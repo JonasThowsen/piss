@@ -1,0 +1,344 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { homedir } from "node:os";
+import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
+import { WebSocket, WebSocketServer } from "ws";
+import {
+  MAX_IMAGE_BYTES,
+  PROTOCOL_VERSION,
+  validateImages,
+  type BridgeToServer,
+  type BrowserToServer,
+  type ServerToBridge,
+  type ServerToBrowser,
+  type SessionEvent,
+  type SessionInfo,
+} from "../shared/protocol.ts";
+
+const HOST = process.env.PISS_HOST ?? "127.0.0.1";
+const PORT = Number(process.env.PISS_PORT ?? "4317");
+const DEV_BYPASS = process.env.PISS_DEV_BYPASS_AUTH === "1";
+const ALLOWED_USERS = new Set((process.env.PISS_ALLOWED_USERS ?? "").split(",").map((v) => v.trim()).filter(Boolean));
+const STATE_DIR = process.env.PISS_STATE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "piss");
+const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ?? join(STATE_DIR, "bridge-token");
+const PUBLIC_DIR = fileURLToPath(new URL("./public", import.meta.url));
+const MAX_EVENTS = 750;
+const OFFLINE_RETENTION_MS = 5 * 60_000;
+
+if (HOST !== "127.0.0.1" && HOST !== "::1" && HOST !== "localhost") {
+  throw new Error("PISS only permits a loopback bind; use its private Tailscale node for remote access");
+}
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("Invalid PISS_PORT");
+if (DEV_BYPASS && process.env.NODE_ENV === "production") throw new Error("Development auth bypass is forbidden with NODE_ENV=production");
+
+interface LiveSession {
+  info: SessionInfo;
+  bridge?: WebSocket;
+  snapshot: unknown[];
+  events: SessionEvent[];
+  sequence: number;
+  offlineTimer?: NodeJS.Timeout;
+}
+
+const sessions = new Map<string, LiveSession>();
+const browsers = new Set<WebSocket>();
+const browserSubscriptions = new Map<WebSocket, string>();
+const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout }>();
+const bridgeSessions = new Map<WebSocket, string>();
+const liveness = new WeakMap<WebSocket, boolean>();
+const commandWindows = new WeakMap<WebSocket, number[]>();
+
+await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
+await chmod(STATE_DIR, 0o700);
+let bridgeToken: string;
+try {
+  bridgeToken = (await readFile(TOKEN_FILE, "utf8")).trim();
+  if (bridgeToken.length < 32) throw new Error("token too short");
+} catch {
+  bridgeToken = randomBytes(32).toString("base64url");
+  await writeFile(TOKEN_FILE, `${bridgeToken}\n`, { mode: 0o600, flag: "wx" }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+    bridgeToken = (await readFile(TOKEN_FILE, "utf8")).trim();
+  });
+}
+await chmod(TOKEN_FILE, 0o600);
+const bridgeTokenHash = createHash("sha256").update(bridgeToken).digest();
+
+function send(ws: WebSocket, message: ServerToBrowser | ServerToBridge) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+}
+
+function publicSessions(): SessionInfo[] {
+  return [...sessions.values()]
+    .map((session) => session.info)
+    .sort((a, b) => Number(a.state === "offline") - Number(b.state === "offline") || b.lastActivity - a.lastActivity);
+}
+
+function broadcastSessions() {
+  const message: ServerToBrowser = { type: "sessions.updated", sessions: publicSessions() };
+  for (const browser of browsers) send(browser, message);
+}
+
+function userFromRequest(request: IncomingMessage): string | undefined {
+  if (DEV_BYPASS) return "local-development";
+  const value = request.headers["tailscale-user-login"];
+  const login = Array.isArray(value) ? value[0] : value;
+  if (!login || (ALLOWED_USERS.size && !ALLOWED_USERS.has(login))) return;
+  return login;
+}
+
+function validOrigin(request: IncomingMessage): boolean {
+  if (DEV_BYPASS) return true;
+  const origin = request.headers.origin;
+  const expectedHost = request.headers["x-forwarded-host"] ?? request.headers.host;
+  if (!origin || !expectedHost || Array.isArray(expectedHost)) return false;
+  try {
+    return new URL(origin).protocol === "https:" && new URL(origin).host === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+function bridgeAuthorized(request: IncomingMessage): boolean {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) return false;
+  const candidate = createHash("sha256").update(authorization.slice(7)).digest();
+  return candidate.length === bridgeTokenHash.length && cryptoTimingSafeEqual(candidate, bridgeTokenHash);
+}
+
+function cryptoTimingSafeEqual(a: Buffer, b: Buffer): boolean {
+  // Hashes are fixed-length; XOR avoids leaking the first differing byte.
+  let difference = 0;
+  for (let index = 0; index < a.length; index++) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  return difference === 0;
+}
+
+function parseJson(raw: Buffer | ArrayBuffer | Buffer[]): unknown {
+  const text = Array.isArray(raw) ? Buffer.concat(raw).toString("utf8") : Buffer.from(raw as ArrayBuffer).toString("utf8");
+  return JSON.parse(text);
+}
+
+function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
+  let message: BridgeToServer;
+  try { message = parseJson(raw) as BridgeToServer; } catch { ws.close(1003, "invalid JSON"); return; }
+
+  if (message.type === "bridge.hello") {
+    if (message.protocolVersion !== PROTOCOL_VERSION) { ws.close(1002, "protocol mismatch"); return; }
+    const previousId = bridgeSessions.get(ws);
+    if (previousId && previousId !== message.session.sessionId) sessions.get(previousId)!.bridge = undefined;
+    const existing = sessions.get(message.session.sessionId);
+    if (existing?.offlineTimer) clearTimeout(existing.offlineTimer);
+    if (existing?.bridge && existing.bridge !== ws) existing.bridge.close(4001, "runtime replaced");
+    sessions.set(message.session.sessionId, {
+      info: { ...message.session, state: message.session.state, lastActivity: Date.now() },
+      bridge: ws,
+      snapshot: Array.isArray(message.snapshot) ? message.snapshot : [],
+      events: existing?.info.runtimeId === message.session.runtimeId ? existing.events : [],
+      sequence: existing?.info.runtimeId === message.session.runtimeId ? existing.sequence : 0,
+    });
+    bridgeSessions.set(ws, message.session.sessionId);
+    broadcastSessions();
+    return;
+  }
+
+  if (message.type === "bridge.command_result") {
+    const pending = pendingCommands.get(message.commandId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingCommands.delete(message.commandId);
+    send(pending.browser, { type: "command.result", commandId: message.commandId, ok: message.ok, error: message.error });
+    return;
+  }
+
+  const sessionId = bridgeSessions.get(ws);
+  const session = sessionId ? sessions.get(sessionId) : undefined;
+  if (!session || session.info.runtimeId !== message.runtimeId) return;
+  session.sequence += 1;
+  session.info.lastActivity = message.timestamp;
+  if (message.event === "agent.started") session.info.state = "streaming";
+  if (message.event === "agent.settled") session.info.state = "idle";
+  if (message.event === "session.info" && message.data && typeof message.data === "object") {
+    session.info = { ...session.info, ...(message.data as Partial<SessionInfo>), state: session.info.state };
+  }
+  if (message.event === "message.completed") {
+    const data = message.data as { message?: unknown };
+    if (data?.message) session.snapshot.push({ type: "message", message: data.message });
+  }
+  const event: SessionEvent = {
+    sequence: session.sequence,
+    runtimeId: session.info.runtimeId,
+    event: message.event,
+    data: message.data,
+    timestamp: message.timestamp,
+  };
+  session.events.push(event);
+  if (session.events.length > MAX_EVENTS) session.events.splice(0, session.events.length - MAX_EVENTS);
+  for (const browser of browsers) {
+    if (browserSubscriptions.get(browser) === sessionId) send(browser, { type: "session.event", sessionId: sessionId!, event });
+  }
+  if (message.event.startsWith("agent.") || message.event === "session.info") broadcastSessions();
+}
+
+function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
+  let message: BrowserToServer;
+  try { message = parseJson(raw) as BrowserToServer; } catch { send(ws, { type: "server.error", error: "Invalid JSON" }); return; }
+  if (message.type === "browser.ping") { send(ws, { type: "server.pong" }); return; }
+
+  if (message.type === "browser.subscribe") {
+    const session = sessions.get(message.sessionId);
+    if (!session) { send(ws, { type: "server.error", error: "Session not found" }); return; }
+    browserSubscriptions.set(ws, message.sessionId);
+    send(ws, { type: "session.snapshot", session: session.info, entries: session.snapshot, sequence: session.sequence });
+    return;
+  }
+
+  const now = Date.now();
+  const recentCommands = (commandWindows.get(ws) ?? []).filter((timestamp) => now - timestamp < 10_000);
+  if (recentCommands.length >= 30) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Command rate limit exceeded" });
+    return;
+  }
+  recentCommands.push(now);
+  commandWindows.set(ws, recentCommands);
+  if ((message.text?.length ?? 0) > 512 * 1024) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Message exceeds 512 KiB" });
+    return;
+  }
+  const session = sessions.get(message.sessionId);
+  if (!session?.bridge || session.bridge.readyState !== WebSocket.OPEN) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Pi session is offline" });
+    return;
+  }
+  if (session.info.runtimeId !== message.runtimeId) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Session runtime changed; refresh before sending" });
+    return;
+  }
+  const imageError = validateImages(message.images);
+  if (imageError) { send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: imageError }); return; }
+  if (message.action !== "abort" && !message.text?.trim() && !message.images?.length) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Message is empty" });
+    return;
+  }
+  if (pendingCommands.has(message.commandId)) return;
+  const timer = setTimeout(() => {
+    pendingCommands.delete(message.commandId);
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Pi did not acknowledge the command" });
+  }, 10_000);
+  pendingCommands.set(message.commandId, { browser: ws, timer });
+  send(session.bridge, {
+    type: "bridge.command",
+    commandId: message.commandId,
+    runtimeId: message.runtimeId,
+    action: message.action,
+    text: message.text,
+    images: message.images,
+  });
+}
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json",
+};
+
+function json(response: ServerResponse, statusCode: number, body: unknown) {
+  const payload = JSON.stringify(body);
+  response.writeHead(statusCode, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), "cache-control": "no-store" });
+  response.end(payload);
+}
+
+async function serveStatic(request: IncomingMessage, response: ServerResponse) {
+  if (!userFromRequest(request)) { json(response, 401, { error: "Tailscale identity required" }); return; }
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  const requested = pathname === "/" ? "index.html" : normalize(pathname).replace(/^[/\\]+/, "");
+  let path = join(PUBLIC_DIR, requested);
+  if (!path.startsWith(PUBLIC_DIR)) { response.writeHead(404).end(); return; }
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) throw new Error("not file");
+  } catch {
+    path = join(PUBLIC_DIR, "index.html");
+  }
+  try {
+    const info = await stat(path);
+    response.writeHead(200, {
+      "content-type": MIME[extname(path)] ?? "application/octet-stream",
+      "content-length": info.size,
+      "cache-control": path.endsWith("index.html") || path.endsWith("service-worker.js") || path.endsWith("manifest.webmanifest") ? "no-cache" : "public, max-age=31536000, immutable",
+      "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+    });
+    createReadStream(path).pipe(response);
+  } catch { response.writeHead(503).end("Web client is not built. Run npm run build.\n"); }
+}
+
+const server = createServer((request, response) => {
+  if (request.url === "/api/health") { json(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION }); return; }
+  void serveStatic(request, response);
+});
+
+const bridgeWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
+const browserWss = new WebSocketServer({ noServer: true, maxPayload: Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024 });
+
+server.on("upgrade", (request, socket, head) => {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (pathname === "/bridge" && bridgeAuthorized(request)) {
+    bridgeWss.handleUpgrade(request, socket, head, (ws) => bridgeWss.emit("connection", ws, request));
+  } else if (pathname === "/api/ws" && userFromRequest(request) && validOrigin(request)) {
+    browserWss.handleUpgrade(request, socket, head, (ws) => browserWss.emit("connection", ws, request));
+  } else {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+  }
+});
+
+bridgeWss.on("connection", (ws) => {
+  liveness.set(ws, true);
+  ws.on("pong", () => liveness.set(ws, true));
+  ws.on("message", (raw) => handleBridgeMessage(ws, raw as Buffer));
+  ws.on("close", () => {
+    const sessionId = bridgeSessions.get(ws);
+    bridgeSessions.delete(ws);
+    const session = sessionId ? sessions.get(sessionId) : undefined;
+    if (!session || session.bridge !== ws) return;
+    session.bridge = undefined;
+    session.info.state = "offline";
+    session.info.lastActivity = Date.now();
+    session.offlineTimer = setTimeout(() => { sessions.delete(sessionId!); broadcastSessions(); }, OFFLINE_RETENTION_MS);
+    broadcastSessions();
+  });
+});
+
+browserWss.on("connection", (ws, request) => {
+  browsers.add(ws);
+  liveness.set(ws, true);
+  ws.on("pong", () => liveness.set(ws, true));
+  send(ws, { type: "server.hello", user: userFromRequest(request)!, sessions: publicSessions() });
+  ws.on("message", (raw) => handleBrowserMessage(ws, raw as Buffer));
+  ws.on("close", () => { browsers.delete(ws); browserSubscriptions.delete(ws); });
+});
+
+const heartbeat = setInterval(() => {
+  for (const ws of [...bridgeWss.clients, ...browserWss.clients]) {
+    if (!liveness.get(ws)) {
+      ws.terminate();
+      continue;
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      liveness.set(ws, false);
+      ws.ping();
+    }
+  }
+}, 20_000);
+heartbeat.unref();
+
+server.listen(PORT, HOST, () => {
+  console.log(`PISS listening on http://${HOST}:${PORT}`);
+  console.log(`Bridge token: ${TOKEN_FILE}`);
+  if (DEV_BYPASS) console.warn("Development authentication bypass is enabled; loopback access only.");
+  else console.log("Remote access is expected through the independent PISS Tailscale node.");
+  if (ALLOWED_USERS.size) console.log(`Allowed Tailscale users: ${[...ALLOWED_USERS].join(", ")}`);
+});
