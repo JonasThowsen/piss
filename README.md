@@ -19,6 +19,7 @@ It does not consume the hosting machine's normal Tailscale Serve configuration.
 - Phone image uploads and desktop clipboard screenshots
 - Per-session persistent text drafts
 - Mobile session drawer and controlled follow-to-bottom behavior
+- Installable PWA with standalone display, offline app shell, and branded icons
 - Runtime-generation checks against stale commands
 - Tailscale identity authentication and optional login allowlist
 - Independent Tailscale hostname and HTTPS certificate
