@@ -52,10 +52,11 @@ interface LiveSession {
 const sessions = new Map<string, LiveSession>();
 const browsers = new Set<WebSocket>();
 const browserSubscriptions = new Map<WebSocket, string>();
-const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout }>();
+const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout; kind: "command" | "review" }>();
 const bridgeSessions = new Map<WebSocket, string>();
 const liveness = new WeakMap<WebSocket, boolean>();
 const commandWindows = new WeakMap<WebSocket, number[]>();
+const lastReviewAt = new WeakMap<WebSocket, number>();
 
 await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
 await chmod(STATE_DIR, 0o700);
@@ -156,7 +157,11 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     if (!pending) return;
     clearTimeout(pending.timer);
     pendingCommands.delete(message.commandId);
-    send(pending.browser, { type: "command.result", commandId: message.commandId, ok: message.ok, error: message.error });
+    if (pending.kind === "review") {
+      send(pending.browser, { type: "review.result", requestId: message.commandId, ok: message.ok, review: message.review, error: message.error });
+    } else {
+      send(pending.browser, { type: "command.result", commandId: message.commandId, ok: message.ok, error: message.error });
+    }
     return;
   }
 
@@ -239,6 +244,36 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     return;
   }
 
+  if (message.type === "browser.review_request") {
+    const now = Date.now();
+    if (now - (lastReviewAt.get(ws) ?? 0) < 3_000) {
+      send(ws, { type: "review.result", requestId: message.requestId, ok: false, error: "Wait before refreshing the review" });
+      return;
+    }
+    lastReviewAt.set(ws, now);
+    const session = sessions.get(message.sessionId);
+    if (!session?.bridge || session.bridge.readyState !== WebSocket.OPEN || session.info.runtimeId !== message.runtimeId) {
+      send(ws, { type: "review.result", requestId: message.requestId, ok: false, error: "Pi session is offline or has changed" });
+      return;
+    }
+    if (pendingCommands.has(message.requestId)) {
+      send(ws, { type: "review.result", requestId: message.requestId, ok: false, error: "Duplicate review request ID" });
+      return;
+    }
+    const timer = setTimeout(() => {
+      pendingCommands.delete(message.requestId);
+      send(ws, { type: "review.result", requestId: message.requestId, ok: false, error: "Pi did not return the review in time" });
+    }, 30_000);
+    pendingCommands.set(message.requestId, { browser: ws, timer, kind: "review" });
+    send(session.bridge, {
+      type: "bridge.command",
+      commandId: message.requestId,
+      runtimeId: message.runtimeId,
+      action: "review",
+    });
+    return;
+  }
+
   const now = Date.now();
   const recentCommands = (commandWindows.get(ws) ?? []).filter((timestamp) => now - timestamp < 10_000);
   if (recentCommands.length >= 30) {
@@ -274,7 +309,7 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     pendingCommands.delete(message.commandId);
     send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Pi did not acknowledge the command" });
   }, 10_000);
-  pendingCommands.set(message.commandId, { browser: ws, timer });
+  pendingCommands.set(message.commandId, { browser: ws, timer, kind: "command" });
   send(session.bridge, {
     type: "bridge.command",
     commandId: message.commandId,

@@ -24,6 +24,23 @@ export interface ImageInput {
   name?: string;
 }
 
+export interface ReviewFile {
+  path: string;
+  indexStatus: string;
+  worktreeStatus: string;
+  patch: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export interface ReviewSnapshot {
+  cwd: string;
+  generatedAt: number;
+  files: ReviewFile[];
+  truncated: boolean;
+  totalFiles: number;
+}
+
 export type BridgeHello = {
   type: "bridge.hello";
   protocolVersion: 1;
@@ -44,13 +61,14 @@ export type BridgeToServer = BridgeHello | BridgeEvent | {
   commandId: string;
   ok: boolean;
   error?: string;
+  review?: ReviewSnapshot;
 };
 
 export type ServerToBridge = {
   type: "bridge.command";
   commandId: string;
   runtimeId: string;
-  action: "prompt" | "steer" | "followUp" | "abort" | "snapshot";
+  action: "prompt" | "steer" | "followUp" | "abort" | "snapshot" | "review";
   text?: string;
   images?: ImageInput[];
 };
@@ -66,6 +84,7 @@ export type SessionEvent = {
 export type BrowserToServer =
   | { type: "browser.subscribe"; sessionId: string; after?: number }
   | { type: "browser.archive"; sessionId: string; runtimeId: string }
+  | { type: "browser.review_request"; requestId: string; sessionId: string; runtimeId: string }
   | { type: "browser.command"; commandId: string; sessionId: string; runtimeId: string; action: Delivery | "abort"; text?: string; images?: ImageInput[] }
   | { type: "browser.ping" };
 
@@ -75,10 +94,12 @@ export type ServerToBrowser =
   | { type: "session.snapshot"; session: SessionInfo; entries: unknown[]; sequence: number }
   | { type: "session.event"; sessionId: string; event: SessionEvent }
   | { type: "command.result"; commandId: string; ok: boolean; error?: string }
+  | { type: "review.result"; requestId: string; ok: boolean; review?: ReviewSnapshot; error?: string }
   | { type: "server.pong" }
   | { type: "server.error"; error: string };
 
 const DELIVERY_ACTIONS = new Set(["prompt", "steer", "followUp", "abort"]);
+const BRIDGE_COMMAND_ACTIONS = new Set(["prompt", "steer", "followUp", "abort", "snapshot", "review"]);
 const BRIDGE_EVENTS = new Set([
   "agent.started",
   "agent.settled",
@@ -118,6 +139,13 @@ export function isImageMediaType(value: string): value is ImageMediaType {
   return (IMAGE_MEDIA_TYPES as readonly string[]).includes(value);
 }
 
+export function isServerToBridge(value: unknown): value is ServerToBridge {
+  if (!isRecord(value) || value.type !== "bridge.command") return false;
+  return isBoundedString(value.commandId, 128) && isBoundedString(value.runtimeId, 128) &&
+    typeof value.action === "string" && BRIDGE_COMMAND_ACTIONS.has(value.action) &&
+    (value.text === undefined || isBoundedString(value.text, 512 * 1024, true)) && hasValidImages(value.images);
+}
+
 export function isBrowserToServer(value: unknown): value is BrowserToServer {
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "browser.ping") return true;
@@ -128,6 +156,10 @@ export function isBrowserToServer(value: unknown): value is BrowserToServer {
   if (value.type === "browser.archive") {
     return isBoundedString(value.sessionId, 512) && isBoundedString(value.runtimeId, 128);
   }
+  if (value.type === "browser.review_request") {
+    return isBoundedString(value.requestId, 128) && isBoundedString(value.sessionId, 512) &&
+      isBoundedString(value.runtimeId, 128);
+  }
   if (value.type !== "browser.command") return false;
   return isBoundedString(value.commandId, 128) &&
     isBoundedString(value.sessionId, 512) &&
@@ -135,6 +167,18 @@ export function isBrowserToServer(value: unknown): value is BrowserToServer {
     typeof value.action === "string" && DELIVERY_ACTIONS.has(value.action) &&
     (value.text === undefined || isBoundedString(value.text, 512 * 1024, true)) &&
     hasValidImages(value.images);
+}
+
+export function isReviewSnapshot(value: unknown): value is ReviewSnapshot {
+  if (!isRecord(value) || !isBoundedString(value.cwd, 16 * 1024) || !isFiniteTimestamp(value.generatedAt) ||
+    typeof value.truncated !== "boolean" || !Number.isSafeInteger(value.totalFiles) || Number(value.totalFiles) < 0 ||
+    !Array.isArray(value.files) || value.files.length > 100) return false;
+  return value.files.every((file) =>
+    isRecord(file) && isBoundedString(file.path, 16 * 1024) &&
+    isBoundedString(file.indexStatus, 1, true) && isBoundedString(file.worktreeStatus, 1, true) &&
+    isBoundedString(file.patch, 256 * 1024, true) &&
+    typeof file.truncated === "boolean" && typeof file.binary === "boolean"
+  );
 }
 
 export function isSessionInfo(value: unknown): value is SessionInfo {
@@ -159,7 +203,8 @@ export function isBridgeToServer(value: unknown): value is BridgeToServer {
   }
   if (value.type === "bridge.command_result") {
     return isBoundedString(value.commandId, 128) && typeof value.ok === "boolean" &&
-      (value.error === undefined || isBoundedString(value.error, 4096, true));
+      (value.error === undefined || isBoundedString(value.error, 4096, true)) &&
+      (value.review === undefined || isReviewSnapshot(value.review));
   }
   if (value.type !== "bridge.event") return false;
   return isBoundedString(value.runtimeId, 128) &&

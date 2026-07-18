@@ -4,8 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { collectReview } from "./review.ts";
 import {
   PROTOCOL_VERSION,
+  isServerToBridge,
   validateImages,
   type BridgeToServer,
   type ImageInput,
@@ -93,9 +95,14 @@ export default function pissExtension(pi: ExtensionAPI) {
     });
   };
 
-  const handleCommand = (message: ServerToBridge) => {
+  const handleCommand = async (message: ServerToBridge) => {
     if (message.type !== "bridge.command" || message.runtimeId !== runtimeId || !context) return;
     try {
+      if (message.action === "review") {
+        const review = await collectReview(pi, context.cwd);
+        send({ type: "bridge.command_result", commandId: message.commandId, ok: true, review });
+        return;
+      }
       if (message.action === "abort") {
         context.abort();
       } else if (message.action === "snapshot") {
@@ -156,7 +163,8 @@ export default function pissExtension(pi: ExtensionAPI) {
       });
       candidate.on("message", (raw) => {
         try {
-          handleCommand(JSON.parse(raw.toString()) as ServerToBridge);
+          const message: unknown = JSON.parse(raw.toString());
+          if (isServerToBridge(message)) void handleCommand(message);
         } catch {
           // Invalid broker messages are ignored; authentication already happened.
         }

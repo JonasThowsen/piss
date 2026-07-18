@@ -4,6 +4,8 @@ import {
   MAX_IMAGE_BYTES,
   type BrowserToServer,
   type ImageInput,
+  type ReviewFile,
+  type ReviewSnapshot,
   type ServerToBrowser,
   type SessionEvent,
   type SessionInfo,
@@ -14,6 +16,7 @@ type RawEntry = { type?: string; message?: PiMessage };
 type PiMessage = { role?: string; content?: unknown; timestamp?: number; toolName?: string; isError?: boolean };
 type ToolActivity = { id: string; name: string; state: "running" | "done"; detail: string; error?: boolean };
 type CommandResult = { ok: boolean; error?: string };
+type ReviewResultMessage = Extract<ServerToBrowser, { type: "review.result" }>;
 type OutboxItem = {
   id: string;
   text: string;
@@ -157,6 +160,7 @@ function App() {
   const [notice, setNotice] = useState<string>();
   const [pending, setPending] = useState<string>();
   const [commandResults, setCommandResults] = useState<Record<string, CommandResult>>({});
+  const [reviewResult, setReviewResult] = useState<ReviewResultMessage>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
   const currentId = useRef<string | undefined>(undefined);
@@ -169,6 +173,7 @@ function App() {
       setEntries(message.entries as RawEntry[]); setLiveMessage(undefined); setTools([]);
     }
     if (message.type === "session.event" && message.sessionId === currentId.current) handleEvent(message.event);
+    if (message.type === "review.result") setReviewResult(message);
     if (message.type === "command.result") {
       setPending((id) => id === message.commandId ? undefined : id);
       setCommandResults((results) => ({ ...results, [message.commandId]: { ok: message.ok, error: message.error } }));
@@ -237,7 +242,12 @@ function App() {
       </div>
     </aside>
     <main className="workspace">
-      {selected ? <SessionView session={selected} entries={entries} liveMessage={liveMessage} tools={tools} pending={pending} commandResults={commandResults} notice={notice} clearNotice={() => setNotice(undefined)} sendCommand={(message) => {
+      {selected ? <SessionView session={selected} entries={entries} liveMessage={liveMessage} tools={tools} pending={pending} commandResults={commandResults} reviewResult={reviewResult} requestReview={(requestId) => {
+        setReviewResult(undefined);
+        if (!send({ type: "browser.review_request", requestId, sessionId: selected.sessionId, runtimeId: selected.runtimeId })) {
+          setReviewResult({ type: "review.result", requestId, ok: false, error: "Sidecar is disconnected" });
+        }
+      }} notice={notice} clearNotice={() => setNotice(undefined)} sendCommand={(message) => {
         setPending(message.commandId); setNotice(undefined);
         if (!send(message)) {
           setPending(undefined);
@@ -255,14 +265,16 @@ function summarize(value: unknown): string {
   try { return JSON.stringify(value).slice(0, 180); } catch { return "Activity update"; }
 }
 
-function SessionView({ session, entries, liveMessage, tools, pending, commandResults, notice, clearNotice, sendCommand }: {
-  session: SessionInfo; entries: RawEntry[]; liveMessage?: PiMessage; tools: ToolActivity[]; pending?: string; commandResults: Record<string, CommandResult>; notice?: string; clearNotice: () => void; sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
+function SessionView({ session, entries, liveMessage, tools, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
+  session: SessionInfo; entries: RawEntry[]; liveMessage?: PiMessage; tools: ToolActivity[]; pending?: string; commandResults: Record<string, CommandResult>; reviewResult?: ReviewResultMessage; requestReview: (requestId: string) => void; notice?: string; clearNotice: () => void; sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<Array<ImageInput & { preview: string }>>([]);
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
   const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const [atBottom, setAtBottom] = useState(true);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewRequestId, setReviewRequestId] = useState<string | undefined>(undefined);
   const timelineRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -295,7 +307,7 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
     draftSessionRef.current = session.sessionId;
     setText(draft?.text ?? "");
     setDelivery(draft?.delivery ?? "steer");
-    setImages([]); setOutbox([]); clearNotice();
+    setImages([]); setOutbox([]); setReviewOpen(false); setReviewRequestId(undefined); clearNotice();
   }, [session.sessionId]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -420,6 +432,7 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
       </section>
       <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={jumpToBottom} aria-label="Jump to latest message"><span>↓</span><small>LATEST</small></button>
     </div>
+    {reviewOpen && <ReviewPanel result={reviewResult?.requestId === reviewRequestId ? reviewResult : undefined} loading={reviewResult?.requestId !== reviewRequestId} onRefresh={() => { const requestId = crypto.randomUUID(); setReviewRequestId(requestId); requestReview(requestId); }} onClose={() => setReviewOpen(false)} />}
     <section className="control-deck">
       {notice && <button className="notice" onClick={clearNotice}>{notice}<span>×</span></button>}
       {images.length > 0 && <div className="image-strip">{images.map((image, index) => <button key={`${image.name}-${index}`} onClick={() => setImages((old) => old.filter((_, item) => item !== index))}><img src={image.preview} alt="" /><span>REMOVE</span></button>)}</div>}
@@ -445,10 +458,51 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
           {isRunning ? <div className="delivery-toggle"><button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")}>STEER AFTER CURRENT TOOL</button><button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")}>FOLLOW-UP AFTER SETTLE</button></div> : <span className="desktop-hint">ENTER TO SEND · SHIFT+ENTER FOR NEW LINE</span>}
           {isRunning && <button className="abort" onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}>ABORT OPERATION</button>}
         </div>
-        <div className="session-status"><span>MODEL <b>{session.model?.split("/").at(-1) ?? "—"}</b></span><span>THINKING <b>{session.thinkingLevel ?? "—"}</b></span></div>
+        <div className="session-status"><button className="review-trigger" onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}>REVIEW CHANGES</button><span>MODEL <b>{session.model?.split("/").at(-1) ?? "—"}</b></span><span>THINKING <b>{session.thinkingLevel ?? "—"}</b></span></div>
       </div>
     </section>
   </div>;
+}
+
+function reviewLabels(file: ReviewFile): string[] {
+  if (file.indexStatus === "?" && file.worktreeStatus === "?") return ["UNTRACKED"];
+  const labels: string[] = [];
+  if (file.indexStatus !== " ") labels.push(`INDEX ${file.indexStatus}`);
+  if (file.worktreeStatus !== " ") labels.push(`WORKTREE ${file.worktreeStatus}`);
+  return labels;
+}
+
+function DiffPatch({ patch }: { patch: string }) {
+  return <pre className="diff-patch">{patch.split("\n").map((line, index) => {
+    const className = line.startsWith("@@") ? "hunk"
+      : line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("# ") ? "meta"
+        : line.startsWith("+") ? "added"
+          : line.startsWith("-") ? "removed"
+            : "context";
+    return <span className={className} key={index}>{line || " "}{"\n"}</span>;
+  })}</pre>;
+}
+
+function ReviewPanel({ result, loading, onRefresh, onClose }: {
+  result?: ReviewResultMessage;
+  loading: boolean;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const review: ReviewSnapshot | undefined = result?.review;
+  return <section className="review-panel" aria-label="Uncommitted changes">
+    <header className="review-header"><div><span>WORKTREE REVIEW</span><b>{review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"}` : "Current uncommitted code"}</b></div><nav><button onClick={onRefresh} disabled={loading}>REFRESH</button><button onClick={onClose}>CLOSE</button></nav></header>
+    <div className="review-body">
+      {loading && <div className="review-state"><i />Reading staged, unstaged, and untracked changes…</div>}
+      {!loading && result && !result.ok && <div className="review-state error">{result.error ?? "Unable to load changes"}</div>}
+      {!loading && review?.files.length === 0 && <div className="review-state">Working tree is clean.</div>}
+      {!loading && review?.truncated && <div className="review-warning">The review was bounded for safety. Some files or patch content are omitted.</div>}
+      {!loading && review?.files.map((file) => <details className="review-file" key={file.path}>
+        <summary><span className="review-file-path">{file.path}</span><span className="review-badges">{reviewLabels(file).map((label) => <i key={label}>{label}</i>)}{file.binary && <i>BINARY</i>}{file.truncated && <i>BOUNDED</i>}</span></summary>
+        {file.patch ? <DiffPatch patch={file.patch} /> : <div className="review-empty-patch">No textual patch is available for this change.</div>}
+      </details>)}
+    </div>
+  </section>;
 }
 
 function OutboxMessage({ item }: { item: OutboxItem }) {

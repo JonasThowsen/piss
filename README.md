@@ -24,6 +24,7 @@ https://piss.<tailnet>.ts.net
 - Controlled follow-to-bottom scrolling
 - Mobile session drawer and installable PWA
 - Immediate archiving of stale offline session cards
+- Read-only staged, unstaged, and untracked Git review with bounded unified diffs
 - Tailscale identity authentication with a secure-by-default allowlist
 - Independent Tailscale hostname and HTTPS certificate
 - Runtime-generation protection against stale commands
@@ -145,6 +146,8 @@ journalctl --user -u piss-tailscale-serve -f
 ```
 
 Only offline sessions can be archived from the session list. Archiving dismisses the cached card; if that Pi runtime reconnects, it appears again automatically.
+
+Use **Review changes** at the bottom of a live session to inspect staged, unstaged, and untracked files. Git commands are fixed and read-only, execute in that session's working directory through its authenticated bridge, and enforce file-count, file-size, patch-size, and total-buffer limits.
 
 ## Development
 

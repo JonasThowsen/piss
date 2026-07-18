@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodedBase64Bytes, isBridgeToServer, isBrowserToServer, validateImages } from "../shared/protocol.ts";
+import { parsePorcelainStatus } from "../extensions/review.ts";
+import { decodedBase64Bytes, isBridgeToServer, isBrowserToServer, isServerToBridge, validateImages } from "../shared/protocol.ts";
 
 test("computes decoded base64 size", () => {
   assert.equal(decodedBase64Bytes(Buffer.from("hello").toString("base64")), 5);
@@ -17,8 +18,22 @@ test("accepts supported images and rejects malformed or mislabeled input", () =>
 test("validates browser messages at runtime", () => {
   assert.equal(isBrowserToServer({ type: "browser.ping" }), true);
   assert.equal(isBrowserToServer({ type: "browser.archive", sessionId: "session", runtimeId: "runtime" }), true);
+  assert.equal(isBrowserToServer({ type: "browser.review_request", requestId: "review", sessionId: "session", runtimeId: "runtime" }), true);
   assert.equal(isBrowserToServer({ type: "browser.command", commandId: "id", sessionId: "session", runtimeId: "runtime", action: "shell", text: "no" }), false);
   assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "" }), false);
+});
+
+test("parses normal, untracked, and renamed porcelain records", () => {
+  assert.deepEqual(parsePorcelainStatus(" M src/app.ts\0?? new file.ts\0R  renamed.ts\0old.ts\0"), [
+    { path: "src/app.ts", indexStatus: " ", worktreeStatus: "M" },
+    { path: "new file.ts", indexStatus: "?", worktreeStatus: "?" },
+    { path: "renamed.ts", indexStatus: "R", worktreeStatus: " " },
+  ]);
+});
+
+test("validates broker commands before the extension handles them", () => {
+  assert.equal(isServerToBridge({ type: "bridge.command", commandId: "review", runtimeId: "runtime", action: "review" }), true);
+  assert.equal(isServerToBridge({ type: "bridge.command", commandId: "bad", runtimeId: "runtime", action: "shell" }), false);
 });
 
 test("validates bridge registration and event names", () => {
