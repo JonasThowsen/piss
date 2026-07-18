@@ -122,6 +122,7 @@ in
       wantedBy = [ "default.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
+      conflicts = [ "pi-sidecar.service" ];
       environment = {
         NODE_ENV = "production";
         PISS_HOST = "127.0.0.1";
