@@ -17,16 +17,27 @@ const BROKER_URL = process.env.PISS_BRIDGE_URL ?? "ws://127.0.0.1:4317/bridge";
 const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ??
   join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "piss", "bridge-token");
 const MAX_RECONNECT_MS = 10_000;
+const MAX_SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
 
 function safeValue(value: unknown): unknown {
   try {
-    return JSON.parse(JSON.stringify(value));
+    return JSON.parse(JSON.stringify(value, (_key, nested) => {
+      if (!nested || typeof nested !== "object") return nested;
+      const image = nested as Record<string, unknown>;
+      if (image.type !== "image") return nested;
+      // Browsers only need attachment metadata for history. Never duplicate
+      // base64 image bodies into event buffers and snapshots.
+      const source = image.source && typeof image.source === "object"
+        ? { ...(image.source as Record<string, unknown>), data: undefined }
+        : image.source;
+      return { ...image, data: undefined, source, redacted: true };
+    }));
   } catch {
     return { unavailable: true };
   }
 }
 
-export default function sidecarExtension(pi: ExtensionAPI) {
+export default function pissExtension(pi: ExtensionAPI) {
   let socket: WebSocket | undefined;
   let reconnectTimer: NodeJS.Timeout | undefined;
   let reconnectDelay = 250;
@@ -53,6 +64,10 @@ export default function sidecarExtension(pi: ExtensionAPI) {
 
   const send = (message: BridgeToServer) => {
     if (socket?.readyState !== WebSocket.OPEN) return;
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFER_BYTES) {
+      socket.close(1013, "broker is not keeping up");
+      return;
+    }
     socket.send(JSON.stringify(message));
   };
 

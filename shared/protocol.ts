@@ -65,6 +65,7 @@ export type SessionEvent = {
 
 export type BrowserToServer =
   | { type: "browser.subscribe"; sessionId: string; after?: number }
+  | { type: "browser.archive"; sessionId: string; runtimeId: string }
   | { type: "browser.command"; commandId: string; sessionId: string; runtimeId: string; action: Delivery | "abort"; text?: string; images?: ImageInput[] }
   | { type: "browser.ping" };
 
@@ -77,8 +78,93 @@ export type ServerToBrowser =
   | { type: "server.pong" }
   | { type: "server.error"; error: string };
 
+const DELIVERY_ACTIONS = new Set(["prompt", "steer", "followUp", "abort"]);
+const BRIDGE_EVENTS = new Set([
+  "agent.started",
+  "agent.settled",
+  "message.started",
+  "message.updated",
+  "message.completed",
+  "tool.started",
+  "tool.updated",
+  "tool.completed",
+  "session.info",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isBoundedString(value: unknown, maximum: number, allowEmpty = false): value is string {
+  return typeof value === "string" && value.length <= maximum && (allowEmpty || value.length > 0);
+}
+
+function isFiniteTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function hasValidImages(value: unknown): value is ImageInput[] | undefined {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 4) return false;
+  return value.every((image) =>
+    isRecord(image) &&
+    typeof image.mediaType === "string" && isImageMediaType(image.mediaType) &&
+    typeof image.data === "string" &&
+    (image.name === undefined || isBoundedString(image.name, 255, true))
+  );
+}
+
 export function isImageMediaType(value: string): value is ImageMediaType {
   return (IMAGE_MEDIA_TYPES as readonly string[]).includes(value);
+}
+
+export function isBrowserToServer(value: unknown): value is BrowserToServer {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "browser.ping") return true;
+  if (value.type === "browser.subscribe") {
+    return isBoundedString(value.sessionId, 512) &&
+      (value.after === undefined || (Number.isSafeInteger(value.after) && Number(value.after) >= 0));
+  }
+  if (value.type === "browser.archive") {
+    return isBoundedString(value.sessionId, 512) && isBoundedString(value.runtimeId, 128);
+  }
+  if (value.type !== "browser.command") return false;
+  return isBoundedString(value.commandId, 128) &&
+    isBoundedString(value.sessionId, 512) &&
+    isBoundedString(value.runtimeId, 128) &&
+    typeof value.action === "string" && DELIVERY_ACTIONS.has(value.action) &&
+    (value.text === undefined || isBoundedString(value.text, 512 * 1024, true)) &&
+    hasValidImages(value.images);
+}
+
+export function isSessionInfo(value: unknown): value is SessionInfo {
+  if (!isRecord(value)) return false;
+  return isBoundedString(value.sessionId, 512) &&
+    isBoundedString(value.runtimeId, 128) &&
+    Number.isSafeInteger(value.pid) && Number(value.pid) > 0 &&
+    isBoundedString(value.cwd, 16 * 1024) &&
+    (value.name === undefined || isBoundedString(value.name, 1024, true)) &&
+    (value.sessionFile === undefined || isBoundedString(value.sessionFile, 16 * 1024, true)) &&
+    (value.model === undefined || isBoundedString(value.model, 1024, true)) &&
+    (value.thinkingLevel === undefined || isBoundedString(value.thinkingLevel, 64, true)) &&
+    (value.state === "idle" || value.state === "streaming" || value.state === "offline") &&
+    isFiniteTimestamp(value.startedAt) && isFiniteTimestamp(value.lastActivity);
+}
+
+export function isBridgeToServer(value: unknown): value is BridgeToServer {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "bridge.hello") {
+    return value.protocolVersion === PROTOCOL_VERSION && isSessionInfo(value.session) &&
+      Array.isArray(value.snapshot) && value.snapshot.length <= 10_000;
+  }
+  if (value.type === "bridge.command_result") {
+    return isBoundedString(value.commandId, 128) && typeof value.ok === "boolean" &&
+      (value.error === undefined || isBoundedString(value.error, 4096, true));
+  }
+  if (value.type !== "bridge.event") return false;
+  return isBoundedString(value.runtimeId, 128) &&
+    typeof value.event === "string" && BRIDGE_EVENTS.has(value.event) &&
+    isFiniteTimestamp(value.timestamp);
 }
 
 export function decodedBase64Bytes(data: string): number {

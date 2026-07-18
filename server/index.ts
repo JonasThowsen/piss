@@ -1,14 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { homedir } from "node:os";
-import { extname, join, normalize } from "node:path";
+import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   MAX_IMAGE_BYTES,
   PROTOCOL_VERSION,
+  isBridgeToServer,
+  isBrowserToServer,
   validateImages,
   type BridgeToServer,
   type BrowserToServer,
@@ -27,6 +29,8 @@ const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ?? join(STATE_DIR, "bridge
 const PUBLIC_DIR = fileURLToPath(new URL("./public", import.meta.url));
 const MAX_EVENTS = 750;
 const OFFLINE_RETENTION_MS = 5 * 60_000;
+const MAX_SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
+const MAX_SNAPSHOT_ENTRIES = 10_000;
 
 if (HOST !== "127.0.0.1" && HOST !== "::1" && HOST !== "localhost") {
   throw new Error("PISS only permits a loopback bind; use its private Tailscale node for remote access");
@@ -68,7 +72,12 @@ await chmod(TOKEN_FILE, 0o600);
 const bridgeTokenHash = createHash("sha256").update(bridgeToken).digest();
 
 function send(ws: WebSocket, message: ServerToBrowser | ServerToBridge) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > MAX_SOCKET_BUFFER_BYTES) {
+    ws.close(1013, "client is not keeping up");
+    return;
+  }
+  ws.send(JSON.stringify(message));
 }
 
 function publicSessions(): SessionInfo[] {
@@ -106,14 +115,7 @@ function bridgeAuthorized(request: IncomingMessage): boolean {
   const authorization = request.headers.authorization;
   if (!authorization?.startsWith("Bearer ")) return false;
   const candidate = createHash("sha256").update(authorization.slice(7)).digest();
-  return candidate.length === bridgeTokenHash.length && cryptoTimingSafeEqual(candidate, bridgeTokenHash);
-}
-
-function cryptoTimingSafeEqual(a: Buffer, b: Buffer): boolean {
-  // Hashes are fixed-length; XOR avoids leaking the first differing byte.
-  let difference = 0;
-  for (let index = 0; index < a.length; index++) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  return difference === 0;
+  return candidate.length === bridgeTokenHash.length && timingSafeEqual(candidate, bridgeTokenHash);
 }
 
 function parseJson(raw: Buffer | ArrayBuffer | Buffer[]): unknown {
@@ -122,8 +124,10 @@ function parseJson(raw: Buffer | ArrayBuffer | Buffer[]): unknown {
 }
 
 function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
-  let message: BridgeToServer;
-  try { message = parseJson(raw) as BridgeToServer; } catch { ws.close(1003, "invalid JSON"); return; }
+  let parsed: unknown;
+  try { parsed = parseJson(raw); } catch { ws.close(1003, "invalid JSON"); return; }
+  if (!isBridgeToServer(parsed)) { ws.close(1008, "invalid bridge message"); return; }
+  const message: BridgeToServer = parsed;
 
   if (message.type === "bridge.hello") {
     if (message.protocolVersion !== PROTOCOL_VERSION) { ws.close(1002, "protocol mismatch"); return; }
@@ -135,7 +139,7 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     sessions.set(message.session.sessionId, {
       info: { ...message.session, state: message.session.state, lastActivity: Date.now() },
       bridge: ws,
-      snapshot: Array.isArray(message.snapshot) ? message.snapshot : [],
+      snapshot: message.snapshot.slice(-MAX_SNAPSHOT_ENTRIES),
       events: existing?.info.runtimeId === message.session.runtimeId ? existing.events : [],
       sequence: existing?.info.runtimeId === message.session.runtimeId ? existing.sequence : 0,
     });
@@ -161,11 +165,22 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
   if (message.event === "agent.started") session.info.state = "streaming";
   if (message.event === "agent.settled") session.info.state = "idle";
   if (message.event === "session.info" && message.data && typeof message.data === "object") {
-    session.info = { ...session.info, ...(message.data as Partial<SessionInfo>), state: session.info.state };
+    const update = message.data as Partial<SessionInfo>;
+    session.info = {
+      ...session.info,
+      ...(typeof update.name === "string" || update.name === undefined ? { name: update.name } : {}),
+      ...(typeof update.cwd === "string" ? { cwd: update.cwd } : {}),
+      ...(typeof update.model === "string" || update.model === undefined ? { model: update.model } : {}),
+      ...(typeof update.thinkingLevel === "string" || update.thinkingLevel === undefined ? { thinkingLevel: update.thinkingLevel } : {}),
+      lastActivity: message.timestamp,
+    };
   }
   if (message.event === "message.completed") {
     const data = message.data as { message?: unknown };
-    if (data?.message) session.snapshot.push({ type: "message", message: data.message });
+    if (data?.message) {
+      session.snapshot.push({ type: "message", message: data.message });
+      if (session.snapshot.length > MAX_SNAPSHOT_ENTRIES) session.snapshot.splice(0, session.snapshot.length - MAX_SNAPSHOT_ENTRIES);
+    }
   }
   const event: SessionEvent = {
     sequence: session.sequence,
@@ -183,8 +198,10 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
 }
 
 function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
-  let message: BrowserToServer;
-  try { message = parseJson(raw) as BrowserToServer; } catch { send(ws, { type: "server.error", error: "Invalid JSON" }); return; }
+  let parsed: unknown;
+  try { parsed = parseJson(raw); } catch { send(ws, { type: "server.error", error: "Invalid JSON" }); return; }
+  if (!isBrowserToServer(parsed)) { send(ws, { type: "server.error", error: "Invalid message" }); return; }
+  const message: BrowserToServer = parsed;
   if (message.type === "browser.ping") { send(ws, { type: "server.pong" }); return; }
 
   if (message.type === "browser.subscribe") {
@@ -192,6 +209,25 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     if (!session) { send(ws, { type: "server.error", error: "Session not found" }); return; }
     browserSubscriptions.set(ws, message.sessionId);
     send(ws, { type: "session.snapshot", session: session.info, entries: session.snapshot, sequence: session.sequence });
+    return;
+  }
+
+  if (message.type === "browser.archive") {
+    const session = sessions.get(message.sessionId);
+    if (!session || session.info.runtimeId !== message.runtimeId) {
+      send(ws, { type: "server.error", error: "Offline session no longer exists" });
+      return;
+    }
+    if (session.bridge || session.info.state !== "offline") {
+      send(ws, { type: "server.error", error: "Only offline sessions can be archived" });
+      return;
+    }
+    if (session.offlineTimer) clearTimeout(session.offlineTimer);
+    sessions.delete(message.sessionId);
+    for (const [browser, subscribedSessionId] of browserSubscriptions) {
+      if (subscribedSessionId === message.sessionId) browserSubscriptions.delete(browser);
+    }
+    broadcastSessions();
     return;
   }
 
@@ -222,7 +258,10 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Message is empty" });
     return;
   }
-  if (pendingCommands.has(message.commandId)) return;
+  if (pendingCommands.has(message.commandId)) {
+    send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Duplicate command ID" });
+    return;
+  }
   const timer = setTimeout(() => {
     pendingCommands.delete(message.commandId);
     send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Pi did not acknowledge the command" });
@@ -251,10 +290,15 @@ function json(response: ServerResponse, statusCode: number, body: unknown) {
 
 async function serveStatic(request: IncomingMessage, response: ServerResponse) {
   if (!userFromRequest(request)) { json(response, 401, { error: "Tailscale identity required" }); return; }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.writeHead(405, { allow: "GET, HEAD" }).end();
+    return;
+  }
   const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-  const requested = pathname === "/" ? "index.html" : normalize(pathname).replace(/^[/\\]+/, "");
-  let path = join(PUBLIC_DIR, requested);
-  if (!path.startsWith(PUBLIC_DIR)) { response.writeHead(404).end(); return; }
+  const requested = pathname === "/" ? "index.html" : pathname.replace(/^[/\\]+/, "");
+  let path = resolve(PUBLIC_DIR, requested);
+  const outsidePublicDirectory = relative(PUBLIC_DIR, path).startsWith("..") || resolve(path) === resolve(PUBLIC_DIR);
+  if (outsidePublicDirectory) { response.writeHead(404).end(); return; }
   try {
     const info = await stat(path);
     if (!info.isFile()) throw new Error("not file");
@@ -269,6 +313,11 @@ async function serveStatic(request: IncomingMessage, response: ServerResponse) {
       "cache-control": path.endsWith("index.html") || path.endsWith("service-worker.js") || path.endsWith("manifest.webmanifest") ? "no-cache" : "public, max-age=31536000, immutable",
       "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "cross-origin-opener-policy": "same-origin",
+      "cross-origin-resource-policy": "same-origin",
+      "permissions-policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+      "strict-transport-security": "max-age=31536000",
       "referrer-policy": "no-referrer",
     });
     createReadStream(path).pipe(response);
@@ -318,7 +367,15 @@ browserWss.on("connection", (ws, request) => {
   ws.on("pong", () => liveness.set(ws, true));
   send(ws, { type: "server.hello", user: userFromRequest(request)!, sessions: publicSessions() });
   ws.on("message", (raw) => handleBrowserMessage(ws, raw as Buffer));
-  ws.on("close", () => { browsers.delete(ws); browserSubscriptions.delete(ws); });
+  ws.on("close", () => {
+    browsers.delete(ws);
+    browserSubscriptions.delete(ws);
+    for (const [commandId, pending] of pendingCommands) {
+      if (pending.browser !== ws) continue;
+      clearTimeout(pending.timer);
+      pendingCommands.delete(commandId);
+    }
+  });
 });
 
 const heartbeat = setInterval(() => {
@@ -334,6 +391,17 @@ const heartbeat = setInterval(() => {
   }
 }, 20_000);
 heartbeat.unref();
+
+function shutdown(signal: string) {
+  console.log(`Received ${signal}; shutting down`);
+  clearInterval(heartbeat);
+  for (const pending of pendingCommands.values()) clearTimeout(pending.timer);
+  for (const ws of [...bridgeWss.clients, ...browserWss.clients]) ws.close(1001, "server shutting down");
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5_000).unref();
+}
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 server.listen(PORT, HOST, () => {
   console.log(`PISS listening on http://${HOST}:${PORT}`);

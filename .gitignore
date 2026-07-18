@@ -1,6 +1,12 @@
 node_modules/
 dist/
-.env
-*.log
+coverage/
 result
 .direnv/
+.env
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+.DS_Store

@@ -8,7 +8,6 @@ self:
 let
   cfg = config.services.piss;
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  socket = "%t/piss/tailscaled.sock";
 
   tailscaledRunner = pkgs.writeShellScript "piss-tailscaled" ''
     set -euo pipefail
@@ -40,9 +39,8 @@ let
         ''
       else
         ''
-          echo "PISS has not joined the tailnet yet." >&2
-          echo "Run: piss-tailscale-login" >&2
-          exit 1
+          echo "PISS has not joined the tailnet yet; run piss-tailscale-login." >&2
+          exit 0
         ''
     }
   '';
@@ -67,7 +65,7 @@ let
       --reset \
       --accept-dns=false \
       --hostname=${lib.escapeShellArg cfg.tailscale.hostname}
-    systemctl --user restart piss-tailscale-serve.service
+    systemctl --user restart piss-tailscale-up.service piss-tailscale-serve.service
   '';
 in
 {
@@ -91,7 +89,13 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [ "you@example.com" ];
-      description = "Tailscale user logins allowed in the browser. Empty permits users allowed by tailnet policy.";
+      description = "Tailscale user logins allowed in the browser. Required unless allowAllTailnetUsers is explicitly enabled.";
+    };
+
+    allowAllTailnetUsers = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Explicitly allow every Tailscale identity permitted by tailnet policy. Prefer allowedUsers.";
     };
 
     tailscale = {
@@ -115,6 +119,13 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.allowedUsers != [ ] || cfg.allowAllTailnetUsers;
+        message = "services.piss.allowedUsers must contain at least one Tailscale login unless allowAllTailnetUsers = true";
+      }
+    ];
+
     environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
 
     systemd.user.services.piss = {
@@ -133,7 +144,29 @@ in
         ExecStart = lib.getExe cfg.package;
         Restart = "on-failure";
         RestartSec = 2;
+        StateDirectory = "piss";
+        StateDirectoryMode = "0700";
+        UMask = "0077";
         NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        ReadWritePaths = [ "%S/piss" ];
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
       };
     };
 
@@ -148,7 +181,30 @@ in
         RestartSec = 3;
         RuntimeDirectory = "piss";
         RuntimeDirectoryMode = "0700";
+        StateDirectory = "piss";
+        StateDirectoryMode = "0700";
+        UMask = "0077";
         NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        ReadWritePaths = [ "%S/piss" ];
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_NETLINK"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
       };
     };
 

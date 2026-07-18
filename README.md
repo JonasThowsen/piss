@@ -1,46 +1,61 @@
 # PISS
 
-**PISS** — **Pi sin sidecar** — is a private, mobile-first web control surface for live [Pi](https://github.com/earendil-works/pi-mono) coding-agent sessions.
+[![CI](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml)
 
-It streams Pi's native messages and tool events instead of mirroring a terminal. From a phone or laptop you can inspect multiple live sessions, send prompts, steer between tool calls, queue follow-ups, abort work, paste or upload images, and safely resume after browser sleep.
+**PISS** — **Pi sin sidecar** — is a private, mobile-first web interface for live [Pi](https://github.com/earendil-works/pi-mono) coding-agent sessions.
 
-PISS is designed for NixOS and private Tailscale access. Its NixOS module runs the application and an independent userspace Tailscale node, giving it its own URL:
+It streams Pi's native messages and tool events instead of mirroring a terminal. From a phone or laptop you can inspect multiple sessions, send prompts, steer between tool calls, queue follow-ups, abort work, paste or upload images, and install the interface as a PWA.
+
+PISS is intentionally designed for **NixOS + Tailscale**. The NixOS module runs the application and an independent userspace Tailscale node, giving it a dedicated URL without consuming the host's normal Tailscale Serve configuration:
 
 ```text
 https://piss.<tailnet>.ts.net
 ```
 
-It does not consume the hosting machine's normal Tailscale Serve configuration.
+> [!WARNING]
+> Remote Pi control is equivalent to remote access to your user account. PISS is a privileged administration interface. Never expose it with Tailscale Funnel or an unauthenticated public proxy.
 
 ## Features
 
 - Native Pi message and tool-event streaming
 - Prompt, steer, follow-up, and abort controls
-- Phone image uploads and desktop clipboard screenshots
-- Per-session persistent text drafts
-- Mobile session drawer and controlled follow-to-bottom behavior
-- Installable PWA with standalone display, offline app shell, and branded icons
-- Runtime-generation checks against stale commands
-- Tailscale identity authentication and optional login allowlist
+- Phone image upload and desktop clipboard screenshots
+- Per-session persistent drafts
+- Controlled follow-to-bottom scrolling
+- Mobile session drawer and installable PWA
+- Immediate archiving of stale offline session cards
+- Tailscale identity authentication with a secure-by-default allowlist
 - Independent Tailscale hostname and HTTPS certificate
-- Separate mode-0600 bridge credential
+- Runtime-generation protection against stale commands
+- Runtime protocol validation, payload limits, backpressure, and image signature checks
 - Reproducible Nix package, NixOS module, and development shell
 - Type checking with the TypeScript 7 native Go compiler (`tsgo`)
 
-## NixOS installation
+## Requirements
 
-Add PISS as a local flake input while developing it:
+- NixOS with flakes enabled
+- Pi installed for the desktop user
+- A Tailscale tailnet with MagicDNS and HTTPS certificates enabled
+- Node.js is only required for development; the Nix package supplies its runtime
+
+## Install on NixOS
+
+### 1. Add the flake input
+
+In your NixOS `flake.nix`:
 
 ```nix
 {
   inputs.piss = {
-    url = "git+file:///home/jonas/coding/piss";
+    url = "github:JonasThowsen/piss";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 }
 ```
 
-Import and enable the module:
+### 2. Enable the service
+
+Import the module and allow your Tailscale login:
 
 ```nix
 { inputs, ... }:
@@ -51,102 +66,137 @@ Import and enable the module:
     enable = true;
     allowedUsers = [ "you@example.com" ];
     tailscale.hostname = "piss";
-
-    # Optional for unattended first login. The file must be readable by the
-    # desktop user. Without it, use piss-tailscale-login once.
-    # tailscale.authKeyFile = "/run/secrets/piss-tailscale-auth-key";
   };
 }
 ```
 
+`allowedUsers` is required by default. To deliberately rely only on tailnet policy, set `allowAllTailnetUsers = true`.
+
 Apply the configuration:
 
 ```bash
-sudo nixos-rebuild switch --flake ~/nixos#nixos
+sudo nixos-rebuild switch --flake ~/nixos#your-host
 ```
 
-### First Tailscale login
+### 3. Authenticate the dedicated Tailscale node
 
-Without an auth key file, authenticate the independent node once:
+On first installation:
 
 ```bash
 piss-tailscale-login
 ```
 
-Open the login URL, then inspect the services:
-
-```bash
-systemctl --user status piss piss-tailscaled piss-tailscale-serve
-journalctl --user -u piss-tailscale-serve -f
-```
-
-With MagicDNS and HTTPS certificates enabled, PISS is available at:
+Open the displayed login URL. PISS then becomes available at:
 
 ```text
 https://piss.<tailnet>.ts.net
 ```
 
-The node state persists under `~/.local/state/piss/tailscale`. A hostname collision may cause Tailscale to add a suffix; remove the old node or rename it in the admin console if the exact `piss` hostname is already occupied.
+The login persists under `~/.local/state/piss/tailscale`. If the hostname already exists, remove or rename the stale node in the Tailscale admin console.
 
-## Install the Pi bridge
+For unattended enrollment, use a secret file readable by the desktop user:
 
-For development, install the repository directly:
+```nix
+services.piss.tailscale.authKeyFile = "/run/secrets/piss-tailscale-auth-key";
+```
+
+### 4. Install the Pi bridge
+
+Once this repository is public:
 
 ```bash
-pi install /home/jonas/coding/piss
+pi install git:github.com/JonasThowsen/piss
 ```
 
-New Pi processes load the bridge automatically. Run `/reload` once in sessions that were already open. Since this is a local Pi package, extension source changes are picked up after `/reload` without reinstalling it.
+For a local checkout instead:
 
-The bridge connects only over loopback and reads its credential from:
-
-```text
-~/.local/state/piss/bridge-token
+```bash
+pi install /path/to/piss
 ```
+
+Start a new Pi process, or run `/reload` in an existing one. The bridge connects over loopback using the mode-0600 credential at `~/.local/state/piss/bridge-token`.
+
+### 5. Install the PWA
+
+Open the HTTPS URL on your phone and choose **Install app** or **Add to Home Screen**. The service worker caches only the application shell; session data still requires a live authenticated connection.
+
+## Updating
+
+Update the Nix input and switch generations:
+
+```bash
+cd ~/nixos
+nix flake update piss
+sudo nixos-rebuild switch --flake .#your-host
+```
+
+Update a Pi Git package with:
+
+```bash
+pi update --extensions
+```
+
+## Operations
+
+```bash
+systemctl --user status piss piss-tailscaled piss-tailscale-serve
+journalctl --user -u piss -f
+journalctl --user -u piss-tailscale-serve -f
+```
+
+Only offline sessions can be archived from the session list. Archiving dismisses the cached card; if that Pi runtime reconnects, it appears again automatically.
 
 ## Development
 
-Enter the reproducible shell and install the locked npm dependencies:
-
 ```bash
+git clone https://github.com/JonasThowsen/piss
+cd piss
 nix develop
-npm install
+npm ci
 ```
 
-Useful commands:
+The dev shell adds `node_modules/.bin` to `PATH`, so both TypeScript commands are directly available after `npm ci`:
 
 ```bash
-npm run check     # TypeScript 7 native Go checker + tests
-npm run build     # production server and browser assets
-npm run dev       # local server and Vite, explicit auth bypass
+tsgo --version   # TypeScript 7 native Go implementation used by CI
+# Compatibility compiler, also installed as a dev dependency:
+tsc --version
+```
+
+Common commands:
+
+```bash
+npm run dev
+npm run typecheck
+npm run typecheck:tsc
+npm test
+npm run build
+npm run audit
 nix flake check
 nix build .#piss
 ```
 
-The development server is loopback-only. `npm run dev` explicitly enables local authentication bypass; production refuses that combination when `NODE_ENV=production`.
+`npm run dev` enables authentication bypass only for its loopback development server. Production refuses that setting.
+
+The production service runs an immutable Nix-store build. Extension changes in a local Pi package require `/reload`; server and web changes require a new NixOS generation.
 
 ## Module options
 
-- `services.piss.enable`
-- `services.piss.package`
-- `services.piss.port` — default `4317`
-- `services.piss.allowedUsers` — Tailscale login allowlist
-- `services.piss.tailscale.enable` — independent userspace node, enabled by default
-- `services.piss.tailscale.hostname` — default `piss`
-- `services.piss.tailscale.authKeyFile` — optional unattended enrollment
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `services.piss.enable` | `false` | Enable PISS |
+| `services.piss.package` | flake package | Package to run |
+| `services.piss.port` | `4317` | Loopback application and bridge port |
+| `services.piss.allowedUsers` | `[]` | Explicit Tailscale login allowlist |
+| `services.piss.allowAllTailnetUsers` | `false` | Explicitly permit all identities allowed by tailnet policy |
+| `services.piss.tailscale.enable` | `true` | Run the independent userspace node |
+| `services.piss.tailscale.hostname` | `"piss"` | Dedicated tailnet hostname |
+| `services.piss.tailscale.authKeyFile` | `null` | Optional unattended enrollment key file |
 
 ## Security
 
-Remote Pi control is effectively remote access to the host user account. PISS therefore:
+See [SECURITY.md](./SECURITY.md) for the supported deployment boundary and vulnerability reporting. The architecture and threat model are expanded in [PLAN.md](./PLAN.md).
 
-- refuses non-loopback application bind addresses;
-- requires Tailscale identity on browser HTTP and WebSocket requests;
-- validates WebSocket origins;
-- uses a separate local bridge credential;
-- validates command targets against the active runtime generation;
-- limits command and image payloads;
-- validates image signatures rather than trusting MIME declarations;
-- ships no third-party browser scripts;
-- does not support Tailscale Funnel.
+## License
 
-Do not expose the loopback server through an unauthenticated proxy. See [PLAN.md](./PLAN.md) for the architecture and threat model.
+[MIT](./LICENSE)

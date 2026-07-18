@@ -227,13 +227,13 @@ function App() {
     <aside className={`rail ${selected ? "rail-has-selection" : ""} ${sidebarOpen ? "mobile-open" : ""}`}>
       <div className="rail-label"><span>ACTIVE RUNTIMES</span><b>{sessions.filter((s) => s.state !== "offline").length.toString().padStart(2, "0")}</b></div>
       <div className="session-list">
-        {sessions.length === 0 && <div className="empty-rail"><strong>No signal</strong><span>Start Pi with the Sidecar extension installed.</span></div>}
-        {sessions.map((session, index) => <button key={session.sessionId} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }}>
+        {sessions.length === 0 && <div className="empty-rail"><strong>No signal</strong><span>Start Pi with the PISS extension installed.</span></div>}
+        {sessions.map((session, index) => <div key={session.sessionId} role="button" tabIndex={0} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(session.sessionId); setSidebarOpen(false); } }}>
           <span className={`state-dot ${session.state}`} />
           <span className="session-index">{String(index + 1).padStart(2, "0")}</span>
           <span className="session-copy"><strong>{session.name || shortProject(session.cwd)}</strong><small>{session.cwd}</small></span>
-          <span className="session-meta">{session.state}<small>{relativeTime(session.lastActivity)}</small></span>
-        </button>)}
+          <span className="session-meta">{session.state}<small>{relativeTime(session.lastActivity)}</small>{session.state === "offline" && <button className="session-archive" onClick={(event) => { event.stopPropagation(); send({ type: "browser.archive", sessionId: session.sessionId, runtimeId: session.runtimeId }); }} aria-label={`Archive ${session.name || shortProject(session.cwd)}`}>ARCHIVE</button>}</span>
+        </div>)}
       </div>
     </aside>
     <main className="workspace">

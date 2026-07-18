@@ -25,6 +25,10 @@
             src = nixpkgs.lib.fileset.toSource {
               root = ./.;
               fileset = nixpkgs.lib.fileset.unions [
+                ./CONTRIBUTING.md
+                ./LICENSE
+                ./README.md
+                ./SECURITY.md
                 ./package.json
                 ./package-lock.json
                 ./tsconfig.json
@@ -36,8 +40,8 @@
                 ./web
               ];
             };
-            npmDepsHash = "sha256-gajwvFrdyEmCOE+C0DovprSJSiT5nQJCdOb1KoAi/aA=";
-          npmDepsFetcherVersion = 2;
+            npmDepsHash = "sha256-ZzYl74tUwArCgxcLTAjg/D6/ycM9a/vsLBpok4zwxkI=";
+            npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build";
             doCheck = true;
@@ -55,7 +59,7 @@
 
               # Keep the Pi package at the output root. The extension needs ws
               # at runtime, while Pi provides its peer dependencies itself.
-              cp package.json $out/package.json
+              cp CONTRIBUTING.md LICENSE README.md SECURITY.md package.json $out/
               cp -r extensions shared $out/
               cp -r node_modules/ws $out/node_modules/ws
 
@@ -97,8 +101,9 @@
               nixfmt
             ];
             shellHook = ''
+              export PATH="$PWD/node_modules/.bin:$PATH"
               echo "PISS development shell — Node $(node --version)"
-              echo "Run npm install once, then npm run dev"
+              echo "Run npm ci once, then npm run dev"
             '';
           };
         }
