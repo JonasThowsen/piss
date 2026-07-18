@@ -28,9 +28,10 @@ const STATE_DIR = process.env.PISS_STATE_DIR ?? join(process.env.XDG_STATE_HOME 
 const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ?? join(STATE_DIR, "bridge-token");
 const PUBLIC_DIR = fileURLToPath(new URL("./public", import.meta.url));
 const MAX_EVENTS = 750;
+const MAX_EVENT_BUFFER_BYTES = 8 * 1024 * 1024;
 const OFFLINE_RETENTION_MS = 5 * 60_000;
 const MAX_SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
-const MAX_SNAPSHOT_ENTRIES = 10_000;
+const MAX_SNAPSHOT_ENTRIES = 250;
 
 if (HOST !== "127.0.0.1" && HOST !== "::1" && HOST !== "localhost") {
   throw new Error("PISS only permits a loopback bind; use its private Tailscale node for remote access");
@@ -43,6 +44,7 @@ interface LiveSession {
   bridge?: WebSocket;
   snapshot: unknown[];
   events: SessionEvent[];
+  eventBytes: number;
   sequence: number;
   offlineTimer?: NodeJS.Timeout;
 }
@@ -141,6 +143,7 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
       bridge: ws,
       snapshot: message.snapshot.slice(-MAX_SNAPSHOT_ENTRIES),
       events: existing?.info.runtimeId === message.session.runtimeId ? existing.events : [],
+      eventBytes: existing?.info.runtimeId === message.session.runtimeId ? existing.eventBytes : 0,
       sequence: existing?.info.runtimeId === message.session.runtimeId ? existing.sequence : 0,
     });
     bridgeSessions.set(ws, message.session.sessionId);
@@ -190,7 +193,12 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     timestamp: message.timestamp,
   };
   session.events.push(event);
-  if (session.events.length > MAX_EVENTS) session.events.splice(0, session.events.length - MAX_EVENTS);
+  session.eventBytes += Buffer.byteLength(JSON.stringify(event));
+  while (session.events.length > MAX_EVENTS || session.eventBytes > MAX_EVENT_BUFFER_BYTES) {
+    const removed = session.events.shift();
+    if (!removed) break;
+    session.eventBytes -= Buffer.byteLength(JSON.stringify(removed));
+  }
   for (const browser of browsers) {
     if (browserSubscriptions.get(browser) === sessionId) send(browser, { type: "session.event", sessionId: sessionId!, event });
   }
@@ -320,13 +328,20 @@ async function serveStatic(request: IncomingMessage, response: ServerResponse) {
       "strict-transport-security": "max-age=31536000",
       "referrer-policy": "no-referrer",
     });
-    createReadStream(path).pipe(response);
+    if (request.method === "HEAD") response.end();
+    else createReadStream(path).pipe(response);
   } catch { response.writeHead(503).end("Web client is not built. Run npm run build.\n"); }
 }
 
 const server = createServer((request, response) => {
   if (request.url === "/api/health") { json(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION }); return; }
   void serveStatic(request, response);
+});
+server.headersTimeout = 10_000;
+server.requestTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
+server.on("clientError", (_error, socket) => {
+  if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
 });
 
 const bridgeWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });

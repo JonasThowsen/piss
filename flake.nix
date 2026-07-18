@@ -40,7 +40,7 @@
                 ./web
               ];
             };
-            npmDepsHash = "sha256-ZzYl74tUwArCgxcLTAjg/D6/ycM9a/vsLBpok4zwxkI=";
+            npmDepsHash = "sha256-Gz9ukO7Wvw9kS8GqFDRSs/XxXj10i8fiKa+3ZawS0wA=";
             npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build";
@@ -84,6 +84,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.piss}/bin/piss";
+          meta.description = "Run PISS on loopback";
         };
       });
 

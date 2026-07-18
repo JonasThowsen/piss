@@ -42,8 +42,6 @@
     "test": "node --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
     "ws": "^8.18.3"
   },
   "peerDependencies": {
@@ -63,6 +61,8 @@
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
     "esbuild": "^0.25.8",
     "tsx": "^4.20.3",
     "typescript": "7.0.2",

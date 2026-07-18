@@ -18,6 +18,7 @@ const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ??
   join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "piss", "bridge-token");
 const MAX_RECONNECT_MS = 10_000;
 const MAX_SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
+const MAX_SNAPSHOT_ENTRIES = 250;
 
 function safeValue(value: unknown): unknown {
   try {
@@ -88,7 +89,7 @@ export default function pissExtension(pi: ExtensionAPI) {
       type: "bridge.hello",
       protocolVersion: PROTOCOL_VERSION,
       session: sessionInfo(context),
-      snapshot: safeValue(context.sessionManager.getBranch()) as unknown[],
+      snapshot: safeValue(context.sessionManager.getBranch().slice(-MAX_SNAPSHOT_ENTRIES)) as unknown[],
     });
   };
 
