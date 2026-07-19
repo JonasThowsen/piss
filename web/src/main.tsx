@@ -267,6 +267,7 @@ function App() {
       : networkState === "offline" ? "DEVICE OFFLINE"
         : networkState === "connecting" ? "CONNECTING" : "RESTORING LINK";
   const selectedName = selected ? selected.name || shortProject(selected.cwd) : undefined;
+  const selectedModel = selected?.model?.split("/").at(-1);
 
   useEffect(() => {
     if (!selected) { document.title = "PISS · Pi sin sidecar"; return; }
@@ -320,7 +321,7 @@ function App() {
       <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label={selected ? `Open sessions. Current session: ${selectedName} in ${selected.cwd}` : "Open sessions"} aria-expanded={sidebarOpen}><span>☰</span></button>
       <div className={`brand ${selected ? "session-brand" : ""}`} title={selected?.cwd}>
         <span className="brand-mark">π</span>
-        <div><b>{selectedName ?? "PISS"}</b><small>{selected ? <><span className="full-directory">{selected.cwd}</span><span className="compact-directory">{compactDirectory(selected.cwd)}</span></> : "PI SIN SIDECAR"}</small></div>
+        <div><b>{selectedName ?? "PISS"}</b><small>{selected ? <><span className="full-directory">{selected.cwd}</span><span className="compact-directory">{compactDirectory(selected.cwd)}</span><span className="session-runtime"> · {selectedModel ?? "—"} · {selected.thinkingLevel ?? "—"}</span></> : "PI SIN SIDECAR"}</small></div>
       </div>
       <div className={`network ${networkState}`} role="status" aria-live="polite"><i />{networkLabel}<span>{user}</span></div>
     </header>
@@ -552,11 +553,15 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
         <button className="send-button" disabled={!!pending || !ready || session.state === "offline" || (!text.trim() && !images.length)} onClick={submit}><span>{pending || !ready ? "…" : "↗"}</span><small>{loading ? "SYNC" : isRunning ? delivery === "steer" ? "STEER" : "QUEUE" : "SEND"}</small></button>
       </div>
       <div className="control-meta">
-        <div className={`deck-footer ${isRunning ? "" : "idle-footer"}`}>
-          {isRunning ? <div className="delivery-toggle"><button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")}>STEER AFTER CURRENT TOOL</button><button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")}>FOLLOW-UP AFTER SETTLE</button></div> : <span className="desktop-hint">ENTER TO SEND · SHIFT+ENTER FOR NEW LINE</span>}
-          {isRunning && <button className="abort" disabled={!ready} onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}>ABORT OPERATION</button>}
+        <div className={`control-actions ${isRunning ? "running-actions" : ""}`}>
+          {isRunning && <div className="delivery-toggle" aria-label="Message delivery timing">
+            <button className={delivery === "steer" ? "active" : ""} title="Steer after the current tool finishes" aria-pressed={delivery === "steer"} onClick={() => setDelivery("steer")}><b>STEER NEXT</b></button>
+            <button className={delivery === "followUp" ? "active" : ""} title="Queue a follow-up after the agent settles" aria-pressed={delivery === "followUp"} onClick={() => setDelivery("followUp")}><b>FOLLOW-UP</b></button>
+          </div>}
+          {isRunning && <button className="abort" title="Abort the active agent operation" disabled={!ready} onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}><i>■</i><b>STOP</b></button>}
+          <button className="review-trigger" title="Open the current uncommitted code diff" disabled={!ready} onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}><i>▤</i><b>REVIEW</b></button>
         </div>
-        <div className="session-status"><button className="review-trigger" disabled={!ready} onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}>REVIEW CHANGES</button><span>MODEL <b>{session.model?.split("/").at(-1) ?? "—"}</b></span><span>THINKING <b>{session.thinkingLevel ?? "—"}</b></span></div>
+        {!isRunning && <span className="desktop-hint">ENTER TO SEND · SHIFT+ENTER FOR NEW LINE</span>}
       </div>
     </section>
   </div>;
