@@ -21,7 +21,7 @@ type OutboxItem = {
   imageCount: number;
   baselineMessages: number;
   action: "prompt" | "steer" | "followUp";
-  status: "sending" | "accepted" | "rejected";
+  status: "sending" | "accepted" | "delivered" | "rejected";
   error?: string;
 };
 type StoredDraft = { text: string; delivery: "steer" | "followUp"; updatedAt: number };
@@ -448,12 +448,19 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
     }
   }, [commandResults, session.sessionId, delivery]);
   useEffect(() => {
-    setOutbox((items) => items.filter((item) => {
-      if (item.status !== "accepted") return true;
-      return !messages.slice(item.baselineMessages).some((message) =>
-        message.role === "user" && (!item.text || textContent(message.content).trim() === item.text),
-      );
-    }));
+    setOutbox((items) => {
+      let changed = false;
+      const next = items.map((item) => {
+        if (item.status !== "accepted") return item;
+        const appeared = messages.slice(item.baselineMessages).some((message) =>
+          message.role === "user" && (!item.text || textContent(message.content).trim() === item.text),
+        );
+        if (!appeared) return item;
+        changed = true;
+        return { ...item, status: "delivered" as const };
+      });
+      return changed ? next : items;
+    });
     const stored = readDraft(session.sessionId);
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
     if (stored && latestUserMessage?.timestamp &&
@@ -463,6 +470,11 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       setText((current) => current.trim() === stored.text.trim() ? "" : current);
     }
   }, [messages, commandResults, session.sessionId, delivery]);
+  useEffect(() => {
+    if (!outbox.some((item) => item.status === "delivered")) return;
+    const timer = window.setTimeout(() => setOutbox((items) => items.filter((item) => item.status !== "delivered")), 2_500);
+    return () => clearTimeout(timer);
+  }, [outbox]);
 
   async function selectImages(files: Iterable<File> | null) {
     if (!files) return;
@@ -534,7 +546,6 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       <section ref={timelineRef} className="timeline" aria-live="polite" aria-busy={loading} onScroll={updateScrollPosition} onWheel={noteWheelIntent} onTouchStart={noteTouchStart} onTouchMove={noteTouchMove} onPointerDown={noteScrollbarIntent}>
         {messages.length === 0 && !liveMessage && !loading && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
         {messages.map((message, index) => <Message key={`${message.timestamp ?? index}-${index}`} message={message} />)}
-        {outbox.map((item) => <OutboxMessage key={item.id} item={item} />)}
         {tools.filter((tool) => tool.state === "running").map((tool) => <div className={`tool-row ${tool.error ? "error" : ""}`} key={tool.id}><i className={tool.state} /><div><b>{tool.name}</b><span>{tool.detail || "Executing…"}</span></div><small>{tool.state}</small></div>)}
         {liveMessage && <Message message={liveMessage} live />}
         <div ref={endRef} />
@@ -543,6 +554,7 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
     </div>
     {reviewOpen && <ReviewPanel result={reviewResult?.requestId === reviewRequestId ? reviewResult : undefined} loading={reviewResult?.requestId !== reviewRequestId} onRefresh={() => { const requestId = crypto.randomUUID(); setReviewRequestId(requestId); requestReview(requestId); }} onClose={() => setReviewOpen(false)} />}
     <section className="control-deck">
+      {outbox.length > 0 && <section className="outbox-tray" aria-label="Outgoing messages" aria-live="polite"><header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header><div>{outbox.map((item) => <OutboxMessage key={item.id} item={item} onDismiss={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} />)}</div></section>}
       {notice && <button className="notice" onClick={clearNotice}>{notice}<span>×</span></button>}
       {images.length > 0 && <div className="image-strip">{images.map((image, index) => <button key={`${image.name}-${index}`} onClick={() => setImages((old) => old.filter((_, item) => item !== index))}><img src={image.preview} alt="" /><span>REMOVE</span></button>)}</div>}
       <div className="composer">
@@ -618,22 +630,24 @@ function ReviewPanel({ result, loading, onRefresh, onClose }: {
   </section>;
 }
 
-function OutboxMessage({ item }: { item: OutboxItem }) {
+function OutboxMessage({ item, onDismiss }: { item: OutboxItem; onDismiss: () => void }) {
   const label = item.action === "steer" ? "STEER" : item.action === "followUp" ? "FOLLOW-UP" : "PROMPT";
   const status = item.status === "sending"
-    ? "Sending to Pi…"
-    : item.status === "rejected"
-      ? item.error ?? "Rejected by Pi"
-      : item.action === "steer"
-        ? "Queued — applies after the current tool call finishes"
-        : item.action === "followUp"
-          ? "Queued — waits until the agent settles"
-          : "Accepted — starting the next turn";
+    ? "SENDING TO PI"
+    : item.status === "delivered"
+      ? "SENT TO PI"
+      : item.status === "rejected"
+        ? item.error ?? "REJECTED BY PI"
+        : item.action === "steer"
+          ? "QUEUED FOR NEXT TOOL BREAK"
+          : item.action === "followUp"
+            ? "QUEUED UNTIL AGENT SETTLES"
+            : "ACCEPTED BY PI";
   return <article className={`outbox-message ${item.status}`}>
-    <header><span>{label}</span><i>{item.status}</i></header>
-    {item.text && <div>{item.text}</div>}
-    {item.imageCount > 0 && <small>{item.imageCount} image{item.imageCount === 1 ? "" : "s"} attached</small>}
-    <footer>{status}</footer>
+    <i className="outbox-state" />
+    <div><header><b>{label}</b><small>{status}</small></header><p>{item.text || `${item.imageCount} attached image${item.imageCount === 1 ? "" : "s"}`}</p></div>
+    {item.imageCount > 0 && item.text && <em>{item.imageCount} IMG</em>}
+    {item.status === "rejected" && <button onClick={onDismiss} aria-label="Dismiss rejected outgoing message">×</button>}
   </article>;
 }
 
