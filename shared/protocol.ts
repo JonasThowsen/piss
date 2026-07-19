@@ -10,6 +10,7 @@ export interface SessionInfo {
   pid: number;
   cwd: string;
   name?: string;
+  branch?: string;
   sessionFile?: string;
   model?: string;
   thinkingLevel?: string;
@@ -190,6 +191,7 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
     Number.isSafeInteger(value.pid) && Number(value.pid) > 0 &&
     isBoundedString(value.cwd, 16 * 1024) &&
     (value.name === undefined || isBoundedString(value.name, 1024, true)) &&
+    (value.branch === undefined || isBoundedString(value.branch, 1024)) &&
     (value.sessionFile === undefined || isBoundedString(value.sessionFile, 16 * 1024, true)) &&
     (value.model === undefined || isBoundedString(value.model, 1024, true)) &&
     (value.thinkingLevel === undefined || isBoundedString(value.thinkingLevel, 64, true)) &&

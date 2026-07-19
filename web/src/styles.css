@@ -20,8 +20,8 @@ button{color:inherit}
 .brand.session-brand div{gap:3px;letter-spacing:0}
 .brand.session-brand b{font:normal 17px Georgia,serif;color:var(--paper)}
 .brand.session-brand small{margin:0;color:var(--signal);font-size:9px;letter-spacing:.035em}
+.session-branch{font-weight:700}
 .session-runtime{color:var(--soft);text-transform:uppercase}
-.compact-directory{display:none}
 .network{display:flex;align-items:center;gap:9px;flex:none;color:var(--soft);font-size:9px;letter-spacing:.14em}
 .network i{width:7px;height:7px;background:var(--danger);border-radius:50%;box-shadow:0 0 10px var(--danger)}
 .network.live i{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
@@ -45,6 +45,7 @@ button{color:inherit}
 .session-copy{min-width:0;display:grid;gap:6px}
 .session-copy strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:600}
 .session-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--soft);font-size:9px}
+.session-copy small.branch{color:var(--signal);font-weight:700;letter-spacing:.04em}
 .session-meta{text-align:right;text-transform:uppercase;color:var(--soft);font-size:8px;display:grid;justify-items:end;gap:5px}
 .session-meta small{color:#71717a}
 .session-archive{border:0;padding:2px 0;background:transparent;color:var(--remote);font-size:7px;font-weight:700;letter-spacing:.08em;cursor:pointer}
@@ -242,8 +243,6 @@ button{color:inherit}
 .brand.session-brand div{gap:2px}
 .brand.session-brand b{font-size:15px}
 .brand.session-brand small{display:block;font-size:8px}
-.session-brand .full-directory{display:none}
-.session-brand .compact-directory{display:inline}
 .network{margin-left:auto}
 .network span{display:none}
 .sidebar-scrim{display:block;position:fixed;inset:58px 0 0;z-index:5;border:0;background:#000;opacity:0;pointer-events:none;transition:opacity .18s ease}

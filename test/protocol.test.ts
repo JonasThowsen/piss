@@ -44,6 +44,7 @@ test("validates bridge registration and event names", () => {
     runtimeId: "runtime",
     pid: 42,
     cwd: "/tmp/project",
+    branch: "feature/worktree",
     state: "idle",
     startedAt: 1,
     lastActivity: 1,
@@ -51,4 +52,5 @@ test("validates bridge registration and event names", () => {
   assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session, snapshot: [] }), true);
   assert.equal(isBridgeToServer({ type: "bridge.event", runtimeId: "runtime", event: "arbitrary.event", data: {}, timestamp: 1 }), false);
   assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 2, session, snapshot: [] }), false);
+  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session: { ...session, branch: "" }, snapshot: [] }), false);
 });

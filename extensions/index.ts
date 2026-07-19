@@ -48,6 +48,7 @@ export default function pissExtension(pi: ExtensionAPI) {
   let connecting = false;
   let runtimeId = "";
   let startedAt = 0;
+  let branch: string | undefined;
   let stopped = true;
   let context: ExtensionContext | undefined;
   let pendingUpdate: unknown;
@@ -59,6 +60,7 @@ export default function pissExtension(pi: ExtensionAPI) {
     pid: process.pid,
     cwd: ctx.cwd,
     name: pi.getSessionName(),
+    branch,
     sessionFile: ctx.sessionManager.getSessionFile(),
     model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
     thinkingLevel: pi.getThinkingLevel(),
@@ -66,6 +68,17 @@ export default function pissExtension(pi: ExtensionAPI) {
     startedAt,
     lastActivity: Date.now(),
   });
+
+  const detectBranch = async (ctx: ExtensionContext): Promise<string | undefined> => {
+    try {
+      const named = await pi.exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: ctx.cwd, timeout: 2_000 });
+      if (named.code === 0 && named.stdout.trim()) return named.stdout.trim();
+      const detached = await pi.exec("git", ["rev-parse", "--short", "HEAD"], { cwd: ctx.cwd, timeout: 2_000 });
+      return detached.code === 0 && detached.stdout.trim() ? `detached@${detached.stdout.trim()}` : undefined;
+    } catch {
+      return;
+    }
+  };
 
   const send = (message: BridgeToServer) => {
     if (socket?.readyState !== WebSocket.OPEN) return;
@@ -192,15 +205,19 @@ export default function pissExtension(pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     connectionGeneration += 1;
+    const generation = connectionGeneration;
     connecting = false;
     stopped = false;
     context = ctx;
     runtimeId = randomUUID();
     startedAt = Date.now();
+    branch = undefined;
     reconnectDelay = 250;
-    void connect();
+    branch = await detectBranch(ctx);
+    if (stopped || generation !== connectionGeneration) return;
+    await connect();
   });
 
   pi.on("session_shutdown", () => {
@@ -208,6 +225,7 @@ export default function pissExtension(pi: ExtensionAPI) {
     connecting = false;
     stopped = true;
     context = undefined;
+    branch = undefined;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (updateTimer) clearTimeout(updateTimer);
     reconnectTimer = undefined;
@@ -217,7 +235,16 @@ export default function pissExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", () => sendEvent("agent.started", {}));
-  pi.on("agent_settled", () => sendEvent("agent.settled", {}));
+  pi.on("agent_settled", async () => {
+    sendEvent("agent.settled", {});
+    const ctx = context;
+    const generation = connectionGeneration;
+    if (!ctx) return;
+    const nextBranch = await detectBranch(ctx);
+    if (stopped || generation !== connectionGeneration || context !== ctx || nextBranch === branch) return;
+    branch = nextBranch;
+    sendEvent("session.info", sessionInfo(ctx));
+  });
   pi.on("message_start", (event) => sendEvent("message.started", { message: event.message }));
   pi.on("message_update", (event) => {
     pendingUpdate = { message: event.message };

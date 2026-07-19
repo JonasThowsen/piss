@@ -167,6 +167,7 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     session.info = {
       ...session.info,
       ...(typeof update.name === "string" || update.name === undefined ? { name: update.name } : {}),
+      ...(typeof update.branch === "string" || update.branch === undefined ? { branch: update.branch } : {}),
       ...(typeof update.cwd === "string" ? { cwd: update.cwd } : {}),
       ...(typeof update.model === "string" || update.model === undefined ? { model: update.model } : {}),
       ...(typeof update.thinkingLevel === "string" || update.thinkingLevel === undefined ? { thinkingLevel: update.thinkingLevel } : {}),

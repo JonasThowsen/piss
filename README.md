@@ -18,6 +18,7 @@ https://piss.<tailnet>.ts.net
 ## Features
 
 - Native Pi message and tool-event streaming
+- Git branch-aware session labels for distinguishing worktrees
 - Prompt, steer, follow-up, and abort controls
 - Phone image upload and desktop clipboard screenshots
 - Per-session persistent drafts

@@ -46,7 +46,11 @@ function shortProject(cwd: string): string {
 function compactDirectory(cwd: string): string {
   const parts = cwd.split("/").filter(Boolean);
   if (parts.length <= 2) return cwd;
-  return `…/${parts.slice(-2).join("/")}`;
+  return parts.slice(-2).join("/");
+}
+
+function sessionLocation(session: SessionInfo): string {
+  return session.branch ? `BRANCH ${session.branch}` : compactDirectory(session.cwd);
 }
 
 export function App() {
@@ -107,8 +111,8 @@ export function App() {
 
   useEffect(() => {
     if (!selected) { document.title = "PISS · Pi sin sidecar"; return; }
-    const directory = shortProject(selected.cwd);
-    document.title = selectedName === directory ? `${directory} · PISS` : `${selectedName} · ${directory} · PISS`;
+    const context = selected.branch ?? shortProject(selected.cwd);
+    document.title = selectedName === context ? `${context} · PISS` : `${selectedName} · ${context} · PISS`;
   }, [selected, selectedName]);
 
   function handleEvent(event: SessionEvent) {
@@ -165,10 +169,10 @@ export function App() {
 
   return <div className="shell">
     <header className="masthead">
-      <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label={selected ? `Open sessions. Current session: ${selectedName} in ${selected.cwd}` : "Open sessions"} aria-expanded={sidebarOpen}><span>☰</span></button>
+      <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label={selected ? `Open sessions. Current session: ${selectedName}, ${sessionLocation(selected)}, in ${selected.cwd}` : "Open sessions"} aria-expanded={sidebarOpen}><span>☰</span></button>
       <div className={`brand ${selected ? "session-brand" : ""}`} title={selected?.cwd}>
         <span className="brand-mark">π</span>
-        <div><b>{selectedName ?? "PISS"}</b><small>{selected ? <><span className="full-directory">{selected.cwd}</span><span className="compact-directory">{compactDirectory(selected.cwd)}</span><span className="session-runtime"> · {selectedModel ?? "—"} · {selected.thinkingLevel ?? "—"}</span></> : "PI SIN SIDECAR"}</small></div>
+        <div><b>{selectedName ?? "PISS"}</b><small>{selected ? <><span className={selected.branch ? "session-branch" : "session-location"}>{sessionLocation(selected)}</span><span className="session-runtime"> · {selectedModel ?? "—"} · {selected.thinkingLevel ?? "—"}</span></> : "PI SIN SIDECAR"}</small></div>
       </div>
       <div className={`network ${networkState}`} role="status" aria-live="polite"><i />{networkLabel}<span>{user}</span></div>
     </header>
@@ -177,10 +181,10 @@ export function App() {
       <div className="rail-label"><span>ACTIVE RUNTIMES</span><b>{sessions.filter((s) => s.state !== "offline").length.toString().padStart(2, "0")}</b></div>
       <div className="session-list">
         {sessions.length === 0 && <div className="empty-rail"><strong>No signal</strong><span>Start Pi with the PISS extension installed.</span></div>}
-        {sessions.map((session, index) => <div key={session.sessionId} role="button" tabIndex={0} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(session.sessionId); setSidebarOpen(false); } }}>
+        {sessions.map((session, index) => <div key={session.sessionId} role="button" tabIndex={0} title={session.cwd} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(session.sessionId); setSidebarOpen(false); } }}>
           <span className={`state-dot ${session.state}`} />
           <span className="session-index">{String(index + 1).padStart(2, "0")}</span>
-          <span className="session-copy"><strong>{session.name || shortProject(session.cwd)}</strong><small>{session.cwd}</small></span>
+          <span className="session-copy"><strong>{session.name || shortProject(session.cwd)}</strong><small className={session.branch ? "branch" : ""}>{sessionLocation(session)}</small></span>
           <span className="session-meta">{session.state}<small>{relativeTime(session.lastActivity)}</small>{session.state === "offline" && <button className="session-archive" onClick={(event) => { event.stopPropagation(); send({ type: "browser.archive", sessionId: session.sessionId, runtimeId: session.runtimeId }); }} aria-label={`Archive ${session.name || shortProject(session.cwd)}`}>ARCHIVE</button>}</span>
         </div>)}
       </div>
