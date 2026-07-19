@@ -44,6 +44,8 @@ export default function pissExtension(pi: ExtensionAPI) {
   let socket: WebSocket | undefined;
   let reconnectTimer: NodeJS.Timeout | undefined;
   let reconnectDelay = 250;
+  let connectionGeneration = 0;
+  let connecting = false;
   let runtimeId = "";
   let startedAt = 0;
   let stopped = true;
@@ -148,20 +150,26 @@ export default function pissExtension(pi: ExtensionAPI) {
   };
 
   const connect = async () => {
-    if (stopped || socket) return;
+    if (stopped || socket || connecting) return;
+    const generation = connectionGeneration;
+    connecting = true;
     try {
       const token = (await readFile(TOKEN_FILE, "utf8")).trim();
+      if (stopped || generation !== connectionGeneration) return;
       if (!token) throw new Error("empty bridge token");
       const candidate = new WebSocket(BROKER_URL, {
         headers: { authorization: `Bearer ${token}` },
         maxPayload: 16 * 1024 * 1024,
       });
+      if (stopped || generation !== connectionGeneration) { candidate.close(); return; }
       socket = candidate;
       candidate.on("open", () => {
+        if (generation !== connectionGeneration || stopped) { candidate.close(); return; }
         reconnectDelay = 250;
         sendHello();
       });
       candidate.on("message", (raw) => {
+        if (generation !== connectionGeneration || stopped) return;
         try {
           const message: unknown = JSON.parse(raw.toString());
           if (isServerToBridge(message)) void handleCommand(message);
@@ -169,19 +177,24 @@ export default function pissExtension(pi: ExtensionAPI) {
           // Invalid broker messages are ignored; authentication already happened.
         }
       });
-      candidate.on("ping", () => candidate.pong());
       candidate.on("error", () => candidate.close());
       candidate.on("close", () => {
         if (socket === candidate) socket = undefined;
-        scheduleReconnect();
+        if (generation === connectionGeneration) scheduleReconnect();
       });
     } catch {
-      socket = undefined;
-      scheduleReconnect();
+      if (generation === connectionGeneration) {
+        socket = undefined;
+        scheduleReconnect();
+      }
+    } finally {
+      if (generation === connectionGeneration) connecting = false;
     }
   };
 
   pi.on("session_start", (_event, ctx) => {
+    connectionGeneration += 1;
+    connecting = false;
     stopped = false;
     context = ctx;
     runtimeId = randomUUID();
@@ -191,6 +204,8 @@ export default function pissExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
+    connectionGeneration += 1;
+    connecting = false;
     stopped = true;
     context = undefined;
     if (reconnectTimer) clearTimeout(reconnectTimer);
