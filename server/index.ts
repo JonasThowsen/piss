@@ -130,7 +130,13 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     if (existing?.offlineTimer) clearTimeout(existing.offlineTimer);
     if (existing?.bridge && existing.bridge !== ws) existing.bridge.close(4001, "runtime replaced");
     sessions.set(message.session.sessionId, {
-      info: { ...message.session, state: message.session.state, lastActivity: Date.now() },
+      info: {
+        ...message.session,
+        state: message.session.state,
+        status: message.session.status ?? (message.session.state === "streaming" ? "working" : "idle"),
+        statusChangedAt: message.session.statusChangedAt ?? message.session.startedAt,
+        lastActivity: Date.now(),
+      },
       bridge: ws,
       snapshot: message.snapshot.slice(-MAX_SNAPSHOT_ENTRIES),
       events: existing?.info.runtimeId === message.session.runtimeId ? existing.events : [],
@@ -160,8 +166,19 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
   if (!session || session.info.runtimeId !== message.runtimeId) return;
   session.sequence += 1;
   session.info.lastActivity = message.timestamp;
-  if (message.event === "agent.started") session.info.state = "streaming";
-  if (message.event === "agent.settled") session.info.state = "idle";
+  if (message.event === "agent.started") {
+    session.info.state = "streaming";
+    session.info.status = "working";
+    session.info.statusChangedAt = message.timestamp;
+  }
+  if (message.event === "agent.settled") {
+    const outcome = message.data && typeof message.data === "object" && "status" in message.data
+      ? (message.data as { status?: unknown }).status
+      : undefined;
+    session.info.state = "idle";
+    session.info.status = outcome === "blocked" ? "blocked" : "finished";
+    session.info.statusChangedAt = message.timestamp;
+  }
   if (message.event === "session.info" && message.data && typeof message.data === "object") {
     const update = message.data as Partial<SessionInfo>;
     session.info = {
@@ -171,6 +188,8 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
       ...(typeof update.cwd === "string" ? { cwd: update.cwd } : {}),
       ...(typeof update.model === "string" || update.model === undefined ? { model: update.model } : {}),
       ...(typeof update.thinkingLevel === "string" || update.thinkingLevel === undefined ? { thinkingLevel: update.thinkingLevel } : {}),
+      ...(update.status === "working" || update.status === "idle" || update.status === "blocked" || update.status === "finished" ? { status: update.status } : {}),
+      ...(typeof update.statusChangedAt === "number" && Number.isFinite(update.statusChangedAt) ? { statusChangedAt: update.statusChangedAt } : {}),
       lastActivity: message.timestamp,
     };
   }

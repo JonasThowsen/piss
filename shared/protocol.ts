@@ -4,6 +4,8 @@ export const IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "image
 export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
 export type Delivery = "prompt" | "steer" | "followUp";
 
+export type AgentStatus = "working" | "idle" | "blocked" | "finished";
+
 export interface SessionInfo {
   sessionId: string;
   runtimeId: string;
@@ -15,6 +17,8 @@ export interface SessionInfo {
   model?: string;
   thinkingLevel?: string;
   state: "idle" | "streaming" | "offline";
+  status?: AgentStatus;
+  statusChangedAt?: number;
   startedAt: number;
   lastActivity: number;
 }
@@ -196,6 +200,8 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
     (value.model === undefined || isBoundedString(value.model, 1024, true)) &&
     (value.thinkingLevel === undefined || isBoundedString(value.thinkingLevel, 64, true)) &&
     (value.state === "idle" || value.state === "streaming" || value.state === "offline") &&
+    (value.status === undefined || value.status === "working" || value.status === "idle" || value.status === "blocked" || value.status === "finished") &&
+    (value.statusChangedAt === undefined || isFiniteTimestamp(value.statusChangedAt)) &&
     isFiniteTimestamp(value.startedAt) && isFiniteTimestamp(value.lastActivity);
 }
 

@@ -19,6 +19,7 @@ https://piss.<tailnet>.ts.net
 
 - Native Pi message and tool-event streaming
 - Git branch-aware session labels for distinguishing worktrees
+- Color-coded working, idle, blocked, finished, and offline agent status
 - Prompt, steer, follow-up, and abort controls
 - Phone image upload and desktop clipboard screenshots
 - Per-session persistent drafts

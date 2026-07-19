@@ -4,11 +4,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { assistantOutcome, statusFromEntries } from "./agent-status.ts";
 import { collectReview } from "./review.ts";
 import {
   PROTOCOL_VERSION,
   isServerToBridge,
   validateImages,
+  type AgentStatus,
   type BridgeToServer,
   type ImageInput,
   type ServerToBridge,
@@ -49,6 +51,9 @@ export default function pissExtension(pi: ExtensionAPI) {
   let runtimeId = "";
   let startedAt = 0;
   let branch: string | undefined;
+  let status: AgentStatus = "idle";
+  let statusChangedAt = 0;
+  let settledStatus: AgentStatus = "finished";
   let stopped = true;
   let context: ExtensionContext | undefined;
   let pendingUpdate: unknown;
@@ -65,6 +70,8 @@ export default function pissExtension(pi: ExtensionAPI) {
     model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
     thinkingLevel: pi.getThinkingLevel(),
     state: ctx.isIdle() ? "idle" : "streaming",
+    status,
+    statusChangedAt,
     startedAt,
     lastActivity: Date.now(),
   });
@@ -214,6 +221,8 @@ export default function pissExtension(pi: ExtensionAPI) {
     runtimeId = randomUUID();
     startedAt = Date.now();
     branch = undefined;
+    ({ status, changedAt: statusChangedAt } = statusFromEntries(ctx.sessionManager.getBranch(), startedAt));
+    settledStatus = "finished";
     reconnectDelay = 250;
     branch = await detectBranch(ctx);
     if (stopped || generation !== connectionGeneration) return;
@@ -226,6 +235,8 @@ export default function pissExtension(pi: ExtensionAPI) {
     stopped = true;
     context = undefined;
     branch = undefined;
+    status = "idle";
+    statusChangedAt = 0;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (updateTimer) clearTimeout(updateTimer);
     reconnectTimer = undefined;
@@ -234,9 +245,16 @@ export default function pissExtension(pi: ExtensionAPI) {
     socket = undefined;
   });
 
-  pi.on("agent_start", () => sendEvent("agent.started", {}));
+  pi.on("agent_start", () => {
+    status = "working";
+    statusChangedAt = Date.now();
+    settledStatus = "finished";
+    sendEvent("agent.started", { status });
+  });
   pi.on("agent_settled", async () => {
-    sendEvent("agent.settled", {});
+    status = settledStatus;
+    statusChangedAt = Date.now();
+    sendEvent("agent.settled", { status });
     const ctx = context;
     const generation = connectionGeneration;
     if (!ctx) return;
@@ -257,6 +275,7 @@ export default function pissExtension(pi: ExtensionAPI) {
     }
   });
   pi.on("message_end", (event) => {
+    settledStatus = assistantOutcome(event.message) ?? settledStatus;
     // A final message can arrive before the 50 ms update batch flushes. Drop
     // that stale timer so a completed assistant message is not rendered again
     // as an indefinitely "streaming" duplicate in the browser.

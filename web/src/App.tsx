@@ -11,6 +11,7 @@ import {
 } from "../../shared/protocol.ts";
 import { readDraft, writeDraft } from "./drafts.ts";
 import { summarize, textContent, type PiMessage } from "./message-content.ts";
+import { displaySessionStatus } from "./session-status.ts";
 import { TimelineMessage } from "./TimelineMessage.tsx";
 import { useSidecarSocket } from "./useSidecarSocket.ts";
 
@@ -31,8 +32,8 @@ type SessionCursor = { sessionId: string; runtimeId: string; sequence: number };
 
 const CONNECTION_INTERRUPTED = "Connection interrupted; check the refreshed output before retrying";
 
-function relativeTime(timestamp: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+function relativeTime(timestamp: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
   if (seconds < 10) return "now";
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -66,10 +67,16 @@ export function App() {
   const [reviewResult, setReviewResult] = useState<ReviewResultMessage>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncing, setSyncing] = useState(true);
+  const [now, setNow] = useState(Date.now);
   const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
   const cursor = useRef<SessionCursor | undefined>(undefined);
   const currentId = useRef<string | undefined>(undefined);
   currentId.current = selectedId;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const onMessage = useCallback((message: ServerToBrowser) => {
     if (message.type === "server.hello") { setUser(message.user); setSessions(message.sessions); }
@@ -181,12 +188,15 @@ export function App() {
       <div className="rail-label"><span>ACTIVE RUNTIMES</span><b>{sessions.filter((s) => s.state !== "offline").length.toString().padStart(2, "0")}</b></div>
       <div className="session-list">
         {sessions.length === 0 && <div className="empty-rail"><strong>No signal</strong><span>Start Pi with the PISS extension installed.</span></div>}
-        {sessions.map((session, index) => <div key={session.sessionId} role="button" tabIndex={0} title={session.cwd} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(session.sessionId); setSidebarOpen(false); } }}>
-          <span className={`state-dot ${session.state}`} />
-          <span className="session-index">{String(index + 1).padStart(2, "0")}</span>
-          <span className="session-copy"><strong>{session.name || shortProject(session.cwd)}</strong><small className={session.branch ? "branch" : ""}>{sessionLocation(session)}</small></span>
-          <span className="session-meta">{session.state}<small>{relativeTime(session.lastActivity)}</small>{session.state === "offline" && <button className="session-archive" onClick={(event) => { event.stopPropagation(); send({ type: "browser.archive", sessionId: session.sessionId, runtimeId: session.runtimeId }); }} aria-label={`Archive ${session.name || shortProject(session.cwd)}`}>ARCHIVE</button>}</span>
-        </div>)}
+        {sessions.map((session) => {
+          const status = displaySessionStatus(session, now);
+          return <div key={session.sessionId} role="button" tabIndex={0} title={session.cwd} className={`session-card ${selectedId === session.sessionId ? "selected" : ""}`} onClick={() => { setSelectedId(session.sessionId); setSidebarOpen(false); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(session.sessionId); setSidebarOpen(false); } }}>
+            <span className={`state-dot ${status}`} />
+            <span className={`session-status ${status}`}>{status}</span>
+            <span className="session-copy"><strong>{session.name || shortProject(session.cwd)}</strong><small className={session.branch ? "branch" : ""}>{sessionLocation(session)}</small></span>
+            <span className="session-meta"><small>{relativeTime(session.lastActivity, now)}</small>{status === "offline" && <button className="session-archive" onClick={(event) => { event.stopPropagation(); send({ type: "browser.archive", sessionId: session.sessionId, runtimeId: session.runtimeId }); }} aria-label={`Archive ${session.name || shortProject(session.cwd)}`}>ARCHIVE</button>}</span>
+          </div>;
+        })}
       </div>
     </aside>
     <main className="workspace">
