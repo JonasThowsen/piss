@@ -50,7 +50,7 @@ function compactDirectory(cwd: string): string {
 }
 
 function sessionLocation(session: SessionInfo): string {
-  return session.branch ? `BRANCH ${session.branch}` : compactDirectory(session.cwd);
+  return session.branch ?? compactDirectory(session.cwd);
 }
 
 export function App() {
