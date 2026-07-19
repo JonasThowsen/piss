@@ -38,6 +38,8 @@
     "typecheck:tsc": "tsc --noEmit",
     "clean": "rm -rf dist",
     "dev": "PISS_DEV_BYPASS_AUTH=1 concurrently -k -n server,web -c cyan,green \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev:tailnet": "bash scripts/dev-tailnet.sh",
+    "dev:tailnet:run": "concurrently -k -n server,web -c cyan,green \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
     "start": "node dist/server.js",
     "test": "node --import tsx --test test/**/*.test.ts"
   },

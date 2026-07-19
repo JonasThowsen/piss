@@ -181,7 +181,32 @@ nix build .#piss
 
 `npm run dev` enables authentication bypass only for its loopback development server. Production refuses that setting.
 
-The production service runs an immutable Nix-store build. Extension changes in a local Pi package require `/reload`; server and web changes require a new NixOS generation.
+### Hot reload through the dedicated tailnet URL
+
+When the NixOS service is already installed and running, develop against the same URL used by the phone without rebuilding NixOS:
+
+```bash
+npm run dev:tailnet
+```
+
+This command:
+
+1. reads the hostname, port, and browser allowlist from the installed `piss.service`;
+2. stops the immutable application service while leaving its dedicated Tailscale node running;
+3. points Tailscale Serve at the local Vite server;
+4. starts the backend with `tsx watch` and the frontend with Vite HMR; and
+5. restores the production service and Serve target when you press Ctrl-C.
+
+Open the existing `https://piss.<tailnet>.ts.net` URL on the phone. The development client removes the production service worker and reloads once so it cannot hide Vite updates. React and CSS edits then update in place; server edits restart the backend and the Pi bridge reconnects automatically. Browser/API access remains protected by the Tailscale identity header and inherits `PISS_ALLOWED_USERS` from the systemd service.
+
+If the development process is killed without running its cleanup trap, restore production with:
+
+```bash
+systemctl --user start piss.service
+systemctl --user restart piss-tailscale-serve.service
+```
+
+After returning to production, reload the PWA once so it installs the production service worker again. Extension changes in a local Pi package still require `/reload` in Pi.
 
 ## Module options
 
