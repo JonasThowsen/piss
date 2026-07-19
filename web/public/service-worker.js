@@ -1,4 +1,4 @@
-const CACHE_VERSION = "piss-shell-v2";
+const CACHE_VERSION = "piss-shell-v3";
 const CACHE_PREFIX = "piss-shell-";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 
@@ -36,8 +36,9 @@ self.addEventListener("activate", (event) => {
 
 async function cacheResponse(request, response, key = request) {
   if (response.ok) {
-    const cache = await caches.open(CACHE_VERSION);
-    await cache.put(key, response.clone());
+    await caches.open(CACHE_VERSION)
+      .then((cache) => cache.put(key, response.clone()))
+      .catch(() => undefined);
   }
   return response;
 }
@@ -50,16 +51,19 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith((async () => {
-      const cached = await caches.match("/");
+      const cachedPromise = caches.match("/");
       const network = (async () => {
         try {
           const preloaded = await event.preloadResponse;
           return cacheResponse(request, preloaded ?? await fetch(request, { cache: "no-store" }), "/");
         } catch {
-          if (cached) return cached;
+          const fallback = await cachedPromise;
+          if (fallback) return fallback;
           return new Response("PISS is offline", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
         }
       })();
+      event.waitUntil(network.then(() => undefined).catch(() => undefined));
+      const cached = await cachedPromise;
 
       if (!cached) return network;
       return Promise.race([
@@ -81,7 +85,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith((async () => {
     const cached = await caches.match(request);
     try {
-      return await cacheResponse(request, await fetch(request, { cache: "no-cache" }));
+      return cacheResponse(request, await fetch(request, { cache: "no-cache" }));
     } catch {
       return cached ?? Response.error();
     }
