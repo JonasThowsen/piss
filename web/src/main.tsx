@@ -99,6 +99,12 @@ function shortProject(cwd: string): string {
   return cwd.split("/").filter(Boolean).at(-1) ?? cwd;
 }
 
+function compactDirectory(cwd: string): string {
+  const parts = cwd.split("/").filter(Boolean);
+  if (parts.length <= 2) return cwd;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
 function useSidecarSocket(onMessage: (message: ServerToBrowser) => void) {
   const [status, setStatus] = useState<ConnectionStatus>(navigator.onLine ? "connecting" : "offline");
   const [connectionId, setConnectionId] = useState(0);
@@ -260,6 +266,13 @@ function App() {
     : networkState === "syncing" ? "SYNCING OUTPUT"
       : networkState === "offline" ? "DEVICE OFFLINE"
         : networkState === "connecting" ? "CONNECTING" : "RESTORING LINK";
+  const selectedName = selected ? selected.name || shortProject(selected.cwd) : undefined;
+
+  useEffect(() => {
+    if (!selected) { document.title = "PISS · Pi sin sidecar"; return; }
+    const directory = shortProject(selected.cwd);
+    document.title = selectedName === directory ? `${directory} · PISS` : `${selectedName} · ${directory} · PISS`;
+  }, [selected, selectedName]);
 
   function handleEvent(event: SessionEvent) {
     const data = event.data as { message?: PiMessage; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean };
@@ -304,8 +317,11 @@ function App() {
 
   return <div className="shell">
     <header className="masthead">
-      <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label="Toggle sessions" aria-expanded={sidebarOpen}><span>☰</span></button>
-      <div className="brand"><span className="brand-mark">π</span><div><b>PISS</b><small>PI SIN SIDECAR</small></div></div>
+      <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label={selected ? `Open sessions. Current session: ${selectedName} in ${selected.cwd}` : "Open sessions"} aria-expanded={sidebarOpen}><span>☰</span></button>
+      <div className={`brand ${selected ? "session-brand" : ""}`} title={selected?.cwd}>
+        <span className="brand-mark">π</span>
+        <div><b>{selectedName ?? "PISS"}</b><small>{selected ? <><span className="full-directory">{selected.cwd}</span><span className="compact-directory">{compactDirectory(selected.cwd)}</span></> : "PI SIN SIDECAR"}</small></div>
+      </div>
       <div className={`network ${networkState}`} role="status" aria-live="polite"><i />{networkLabel}<span>{user}</span></div>
     </header>
     <button className={`sidebar-scrim ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} aria-label="Close sessions" />
