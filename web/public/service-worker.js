@@ -1,17 +1,46 @@
-const CACHE_VERSION = "piss-shell-v1";
+const CACHE_VERSION = "piss-shell-v2";
+const CACHE_PREFIX = "piss-shell-";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_VERSION).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE_VERSION)
+      .then((cache) => Promise.all(APP_SHELL.map(async (path) => {
+        try {
+          const response = await fetch(path, { cache: "reload" });
+          if (response.ok) await cache.put(path, response);
+        } catch {
+          // A partial shell is preferable to blocking an update indefinitely.
+        }
+      })))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_VERSION).map((key) => caches.delete(key))))
-      .then(() => self.clients.claim()),
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    const migratingLegacyClient = keys.includes("piss-shell-v1");
+    await Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_VERSION).map((key) => caches.delete(key)));
+    if (self.registration.navigationPreload) await self.registration.navigationPreload.enable();
+    await self.clients.claim();
+
+    // The previous client cannot know that its app bundle is obsolete. Move any
+    // open PWA window onto the newly activated shell immediately.
+    if (migratingLegacyClient) {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      await Promise.all(windows.map((client) => client.navigate(client.url).catch(() => undefined)));
+    }
+  })());
 });
+
+async function cacheResponse(request, response, key = request) {
+  if (response.ok) {
+    const cache = await caches.open(CACHE_VERSION);
+    await cache.put(key, response.clone());
+  }
+  return response;
+}
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;
@@ -20,26 +49,41 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
+    event.respondWith((async () => {
+      const cached = await caches.match("/");
+      const network = (async () => {
+        try {
+          const preloaded = await event.preloadResponse;
+          return cacheResponse(request, preloaded ?? await fetch(request, { cache: "no-store" }), "/");
+        } catch {
+          if (cached) return cached;
+          return new Response("PISS is offline", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+      })();
+
+      if (!cached) return network;
+      return Promise.race([
+        network,
+        new Promise((resolve) => setTimeout(() => resolve(cached), 2000)),
+      ]);
+    })());
+    return;
+  }
+
+  const isVersionedAsset = url.pathname.startsWith("/assets/");
+  if (isVersionedAsset) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) caches.open(CACHE_VERSION).then((cache) => cache.put("/", response.clone()));
-          return response;
-        })
-        .catch(() => caches.match("/")),
+      caches.match(request).then((cached) => cached ?? fetch(request).then((response) => cacheResponse(request, response))),
     );
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      const refresh = fetch(request)
-        .then((response) => {
-          if (response.ok) caches.open(CACHE_VERSION).then((cache) => cache.put(request, response.clone()));
-          return response;
-        })
-        .catch(() => cached ?? Response.error());
-      return cached ?? refresh;
-    }),
-  );
+  event.respondWith((async () => {
+    const cached = await caches.match(request);
+    try {
+      return await cacheResponse(request, await fetch(request, { cache: "no-cache" }));
+    } catch {
+      return cached ?? Response.error();
+    }
+  })());
 });

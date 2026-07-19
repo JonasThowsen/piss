@@ -27,6 +27,7 @@ type OutboxItem = {
   error?: string;
 };
 type StoredDraft = { text: string; delivery: "steer" | "followUp"; updatedAt: number };
+type ConnectionStatus = "connecting" | "reconnecting" | "online" | "offline";
 
 const DRAFT_PREFIX = "piss:draft:";
 const DRAFT_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
@@ -99,46 +100,114 @@ function shortProject(cwd: string): string {
 }
 
 function useSidecarSocket(onMessage: (message: ServerToBrowser) => void) {
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<ConnectionStatus>(navigator.onLine ? "connecting" : "offline");
+  const [connectionId, setConnectionId] = useState(0);
   const socket = useRef<WebSocket | undefined>(undefined);
   const callback = useRef(onMessage);
   callback.current = onMessage;
 
   useEffect(() => {
     let stopped = false;
+    let hasConnected = false;
     let retry = 250;
-    let timer: number | undefined;
+    let reconnectTimer: number | undefined;
+    let lastReceivedAt = Date.now();
+    let lastWakeAt = 0;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    };
     const connect = () => {
-      if (stopped) return;
+      clearReconnectTimer();
+      if (stopped || document.visibilityState === "hidden") return;
+      if (!navigator.onLine) { setStatus("offline"); return; }
+      if (socket.current?.readyState === WebSocket.OPEN || socket.current?.readyState === WebSocket.CONNECTING) return;
+
+      setStatus(hasConnected ? "reconnecting" : "connecting");
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${location.host}/api/ws`);
       socket.current = ws;
-      ws.onopen = () => { retry = 250; setConnected(true); };
+      ws.onopen = () => {
+        if (socket.current !== ws) { ws.close(); return; }
+        hasConnected = true;
+        retry = 250;
+        lastReceivedAt = Date.now();
+        setStatus("online");
+        setConnectionId((id) => id + 1);
+        ws.send(JSON.stringify({ type: "browser.ping" }));
+      };
       ws.onmessage = (event) => {
-        try { callback.current(JSON.parse(event.data) as ServerToBrowser); } catch { /* ignore malformed frames */ }
+        if (socket.current !== ws) return;
+        lastReceivedAt = Date.now();
+        try {
+          const message = JSON.parse(event.data) as ServerToBrowser;
+          if (message.type !== "server.pong") callback.current(message);
+        } catch { /* ignore malformed frames */ }
       };
       ws.onclose = () => {
-        if (socket.current === ws) socket.current = undefined;
-        setConnected(false);
-        if (!stopped) timer = window.setTimeout(connect, retry);
-        retry = Math.min(retry * 2, 5000);
+        if (socket.current !== ws) return;
+        socket.current = undefined;
+        if (stopped) return;
+        setStatus(navigator.onLine ? "reconnecting" : "offline");
+        if (document.visibilityState !== "hidden" && navigator.onLine) {
+          reconnectTimer = window.setTimeout(connect, retry);
+          retry = Math.min(retry * 2, 5000);
+        }
       };
       ws.onerror = () => ws.close();
     };
-    const wake = () => { if (!socket.current || socket.current.readyState > WebSocket.OPEN) { if (timer) clearTimeout(timer); connect(); } };
-    document.addEventListener("visibilitychange", wake);
+    const disconnect = () => {
+      clearReconnectTimer();
+      const current = socket.current;
+      socket.current = undefined;
+      if (current && current.readyState < WebSocket.CLOSING) current.close(4000, "app suspended");
+    };
+    const wake = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastWakeAt < 500) return;
+      lastWakeAt = now;
+      retry = 250;
+      disconnect();
+      setStatus(navigator.onLine ? "reconnecting" : "offline");
+      connect();
+    };
+    const visibilityChanged = () => {
+      if (document.visibilityState === "hidden") {
+        disconnect();
+        setStatus("reconnecting");
+      } else {
+        wake();
+      }
+    };
+    const wentOffline = () => { disconnect(); setStatus("offline"); };
+
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("pageshow", wake);
+    window.addEventListener("focus", wake);
     window.addEventListener("online", wake);
+    window.addEventListener("offline", wentOffline);
     connect();
-    const ping = window.setInterval(() => {
-      if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: "browser.ping" }));
-    }, 20_000);
+    const heartbeat = window.setInterval(() => {
+      const current = socket.current;
+      if (current?.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastReceivedAt > 30_000) {
+        current.close(4002, "heartbeat timed out");
+        return;
+      }
+      current.send(JSON.stringify({ type: "browser.ping" }));
+    }, 10_000);
     return () => {
       stopped = true;
-      if (timer) clearTimeout(timer);
-      clearInterval(ping);
-      document.removeEventListener("visibilitychange", wake);
+      clearReconnectTimer();
+      clearInterval(heartbeat);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      window.removeEventListener("pageshow", wake);
+      window.removeEventListener("focus", wake);
       window.removeEventListener("online", wake);
-      socket.current?.close();
+      window.removeEventListener("offline", wentOffline);
+      disconnect();
     };
   }, []);
 
@@ -147,7 +216,7 @@ function useSidecarSocket(onMessage: (message: ServerToBrowser) => void) {
     socket.current.send(JSON.stringify(message));
     return true;
   }, []);
-  return { connected, send };
+  return { connected: status === "online", status, connectionId, send };
 }
 
 function App() {
@@ -162,6 +231,7 @@ function App() {
   const [commandResults, setCommandResults] = useState<Record<string, CommandResult>>({});
   const [reviewResult, setReviewResult] = useState<ReviewResultMessage>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [syncing, setSyncing] = useState(true);
   const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
   const currentId = useRef<string | undefined>(undefined);
   currentId.current = selectedId;
@@ -170,9 +240,9 @@ function App() {
     if (message.type === "server.hello") { setUser(message.user); setSessions(message.sessions); }
     if (message.type === "sessions.updated") setSessions(message.sessions);
     if (message.type === "session.snapshot" && message.session.sessionId === currentId.current) {
-      setEntries(message.entries as RawEntry[]); setLiveMessage(undefined); setTools([]);
+      setEntries(message.entries as RawEntry[]); setLiveMessage(undefined); setTools([]); setSyncing(false);
     }
-    if (message.type === "session.event" && message.sessionId === currentId.current) handleEvent(message.event);
+    if (message.type === "session.event" && message.sessionId === currentId.current) { setSyncing(false); handleEvent(message.event); }
     if (message.type === "review.result") setReviewResult(message);
     if (message.type === "command.result") {
       setPending((id) => id === message.commandId ? undefined : id);
@@ -182,8 +252,14 @@ function App() {
     if (message.type === "server.error") setNotice(message.error);
   }, []);
 
-  const { connected, send } = useSidecarSocket(onMessage);
+  const { connected, status: connectionStatus, connectionId, send } = useSidecarSocket(onMessage);
   const selected = sessions.find((session) => session.sessionId === selectedId);
+  const outputLoading = !!selected && (!connected || syncing);
+  const networkState = connectionStatus === "online" ? (syncing && selected ? "syncing" : "live") : connectionStatus;
+  const networkLabel = networkState === "live" ? "LIVE OUTPUT"
+    : networkState === "syncing" ? "SYNCING OUTPUT"
+      : networkState === "offline" ? "DEVICE OFFLINE"
+        : networkState === "connecting" ? "CONNECTING" : "RESTORING LINK";
 
   function handleEvent(event: SessionEvent) {
     const data = event.data as { message?: PiMessage; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean };
@@ -216,17 +292,21 @@ function App() {
   }, [sessions, selectedId]);
 
   useEffect(() => {
-    if (!selectedId || !connected) return;
-    setEntries([]); setTools([]); setLiveMessage(undefined);
+    setEntries([]); setTools([]); setLiveMessage(undefined); setSyncing(!!selectedId);
     lastCompletedMessage.current = undefined;
-    send({ type: "browser.subscribe", sessionId: selectedId });
-  }, [selectedId, connected, send]);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) { setSyncing(false); return; }
+    setSyncing(true);
+    if (connected) send({ type: "browser.subscribe", sessionId: selectedId });
+  }, [selectedId, connected, connectionId, send]);
 
   return <div className="shell">
     <header className="masthead">
       <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label="Toggle sessions" aria-expanded={sidebarOpen}><span>☰</span></button>
       <div className="brand"><span className="brand-mark">π</span><div><b>PISS</b><small>PI SIN SIDECAR</small></div></div>
-      <div className="network"><i className={connected ? "online" : ""} />{connected ? "TAILNET LINK" : "RECONNECTING"}<span>{user}</span></div>
+      <div className={`network ${networkState}`} role="status" aria-live="polite"><i />{networkLabel}<span>{user}</span></div>
     </header>
     <button className={`sidebar-scrim ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} aria-label="Close sessions" />
     <aside className={`rail ${selected ? "rail-has-selection" : ""} ${sidebarOpen ? "mobile-open" : ""}`}>
@@ -242,7 +322,7 @@ function App() {
       </div>
     </aside>
     <main className="workspace">
-      {selected ? <SessionView session={selected} entries={entries} liveMessage={liveMessage} tools={tools} pending={pending} commandResults={commandResults} reviewResult={reviewResult} requestReview={(requestId) => {
+      {selected ? <SessionView session={selected} entries={entries} liveMessage={liveMessage} tools={tools} loading={outputLoading} connected={connected} pending={pending} commandResults={commandResults} reviewResult={reviewResult} requestReview={(requestId) => {
         setReviewResult(undefined);
         if (!send({ type: "browser.review_request", requestId, sessionId: selected.sessionId, runtimeId: selected.runtimeId })) {
           setReviewResult({ type: "review.result", requestId, ok: false, error: "Sidecar is disconnected" });
@@ -265,8 +345,8 @@ function summarize(value: unknown): string {
   try { return JSON.stringify(value).slice(0, 180); } catch { return "Activity update"; }
 }
 
-function SessionView({ session, entries, liveMessage, tools, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
-  session: SessionInfo; entries: RawEntry[]; liveMessage?: PiMessage; tools: ToolActivity[]; pending?: string; commandResults: Record<string, CommandResult>; reviewResult?: ReviewResultMessage; requestReview: (requestId: string) => void; notice?: string; clearNotice: () => void; sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
+function SessionView({ session, entries, liveMessage, tools, loading, connected, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
+  session: SessionInfo; entries: RawEntry[]; liveMessage?: PiMessage; tools: ToolActivity[]; loading: boolean; connected: boolean; pending?: string; commandResults: Record<string, CommandResult>; reviewResult?: ReviewResultMessage; requestReview: (requestId: string) => void; notice?: string; clearNotice: () => void; sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<Array<ImageInput & { preview: string }>>([]);
@@ -283,6 +363,7 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
   const draftSessionRef = useRef(session.sessionId);
   const submittedDrafts = useRef(new Map<string, { sessionId: string }>());
   const isRunning = session.state === "streaming";
+  const ready = connected && !loading;
   const messages = useMemo(() => entries.filter((entry) => entry.type === "message" && entry.message).map((entry) => entry.message!), [entries]);
 
   useLayoutEffect(() => {
@@ -369,7 +450,7 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
   }
 
   function submit() {
-    if ((!text.trim() && !images.length) || pending || session.state === "offline") return;
+    if ((!text.trim() && !images.length) || pending || !ready || session.state === "offline") return;
     const commandId = crypto.randomUUID();
     const action = isRunning ? delivery : "prompt";
     const submittedText = text.trim();
@@ -422,8 +503,9 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
 
   return <div className="session-view">
     <div className="timeline-wrap">
-      <section ref={timelineRef} className="timeline" aria-live="polite" onScroll={updateScrollPosition} onWheel={noteWheelIntent} onTouchStart={noteTouchStart} onTouchMove={noteTouchMove} onPointerDown={noteScrollbarIntent}>
-        {messages.length === 0 && !liveMessage && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
+      {loading && <div className="sync-banner" role="status"><i /><div><b>{connected ? "SYNCING LATEST OUTPUT" : "RESTORING LIVE LINK"}</b><span>{connected ? "Checking the session snapshot before resuming the stream…" : "Reconnecting automatically…"}</span></div></div>}
+      <section ref={timelineRef} className="timeline" aria-live="polite" aria-busy={loading} onScroll={updateScrollPosition} onWheel={noteWheelIntent} onTouchStart={noteTouchStart} onTouchMove={noteTouchMove} onPointerDown={noteScrollbarIntent}>
+        {messages.length === 0 && !liveMessage && !loading && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
         {messages.map((message, index) => <Message key={`${message.timestamp ?? index}-${index}`} message={message} />)}
         {outbox.map((item) => <OutboxMessage key={item.id} item={item} />)}
         {tools.map((tool) => <div className={`tool-row ${tool.error ? "error" : ""}`} key={tool.id}><i className={tool.state} /><div><b>{tool.name}</b><span>{tool.detail || (tool.state === "running" ? "Executing…" : "Complete")}</span></div><small>{tool.state}</small></div>)}
@@ -437,8 +519,8 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
       {notice && <button className="notice" onClick={clearNotice}>{notice}<span>×</span></button>}
       {images.length > 0 && <div className="image-strip">{images.map((image, index) => <button key={`${image.name}-${index}`} onClick={() => setImages((old) => old.filter((_, item) => item !== index))}><img src={image.preview} alt="" /><span>REMOVE</span></button>)}</div>}
       <div className="composer">
-        <label className={`attach ${pending ? "disabled" : ""}`} title="Attach images"><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={!!pending} onChange={(event) => { void selectImages(event.target.files); event.target.value = ""; }} /><span>＋</span><small>IMAGE</small></label>
-        <textarea value={text} disabled={!!pending} onChange={(event) => setText(event.target.value)} onPaste={(event) => {
+        <label className={`attach ${pending || !ready ? "disabled" : ""}`} title="Attach images"><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={!!pending || !ready} onChange={(event) => { void selectImages(event.target.files); event.target.value = ""; }} /><span>＋</span><small>IMAGE</small></label>
+        <textarea value={text} disabled={!!pending || !ready} onChange={(event) => setText(event.target.value)} onPaste={(event) => {
           const pastedImages = [...event.clipboardData.items]
             .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
             .map((item) => item.getAsFile())
@@ -451,14 +533,14 @@ function SessionView({ session, entries, liveMessage, tools, pending, commandRes
             submit();
           }
         }} placeholder={isRunning ? "Steer the active operation…" : "Issue a new instruction…"} rows={3} />
-        <button className="send-button" disabled={!!pending || session.state === "offline" || (!text.trim() && !images.length)} onClick={submit}><span>{pending ? "…" : "↗"}</span><small>{isRunning ? delivery === "steer" ? "STEER" : "QUEUE" : "SEND"}</small></button>
+        <button className="send-button" disabled={!!pending || !ready || session.state === "offline" || (!text.trim() && !images.length)} onClick={submit}><span>{pending || !ready ? "…" : "↗"}</span><small>{loading ? "SYNC" : isRunning ? delivery === "steer" ? "STEER" : "QUEUE" : "SEND"}</small></button>
       </div>
       <div className="control-meta">
         <div className={`deck-footer ${isRunning ? "" : "idle-footer"}`}>
           {isRunning ? <div className="delivery-toggle"><button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")}>STEER AFTER CURRENT TOOL</button><button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")}>FOLLOW-UP AFTER SETTLE</button></div> : <span className="desktop-hint">ENTER TO SEND · SHIFT+ENTER FOR NEW LINE</span>}
-          {isRunning && <button className="abort" onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}>ABORT OPERATION</button>}
+          {isRunning && <button className="abort" disabled={!ready} onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}>ABORT OPERATION</button>}
         </div>
-        <div className="session-status"><button className="review-trigger" onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}>REVIEW CHANGES</button><span>MODEL <b>{session.model?.split("/").at(-1) ?? "—"}</b></span><span>THINKING <b>{session.thinkingLevel ?? "—"}</b></span></div>
+        <div className="session-status"><button className="review-trigger" disabled={!ready} onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}>REVIEW CHANGES</button><span>MODEL <b>{session.model?.split("/").at(-1) ?? "—"}</b></span><span>THINKING <b>{session.thinkingLevel ?? "—"}</b></span></div>
       </div>
     </section>
   </div>;
@@ -543,7 +625,23 @@ function fileToDataUrl(file: File): Promise<string> {
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+    void (async () => {
+      let reloadOnControllerChange = navigator.serviceWorker.controller !== null;
+      let reloading = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (reloadOnControllerChange && !reloading) {
+          reloading = true;
+          location.reload();
+        }
+        reloadOnControllerChange = true;
+      });
+      const registration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });
+      const checkForUpdate = () => { if (document.visibilityState === "visible") void registration.update().catch(() => undefined); };
+      document.addEventListener("visibilitychange", checkForUpdate);
+      window.addEventListener("online", checkForUpdate);
+      checkForUpdate();
+      window.setInterval(checkForUpdate, 60 * 60_000);
+    })().catch(() => undefined);
   });
 }
 
