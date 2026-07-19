@@ -179,7 +179,7 @@ nix flake check
 nix build .#piss
 ```
 
-`npm run dev` enables authentication bypass only for its loopback development server. Production refuses that setting.
+`npm run dev` enables identity bypass only for its loopback development server, while still restricting browser WebSockets to the local Vite origin. Production refuses the bypass entirely.
 
 ### Hot reload through the dedicated tailnet URL
 

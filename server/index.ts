@@ -6,6 +6,8 @@ import { homedir } from "node:os";
 import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { browserUser, defaultDevOrigins, validBrowserOrigin, type BrowserAuthConfig } from "./browser-auth.ts";
+import { eventsAfter } from "./event-replay.ts";
 import {
   MAX_IMAGE_BYTES,
   PROTOCOL_VERSION,
@@ -23,7 +25,14 @@ import {
 const HOST = process.env.PISS_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.PISS_PORT ?? "4317");
 const DEV_BYPASS = process.env.PISS_DEV_BYPASS_AUTH === "1";
+const DEV_WEB_PORT = Number(process.env.PISS_DEV_WEB_PORT ?? "5173");
 const ALLOWED_USERS = new Set((process.env.PISS_ALLOWED_USERS ?? "").split(",").map((v) => v.trim()).filter(Boolean));
+const configuredDevOrigins = new Set((process.env.PISS_DEV_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+const browserAuth: BrowserAuthConfig = {
+  devBypass: DEV_BYPASS,
+  allowedUsers: ALLOWED_USERS,
+  devAllowedOrigins: configuredDevOrigins.size > 0 ? configuredDevOrigins : defaultDevOrigins(DEV_WEB_PORT),
+};
 const STATE_DIR = process.env.PISS_STATE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "piss");
 const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ?? join(STATE_DIR, "bridge-token");
 const PUBLIC_DIR = fileURLToPath(new URL("./public", import.meta.url));
@@ -37,6 +46,7 @@ if (HOST !== "127.0.0.1" && HOST !== "::1" && HOST !== "localhost") {
   throw new Error("PISS only permits a loopback bind; use its private Tailscale node for remote access");
 }
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("Invalid PISS_PORT");
+if (!Number.isInteger(DEV_WEB_PORT) || DEV_WEB_PORT < 1 || DEV_WEB_PORT > 65535) throw new Error("Invalid PISS_DEV_WEB_PORT");
 if (DEV_BYPASS && process.env.NODE_ENV === "production") throw new Error("Development auth bypass is forbidden with NODE_ENV=production");
 
 interface LiveSession {
@@ -92,26 +102,6 @@ function publicSessions(): SessionInfo[] {
 function broadcastSessions() {
   const message: ServerToBrowser = { type: "sessions.updated", sessions: publicSessions() };
   for (const browser of browsers) send(browser, message);
-}
-
-function userFromRequest(request: IncomingMessage): string | undefined {
-  if (DEV_BYPASS) return "local-development";
-  const value = request.headers["tailscale-user-login"];
-  const login = Array.isArray(value) ? value[0] : value;
-  if (!login || (ALLOWED_USERS.size && !ALLOWED_USERS.has(login))) return;
-  return login;
-}
-
-function validOrigin(request: IncomingMessage): boolean {
-  if (DEV_BYPASS) return true;
-  const origin = request.headers.origin;
-  const expectedHost = request.headers["x-forwarded-host"] ?? request.headers.host;
-  if (!origin || !expectedHost || Array.isArray(expectedHost)) return false;
-  try {
-    return new URL(origin).protocol === "https:" && new URL(origin).host === expectedHost;
-  } catch {
-    return false;
-  }
 }
 
 function bridgeAuthorized(request: IncomingMessage): boolean {
@@ -221,7 +211,15 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     const session = sessions.get(message.sessionId);
     if (!session) { send(ws, { type: "server.error", error: "Session not found" }); return; }
     browserSubscriptions.set(ws, message.sessionId);
-    send(ws, { type: "session.snapshot", session: session.info, entries: session.snapshot, sequence: session.sequence });
+    const replay = message.runtimeId === session.info.runtimeId && message.after !== undefined
+      ? eventsAfter(session.events, session.sequence, message.after)
+      : undefined;
+    if (replay !== undefined) {
+      for (const event of replay) send(ws, { type: "session.event", sessionId: message.sessionId, event });
+      send(ws, { type: "session.resumed", session: session.info, sequence: session.sequence });
+    } else {
+      send(ws, { type: "session.snapshot", session: session.info, entries: session.snapshot, sequence: session.sequence });
+    }
     return;
   }
 
@@ -332,7 +330,7 @@ function json(response: ServerResponse, statusCode: number, body: unknown) {
 }
 
 async function serveStatic(request: IncomingMessage, response: ServerResponse) {
-  if (!userFromRequest(request)) { json(response, 401, { error: "Tailscale identity required" }); return; }
+  if (!browserUser(request, browserAuth)) { json(response, 401, { error: "Tailscale identity required" }); return; }
   if (request.method !== "GET" && request.method !== "HEAD") {
     response.writeHead(405, { allow: "GET, HEAD" }).end();
     return;
@@ -386,7 +384,7 @@ server.on("upgrade", (request, socket, head) => {
   const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
   if (pathname === "/bridge" && bridgeAuthorized(request)) {
     bridgeWss.handleUpgrade(request, socket, head, (ws) => bridgeWss.emit("connection", ws, request));
-  } else if (pathname === "/api/ws" && userFromRequest(request) && validOrigin(request)) {
+  } else if (pathname === "/api/ws" && browserUser(request, browserAuth) && validBrowserOrigin(request, browserAuth)) {
     browserWss.handleUpgrade(request, socket, head, (ws) => browserWss.emit("connection", ws, request));
   } else {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -415,7 +413,7 @@ browserWss.on("connection", (ws, request) => {
   browsers.add(ws);
   liveness.set(ws, true);
   ws.on("pong", () => liveness.set(ws, true));
-  send(ws, { type: "server.hello", user: userFromRequest(request)!, sessions: publicSessions() });
+  send(ws, { type: "server.hello", user: browserUser(request, browserAuth)!, sessions: publicSessions() });
   ws.on("message", (raw) => handleBrowserMessage(ws, raw as Buffer));
   ws.on("close", () => {
     browsers.delete(ws);

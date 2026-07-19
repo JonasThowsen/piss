@@ -82,7 +82,7 @@ export type SessionEvent = {
 };
 
 export type BrowserToServer =
-  | { type: "browser.subscribe"; sessionId: string; after?: number }
+  | { type: "browser.subscribe"; sessionId: string; runtimeId?: string; after?: number }
   | { type: "browser.archive"; sessionId: string; runtimeId: string }
   | { type: "browser.review_request"; requestId: string; sessionId: string; runtimeId: string }
   | { type: "browser.command"; commandId: string; sessionId: string; runtimeId: string; action: Delivery | "abort"; text?: string; images?: ImageInput[] }
@@ -93,6 +93,7 @@ export type ServerToBrowser =
   | { type: "sessions.updated"; sessions: SessionInfo[] }
   | { type: "session.snapshot"; session: SessionInfo; entries: unknown[]; sequence: number }
   | { type: "session.event"; sessionId: string; event: SessionEvent }
+  | { type: "session.resumed"; session: SessionInfo; sequence: number }
   | { type: "command.result"; commandId: string; ok: boolean; error?: string }
   | { type: "review.result"; requestId: string; ok: boolean; review?: ReviewSnapshot; error?: string }
   | { type: "server.pong" }
@@ -151,6 +152,7 @@ export function isBrowserToServer(value: unknown): value is BrowserToServer {
   if (value.type === "browser.ping") return true;
   if (value.type === "browser.subscribe") {
     return isBoundedString(value.sessionId, 512) &&
+      (value.runtimeId === undefined || isBoundedString(value.runtimeId, 128)) &&
       (value.after === undefined || (Number.isSafeInteger(value.after) && Number(value.after) >= 0));
   }
   if (value.type === "browser.archive") {

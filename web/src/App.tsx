@@ -9,9 +9,12 @@ import {
   type SessionEvent,
   type SessionInfo,
 } from "../../shared/protocol.ts";
+import { readDraft, writeDraft } from "./drafts.ts";
+import { summarize, textContent, type PiMessage } from "./message-content.ts";
+import { TimelineMessage } from "./TimelineMessage.tsx";
+import { useSidecarSocket } from "./useSidecarSocket.ts";
 
 type RawEntry = { type?: string; message?: PiMessage };
-type PiMessage = { role?: string; content?: unknown; timestamp?: number; toolCallId?: string; toolName?: string; isError?: boolean };
 type ToolActivity = { id: string; name: string; state: "running" | "done"; detail: string; error?: boolean };
 type CommandResult = { ok: boolean; error?: string };
 type ReviewResultMessage = Extract<ServerToBrowser, { type: "review.result" }>;
@@ -24,66 +27,9 @@ type OutboxItem = {
   status: "sending" | "accepted" | "delivered" | "rejected";
   error?: string;
 };
-type StoredDraft = { text: string; delivery: "steer" | "followUp"; updatedAt: number };
-type ConnectionStatus = "connecting" | "reconnecting" | "online" | "offline";
+type SessionCursor = { sessionId: string; runtimeId: string; sequence: number };
 
-const DRAFT_PREFIX = "piss:draft:";
-const DRAFT_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
-
-function readDraft(sessionId: string): StoredDraft | undefined {
-  try {
-    const value = localStorage.getItem(`${DRAFT_PREFIX}${sessionId}`);
-    if (!value) return;
-    const draft = JSON.parse(value) as Partial<StoredDraft>;
-    if (typeof draft.text !== "string") return;
-    const updatedAt = typeof draft.updatedAt === "number" ? draft.updatedAt : Date.now();
-    if (Date.now() - updatedAt > DRAFT_MAX_AGE) {
-      localStorage.removeItem(`${DRAFT_PREFIX}${sessionId}`);
-      return;
-    }
-    return {
-      text: draft.text,
-      delivery: draft.delivery === "followUp" ? "followUp" : "steer",
-      updatedAt,
-    };
-  } catch {
-    return;
-  }
-}
-
-function writeDraft(sessionId: string, text: string, delivery: "steer" | "followUp") {
-  try {
-    const key = `${DRAFT_PREFIX}${sessionId}`;
-    if (!text) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify({ text, delivery, updatedAt: Date.now() } satisfies StoredDraft));
-  } catch {
-    // Storage can be unavailable in strict private-browsing configurations.
-  }
-}
-
-function textContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type?: string; text?: string; name?: string; arguments?: unknown } => !!part && typeof part === "object")
-    .map((part) => part.type === "text" ? part.text ?? "" : "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function imageAttachments(content: unknown): Array<{ mimeType: string }> {
-  if (!Array.isArray(content)) return [];
-  return content.flatMap((part) => {
-    if (!part || typeof part !== "object" || !("type" in part) || part.type !== "image") return [];
-    const image = part as { mimeType?: unknown; source?: { mediaType?: unknown } };
-    const mimeType = typeof image.mimeType === "string"
-      ? image.mimeType
-      : typeof image.source?.mediaType === "string"
-        ? image.source.mediaType
-        : "image";
-    return [{ mimeType }];
-  });
-}
+const CONNECTION_INTERRUPTED = "Connection interrupted; check the refreshed output before retrying";
 
 function relativeTime(timestamp: number): string {
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
@@ -103,126 +49,6 @@ function compactDirectory(cwd: string): string {
   return `…/${parts.slice(-2).join("/")}`;
 }
 
-function useSidecarSocket(onMessage: (message: ServerToBrowser) => void) {
-  const [status, setStatus] = useState<ConnectionStatus>(navigator.onLine ? "connecting" : "offline");
-  const [connectionId, setConnectionId] = useState(0);
-  const socket = useRef<WebSocket | undefined>(undefined);
-  const callback = useRef(onMessage);
-  callback.current = onMessage;
-
-  useEffect(() => {
-    let stopped = false;
-    let hasConnected = false;
-    let retry = 250;
-    let reconnectTimer: number | undefined;
-    let lastReceivedAt = Date.now();
-    let lastWakeAt = 0;
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
-      reconnectTimer = undefined;
-    };
-    const connect = () => {
-      clearReconnectTimer();
-      if (stopped || document.visibilityState === "hidden") return;
-      if (!navigator.onLine) { setStatus("offline"); return; }
-      if (socket.current?.readyState === WebSocket.OPEN || socket.current?.readyState === WebSocket.CONNECTING) return;
-
-      setStatus(hasConnected ? "reconnecting" : "connecting");
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${location.host}/api/ws`);
-      socket.current = ws;
-      ws.onopen = () => {
-        if (socket.current !== ws) { ws.close(); return; }
-        hasConnected = true;
-        retry = 250;
-        lastReceivedAt = Date.now();
-        setStatus("online");
-        setConnectionId((id) => id + 1);
-        ws.send(JSON.stringify({ type: "browser.ping" }));
-      };
-      ws.onmessage = (event) => {
-        if (socket.current !== ws) return;
-        lastReceivedAt = Date.now();
-        try {
-          const message = JSON.parse(event.data) as ServerToBrowser;
-          if (message.type !== "server.pong") callback.current(message);
-        } catch { /* ignore malformed frames */ }
-      };
-      ws.onclose = () => {
-        if (socket.current !== ws) return;
-        socket.current = undefined;
-        if (stopped) return;
-        setStatus(navigator.onLine ? "reconnecting" : "offline");
-        if (document.visibilityState !== "hidden" && navigator.onLine) {
-          reconnectTimer = window.setTimeout(connect, retry);
-          retry = Math.min(retry * 2, 5000);
-        }
-      };
-      ws.onerror = () => ws.close();
-    };
-    const disconnect = () => {
-      clearReconnectTimer();
-      const current = socket.current;
-      socket.current = undefined;
-      if (current && current.readyState < WebSocket.CLOSING) current.close(4000, "app suspended");
-    };
-    const wake = () => {
-      if (document.visibilityState === "hidden") return;
-      const now = Date.now();
-      if (now - lastWakeAt < 500) return;
-      lastWakeAt = now;
-      retry = 250;
-      disconnect();
-      setStatus(navigator.onLine ? "reconnecting" : "offline");
-      connect();
-    };
-    const visibilityChanged = () => {
-      if (document.visibilityState === "hidden") {
-        disconnect();
-        setStatus("reconnecting");
-      } else {
-        wake();
-      }
-    };
-    const wentOffline = () => { disconnect(); setStatus("offline"); };
-
-    document.addEventListener("visibilitychange", visibilityChanged);
-    window.addEventListener("pageshow", wake);
-    window.addEventListener("focus", wake);
-    window.addEventListener("online", wake);
-    window.addEventListener("offline", wentOffline);
-    connect();
-    const heartbeat = window.setInterval(() => {
-      const current = socket.current;
-      if (current?.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - lastReceivedAt > 30_000) {
-        current.close(4002, "heartbeat timed out");
-        return;
-      }
-      current.send(JSON.stringify({ type: "browser.ping" }));
-    }, 10_000);
-    return () => {
-      stopped = true;
-      clearReconnectTimer();
-      clearInterval(heartbeat);
-      document.removeEventListener("visibilitychange", visibilityChanged);
-      window.removeEventListener("pageshow", wake);
-      window.removeEventListener("focus", wake);
-      window.removeEventListener("online", wake);
-      window.removeEventListener("offline", wentOffline);
-      disconnect();
-    };
-  }, []);
-
-  const send = useCallback((message: BrowserToServer) => {
-    if (socket.current?.readyState !== WebSocket.OPEN) return false;
-    socket.current.send(JSON.stringify(message));
-    return true;
-  }, []);
-  return { connected: status === "online", status, connectionId, send };
-}
-
 export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -237,6 +63,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncing, setSyncing] = useState(true);
   const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
+  const cursor = useRef<SessionCursor | undefined>(undefined);
   const currentId = useRef<string | undefined>(undefined);
   currentId.current = selectedId;
 
@@ -244,9 +71,20 @@ export function App() {
     if (message.type === "server.hello") { setUser(message.user); setSessions(message.sessions); }
     if (message.type === "sessions.updated") setSessions(message.sessions);
     if (message.type === "session.snapshot" && message.session.sessionId === currentId.current) {
+      cursor.current = { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence };
       setEntries(message.entries as RawEntry[]); setLiveMessage(undefined); setTools([]); setSyncing(false);
     }
-    if (message.type === "session.event" && message.sessionId === currentId.current) { setSyncing(false); handleEvent(message.event); }
+    if (message.type === "session.event" && message.sessionId === currentId.current) {
+      const previous = cursor.current;
+      if (previous?.runtimeId === message.event.runtimeId && message.event.sequence <= previous.sequence) return;
+      cursor.current = { sessionId: message.sessionId, runtimeId: message.event.runtimeId, sequence: message.event.sequence };
+      setSyncing(false); handleEvent(message.event);
+    }
+    if (message.type === "session.resumed" && message.session.sessionId === currentId.current) {
+      cursor.current = { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence };
+      setSessions((old) => old.map((session) => session.sessionId === message.session.sessionId ? message.session : session));
+      setSyncing(false);
+    }
     if (message.type === "review.result") setReviewResult(message);
     if (message.type === "command.result") {
       setPending((id) => id === message.commandId ? undefined : id);
@@ -306,13 +144,24 @@ export function App() {
   useEffect(() => {
     setEntries([]); setTools([]); setLiveMessage(undefined); setSyncing(!!selectedId);
     lastCompletedMessage.current = undefined;
+    cursor.current = undefined;
   }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) { setSyncing(false); return; }
     setSyncing(true);
-    if (connected) send({ type: "browser.subscribe", sessionId: selectedId });
+    if (!connected) return;
+    const previous = cursor.current?.sessionId === selectedId ? cursor.current : undefined;
+    send({ type: "browser.subscribe", sessionId: selectedId, runtimeId: previous?.runtimeId, after: previous?.sequence });
   }, [selectedId, connected, connectionId, send]);
+
+  useEffect(() => {
+    if (connected || !pending) return;
+    const commandId = pending;
+    setPending(undefined);
+    setCommandResults((results) => ({ ...results, [commandId]: { ok: false, error: CONNECTION_INTERRUPTED } }));
+    setNotice(CONNECTION_INTERRUPTED);
+  }, [connected, pending]);
 
   return <div className="shell">
     <header className="masthead">
@@ -352,24 +201,6 @@ export function App() {
       }} /> : <div className="blank-state"><span>π</span><h1>Awaiting runtime</h1><p>The control surface is ready. Open a Pi session to establish a bridge.</p></div>}
     </main>
   </div>;
-}
-
-function compactText(value: string, maximum = 140): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > maximum ? `${compact.slice(0, maximum - 1)}…` : compact;
-}
-
-function summarize(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return compactText(value);
-  if (typeof value === "object" && !Array.isArray(value)) {
-    const record = value as { content?: unknown; text?: unknown; path?: unknown };
-    const content = textContent(record.content);
-    if (content) return compactText(content);
-    if (typeof record.text === "string") return compactText(record.text);
-    if (typeof record.path === "string") return compactText(record.path);
-  }
-  try { return compactText(JSON.stringify(value)); } catch { return "Activity update"; }
 }
 
 function SessionView({ session, entries, liveMessage, tools, loading, connected, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
@@ -451,7 +282,8 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
     setOutbox((items) => {
       let changed = false;
       const next = items.map((item) => {
-        if (item.status !== "accepted") return item;
+        const mayHaveReachedPi = item.status === "accepted" || (item.status === "rejected" && item.error === CONNECTION_INTERRUPTED);
+        if (!mayHaveReachedPi) return item;
         const appeared = messages.slice(item.baselineMessages).some((message) =>
           message.role === "user" && (!item.text || textContent(message.content).trim() === item.text),
         );
@@ -545,9 +377,9 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       {loading && <div className="sync-banner" role="status"><i /><div><b>{connected ? "SYNCING LATEST OUTPUT" : "RESTORING LIVE LINK"}</b><span>{connected ? "Checking the session snapshot before resuming the stream…" : "Reconnecting automatically…"}</span></div></div>}
       <section ref={timelineRef} className="timeline" aria-live="polite" aria-busy={loading} onScroll={updateScrollPosition} onWheel={noteWheelIntent} onTouchStart={noteTouchStart} onTouchMove={noteTouchMove} onPointerDown={noteScrollbarIntent}>
         {messages.length === 0 && !liveMessage && !loading && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
-        {messages.map((message, index) => <Message key={`${message.timestamp ?? index}-${index}`} message={message} />)}
+        {messages.map((message, index) => <TimelineMessage key={`${message.timestamp ?? index}-${index}`} message={message} />)}
         {tools.filter((tool) => tool.state === "running").map((tool) => <div className={`tool-row ${tool.error ? "error" : ""}`} key={tool.id}><i className={tool.state} /><div><b>{tool.name}</b><span>{tool.detail || "Executing…"}</span></div><small>{tool.state}</small></div>)}
-        {liveMessage && <Message message={liveMessage} live />}
+        {liveMessage && <TimelineMessage message={liveMessage} live />}
         <div ref={endRef} />
       </section>
       <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={jumpToBottom} aria-label="Jump to latest message"><span>↓</span><small>LATEST</small></button>
@@ -648,44 +480,6 @@ function OutboxMessage({ item, onDismiss }: { item: OutboxItem; onDismiss: () =>
     <div><header><b>{label}</b><small>{status}</small></header><p>{item.text || `${item.imageCount} attached image${item.imageCount === 1 ? "" : "s"}`}</p></div>
     {item.imageCount > 0 && item.text && <em>{item.imageCount} IMG</em>}
     {item.status === "rejected" && <button onClick={onDismiss} aria-label="Dismiss rejected outgoing message">×</button>}
-  </article>;
-}
-
-function ToolResult({ message }: { message: PiMessage }) {
-  const text = textContent(message.content);
-  const images = imageAttachments(message.content);
-  const toolName = message.toolName ?? "tool";
-  const lines = text ? text.split("\n").length : 0;
-  const changed = toolName === "edit" || toolName === "write";
-  const status = message.isError ? "ERROR" : changed ? "CHANGED" : "DONE";
-  const preview = compactText(text, 110) || (images.length ? `${images.length} image result${images.length === 1 ? "" : "s"}` : "No textual output");
-
-  return <details className={`tool-result ${message.isError ? "error" : ""} ${changed ? "changed" : ""}`}>
-    <summary>
-      <i />
-      <b>{toolName}</b>
-      <span>{preview}</span>
-      {lines > 1 && <em>{lines}L</em>}
-      <small>{status}</small>
-      <strong aria-hidden="true">+</strong>
-    </summary>
-    <div className="tool-result-body">
-      {text && <pre>{text}</pre>}
-      {images.length > 0 && <div className="tool-result-images">{images.map((image, index) => <span key={`${image.mimeType}-${index}`}>▧ IMAGE <small>{image.mimeType.replace("image/", "").toUpperCase()}</small></span>)}</div>}
-    </div>
-  </details>;
-}
-
-function Message({ message, live }: { message: PiMessage; live?: boolean }) {
-  const role = message.role ?? "event";
-  if (role === "toolResult") return <ToolResult message={message} />;
-  const text = textContent(message.content);
-  const images = imageAttachments(message.content);
-  if (!text && images.length === 0) return null;
-  return <article className={`message ${role} ${live ? "live" : ""}`}>
-    <header><span>{role === "assistant" ? "PI" : role === "user" ? "REMOTE" : role.toUpperCase()}</span>{live && <i>STREAMING</i>}</header>
-    {text && <div>{text}</div>}
-    {images.length > 0 && <div className="message-attachments">{images.map((image, index) => <span key={`${image.mimeType}-${index}`}>▧ IMAGE ATTACHED <small>{image.mimeType.replace("image/", "").toUpperCase()}</small></span>)}</div>}
   </article>;
 }
 

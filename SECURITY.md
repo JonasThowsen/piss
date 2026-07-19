@@ -19,7 +19,7 @@ The following are explicitly unsupported:
 - a non-loopback `PISS_HOST`;
 - production use with `PISS_DEV_BYPASS_AUTH=1`.
 
-PISS deliberately refuses non-loopback binds and refuses the development bypass when `NODE_ENV=production`.
+PISS deliberately refuses non-loopback binds and refuses the development bypass when `NODE_ENV=production`. In development, identity may be bypassed but browser WebSockets still require the configured local Vite origin (`PISS_DEV_ALLOWED_ORIGINS`, or the loopback defaults for `PISS_DEV_WEB_PORT`).
 
 ## Secrets and local data
 

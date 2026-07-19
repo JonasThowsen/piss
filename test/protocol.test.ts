@@ -20,6 +20,8 @@ test("validates browser messages at runtime", () => {
   assert.equal(isBrowserToServer({ type: "browser.archive", sessionId: "session", runtimeId: "runtime" }), true);
   assert.equal(isBrowserToServer({ type: "browser.review_request", requestId: "review", sessionId: "session", runtimeId: "runtime" }), true);
   assert.equal(isBrowserToServer({ type: "browser.command", commandId: "id", sessionId: "session", runtimeId: "runtime", action: "shell", text: "no" }), false);
+  assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "session", runtimeId: "runtime", after: 42 }), true);
+  assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "session", runtimeId: "", after: 42 }), false);
   assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "" }), false);
 });
 
