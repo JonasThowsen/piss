@@ -13,7 +13,7 @@ import {
 import "./styles.css";
 
 type RawEntry = { type?: string; message?: PiMessage };
-type PiMessage = { role?: string; content?: unknown; timestamp?: number; toolName?: string; isError?: boolean };
+type PiMessage = { role?: string; content?: unknown; timestamp?: number; toolCallId?: string; toolName?: string; isError?: boolean };
 type ToolActivity = { id: string; name: string; state: "running" | "done"; detail: string; error?: boolean };
 type CommandResult = { ok: boolean; error?: string };
 type ReviewResultMessage = Extract<ServerToBrowser, { type: "review.result" }>;
@@ -68,7 +68,7 @@ function textContent(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
     .filter((part): part is { type?: string; text?: string; name?: string; arguments?: unknown } => !!part && typeof part === "object")
-    .map((part) => part.type === "text" ? part.text ?? "" : part.type === "toolCall" ? `Tool · ${part.name ?? "unknown"}` : "")
+    .map((part) => part.type === "text" ? part.text ?? "" : "")
     .filter(Boolean)
     .join("\n");
 }
@@ -356,10 +356,22 @@ function App() {
   </div>;
 }
 
+function compactText(value: string, maximum = 140): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > maximum ? `${compact.slice(0, maximum - 1)}…` : compact;
+}
+
 function summarize(value: unknown): string {
   if (value == null) return "";
-  if (typeof value === "string") return value.slice(0, 180);
-  try { return JSON.stringify(value).slice(0, 180); } catch { return "Activity update"; }
+  if (typeof value === "string") return compactText(value);
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const record = value as { content?: unknown; text?: unknown; path?: unknown };
+    const content = textContent(record.content);
+    if (content) return compactText(content);
+    if (typeof record.text === "string") return compactText(record.text);
+    if (typeof record.path === "string") return compactText(record.path);
+  }
+  try { return compactText(JSON.stringify(value)); } catch { return "Activity update"; }
 }
 
 function SessionView({ session, entries, liveMessage, tools, loading, connected, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
@@ -525,7 +537,7 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
         {messages.length === 0 && !liveMessage && !loading && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
         {messages.map((message, index) => <Message key={`${message.timestamp ?? index}-${index}`} message={message} />)}
         {outbox.map((item) => <OutboxMessage key={item.id} item={item} />)}
-        {tools.map((tool) => <div className={`tool-row ${tool.error ? "error" : ""}`} key={tool.id}><i className={tool.state} /><div><b>{tool.name}</b><span>{tool.detail || (tool.state === "running" ? "Executing…" : "Complete")}</span></div><small>{tool.state}</small></div>)}
+        {tools.filter((tool) => tool.state === "running").map((tool) => <div className={`tool-row ${tool.error ? "error" : ""}`} key={tool.id}><i className={tool.state} /><div><b>{tool.name}</b><span>{tool.detail || "Executing…"}</span></div><small>{tool.state}</small></div>)}
         {liveMessage && <Message message={liveMessage} live />}
         <div ref={endRef} />
       </section>
@@ -627,16 +639,41 @@ function OutboxMessage({ item }: { item: OutboxItem }) {
   </article>;
 }
 
-function Message({ message, live }: { message: PiMessage; live?: boolean }) {
-  const role = message.role ?? "event";
+function ToolResult({ message }: { message: PiMessage }) {
   const text = textContent(message.content);
   const images = imageAttachments(message.content);
-  if (!text && images.length === 0 && role === "toolResult") return null;
+  const toolName = message.toolName ?? "tool";
+  const lines = text ? text.split("\n").length : 0;
+  const changed = toolName === "edit" || toolName === "write";
+  const status = message.isError ? "ERROR" : changed ? "CHANGED" : "DONE";
+  const preview = compactText(text, 110) || (images.length ? `${images.length} image result${images.length === 1 ? "" : "s"}` : "No textual output");
+
+  return <details className={`tool-result ${message.isError ? "error" : ""} ${changed ? "changed" : ""}`}>
+    <summary>
+      <i />
+      <b>{toolName}</b>
+      <span>{preview}</span>
+      {lines > 1 && <em>{lines}L</em>}
+      <small>{status}</small>
+      <strong aria-hidden="true">+</strong>
+    </summary>
+    <div className="tool-result-body">
+      {text && <pre>{text}</pre>}
+      {images.length > 0 && <div className="tool-result-images">{images.map((image, index) => <span key={`${image.mimeType}-${index}`}>▧ IMAGE <small>{image.mimeType.replace("image/", "").toUpperCase()}</small></span>)}</div>}
+    </div>
+  </details>;
+}
+
+function Message({ message, live }: { message: PiMessage; live?: boolean }) {
+  const role = message.role ?? "event";
+  if (role === "toolResult") return <ToolResult message={message} />;
+  const text = textContent(message.content);
+  const images = imageAttachments(message.content);
+  if (!text && images.length === 0) return null;
   return <article className={`message ${role} ${live ? "live" : ""}`}>
     <header><span>{role === "assistant" ? "PI" : role === "user" ? "REMOTE" : role.toUpperCase()}</span>{live && <i>STREAMING</i>}</header>
     {text && <div>{text}</div>}
     {images.length > 0 && <div className="message-attachments">{images.map((image, index) => <span key={`${image.mimeType}-${index}`}>▧ IMAGE ATTACHED <small>{image.mimeType.replace("image/", "").toUpperCase()}</small></span>)}</div>}
-    {!text && images.length === 0 && <div>Structured content</div>}
   </article>;
 }
 
