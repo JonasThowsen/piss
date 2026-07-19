@@ -72,11 +72,6 @@ button{color:inherit}
 .runtime-spec b{color:var(--paper);font-size:9px;letter-spacing:0;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 .timeline-wrap{position:relative;min-height:0;overflow:hidden;background:var(--ink)}
 .timeline{width:100%;height:100%;overflow-y:auto;overflow-x:hidden;padding:30px 32px 70px;overscroll-behavior:contain;scrollbar-color:var(--line) transparent}
-.sync-banner{position:absolute;z-index:3;top:12px;left:50%;translate:-50% 0;width:min(460px,calc(100% - 28px));display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid #fed7aa;background:rgba(255,255,255,.96);box-shadow:0 12px 32px rgba(24,24,27,.12);pointer-events:none}
-.sync-banner>i{width:9px;height:9px;flex:none;border:1px solid var(--signal);background:var(--signal);transform:rotate(45deg);animation:pulse .8s infinite}
-.sync-banner>div{display:grid;gap:4px}
-.sync-banner b{color:var(--signal);font-size:8px;letter-spacing:.13em}
-.sync-banner span{color:var(--soft);font-size:9px}
 .jump-bottom{position:absolute;right:22px;bottom:18px;z-index:2;width:58px;height:58px;border:1px solid #a1a1aa;background:var(--paper);color:var(--ink);display:grid;place-items:center;align-content:center;gap:1px;cursor:pointer;transition:opacity .15s ease,transform .15s ease}
 .jump-bottom:hover{transform:translateY(2px)}
 .jump-bottom span{font-size:24px;line-height:22px}

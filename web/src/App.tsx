@@ -388,7 +388,6 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
 
   return <div className="session-view">
     <div className="timeline-wrap">
-      {loading && <div className="sync-banner" role="status"><i /><div><b>{connected ? "SYNCING LATEST OUTPUT" : "RESTORING LIVE LINK"}</b><span>{connected ? "Checking the session snapshot before resuming the stream…" : "Reconnecting automatically…"}</span></div></div>}
       <section ref={timelineRef} className="timeline" aria-live="polite" aria-busy={loading} onScroll={updateScrollPosition} onWheel={noteWheelIntent} onTouchStart={noteTouchStart} onTouchMove={noteTouchMove} onPointerDown={noteScrollbarIntent}>
         {messages.length === 0 && !liveMessage && !loading && <div className="timeline-empty"><span>EVENT STREAM / {session.runtimeId.slice(0, 8)}</span><p>No conversation entries in this runtime yet.</p></div>}
         {messages.map((message, index) => <TimelineMessage key={`${message.timestamp ?? index}-${index}`} message={message} />)}
