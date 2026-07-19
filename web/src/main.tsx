@@ -6,6 +6,12 @@ import "./styles.css";
 type ErrorBoundaryProps = { children: ReactNode };
 type ErrorBoundaryState = { error?: Error };
 
+declare global {
+  interface Window {
+    __PISS_MARK_BOOTED__?: () => void;
+  }
+}
+
 class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = {};
 
@@ -27,26 +33,6 @@ class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundary
       <button onClick={() => location.reload()}>RELOAD PISS</button>
     </main>;
   }
-}
-
-if (import.meta.env.DEV && "serviceWorker" in navigator) {
-  void (async () => {
-    const registrations = await navigator.serviceWorker.getRegistrations();
-    const wasControlled = navigator.serviceWorker.controller !== null || registrations.length > 0;
-    await Promise.all(registrations.map((registration) => registration.unregister()));
-    if ("caches" in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.filter((key) => key.startsWith("piss-shell-")).map((key) => caches.delete(key)));
-    }
-
-    const reloadKey = "piss:dev-without-service-worker";
-    if (wasControlled && sessionStorage.getItem(reloadKey) !== "1") {
-      sessionStorage.setItem(reloadKey, "1");
-      location.reload();
-    } else {
-      sessionStorage.removeItem(reloadKey);
-    }
-  })().catch(() => undefined);
 }
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
@@ -72,3 +58,4 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>);
+window.__PISS_MARK_BOOTED__?.();
