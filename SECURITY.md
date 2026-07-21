@@ -28,6 +28,7 @@ PISS deliberately refuses non-loopback binds and refuses the development bypass 
 - Use a secret manager for `services.piss.tailscale.authKeyFile`; never put an auth key in Nix source.
 - Text drafts are stored in the browser's local storage for up to 30 days. Do not use an untrusted browser profile.
 - Image bytes are validated at both trust boundaries and are not retained in the server's history cache.
+- Web Push VAPID keys and opted-in device subscriptions are stored under `~/.local/state/piss` with mode `0600`. Push delivery necessarily reveals the device's push endpoint and an encrypted payload to its browser vendor; PISS payloads contain only session label, branch, completion state, and session ID, never conversation content or credentials.
 
 ## Reporting a vulnerability
 

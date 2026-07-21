@@ -8,13 +8,16 @@ import { assistantOutcome, statusFromEntries } from "./agent-status.ts";
 import { collectReview } from "./review.ts";
 import {
   PROTOCOL_VERSION,
+  THINKING_LEVELS,
   isServerToBridge,
   validateImages,
   type AgentStatus,
+  type AvailableModel,
   type BridgeToServer,
   type ImageInput,
   type ServerToBridge,
   type SessionInfo,
+  type ThinkingLevel,
 } from "../shared/protocol.ts";
 
 const BROKER_URL = process.env.PISS_BRIDGE_URL ?? "ws://127.0.0.1:4317/bridge";
@@ -23,6 +26,31 @@ const TOKEN_FILE = process.env.PISS_BRIDGE_TOKEN_FILE ??
 const MAX_RECONNECT_MS = 10_000;
 const MAX_SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_SNAPSHOT_ENTRIES = 250;
+
+function supportedThinkingLevels(model: { reasoning?: boolean; thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>> }): ThinkingLevel[] {
+  if (!model.reasoning) return ["off"];
+  return THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    return level === "xhigh" || level === "max" ? typeof mapped === "string" : true;
+  });
+}
+
+function publicModel(model: {
+  provider: string;
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+}): AvailableModel {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name ?? model.id,
+    reasoning: model.reasoning === true,
+    thinkingLevels: supportedThinkingLevels(model),
+  };
+}
 
 function safeValue(value: unknown): unknown {
   try {
@@ -123,6 +151,42 @@ export default function pissExtension(pi: ExtensionAPI) {
       if (message.action === "review") {
         const review = await collectReview(pi, context.cwd);
         send({ type: "bridge.command_result", commandId: message.commandId, ok: true, review });
+        return;
+      }
+      if (message.action === "list_models") {
+        await context.modelRegistry.refresh();
+        const models = context.modelRegistry.getAvailable()
+          .map(publicModel)
+          .sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name));
+        send({ type: "bridge.command_result", commandId: message.commandId, ok: true, models });
+        return;
+      }
+      if (message.action === "set_model") {
+        if (!context.isIdle()) throw new Error("Wait for the agent to finish before changing model");
+        await context.modelRegistry.refresh();
+        const model = context.modelRegistry.find(message.provider!, message.modelId!);
+        if (!model || !context.modelRegistry.getAvailable().some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+          throw new Error("Model is unavailable or has no configured authentication");
+        }
+        if (!await pi.setModel(model)) throw new Error("Model authentication is unavailable");
+        send({
+          type: "bridge.command_result",
+          commandId: message.commandId,
+          ok: true,
+          model: `${model.provider}/${model.id}`,
+          thinkingLevel: pi.getThinkingLevel(),
+        });
+        return;
+      }
+      if (message.action === "set_thinking_level") {
+        if (!context.isIdle()) throw new Error("Wait for the agent to finish before changing effort");
+        pi.setThinkingLevel(message.thinkingLevel!);
+        send({
+          type: "bridge.command_result",
+          commandId: message.commandId,
+          ok: true,
+          thinkingLevel: pi.getThinkingLevel(),
+        });
         return;
       }
       if (message.action === "abort") {

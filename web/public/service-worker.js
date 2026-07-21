@@ -1,4 +1,4 @@
-const CACHE_VERSION = "piss-shell-v3";
+const CACHE_VERSION = "piss-shell-v4";
 const CACHE_PREFIX = "piss-shell-";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 
@@ -42,6 +42,37 @@ async function cacheResponse(request, response, key = request) {
   }
   return response;
 }
+
+self.addEventListener("push", (event) => {
+  event.waitUntil((async () => {
+    let payload = {};
+    try { payload = event.data?.json() ?? {}; } catch { /* show a generic alert */ }
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (windows.some((client) => client.focused)) return;
+    await self.registration.showNotification(payload.title ?? "Pi agent finished", {
+      body: payload.body ?? "A Pi session has settled.",
+      tag: payload.tag ?? "piss-agent-settled",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      data: { url: payload.url ?? "/" },
+    });
+  })());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const target = new URL(event.notification.data?.url ?? "/", self.location.origin).href;
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const existing = windows[0];
+    if (existing) {
+      await existing.navigate(target).catch(() => undefined);
+      await existing.focus();
+      return;
+    }
+    await self.clients.openWindow(target);
+  })());
+});
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;

@@ -40,7 +40,7 @@
                 ./web
               ];
             };
-            npmDepsHash = "sha256-Gz9ukO7Wvw9kS8GqFDRSs/XxXj10i8fiKa+3ZawS0wA=";
+            npmDepsHash = "sha256-nV3bIIH3vzSSn3TpYx+aQWYnVnwuOfdntBCuACjSEUA=";
             npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build";
@@ -53,15 +53,16 @@
             installPhase = ''
               runHook preInstall
 
-              mkdir -p $out/bin $out/lib/piss $out/node_modules
+              mkdir -p $out/bin $out/lib/piss
               cp dist/server.js $out/lib/piss/server.js
               cp -r dist/public $out/lib/piss/public
 
-              # Keep the Pi package at the output root. The extension needs ws
-              # at runtime, while Pi provides its peer dependencies itself.
+              # Keep the Pi package at the output root. Pi provides the optional
+              # coding-agent peer; prune and retain PISS's server dependencies.
               cp CONTRIBUTING.md LICENSE README.md SECURITY.md package.json $out/
               cp -r extensions shared $out/
-              cp -r node_modules/ws $out/node_modules/ws
+              npm prune --omit=dev --offline
+              cp -r node_modules $out/node_modules
 
               makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
                 --add-flags $out/lib/piss/server.js

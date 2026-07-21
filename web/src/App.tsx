@@ -1,24 +1,31 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   MAX_IMAGE_BYTES,
+  THINKING_LEVELS,
+  type AvailableModel,
   type BrowserToServer,
   type ImageInput,
+  type NotificationCapability,
   type ReviewFile,
   type ReviewSnapshot,
   type ServerToBrowser,
   type SessionEvent,
   type SessionInfo,
+  type ThinkingLevel,
 } from "../../shared/protocol.ts";
 import { readDraft, writeDraft } from "./drafts.ts";
 import { summarize, textContent, type PiMessage } from "./message-content.ts";
 import { displaySessionStatus } from "./session-status.ts";
 import { TimelineMessage } from "./TimelineMessage.tsx";
+import { usePushNotifications, type PushNotificationStatus } from "./usePushNotifications.ts";
 import { useSidecarSocket } from "./useSidecarSocket.ts";
 
 type RawEntry = { type?: string; message?: PiMessage };
 type ToolActivity = { id: string; name: string; state: "running" | "done"; detail: string; error?: boolean };
 type CommandResult = { ok: boolean; error?: string };
 type ReviewResultMessage = Extract<ServerToBrowser, { type: "review.result" }>;
+type ModelResultMessage = Extract<ServerToBrowser, { type: "models.result" }>;
+type NotificationUpdateMessage = Extract<ServerToBrowser, { type: "notifications.updated" }>;
 type OutboxItem = {
   id: string;
   text: string;
@@ -54,6 +61,18 @@ function sessionLocation(session: SessionInfo): string {
   return session.branch ?? compactDirectory(session.cwd);
 }
 
+function notificationStatusLabel(status: PushNotificationStatus): string {
+  switch (status) {
+    case "enabled": return "ON FOR THIS DEVICE";
+    case "enabling": return "CONNECTING PUSH…";
+    case "denied": return "BLOCKED BY BROWSER";
+    case "unavailable": return "INSTALL PWA TO ENABLE";
+    case "error": return "RETRY ALERT SETUP";
+    case "loading": return "CHECKING DEVICE…";
+    default: return "OFF FOR THIS DEVICE";
+  }
+}
+
 export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -65,12 +84,16 @@ export function App() {
   const [pending, setPending] = useState<string>();
   const [commandResults, setCommandResults] = useState<Record<string, CommandResult>>({});
   const [reviewResult, setReviewResult] = useState<ReviewResultMessage>();
+  const [modelResult, setModelResult] = useState<ModelResultMessage>();
+  const [notificationCapability, setNotificationCapability] = useState<NotificationCapability>();
+  const [notificationUpdate, setNotificationUpdate] = useState<NotificationUpdateMessage>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncing, setSyncing] = useState(true);
   const [now, setNow] = useState(Date.now);
   const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
   const cursor = useRef<SessionCursor | undefined>(undefined);
   const currentId = useRef<string | undefined>(undefined);
+  const requestedSessionId = useRef(new URLSearchParams(location.search).get("session") ?? undefined);
   currentId.current = selectedId;
 
   useEffect(() => {
@@ -79,7 +102,11 @@ export function App() {
   }, []);
 
   const onMessage = useCallback((message: ServerToBrowser) => {
-    if (message.type === "server.hello") { setUser(message.user); setSessions(message.sessions); }
+    if (message.type === "server.hello") {
+      setUser(message.user);
+      setSessions(message.sessions);
+      setNotificationCapability(message.notifications);
+    }
     if (message.type === "sessions.updated") setSessions(message.sessions);
     if (message.type === "session.snapshot" && message.session.sessionId === currentId.current) {
       cursor.current = { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence };
@@ -97,6 +124,8 @@ export function App() {
       setSyncing(false);
     }
     if (message.type === "review.result") setReviewResult(message);
+    if (message.type === "models.result") setModelResult(message);
+    if (message.type === "notifications.updated") setNotificationUpdate(message);
     if (message.type === "command.result") {
       setPending((id) => id === message.commandId ? undefined : id);
       setCommandResults((results) => ({ ...results, [message.commandId]: { ok: message.ok, error: message.error } }));
@@ -106,6 +135,13 @@ export function App() {
   }, []);
 
   const { connected, status: connectionStatus, connectionId, send } = useSidecarSocket(onMessage);
+  const taskAlerts = usePushNotifications({
+    capability: notificationCapability,
+    acknowledgement: notificationUpdate,
+    connected,
+    connectionId,
+    send,
+  });
   const selected = sessions.find((session) => session.sessionId === selectedId);
   const outputLoading = !!selected && (!connected || syncing);
   const networkState = connectionStatus === "online" ? (syncing && selected ? "syncing" : "live") : connectionStatus;
@@ -148,6 +184,14 @@ export function App() {
   }
 
   useEffect(() => {
+    const requested = requestedSessionId.current;
+    if (requested && sessions.some((session) => session.sessionId === requested)) {
+      requestedSessionId.current = undefined;
+      history.replaceState(null, "", location.pathname);
+      setSelectedId(requested);
+      return;
+    }
+    if (requested && sessions.length) requestedSessionId.current = undefined;
     if (!selectedId && sessions.length) setSelectedId(sessions[0]?.sessionId);
     if (selectedId && !sessions.some((session) => session.sessionId === selectedId)) setSelectedId(sessions[0]?.sessionId);
   }, [sessions, selectedId]);
@@ -186,6 +230,15 @@ export function App() {
     <button className={`sidebar-scrim ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} aria-label="Close sessions" />
     <aside className={`rail ${selected ? "rail-has-selection" : ""} ${sidebarOpen ? "mobile-open" : ""}`}>
       <div className="rail-label"><span>ACTIVE RUNTIMES</span><b>{sessions.filter((s) => s.state !== "offline").length.toString().padStart(2, "0")}</b></div>
+      <button
+        className={`notification-toggle ${taskAlerts.status}`}
+        disabled={!connected || taskAlerts.status === "loading" || taskAlerts.status === "enabling" || taskAlerts.status === "unavailable" || taskAlerts.status === "denied"}
+        title={taskAlerts.error ?? (taskAlerts.status === "denied" ? "Allow notifications in browser settings" : "Notify this device when an agent settles")}
+        onClick={() => void (taskAlerts.status === "enabled" ? taskAlerts.disable() : taskAlerts.enable())}
+      >
+        <i>{taskAlerts.status === "enabled" ? "●" : "○"}</i>
+        <span><b>TASK ALERTS</b><small>{notificationStatusLabel(taskAlerts.status)}</small></span>
+      </button>
       <div className="session-list">
         {sessions.length === 0 && <div className="empty-rail"><strong>No signal</strong><span>Start Pi with the PISS extension installed.</span></div>}
         {sessions.map((session) => {
@@ -205,7 +258,20 @@ export function App() {
         if (!send({ type: "browser.review_request", requestId, sessionId: selected.sessionId, runtimeId: selected.runtimeId })) {
           setReviewResult({ type: "review.result", requestId, ok: false, error: "Sidecar is disconnected" });
         }
-      }} notice={notice} clearNotice={() => setNotice(undefined)} sendCommand={(message) => {
+      }} modelResult={modelResult} requestModels={(requestId) => {
+        setModelResult(undefined);
+        if (!send({ type: "browser.models_request", requestId, sessionId: selected.sessionId, runtimeId: selected.runtimeId })) {
+          setModelResult({ type: "models.result", requestId, ok: false, error: "Sidecar is disconnected" });
+        }
+      }} notice={notice} clearNotice={() => setNotice(undefined)} sendControl={(message) => {
+        setNotice(undefined);
+        if (!send(message)) {
+          setNotice("Sidecar is disconnected");
+          if (message.type === "browser.set_model" || message.type === "browser.set_thinking_level") {
+            setCommandResults((results) => ({ ...results, [message.requestId]: { ok: false, error: "Sidecar is disconnected" } }));
+          }
+        }
+      }} sendCommand={(message) => {
         setPending(message.commandId); setNotice(undefined);
         if (!send(message)) {
           setPending(undefined);
@@ -217,8 +283,23 @@ export function App() {
   </div>;
 }
 
-function SessionView({ session, entries, liveMessage, tools, loading, connected, pending, commandResults, reviewResult, requestReview, notice, clearNotice, sendCommand }: {
-  session: SessionInfo; entries: RawEntry[]; liveMessage?: PiMessage; tools: ToolActivity[]; loading: boolean; connected: boolean; pending?: string; commandResults: Record<string, CommandResult>; reviewResult?: ReviewResultMessage; requestReview: (requestId: string) => void; notice?: string; clearNotice: () => void; sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
+function SessionView({ session, entries, liveMessage, tools, loading, connected, pending, commandResults, reviewResult, requestReview, modelResult, requestModels, notice, clearNotice, sendControl, sendCommand }: {
+  session: SessionInfo;
+  entries: RawEntry[];
+  liveMessage?: PiMessage;
+  tools: ToolActivity[];
+  loading: boolean;
+  connected: boolean;
+  pending?: string;
+  commandResults: Record<string, CommandResult>;
+  reviewResult?: ReviewResultMessage;
+  requestReview: (requestId: string) => void;
+  modelResult?: ModelResultMessage;
+  requestModels: (requestId: string) => void;
+  notice?: string;
+  clearNotice: () => void;
+  sendControl: (message: BrowserToServer) => void;
+  sendCommand: (message: BrowserToServer & { type: "browser.command" }) => void;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<Array<ImageInput & { preview: string }>>([]);
@@ -227,6 +308,8 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
   const [atBottom, setAtBottom] = useState(true);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRequestId, setReviewRequestId] = useState<string | undefined>(undefined);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelRequestId, setModelRequestId] = useState<string | undefined>(undefined);
   const timelineRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -260,7 +343,7 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
     draftSessionRef.current = session.sessionId;
     setText(draft?.text ?? "");
     setDelivery(draft?.delivery ?? "steer");
-    setImages([]); setOutbox([]); setReviewOpen(false); setReviewRequestId(undefined); clearNotice();
+    setImages([]); setOutbox([]); setReviewOpen(false); setReviewRequestId(undefined); setModelOpen(false); setModelRequestId(undefined); clearNotice();
   }, [session.sessionId]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -398,6 +481,16 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={jumpToBottom} aria-label="Jump to latest message"><span>↓</span><small>LATEST</small></button>
     </div>
     {reviewOpen && <ReviewPanel result={reviewResult?.requestId === reviewRequestId ? reviewResult : undefined} loading={reviewResult?.requestId !== reviewRequestId} onRefresh={() => { const requestId = crypto.randomUUID(); setReviewRequestId(requestId); requestReview(requestId); }} onClose={() => setReviewOpen(false)} />}
+    {modelOpen && <ModelPanel
+      session={session}
+      result={modelResult?.requestId === modelRequestId ? modelResult : undefined}
+      loading={modelResult?.requestId !== modelRequestId}
+      commandResults={commandResults}
+      onRefresh={() => { const requestId = crypto.randomUUID(); setModelRequestId(requestId); requestModels(requestId); }}
+      onSetModel={(provider, modelId, requestId) => sendControl({ type: "browser.set_model", requestId, sessionId: session.sessionId, runtimeId: session.runtimeId, provider, modelId })}
+      onSetEffort={(level, requestId) => sendControl({ type: "browser.set_thinking_level", requestId, sessionId: session.sessionId, runtimeId: session.runtimeId, level })}
+      onClose={() => setModelOpen(false)}
+    />}
     <section className="control-deck">
       {outbox.length > 0 && <section className="outbox-tray" aria-label="Outgoing messages" aria-live="polite"><header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header><div>{outbox.map((item) => <OutboxMessage key={item.id} item={item} onDismiss={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} />)}</div></section>}
       {notice && <button className="notice" onClick={clearNotice}>{notice}<span>×</span></button>}
@@ -426,12 +519,89 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
             <button className={delivery === "followUp" ? "active" : ""} title="Queue a follow-up after the agent settles" aria-pressed={delivery === "followUp"} onClick={() => setDelivery("followUp")}><b>FOLLOW-UP</b></button>
           </div>}
           {isRunning && <button className="abort" title="Abort the active agent operation" disabled={!ready} onClick={() => sendCommand({ type: "browser.command", commandId: crypto.randomUUID(), sessionId: session.sessionId, runtimeId: session.runtimeId, action: "abort" })}><i>■</i><b>STOP</b></button>}
-          <button className="review-trigger" title="Open the current uncommitted code diff" disabled={!ready} onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}><i>▤</i><b>REVIEW</b></button>
+          <button className="model-trigger" title={isRunning ? "Model changes are available when the agent settles" : "Change model and effort"} disabled={!ready || isRunning} onClick={() => { const requestId = crypto.randomUUID(); setReviewOpen(false); setModelOpen(true); setModelRequestId(requestId); requestModels(requestId); }}><i>◇</i><b>MODEL</b></button>
+          <button className="review-trigger" title="Open the current uncommitted code diff" disabled={!ready} onClick={() => { const requestId = crypto.randomUUID(); setModelOpen(false); setReviewOpen(true); setReviewRequestId(requestId); requestReview(requestId); }}><i>▤</i><b>REVIEW</b></button>
         </div>
         {!isRunning && <span className="desktop-hint">ENTER TO SEND · SHIFT+ENTER FOR NEW LINE</span>}
       </div>
     </section>
   </div>;
+}
+
+function ModelPanel({ session, result, loading, commandResults, onRefresh, onSetModel, onSetEffort, onClose }: {
+  session: SessionInfo;
+  result?: ModelResultMessage;
+  loading: boolean;
+  commandResults: Record<string, CommandResult>;
+  onRefresh: () => void;
+  onSetModel: (provider: string, modelId: string, requestId: string) => void;
+  onSetEffort: (level: ThinkingLevel, requestId: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [pendingId, setPendingId] = useState<string>();
+  const models = result?.models ?? [];
+  const currentModel = models.find((model) => `${model.provider}/${model.id}` === session.model);
+  const pendingResult = pendingId ? commandResults[pendingId] : undefined;
+  const filtered = models.filter((model) => `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()));
+
+  useEffect(() => {
+    if (pendingResult?.ok) setPendingId(undefined);
+  }, [pendingResult]);
+
+  const setModel = (model: AvailableModel) => {
+    if (`${model.provider}/${model.id}` === session.model || pendingId) return;
+    const requestId = crypto.randomUUID();
+    setPendingId(requestId);
+    onSetModel(model.provider, model.id, requestId);
+  };
+  const setEffort = (level: ThinkingLevel) => {
+    if (level === session.thinkingLevel || pendingId) return;
+    const requestId = crypto.randomUUID();
+    setPendingId(requestId);
+    onSetEffort(level, requestId);
+  };
+
+  return <section className="model-panel" aria-label="Model and effort settings">
+    <header className="model-header">
+      <div><span>RUNTIME CONFIGURATION</span><b>Model &amp; effort</b></div>
+      <nav><button onClick={onRefresh} disabled={loading || !!pendingId}>REFRESH</button><button onClick={onClose}>CLOSE</button></nav>
+    </header>
+    <div className="model-body">
+      <aside className="effort-console">
+        <span>CURRENT ROUTE</span>
+        <strong>{currentModel?.name ?? session.model?.split("/").at(-1) ?? "No model"}</strong>
+        <small>{session.model ?? "Model unavailable"}</small>
+        <div className="effort-scale" aria-label="Effort level">
+          <label>EFFORT</label>
+          <div>{(currentModel?.thinkingLevels ?? THINKING_LEVELS).map((level) => <button
+            key={level}
+            className={session.thinkingLevel === level ? "active" : ""}
+            disabled={!!pendingId || !currentModel}
+            onClick={() => setEffort(level)}
+            aria-pressed={session.thinkingLevel === level}
+          >{level}</button>)}</div>
+        </div>
+        <p>Model and effort changes apply to the next agent run. Unsupported effort levels are removed automatically.</p>
+        {pendingId && !pendingResult && <div className="model-pending"><i />APPLYING CONFIGURATION</div>}
+        {pendingResult && !pendingResult.ok && <button className="model-error" onClick={() => setPendingId(undefined)}>{pendingResult.error ?? "Configuration rejected"}<b>×</b></button>}
+      </aside>
+      <div className="model-catalog">
+        <label className="model-search"><span>AVAILABLE MODELS</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter provider or model…" /></label>
+        {loading && <div className="model-state"><i />Reading authenticated model catalog…</div>}
+        {!loading && result && !result.ok && <div className="model-state error">{result.error ?? "Unable to load models"}</div>}
+        {!loading && result?.ok && filtered.length === 0 && <div className="model-state">No available models match this filter.</div>}
+        {!loading && filtered.map((model) => {
+          const active = `${model.provider}/${model.id}` === session.model;
+          return <button className={`model-option ${active ? "active" : ""}`} key={`${model.provider}/${model.id}`} disabled={!!pendingId} onClick={() => setModel(model)}>
+            <i>{active ? "●" : "○"}</i>
+            <span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span>
+            <em>{model.reasoning ? `${model.thinkingLevels.length} EFFORT LEVELS` : "DIRECT"}</em>
+          </button>;
+        })}
+      </div>
+    </div>
+  </section>;
 }
 
 function reviewLabels(file: ReviewFile): string[] {

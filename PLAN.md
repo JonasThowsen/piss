@@ -25,6 +25,8 @@ The first version should focus on terminal-owned sessions. This gives immediate 
 - Send steering and follow-up messages to a running session.
 - Abort an active agent operation.
 - Upload images from the remote device and send them as native Pi image content with prompts, steering messages, or follow-ups.
+- Select authenticated models and supported thinking levels remotely while an agent is idle.
+- Receive opt-in PWA push notifications when agents settle.
 - Recover cleanly when the browser, extension, server, or network reconnects.
 - Work well on a phone-sized screen.
 - Be safe to use through a private remote-access network.
@@ -34,10 +36,8 @@ The first version should focus on terminal-owned sessions. This gives immediate 
 - Start new Pi sessions from the web interface.
 - Manage sidecar-owned Pi RPC processes.
 - Switch, fork, clone, compact, and navigate session trees.
-- Select models and thinking levels remotely.
 - Display context usage, token totals, and cost.
 - Handle extension confirmation/input dialogs in the web client.
-- Send browser notifications when sessions settle or require attention.
 - Support read-only accounts or device-specific permissions.
 
 ## 3. Non-goals
@@ -237,8 +237,9 @@ One Pi process can replace its active session. The extension lifecycle will disc
 - `command.follow_up`
 - `command.abort`
 - `command.get_snapshot`
-- `command.set_model` — later
-- `command.set_thinking_level` — later
+- `command.list_models`
+- `command.set_model`
+- `command.set_thinking_level`
 
 Every command should have a command ID and receive an acceptance or rejection result. Acceptance only means Pi accepted or queued the instruction; subsequent model/tool failures arrive as normal events.
 
@@ -252,6 +253,8 @@ The browser protocol can closely mirror the internal messages but must not expos
 - submit prompt/steer/follow-up;
 - abort;
 - acknowledge server event cursor;
+- list configured models and select model/thinking level;
+- manage a Web Push subscription for task alerts;
 - list saved sessions later.
 
 ## 8. Event storage and resynchronization
@@ -692,7 +695,7 @@ Version `0.1.0` is useful when:
 
 ## 19. Current implementation status and next steps
 
-The first implementation now includes the package scaffold, shared protocol, authenticated loopback server, global bridge extension, structured mobile web client, native image delivery, prompt/steer/follow-up/abort routing, Tailscale Serve identity enforcement, bounded in-memory session events, reconnect behavior, and a hardened systemd user-service installer.
+The first implementation now includes the package scaffold, shared protocol, authenticated loopback server, global bridge extension, structured mobile web client, native image delivery, prompt/steer/follow-up/abort routing, remote model and effort controls, opt-in PWA Web Push alerts, Tailscale Serve identity enforcement, bounded in-memory session events, reconnect behavior, and a hardened systemd user-service installer.
 
 Next hardening work should proceed against real daily use rather than replacing this implementation with a prototype:
 

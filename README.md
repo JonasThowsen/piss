@@ -21,6 +21,8 @@ https://piss.<tailnet>.ts.net
 - Git branch-aware session labels for distinguishing worktrees
 - Color-coded working, idle, blocked, finished, and offline agent status
 - Prompt, steer, follow-up, and abort controls
+- Remote model and effort-level selection for idle agents
+- Opt-in PWA push notifications when agents finish or need attention
 - Phone image upload and desktop clipboard screenshots
 - Per-session persistent drafts
 - Controlled follow-to-bottom scrolling
@@ -122,6 +124,8 @@ Start a new Pi process, or run `/reload` in an existing one. The bridge connects
 ### 5. Install the PWA
 
 Open the HTTPS URL on your phone and choose **Install app** or **Add to Home Screen**. The service worker caches only the application shell; session data still requires a live authenticated connection.
+
+After installing, open the session drawer and enable **Task alerts**. The browser will ask for notification permission. Alerts use the browser vendor's Web Push service so they continue to work while the PWA is closed; the push payload contains only the session label, branch, completion state, and session ID—never prompts, model output, or bridge credentials. The host needs outbound HTTPS access to the device's push service.
 
 ## Updating
 

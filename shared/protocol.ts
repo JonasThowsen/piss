@@ -1,8 +1,29 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type Delivery = "prompt" | "steer" | "followUp";
+
+export interface AvailableModel {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevels: ThinkingLevel[];
+}
+
+export interface BrowserPushSubscription {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: { p256dh: string; auth: string };
+}
+
+export interface NotificationCapability {
+  supported: boolean;
+  vapidPublicKey?: string;
+}
 
 export type AgentStatus = "working" | "idle" | "blocked" | "finished";
 
@@ -48,7 +69,7 @@ export interface ReviewSnapshot {
 
 export type BridgeHello = {
   type: "bridge.hello";
-  protocolVersion: 1;
+  protocolVersion: 2;
   session: SessionInfo;
   snapshot: unknown[];
 };
@@ -67,15 +88,21 @@ export type BridgeToServer = BridgeHello | BridgeEvent | {
   ok: boolean;
   error?: string;
   review?: ReviewSnapshot;
+  models?: AvailableModel[];
+  model?: string;
+  thinkingLevel?: ThinkingLevel;
 };
 
 export type ServerToBridge = {
   type: "bridge.command";
   commandId: string;
   runtimeId: string;
-  action: "prompt" | "steer" | "followUp" | "abort" | "snapshot" | "review";
+  action: "prompt" | "steer" | "followUp" | "abort" | "snapshot" | "review" | "list_models" | "set_model" | "set_thinking_level";
   text?: string;
   images?: ImageInput[];
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: ThinkingLevel;
 };
 
 export type SessionEvent = {
@@ -90,22 +117,30 @@ export type BrowserToServer =
   | { type: "browser.subscribe"; sessionId: string; runtimeId?: string; after?: number }
   | { type: "browser.archive"; sessionId: string; runtimeId: string }
   | { type: "browser.review_request"; requestId: string; sessionId: string; runtimeId: string }
+  | { type: "browser.models_request"; requestId: string; sessionId: string; runtimeId: string }
+  | { type: "browser.set_model"; requestId: string; sessionId: string; runtimeId: string; provider: string; modelId: string }
+  | { type: "browser.set_thinking_level"; requestId: string; sessionId: string; runtimeId: string; level: ThinkingLevel }
+  | { type: "browser.push_subscribe"; subscription: BrowserPushSubscription }
+  | { type: "browser.push_unsubscribe"; endpoint: string }
   | { type: "browser.command"; commandId: string; sessionId: string; runtimeId: string; action: Delivery | "abort"; text?: string; images?: ImageInput[] }
   | { type: "browser.ping" };
 
 export type ServerToBrowser =
-  | { type: "server.hello"; user: string; sessions: SessionInfo[] }
+  | { type: "server.hello"; user: string; sessions: SessionInfo[]; notifications: NotificationCapability }
   | { type: "sessions.updated"; sessions: SessionInfo[] }
   | { type: "session.snapshot"; session: SessionInfo; entries: unknown[]; sequence: number }
   | { type: "session.event"; sessionId: string; event: SessionEvent }
   | { type: "session.resumed"; session: SessionInfo; sequence: number }
   | { type: "command.result"; commandId: string; ok: boolean; error?: string }
   | { type: "review.result"; requestId: string; ok: boolean; review?: ReviewSnapshot; error?: string }
+  | { type: "models.result"; requestId: string; ok: boolean; models?: AvailableModel[]; error?: string }
+  | { type: "notifications.updated"; enabled: boolean; error?: string }
   | { type: "server.pong" }
   | { type: "server.error"; error: string };
 
 const DELIVERY_ACTIONS = new Set(["prompt", "steer", "followUp", "abort"]);
-const BRIDGE_COMMAND_ACTIONS = new Set(["prompt", "steer", "followUp", "abort", "snapshot", "review"]);
+const BRIDGE_COMMAND_ACTIONS = new Set(["prompt", "steer", "followUp", "abort", "snapshot", "review", "list_models", "set_model", "set_thinking_level"]);
+const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
 const BRIDGE_EVENTS = new Set([
   "agent.started",
   "agent.settled",
@@ -130,6 +165,23 @@ function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && THINKING_LEVEL_SET.has(value);
+}
+
+function isPushSubscription(value: unknown): value is BrowserPushSubscription {
+  if (!isRecord(value) || !isBoundedString(value.endpoint, 4096) || !value.endpoint.startsWith("https://") || !isRecord(value.keys)) return false;
+  return (value.expirationTime === undefined || value.expirationTime === null || isFiniteTimestamp(value.expirationTime)) &&
+    isBoundedString(value.keys.p256dh, 512) && isBoundedString(value.keys.auth, 512);
+}
+
+function isAvailableModel(value: unknown): value is AvailableModel {
+  return isRecord(value) && isBoundedString(value.provider, 256) && isBoundedString(value.id, 1024) &&
+    isBoundedString(value.name, 1024) && typeof value.reasoning === "boolean" &&
+    Array.isArray(value.thinkingLevels) && value.thinkingLevels.length <= THINKING_LEVELS.length &&
+    value.thinkingLevels.every(isThinkingLevel);
+}
+
 function hasValidImages(value: unknown): value is ImageInput[] | undefined {
   if (value === undefined) return true;
   if (!Array.isArray(value) || value.length > 4) return false;
@@ -146,10 +198,11 @@ export function isImageMediaType(value: string): value is ImageMediaType {
 }
 
 export function isServerToBridge(value: unknown): value is ServerToBridge {
-  if (!isRecord(value) || value.type !== "bridge.command") return false;
-  return isBoundedString(value.commandId, 128) && isBoundedString(value.runtimeId, 128) &&
-    typeof value.action === "string" && BRIDGE_COMMAND_ACTIONS.has(value.action) &&
-    (value.text === undefined || isBoundedString(value.text, 512 * 1024, true)) && hasValidImages(value.images);
+  if (!isRecord(value) || value.type !== "bridge.command" || !isBoundedString(value.commandId, 128) ||
+    !isBoundedString(value.runtimeId, 128) || typeof value.action !== "string" || !BRIDGE_COMMAND_ACTIONS.has(value.action)) return false;
+  if (value.action === "set_model") return isBoundedString(value.provider, 256) && isBoundedString(value.modelId, 1024);
+  if (value.action === "set_thinking_level") return isThinkingLevel(value.thinkingLevel);
+  return (value.text === undefined || isBoundedString(value.text, 512 * 1024, true)) && hasValidImages(value.images);
 }
 
 export function isBrowserToServer(value: unknown): value is BrowserToServer {
@@ -163,10 +216,20 @@ export function isBrowserToServer(value: unknown): value is BrowserToServer {
   if (value.type === "browser.archive") {
     return isBoundedString(value.sessionId, 512) && isBoundedString(value.runtimeId, 128);
   }
-  if (value.type === "browser.review_request") {
+  if (value.type === "browser.review_request" || value.type === "browser.models_request") {
     return isBoundedString(value.requestId, 128) && isBoundedString(value.sessionId, 512) &&
       isBoundedString(value.runtimeId, 128);
   }
+  if (value.type === "browser.set_model") {
+    return isBoundedString(value.requestId, 128) && isBoundedString(value.sessionId, 512) &&
+      isBoundedString(value.runtimeId, 128) && isBoundedString(value.provider, 256) && isBoundedString(value.modelId, 1024);
+  }
+  if (value.type === "browser.set_thinking_level") {
+    return isBoundedString(value.requestId, 128) && isBoundedString(value.sessionId, 512) &&
+      isBoundedString(value.runtimeId, 128) && isThinkingLevel(value.level);
+  }
+  if (value.type === "browser.push_subscribe") return isPushSubscription(value.subscription);
+  if (value.type === "browser.push_unsubscribe") return isBoundedString(value.endpoint, 4096);
   if (value.type !== "browser.command") return false;
   return isBoundedString(value.commandId, 128) &&
     isBoundedString(value.sessionId, 512) &&
@@ -214,7 +277,10 @@ export function isBridgeToServer(value: unknown): value is BridgeToServer {
   if (value.type === "bridge.command_result") {
     return isBoundedString(value.commandId, 128) && typeof value.ok === "boolean" &&
       (value.error === undefined || isBoundedString(value.error, 4096, true)) &&
-      (value.review === undefined || isReviewSnapshot(value.review));
+      (value.review === undefined || isReviewSnapshot(value.review)) &&
+      (value.models === undefined || (Array.isArray(value.models) && value.models.length <= 2_000 && value.models.every(isAvailableModel))) &&
+      (value.model === undefined || isBoundedString(value.model, 1024, true)) &&
+      (value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel));
   }
   if (value.type !== "bridge.event") return false;
   return isBoundedString(value.runtimeId, 128) &&

@@ -36,25 +36,23 @@ class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundary
 }
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    void (async () => {
-      let reloadOnControllerChange = navigator.serviceWorker.controller !== null;
-      let reloading = false;
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (reloadOnControllerChange && !reloading) {
-          reloading = true;
-          location.reload();
-        }
-        reloadOnControllerChange = true;
-      });
-      const registration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });
-      const checkForUpdate = () => { if (document.visibilityState === "visible") void registration.update().catch(() => undefined); };
-      document.addEventListener("visibilitychange", checkForUpdate);
-      window.addEventListener("online", checkForUpdate);
-      checkForUpdate();
-      window.setInterval(checkForUpdate, 60 * 60_000);
-    })().catch(() => undefined);
-  });
+  void (async () => {
+    let reloadOnControllerChange = navigator.serviceWorker.controller !== null;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloadOnControllerChange && !reloading) {
+        reloading = true;
+        location.reload();
+      }
+      reloadOnControllerChange = true;
+    });
+    const registration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });
+    const checkForUpdate = () => { if (document.visibilityState === "visible") void registration.update().catch(() => undefined); };
+    document.addEventListener("visibilitychange", checkForUpdate);
+    window.addEventListener("online", checkForUpdate);
+    checkForUpdate();
+    window.setInterval(checkForUpdate, 60 * 60_000);
+  })().catch(() => undefined);
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>);

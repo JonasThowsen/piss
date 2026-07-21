@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { browserUser, defaultDevOrigins, validBrowserOrigin, type BrowserAuthConfig } from "./browser-auth.ts";
 import { eventsAfter } from "./event-replay.ts";
+import { PushNotifications } from "./push-notifications.ts";
 import {
   MAX_IMAGE_BYTES,
   PROTOCOL_VERSION,
@@ -62,8 +63,9 @@ interface LiveSession {
 const sessions = new Map<string, LiveSession>();
 const browsers = new Set<WebSocket>();
 const browserSubscriptions = new Map<WebSocket, string>();
-const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout; kind: "command" | "review" }>();
+const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout; kind: "command" | "review" | "models" }>();
 const bridgeSessions = new Map<WebSocket, string>();
+const browserUsers = new WeakMap<WebSocket, string>();
 const liveness = new WeakMap<WebSocket, boolean>();
 const commandWindows = new WeakMap<WebSocket, number[]>();
 const lastReviewAt = new WeakMap<WebSocket, number>();
@@ -83,6 +85,7 @@ try {
 }
 await chmod(TOKEN_FILE, 0o600);
 const bridgeTokenHash = createHash("sha256").update(bridgeToken).digest();
+const pushNotifications = await PushNotifications.create(STATE_DIR);
 
 function send(ws: WebSocket, message: ServerToBrowser | ServerToBridge) {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -155,6 +158,8 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     pendingCommands.delete(message.commandId);
     if (pending.kind === "review") {
       send(pending.browser, { type: "review.result", requestId: message.commandId, ok: message.ok, review: message.review, error: message.error });
+    } else if (pending.kind === "models") {
+      send(pending.browser, { type: "models.result", requestId: message.commandId, ok: message.ok, models: message.models, error: message.error });
     } else {
       send(pending.browser, { type: "command.result", commandId: message.commandId, ok: message.ok, error: message.error });
     }
@@ -178,6 +183,7 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     session.info.state = "idle";
     session.info.status = outcome === "blocked" ? "blocked" : "finished";
     session.info.statusChangedAt = message.timestamp;
+    void pushNotifications.notifySettled(session.info);
   }
   if (message.event === "session.info" && message.data && typeof message.data === "object") {
     const update = message.data as Partial<SessionInfo>;
@@ -220,12 +226,36 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
   if (message.event.startsWith("agent.") || message.event === "session.info") broadcastSessions();
 }
 
+function consumeCommandSlot(ws: WebSocket): boolean {
+  const now = Date.now();
+  const recentCommands = (commandWindows.get(ws) ?? []).filter((timestamp) => now - timestamp < 10_000);
+  if (recentCommands.length >= 30) return false;
+  recentCommands.push(now);
+  commandWindows.set(ws, recentCommands);
+  return true;
+}
+
 function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
   let parsed: unknown;
   try { parsed = parseJson(raw); } catch { send(ws, { type: "server.error", error: "Invalid JSON" }); return; }
   if (!isBrowserToServer(parsed)) { send(ws, { type: "server.error", error: "Invalid message" }); return; }
   const message: BrowserToServer = parsed;
   if (message.type === "browser.ping") { send(ws, { type: "server.pong" }); return; }
+
+  if (message.type === "browser.push_subscribe") {
+    const user = browserUsers.get(ws);
+    if (!user) { send(ws, { type: "notifications.updated", enabled: false, error: "Browser identity is unavailable" }); return; }
+    pushNotifications.subscribe(user, message.subscription);
+    send(ws, { type: "notifications.updated", enabled: true });
+    return;
+  }
+
+  if (message.type === "browser.push_unsubscribe") {
+    const user = browserUsers.get(ws);
+    if (user) pushNotifications.unsubscribe(user, message.endpoint);
+    send(ws, { type: "notifications.updated", enabled: false });
+    return;
+  }
 
   if (message.type === "browser.subscribe") {
     const session = sessions.get(message.sessionId);
@@ -262,6 +292,46 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     return;
   }
 
+  if (message.type === "browser.models_request" || message.type === "browser.set_model" || message.type === "browser.set_thinking_level") {
+    const resultType = message.type === "browser.models_request" ? "models" : "command";
+    const reject = (error: string) => resultType === "models"
+      ? send(ws, { type: "models.result", requestId: message.requestId, ok: false, error })
+      : send(ws, { type: "command.result", commandId: message.requestId, ok: false, error });
+    if (!consumeCommandSlot(ws)) { reject("Command rate limit exceeded"); return; }
+    const session = sessions.get(message.sessionId);
+    if (!session?.bridge || session.bridge.readyState !== WebSocket.OPEN || session.info.runtimeId !== message.runtimeId) {
+      reject("Pi session is offline or has changed");
+      return;
+    }
+    if (pendingCommands.has(message.requestId)) { reject("Duplicate request ID"); return; }
+    const timer = setTimeout(() => {
+      pendingCommands.delete(message.requestId);
+      reject("Pi did not acknowledge the request");
+    }, 10_000);
+    pendingCommands.set(message.requestId, { browser: ws, timer, kind: resultType });
+    if (message.type === "browser.models_request") {
+      send(session.bridge, { type: "bridge.command", commandId: message.requestId, runtimeId: message.runtimeId, action: "list_models" });
+    } else if (message.type === "browser.set_model") {
+      send(session.bridge, {
+        type: "bridge.command",
+        commandId: message.requestId,
+        runtimeId: message.runtimeId,
+        action: "set_model",
+        provider: message.provider,
+        modelId: message.modelId,
+      });
+    } else {
+      send(session.bridge, {
+        type: "bridge.command",
+        commandId: message.requestId,
+        runtimeId: message.runtimeId,
+        action: "set_thinking_level",
+        thinkingLevel: message.level,
+      });
+    }
+    return;
+  }
+
   if (message.type === "browser.review_request") {
     const now = Date.now();
     if (now - (lastReviewAt.get(ws) ?? 0) < 3_000) {
@@ -292,14 +362,10 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     return;
   }
 
-  const now = Date.now();
-  const recentCommands = (commandWindows.get(ws) ?? []).filter((timestamp) => now - timestamp < 10_000);
-  if (recentCommands.length >= 30) {
+  if (!consumeCommandSlot(ws)) {
     send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Command rate limit exceeded" });
     return;
   }
-  recentCommands.push(now);
-  commandWindows.set(ws, recentCommands);
   if ((message.text?.length ?? 0) > 512 * 1024) {
     send(ws, { type: "command.result", commandId: message.commandId, ok: false, error: "Message exceeds 512 KiB" });
     return;
@@ -432,8 +498,10 @@ bridgeWss.on("connection", (ws) => {
 browserWss.on("connection", (ws, request) => {
   browsers.add(ws);
   liveness.set(ws, true);
+  const user = browserUser(request, browserAuth)!;
+  browserUsers.set(ws, user);
   ws.on("pong", () => liveness.set(ws, true));
-  send(ws, { type: "server.hello", user: browserUser(request, browserAuth)!, sessions: publicSessions() });
+  send(ws, { type: "server.hello", user, sessions: publicSessions(), notifications: pushNotifications.capability });
   ws.on("message", (raw) => handleBrowserMessage(ws, raw as Buffer));
   ws.on("close", () => {
     browsers.delete(ws);

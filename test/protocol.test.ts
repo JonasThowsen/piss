@@ -19,6 +19,11 @@ test("validates browser messages at runtime", () => {
   assert.equal(isBrowserToServer({ type: "browser.ping" }), true);
   assert.equal(isBrowserToServer({ type: "browser.archive", sessionId: "session", runtimeId: "runtime" }), true);
   assert.equal(isBrowserToServer({ type: "browser.review_request", requestId: "review", sessionId: "session", runtimeId: "runtime" }), true);
+  assert.equal(isBrowserToServer({ type: "browser.models_request", requestId: "models", sessionId: "session", runtimeId: "runtime" }), true);
+  assert.equal(isBrowserToServer({ type: "browser.set_model", requestId: "model", sessionId: "session", runtimeId: "runtime", provider: "anthropic", modelId: "opus" }), true);
+  assert.equal(isBrowserToServer({ type: "browser.set_thinking_level", requestId: "effort", sessionId: "session", runtimeId: "runtime", level: "high" }), true);
+  assert.equal(isBrowserToServer({ type: "browser.set_thinking_level", requestId: "effort", sessionId: "session", runtimeId: "runtime", level: "extreme" }), false);
+  assert.equal(isBrowserToServer({ type: "browser.push_subscribe", subscription: { endpoint: "https://push.example/id", keys: { p256dh: "key", auth: "auth" } } }), true);
   assert.equal(isBrowserToServer({ type: "browser.command", commandId: "id", sessionId: "session", runtimeId: "runtime", action: "shell", text: "no" }), false);
   assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "session", runtimeId: "runtime", after: 42 }), true);
   assert.equal(isBrowserToServer({ type: "browser.subscribe", sessionId: "session", runtimeId: "", after: 42 }), false);
@@ -35,6 +40,8 @@ test("parses normal, untracked, and renamed porcelain records", () => {
 
 test("validates broker commands before the extension handles them", () => {
   assert.equal(isServerToBridge({ type: "bridge.command", commandId: "review", runtimeId: "runtime", action: "review" }), true);
+  assert.equal(isServerToBridge({ type: "bridge.command", commandId: "model", runtimeId: "runtime", action: "set_model", provider: "anthropic", modelId: "opus" }), true);
+  assert.equal(isServerToBridge({ type: "bridge.command", commandId: "effort", runtimeId: "runtime", action: "set_thinking_level", thinkingLevel: "max" }), true);
   assert.equal(isServerToBridge({ type: "bridge.command", commandId: "bad", runtimeId: "runtime", action: "shell" }), false);
 });
 
@@ -51,9 +58,9 @@ test("validates bridge registration and event names", () => {
     startedAt: 1,
     lastActivity: 1,
   };
-  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session, snapshot: [] }), true);
+  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 2, session, snapshot: [] }), true);
   assert.equal(isBridgeToServer({ type: "bridge.event", runtimeId: "runtime", event: "arbitrary.event", data: {}, timestamp: 1 }), false);
-  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 2, session, snapshot: [] }), false);
-  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session: { ...session, branch: "" }, snapshot: [] }), false);
-  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session: { ...session, status: "waiting" }, snapshot: [] }), false);
+  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 1, session, snapshot: [] }), false);
+  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 2, session: { ...session, branch: "" }, snapshot: [] }), false);
+  assert.equal(isBridgeToServer({ type: "bridge.hello", protocolVersion: 2, session: { ...session, status: "waiting" }, snapshot: [] }), false);
 });
