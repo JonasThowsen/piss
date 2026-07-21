@@ -62,7 +62,7 @@ interface LiveSession {
 
 const sessions = new Map<string, LiveSession>();
 const browsers = new Set<WebSocket>();
-const browserSubscriptions = new Map<WebSocket, string>();
+const browserSubscriptions = new Map<WebSocket, Set<string>>();
 const pendingCommands = new Map<string, { browser: WebSocket; timer: NodeJS.Timeout; kind: "command" | "review" | "models" }>();
 const bridgeSessions = new Map<WebSocket, string>();
 const browserUsers = new WeakMap<WebSocket, string>();
@@ -221,7 +221,7 @@ function handleBridgeMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]
     session.eventBytes -= Buffer.byteLength(JSON.stringify(removed));
   }
   for (const browser of browsers) {
-    if (browserSubscriptions.get(browser) === sessionId) send(browser, { type: "session.event", sessionId: sessionId!, event });
+    if (browserSubscriptions.get(browser)?.has(sessionId!)) send(browser, { type: "session.event", sessionId: sessionId!, event });
   }
   if (message.event.startsWith("agent.") || message.event === "session.info") broadcastSessions();
 }
@@ -260,7 +260,9 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
   if (message.type === "browser.subscribe") {
     const session = sessions.get(message.sessionId);
     if (!session) { send(ws, { type: "server.error", error: "Session not found" }); return; }
-    browserSubscriptions.set(ws, message.sessionId);
+    const subscriptions = browserSubscriptions.get(ws) ?? new Set<string>();
+    subscriptions.add(message.sessionId);
+    browserSubscriptions.set(ws, subscriptions);
     const replay = message.runtimeId === session.info.runtimeId && message.after !== undefined
       ? eventsAfter(session.events, session.sequence, message.after)
       : undefined;
@@ -285,9 +287,7 @@ function handleBrowserMessage(ws: WebSocket, raw: Buffer | ArrayBuffer | Buffer[
     }
     if (session.offlineTimer) clearTimeout(session.offlineTimer);
     sessions.delete(message.sessionId);
-    for (const [browser, subscribedSessionId] of browserSubscriptions) {
-      if (subscribedSessionId === message.sessionId) browserSubscriptions.delete(browser);
-    }
+    for (const subscriptions of browserSubscriptions.values()) subscriptions.delete(message.sessionId);
     broadcastSessions();
     return;
   }

@@ -36,6 +36,38 @@ type OutboxItem = {
   error?: string;
 };
 type SessionCursor = { sessionId: string; runtimeId: string; sequence: number };
+type SessionViewCache = {
+  cursor: SessionCursor;
+  entries: RawEntry[];
+  liveMessage?: PiMessage;
+  tools: ToolActivity[];
+  lastCompletedMessage?: PiMessage;
+};
+
+function applyEvent(view: SessionViewCache, event: SessionEvent): SessionViewCache {
+  const data = event.data as { message?: PiMessage; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean };
+  let next = { ...view, cursor: { sessionId: view.cursor.sessionId, runtimeId: event.runtimeId, sequence: event.sequence } };
+  if ((event.event === "message.started" || event.event === "message.updated") && data.message) {
+    const completed = view.lastCompletedMessage;
+    const stale = completed && data.message.role === completed.role &&
+      (data.message.timestamp !== undefined
+        ? data.message.timestamp === completed.timestamp
+        : textContent(data.message.content) === textContent(completed.content));
+    if (!stale) next = { ...next, liveMessage: data.message };
+  }
+  if (event.event === "message.completed" && data.message) {
+    next = { ...next, entries: [...view.entries, { type: "message", message: data.message }], liveMessage: undefined, lastCompletedMessage: data.message };
+  }
+  if (event.event === "tool.started") {
+    const id = data.toolCallId ?? crypto.randomUUID();
+    next = { ...next, tools: [...view.tools.filter((tool) => tool.id !== id), { id, name: data.toolName ?? "tool", state: "running", detail: summarize(data.args) }] };
+  }
+  if (event.event === "tool.updated" || event.event === "tool.completed") {
+    const id = data.toolCallId ?? "";
+    next = { ...next, tools: view.tools.map((tool) => tool.id === id ? { ...tool, state: event.event === "tool.completed" ? "done" : "running", detail: summarize(data.result ?? data.args), error: data.isError } : tool) };
+  }
+  return next;
+}
 
 const CONNECTION_INTERRUPTED = "Connection interrupted; check the refreshed output before retrying";
 
@@ -90,8 +122,8 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncing, setSyncing] = useState(true);
   const [now, setNow] = useState(Date.now);
-  const lastCompletedMessage = useRef<PiMessage | undefined>(undefined);
-  const cursor = useRef<SessionCursor | undefined>(undefined);
+  const sessionViews = useRef(new Map<string, SessionViewCache>());
+  const warmedSessions = useRef({ connectionId: 0, ids: new Set<string>() });
   const currentId = useRef<string | undefined>(undefined);
   const requestedSessionId = useRef(new URLSearchParams(location.search).get("session") ?? undefined);
   currentId.current = selectedId;
@@ -108,20 +140,39 @@ export function App() {
       setNotificationCapability(message.notifications);
     }
     if (message.type === "sessions.updated") setSessions(message.sessions);
-    if (message.type === "session.snapshot" && message.session.sessionId === currentId.current) {
-      cursor.current = { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence };
-      setEntries(message.entries as RawEntry[]); setLiveMessage(undefined); setTools([]); setSyncing(false);
+    if (message.type === "session.snapshot") {
+      const snapshotEntries = message.entries as RawEntry[];
+      const view: SessionViewCache = {
+        cursor: { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence },
+        entries: snapshotEntries,
+        liveMessage: undefined,
+        tools: [],
+        lastCompletedMessage: snapshotEntries.findLast((entry) => entry.type === "message" && entry.message)?.message,
+      };
+      sessionViews.current.set(message.session.sessionId, view);
+      if (message.session.sessionId === currentId.current) {
+        setEntries(view.entries); setLiveMessage(view.liveMessage); setTools(view.tools); setSyncing(false);
+      }
     }
-    if (message.type === "session.event" && message.sessionId === currentId.current) {
-      const previous = cursor.current;
-      if (previous?.runtimeId === message.event.runtimeId && message.event.sequence <= previous.sequence) return;
-      cursor.current = { sessionId: message.sessionId, runtimeId: message.event.runtimeId, sequence: message.event.sequence };
-      setSyncing(false); handleEvent(message.event);
+    if (message.type === "session.event") {
+      const previous = sessionViews.current.get(message.sessionId) ?? {
+        cursor: { sessionId: message.sessionId, runtimeId: message.event.runtimeId, sequence: 0 }, entries: [], tools: [],
+      };
+      if (previous.cursor.runtimeId === message.event.runtimeId && message.event.sequence <= previous.cursor.sequence) return;
+      const view = applyEvent(previous, message.event);
+      sessionViews.current.set(message.sessionId, view);
+      if (message.sessionId === currentId.current) {
+        setEntries(view.entries); setLiveMessage(view.liveMessage); setTools(view.tools); setSyncing(false);
+      }
     }
-    if (message.type === "session.resumed" && message.session.sessionId === currentId.current) {
-      cursor.current = { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence };
+    if (message.type === "session.resumed") {
+      const previous = sessionViews.current.get(message.session.sessionId);
+      if (previous) sessionViews.current.set(message.session.sessionId, {
+        ...previous,
+        cursor: { sessionId: message.session.sessionId, runtimeId: message.session.runtimeId, sequence: message.sequence },
+      });
       setSessions((old) => old.map((session) => session.sessionId === message.session.sessionId ? message.session : session));
-      setSyncing(false);
+      if (message.session.sessionId === currentId.current) setSyncing(false);
     }
     if (message.type === "review.result") setReviewResult(message);
     if (message.type === "models.result") setModelResult(message);
@@ -158,31 +209,6 @@ export function App() {
     document.title = selectedName === context ? `${context} · PISS` : `${selectedName} · ${context} · PISS`;
   }, [selected, selectedName]);
 
-  function handleEvent(event: SessionEvent) {
-    const data = event.data as { message?: PiMessage; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean };
-    if ((event.event === "message.started" || event.event === "message.updated") && data.message) {
-      const completed = lastCompletedMessage.current;
-      const isStaleFinalUpdate = completed && data.message.role === completed.role &&
-        (data.message.timestamp !== undefined
-          ? data.message.timestamp === completed.timestamp
-          : textContent(data.message.content) === textContent(completed.content));
-      if (!isStaleFinalUpdate) setLiveMessage(data.message);
-    }
-    if (event.event === "message.completed" && data.message) {
-      lastCompletedMessage.current = data.message;
-      setEntries((old) => [...old, { type: "message", message: data.message }]);
-      setLiveMessage(undefined);
-    }
-    if (event.event === "tool.started") {
-      const id = data.toolCallId ?? crypto.randomUUID();
-      setTools((old) => [...old.filter((tool) => tool.id !== id), { id, name: data.toolName ?? "tool", state: "running", detail: summarize(data.args) }]);
-    }
-    if (event.event === "tool.updated" || event.event === "tool.completed") {
-      const id = data.toolCallId ?? "";
-      setTools((old) => old.map((tool) => tool.id === id ? { ...tool, state: event.event === "tool.completed" ? "done" : "running", detail: summarize(data.result ?? data.args), error: data.isError } : tool));
-    }
-  }
-
   useEffect(() => {
     const requested = requestedSessionId.current;
     if (requested && sessions.some((session) => session.sessionId === requested)) {
@@ -197,18 +223,29 @@ export function App() {
   }, [sessions, selectedId]);
 
   useEffect(() => {
-    setEntries([]); setTools([]); setLiveMessage(undefined); setSyncing(!!selectedId);
-    lastCompletedMessage.current = undefined;
-    cursor.current = undefined;
+    if (!selectedId) { setEntries([]); setTools([]); setLiveMessage(undefined); setSyncing(false); return; }
+    const cached = sessionViews.current.get(selectedId);
+    setEntries(cached?.entries ?? []);
+    setTools(cached?.tools ?? []);
+    setLiveMessage(cached?.liveMessage);
+    setSyncing(!cached);
   }, [selectedId]);
 
   useEffect(() => {
-    if (!selectedId) { setSyncing(false); return; }
-    setSyncing(true);
     if (!connected) return;
-    const previous = cursor.current?.sessionId === selectedId ? cursor.current : undefined;
-    send({ type: "browser.subscribe", sessionId: selectedId, runtimeId: previous?.runtimeId, after: previous?.sequence });
-  }, [selectedId, connected, connectionId, send]);
+    if (warmedSessions.current.connectionId !== connectionId) {
+      warmedSessions.current = { connectionId, ids: new Set() };
+    }
+    for (const session of sessions) {
+      if (warmedSessions.current.ids.has(session.sessionId)) continue;
+      const cached = sessionViews.current.get(session.sessionId);
+      const cursor = cached?.cursor.runtimeId === session.runtimeId ? cached.cursor : undefined;
+      if (send({ type: "browser.subscribe", sessionId: session.sessionId, runtimeId: cursor?.runtimeId, after: cursor?.sequence })) {
+        warmedSessions.current.ids.add(session.sessionId);
+        if (session.sessionId === currentId.current) setSyncing(true);
+      }
+    }
+  }, [sessions, connected, connectionId, send]);
 
   useEffect(() => {
     if (connected || !pending) return;
