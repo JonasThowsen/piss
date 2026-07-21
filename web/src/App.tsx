@@ -31,6 +31,7 @@ type OutboxItem = {
   text: string;
   imageCount: number;
   baselineMessages: number;
+  submittedAt: number;
   action: "prompt" | "steer" | "followUp";
   status: "sending" | "accepted" | "delivered" | "rejected";
   error?: string;
@@ -418,9 +419,15 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       const next = items.map((item) => {
         const mayHaveReachedPi = item.status === "accepted" || (item.status === "rejected" && item.error === CONNECTION_INTERRUPTED);
         if (!mayHaveReachedPi) return item;
-        const appeared = messages.slice(item.baselineMessages).some((message) =>
-          message.role === "user" && (!item.text || textContent(message.content).trim() === item.text),
-        );
+        const appeared = messages.some((message, index) => {
+          if (message.role !== "user" || (item.text && textContent(message.content).trim() !== item.text)) return false;
+          // A reconnect can replace the timeline with a bounded snapshot, making
+          // the old array index larger than the new message list. Prefer Pi's
+          // timestamp so accepted queue items still settle after resync.
+          return message.timestamp !== undefined
+            ? message.timestamp >= item.submittedAt - 2_000
+            : index >= item.baselineMessages;
+        });
         if (!appeared) return item;
         changed = true;
         return { ...item, status: "delivered" as const };
@@ -436,6 +443,12 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
       setText((current) => current.trim() === stored.text.trim() ? "" : current);
     }
   }, [messages, commandResults, session.sessionId, delivery]);
+  useEffect(() => {
+    if (isRunning) return;
+    // agent_settled is emitted only after Pi has exhausted queued continuations,
+    // so no accepted steer/follow-up can still be waiting at this point.
+    setOutbox((items) => items.map((item) => item.status === "accepted" ? { ...item, status: "delivered" } : item));
+  }, [isRunning, commandResults]);
   useEffect(() => {
     if (!outbox.some((item) => item.status === "delivered")) return;
     const timer = window.setTimeout(() => setOutbox((items) => items.filter((item) => item.status !== "delivered")), 2_500);
@@ -460,7 +473,7 @@ function SessionView({ session, entries, liveMessage, tools, loading, connected,
     const action = isRunning ? delivery : "prompt";
     const submittedText = text.trim();
     submittedDrafts.current.set(commandId, { sessionId: session.sessionId });
-    setOutbox((items) => [...items, { id: commandId, text: submittedText, imageCount: images.length, baselineMessages: messages.length, action, status: "sending" }]);
+    setOutbox((items) => [...items, { id: commandId, text: submittedText, imageCount: images.length, baselineMessages: messages.length, submittedAt: Date.now(), action, status: "sending" }]);
     sendCommand({ type: "browser.command", commandId, sessionId: session.sessionId, runtimeId: session.runtimeId, action, text: submittedText, images: images.map(({ preview: _, ...image }) => image) });
   }
 
