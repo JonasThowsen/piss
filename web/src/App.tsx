@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -199,7 +199,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
   const [archivePending, setArchivePending] = useState(false);
   const [archiveError, setArchiveError] = useState<string>();
@@ -209,7 +209,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [activeView, setActiveView] = useState<"agent" | "changes">("agent");
+  const [activeView, setActiveView] = useState<"agent" | "changes" | "details">("agent");
   const [reviewState, setReviewState] = useState<ReviewState>();
   const [name, setName] = useState("");
   const [commandText, setCommandText] = useState(() => routedSessionId ? readDraft(routedSessionId)?.text ?? "" : "");
@@ -337,7 +337,6 @@ export function App() {
     setActiveView("agent");
     setModelDialogOpen(false);
     setCompactionDialogOpen(false);
-    setDetailsOpen(false);
     setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
     setSelectedSessionId(sessionId);
@@ -489,7 +488,7 @@ export function App() {
   }, [isMobile]);
 
   useEffect(() => {
-    if (!detailsOpen || !selectedSession || selectedSession.status === "stopped" || selectedSession.status === "crashed" || selectedSession.status === "stopping") return;
+    if (activeView !== "details" || !selectedSession || selectedSession.status === "stopped" || selectedSession.status === "crashed" || selectedSession.status === "stopping") return;
     const sessionId = selectedSession.id;
     const runtimeId = selectedSession.runtimeId;
     let cancelled = false;
@@ -506,7 +505,7 @@ export function App() {
     load();
     const timer = window.setInterval(load, 10_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [detailsOpen, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
+  }, [activeView, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
 
   useEffect(() => {
     if (modelDialogOpen && selectedSession && !canConfigureSession(selectedSession.status)) setModelDialogOpen(false);
@@ -1161,8 +1160,8 @@ export function App() {
         return;
       }
       case "session":
-        setDetailsOpen(true);
-        window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".session-details-toggle")?.focus());
+        setActiveView("details");
+        window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".details-tab")?.focus());
         return;
     }
   };
@@ -1332,21 +1331,22 @@ export function App() {
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
         {selectedSession ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
-          const next = value as "agent" | "changes";
+          const next = value as "agent" | "changes" | "details";
           setActiveView(next);
           if (next === "changes") void requestReview(selectedSession);
         }}>
           <Tabs.List className="capability-tabs" aria-label="Session views">
             <Tabs.Tab className={activeView === "agent" ? "active" : ""} value="agent"><Bot aria-hidden="true" /> Agent</Tabs.Tab>
             <Tabs.Tab className={activeView === "changes" ? "active" : ""} value="changes"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && reviewState.snapshot.totalFiles > 0 && <em>{reviewState.snapshot.totalFiles}</em>}</Tabs.Tab>
+            <Tabs.Tab className={`details-tab ${activeView === "details" ? "active" : ""}`} value="details"><Gauge aria-hidden="true" /> Details</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel className="timeline-wrap" value={activeView}>
             <section
-              className={`timeline ${activeView === "changes" ? "review-stream" : ""}`}
+              className={`timeline ${activeView === "changes" ? "review-stream" : activeView === "details" ? "details-stream" : ""}`}
               id="session-view-panel"
               role="tabpanel"
               ref={timelineRef}
-              aria-live={activeView === "changes" ? "off" : "polite"}
+              aria-live={activeView === "agent" ? "polite" : "off"}
               onWheel={(event) => {
                 if (event.deltaY < 0) {
                   followingRef.current = false;
@@ -1395,29 +1395,29 @@ export function App() {
                       <pre>{item.detail}</pre>
                     </details>)}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
+              {activeView === "details" && <div className="details-view">
+                <header className="details-heading"><div><span>SESSION</span><h2>Details</h2></div><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b></header>
+                <section className="session-details" role="region" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
+                  <div className="usage-metrics">
+                    <span><small>CONTEXT</small><b>{selectedSession.usage?.contextUsage?.tokens === null ? "Recalculating" : selectedSession.usage?.contextUsage ? `${selectedSession.usage.contextUsage.tokens.toLocaleString()} / ${selectedSession.usage.contextUsage.contextWindow.toLocaleString()}` : "Not reported"}</b></span>
+                    <span><small>TOKENS IN / OUT</small><b>{selectedSession.usage ? `${selectedSession.usage.tokens.input.toLocaleString()} / ${selectedSession.usage.tokens.output.toLocaleString()}` : "Not reported"}</b></span>
+                    <span><small>CACHE READ / WRITE</small><b>{selectedSession.usage ? `${selectedSession.usage.tokens.cacheRead.toLocaleString()} / ${selectedSession.usage.tokens.cacheWrite.toLocaleString()}` : "Not reported"}</b></span>
+                    <span><small>SESSION COST</small><b>{selectedSession.usage?.cost === null || selectedSession.usage?.cost === undefined ? "Not reported" : `$${selectedSession.usage.cost.toFixed(4)}`}</b></span>
+                    <span><small>PENDING</small><b>{selectedSession.pendingMessageCount} message{selectedSession.pendingMessageCount === 1 ? "" : "s"}</b></span>
+                    <span><small>COMPACTION</small><b>{selectedSession.compaction.status}{selectedSession.compaction.tokensBefore !== null ? ` · ${selectedSession.compaction.tokensBefore.toLocaleString()} → ${selectedSession.compaction.estimatedTokensAfter?.toLocaleString() ?? "?"}` : ""}</b></span>
+                  </div>
+                  {selectedSession.compaction.error && <p className="compaction-error" role="alert">{selectedSession.compaction.error}</p>}
+                  <div className="compaction-actions">
+                    <button type="button" aria-pressed={selectedSession.autoCompactionEnabled === true} disabled={busy || !canConfigure || selectedSession.autoCompactionEnabled === null} onClick={() => void changeAutoCompaction(selectedSession.autoCompactionEnabled !== true)}>AUTO COMPACT: {selectedSession.autoCompactionEnabled === null ? "UNKNOWN" : selectedSession.autoCompactionEnabled ? "ON" : "OFF"}</button>
+                    <button type="button" disabled={busy || !canConfigure || selectedSession.compaction.status === "running"} onClick={(event) => { compactionReturnFocusRef.current = event.currentTarget; setCompactionDialogOpen(true); }}>{selectedSession.compaction.status === "running" ? "COMPACTING…" : "COMPACT NOW"}</button>
+                  </div>
+                </section>
+              </div>}
             </section>
-            {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
+            {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
           <section className="control-deck">
-            <Collapsible.Root open={detailsOpen} onOpenChange={setDetailsOpen}>
-            <Collapsible.Trigger className="session-details-toggle"><span>SESSION DETAILS</span><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b><i aria-hidden="true">{detailsOpen ? <ChevronUp /> : <ChevronDown />}</i></Collapsible.Trigger>
-            <Collapsible.Panel className="session-details" role="region" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
-              <div className="usage-metrics">
-                <span><small>CONTEXT</small><b>{selectedSession.usage?.contextUsage?.tokens === null ? "Recalculating" : selectedSession.usage?.contextUsage ? `${selectedSession.usage.contextUsage.tokens.toLocaleString()} / ${selectedSession.usage.contextUsage.contextWindow.toLocaleString()}` : "Not reported"}</b></span>
-                <span><small>TOKENS IN / OUT</small><b>{selectedSession.usage ? `${selectedSession.usage.tokens.input.toLocaleString()} / ${selectedSession.usage.tokens.output.toLocaleString()}` : "Not reported"}</b></span>
-                <span><small>CACHE READ / WRITE</small><b>{selectedSession.usage ? `${selectedSession.usage.tokens.cacheRead.toLocaleString()} / ${selectedSession.usage.tokens.cacheWrite.toLocaleString()}` : "Not reported"}</b></span>
-                <span><small>SESSION COST</small><b>{selectedSession.usage?.cost === null || selectedSession.usage?.cost === undefined ? "Not reported" : `$${selectedSession.usage.cost.toFixed(4)}`}</b></span>
-                <span><small>PENDING</small><b>{selectedSession.pendingMessageCount} message{selectedSession.pendingMessageCount === 1 ? "" : "s"}</b></span>
-                <span><small>COMPACTION</small><b>{selectedSession.compaction.status}{selectedSession.compaction.tokensBefore !== null ? ` · ${selectedSession.compaction.tokensBefore.toLocaleString()} → ${selectedSession.compaction.estimatedTokensAfter?.toLocaleString() ?? "?"}` : ""}</b></span>
-              </div>
-              {selectedSession.compaction.error && <p className="compaction-error" role="alert">{selectedSession.compaction.error}</p>}
-              <div className="compaction-actions">
-                <button type="button" aria-pressed={selectedSession.autoCompactionEnabled === true} disabled={busy || !canConfigure || selectedSession.autoCompactionEnabled === null} onClick={() => void changeAutoCompaction(selectedSession.autoCompactionEnabled !== true)}>AUTO COMPACT: {selectedSession.autoCompactionEnabled === null ? "UNKNOWN" : selectedSession.autoCompactionEnabled ? "ON" : "OFF"}</button>
-                <button type="button" disabled={busy || !canConfigure || selectedSession.compaction.status === "running"} onClick={(event) => { compactionReturnFocusRef.current = event.currentTarget; setCompactionDialogOpen(true); }}>{selectedSession.compaction.status === "running" ? "COMPACTING…" : "COMPACT NOW"}</button>
-              </div>
-            </Collapsible.Panel>
-            </Collapsible.Root>
             {outbox.length > 0 && <section className="outbox-tray" aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>

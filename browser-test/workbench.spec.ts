@@ -788,7 +788,6 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
     const masthead = document.querySelector<HTMLElement>(".masthead")!.getBoundingClientRect();
     const tabs = document.querySelector<HTMLElement>(".capability-tabs")!.getBoundingClientRect();
     const timeline = document.querySelector<HTMLElement>(".timeline-wrap")!.getBoundingClientRect();
-    const details = document.querySelector<HTMLElement>(".session-details-toggle")!.getBoundingClientRect();
     return {
       configuredHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
       visibleHeight,
@@ -799,7 +798,6 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
       controlsHeight: controls.height,
       composerBottom: composer.bottom,
       composerHeight: composer.height,
-      detailsHeight: details.height,
       mastheadHeight: masthead.height,
       tabsHeight: tabs.height,
       timelineHeight: timeline.height,
@@ -830,10 +828,10 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   const composer = page.getByLabel("Message Pi");
   await composer.focus();
   await page.setViewportSize({ width: 390, height: 520 });
-  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520, mastheadHeight: 0, tabsHeight: 0, detailsHeight: 0 });
+  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520, mastheadHeight: 0, tabsHeight: 0 });
   layout = await viewportLayout();
   expect(layout.controlsHeight).toBeGreaterThanOrEqual(40);
-  expect(layout.timelineHeight).toBeGreaterThan(restingTimelineHeight + 100);
+  expect(layout.timelineHeight).toBeGreaterThan(restingTimelineHeight + 90);
 
   await composer.fill("Maybe we should be trying to be better with the space for the chat interface as well, quite little space on mobile for the actual messages");
   layout = await viewportLayout();
@@ -845,10 +843,9 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   await expect.poll(async () => (await viewportLayout()).mastheadHeight).toBeGreaterThan(0);
   layout = await viewportLayout();
   expect(layout.tabsHeight).toBeGreaterThan(0);
-  expect(layout.detailsHeight).toBeGreaterThan(0);
 });
 
-test("mobile session tabs omit events and hide an empty review count", async ({ page }) => {
+test("mobile session tabs expose agent, changes, and details without an empty review count", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installApi(page, { emptyReview: true });
   await page.goto("/");
@@ -857,8 +854,8 @@ test("mobile session tabs omit events and hide an empty review count", async ({ 
   await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
 
   const tabs = page.locator(".capability-tabs").getByRole("tab");
-  await expect(tabs).toHaveCount(2);
-  await expect(tabs.filter({ hasText: "Events" })).toHaveCount(0);
+  await expect(tabs).toHaveCount(3);
+  await expect(tabs).toHaveText(["Agent", "Changes", "Details"]);
   const changes = tabs.filter({ hasText: "Changes" });
   await changes.click();
   await expect(page.getByRole("region", { name: "Uncommitted changes" })).toContainText("Working tree is clean");
@@ -1555,8 +1552,7 @@ test("session details show real usage and control Pi compaction", async ({ page 
   await page.getByRole("button", { name: "New session in erp" }).click();
   await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
 
-  const detailsToggle = page.getByRole("button", { name: /SESSION DETAILS/ });
-  await detailsToggle.click();
+  await page.getByRole("tab", { name: "Details" }).click();
   const details = page.getByRole("region", { name: "Session usage and compaction" });
   await expect(details).toContainText("42,000 / 200,000");
   await expect(details).toContainText("1,200 / 345");

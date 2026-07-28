@@ -371,12 +371,15 @@ button { color: inherit; }
 .diff-patch .meta { color: var(--muted); font-weight: 700; }
 .review-empty-patch { padding: 18px 14px; border-top: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 10px; }
 
+.details-stream { padding-top: 20px; }
+.details-view { width: min(100%, 900px); display: grid; gap: 10px; margin: 0 auto; }
+.details-heading { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 2px 10px rgba(32, 35, 31, .04); }
+.details-heading > div { display: grid; gap: 3px; }
+.details-heading span { color: var(--accent); font-size: 7px; font-weight: 750; letter-spacing: .11em; }
+.details-heading h2 { margin: 0; font-size: 20px; font-weight: 650; }
+.details-heading > b { color: var(--text); font-size: 9px; }
 .control-deck { padding: 10px max(12px, calc((100% - 930px) / 2)) max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgba(251, 252, 248, .96); backdrop-filter: blur(18px); }
-.session-details-toggle { width: 100%; min-height: 31px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin-bottom: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: #f4f6f2; color: var(--muted); font-size: 8px; text-align: left; cursor: pointer; }
-.session-details-toggle b { justify-self: end; color: var(--text); font-size: 8px; }
-.session-details-toggle i { display: grid; place-items: center; font-style: normal; }
-.session-details-toggle i svg { width: 14px; height: 14px; }
-.session-details { margin: -9px 0 8px; padding: 10px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 5px 5px; background: var(--panel); }
+.session-details { padding: 15px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 2px 10px rgba(32, 35, 31, .04); }
 .usage-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .usage-metrics span { min-width: 0; display: grid; gap: 3px; }
 .usage-metrics small { color: var(--faint); font-size: 7px; letter-spacing: .06em; }
@@ -773,7 +776,10 @@ button { color: inherit; }
   .diff-patch span { padding: 0 10px; }
   .jump-bottom { right: 10px; bottom: 10px; width: 42px; height: 42px; }
   .control-deck { padding: 6px 7px max(7px, env(safe-area-inset-bottom)); }
-  .session-details-toggle { min-height: 30px; margin-bottom: 6px; padding: 5px 9px; }
+  .details-stream { padding: 10px 9px 35px; }
+  .details-heading { min-height: 62px; padding: 11px 13px; }
+  .details-heading h2 { font-size: 18px; }
+  .session-details { padding: 13px; }
   .usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .compaction-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .compaction-actions button { min-height: 38px; }
@@ -813,9 +819,7 @@ button { color: inherit; }
   .operation-error { inset: 52px 10px auto; width: calc(100% - 20px); }
   .shell.mobile-keyboard-open { padding-top: 0; }
   .shell.mobile-keyboard-open .masthead,
-  .shell.mobile-keyboard-open .capability-tabs,
-  .shell.mobile-keyboard-open .session-details-toggle,
-  .shell.mobile-keyboard-open .session-details { display: none; }
+  .shell.mobile-keyboard-open .capability-tabs { display: none; }
   .shell.mobile-keyboard-open .session-view { grid-template-rows: minmax(0, 1fr) auto; }
   .shell.mobile-keyboard-open .timeline { padding-top: 10px; }
   .global-picker-layer { align-items: end; padding: 6px; }
