@@ -549,16 +549,22 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await expect(sessionPicker).toBeVisible();
   const mobilePickerChrome = await sessionPicker.evaluate((picker) => {
     const header = picker.querySelector<HTMLElement>(":scope > header")!;
+    const title = header.querySelector<HTMLElement>("div")!;
+    const close = header.querySelector<HTMLElement>("button")!.getBoundingClientRect();
     const footer = picker.querySelector<HTMLElement>(":scope > footer")!;
-    const search = picker.querySelector<HTMLElement>(".global-picker-search")!;
+    const search = picker.querySelector<HTMLElement>(".global-picker-search")!.getBoundingClientRect();
     return {
-      headerHeight: header.getBoundingClientRect().height,
-      searchHeight: search.getBoundingClientRect().height,
+      closeTop: close.top,
+      closeBottom: close.bottom,
+      searchTop: search.top,
+      searchBottom: search.bottom,
+      titleDisplay: getComputedStyle(title).display,
       footerDisplay: getComputedStyle(footer).display,
     };
   });
-  expect(mobilePickerChrome.headerHeight).toBeLessThanOrEqual(43);
-  expect(mobilePickerChrome.searchHeight).toBeLessThanOrEqual(44);
+  expect(Math.abs(mobilePickerChrome.closeTop - mobilePickerChrome.searchTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(mobilePickerChrome.closeBottom - mobilePickerChrome.searchBottom)).toBeLessThanOrEqual(1);
+  expect(mobilePickerChrome.titleDisplay).toBe("none");
   expect(mobilePickerChrome.footerDisplay).toBe("none");
   expect(api.commands).toHaveLength(0);
   await page.keyboard.press("Escape");
@@ -819,16 +825,27 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
 
   const restingTimelineHeight = layout.timelineHeight;
-  await page.getByLabel("Message Pi").focus();
-  await expect.poll(viewportLayout).toMatchObject({ mastheadHeight: 0, tabsHeight: 0, detailsHeight: 0 });
+  await page.setViewportSize({ width: 390, height: 700 });
+  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 700, configuredHeight: 700 });
+  const composer = page.getByLabel("Message Pi");
+  await composer.focus();
+  await page.setViewportSize({ width: 390, height: 520 });
+  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520, mastheadHeight: 0, tabsHeight: 0, detailsHeight: 0 });
   layout = await viewportLayout();
   expect(layout.controlsHeight).toBeGreaterThanOrEqual(40);
   expect(layout.timelineHeight).toBeGreaterThan(restingTimelineHeight + 100);
 
-  await page.getByLabel("Message Pi").fill("Maybe we should be trying to be better with the space for the chat interface as well, quite little space on mobile for the actual messages");
+  await composer.fill("Maybe we should be trying to be better with the space for the chat interface as well, quite little space on mobile for the actual messages");
   layout = await viewportLayout();
   expect(layout.composerHeight).toBeLessThanOrEqual(178);
   expect(layout.timelineHeight).toBeGreaterThanOrEqual(280);
+
+  await page.setViewportSize({ width: 390, height: 700 });
+  await expect(composer).toBeFocused();
+  await expect.poll(async () => (await viewportLayout()).mastheadHeight).toBeGreaterThan(0);
+  layout = await viewportLayout();
+  expect(layout.tabsHeight).toBeGreaterThan(0);
+  expect(layout.detailsHeight).toBeGreaterThan(0);
 });
 
 test("mobile session tabs omit events and hide an empty review count", async ({ page }) => {

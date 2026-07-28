@@ -226,6 +226,7 @@ export function App() {
   const [copyFeedback, setCopyFeedback] = useState<{ readonly key: string; readonly ok: boolean; readonly label: string }>();
   const [atBottom, setAtBottom] = useState(true);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
+  const [mobileKeyboardOpen, setMobileKeyboardOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [updateRegistration, setUpdateRegistration] = useState<ServiceWorkerRegistration>();
   const notifications = useNotifications();
@@ -453,6 +454,37 @@ export function App() {
       media.removeEventListener("change", updateLayout);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileKeyboardOpen(false);
+      return;
+    }
+    const viewport = window.visualViewport;
+    let restingHeight = viewport?.height ?? window.innerHeight;
+    const composerHasFocus = () => Boolean(composerRef.current?.contains(document.activeElement));
+    const updateKeyboardState = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      if (!composerHasFocus()) {
+        restingHeight = Math.max(restingHeight, height);
+        setMobileKeyboardOpen(false);
+        return;
+      }
+      setMobileKeyboardOpen(restingHeight - height > 100);
+    };
+    const scheduleUpdate = () => window.requestAnimationFrame(updateKeyboardState);
+    viewport?.addEventListener("resize", updateKeyboardState);
+    window.addEventListener("resize", updateKeyboardState);
+    document.addEventListener("focusin", scheduleUpdate);
+    document.addEventListener("focusout", scheduleUpdate);
+    updateKeyboardState();
+    return () => {
+      viewport?.removeEventListener("resize", updateKeyboardState);
+      window.removeEventListener("resize", updateKeyboardState);
+      document.removeEventListener("focusin", scheduleUpdate);
+      document.removeEventListener("focusout", scheduleUpdate);
+    };
+  }, [isMobile]);
 
   useEffect(() => {
     if (!detailsOpen || !selectedSession || selectedSession.status === "stopped" || selectedSession.status === "crashed" || selectedSession.status === "stopping") return;
@@ -1191,7 +1223,7 @@ export function App() {
       if (!isMobile) { details.cancel(); return; }
       setSidebarOpen(open);
     }}>
-    <div className="shell" ref={shellRef}>
+    <div className={`shell ${mobileKeyboardOpen ? "mobile-keyboard-open" : ""}`} ref={shellRef}>
       <header className="masthead">
         <Drawer.Trigger className="mobile-menu" ref={mobileMenuRef} aria-label="Open workspaces and sessions"><Menu aria-hidden="true" /></Drawer.Trigger>
         <div className={`brand ${selectedSession ? "session-brand" : ""}`} title={selectedWorkspace?.root} ref={sessionHeadingRef} tabIndex={-1}>

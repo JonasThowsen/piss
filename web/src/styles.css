@@ -797,21 +797,19 @@ button { color: inherit; }
   .model-trigger:disabled { display: none; }
   .runtime-state { display: none; }
   .operation-error { inset: 52px 10px auto; width: calc(100% - 20px); }
-  .shell:has(.composer:focus-within) { padding-top: 0; }
-  .shell:has(.composer:focus-within) .masthead,
-  .shell:has(.composer:focus-within) .capability-tabs,
-  .shell:has(.composer:focus-within) .session-details-toggle,
-  .shell:has(.composer:focus-within) .session-details { display: none; }
-  .shell:has(.composer:focus-within) .session-view { grid-template-rows: minmax(0, 1fr) auto; }
-  .shell:has(.composer:focus-within) .timeline { padding-top: 10px; }
+  .shell.mobile-keyboard-open { padding-top: 0; }
+  .shell.mobile-keyboard-open .masthead,
+  .shell.mobile-keyboard-open .capability-tabs,
+  .shell.mobile-keyboard-open .session-details-toggle,
+  .shell.mobile-keyboard-open .session-details { display: none; }
+  .shell.mobile-keyboard-open .session-view { grid-template-rows: minmax(0, 1fr) auto; }
+  .shell.mobile-keyboard-open .timeline { padding-top: 10px; }
   .global-picker-layer { align-items: end; padding: 6px; }
-  .global-picker { max-height: calc(100dvh - 12px); border-radius: 12px 12px 7px 7px; }
-  .global-picker > header { min-height: 42px; padding: 4px 7px 4px 12px; }
-  .global-picker > header div { display: block; }
-  .global-picker > header span { display: none; }
-  .global-picker > header b { font-size: 15px; }
-  .global-picker > header button { width: 34px; height: 34px; }
-  .global-picker-search { margin: 6px 8px; }
+  .global-picker { position: relative; max-height: calc(100dvh - 12px); grid-template-rows: auto minmax(0, 1fr); border-radius: 12px 12px 7px 7px; }
+  .global-picker > header { position: absolute; top: 6px; right: 6px; z-index: 1; min-height: 0; padding: 0; border: 0; background: transparent; }
+  .global-picker > header div { display: none; }
+  .global-picker > header button { width: 44px; height: 44px; background: var(--surface); }
+  .global-picker-search { margin: 6px 56px 6px 8px; }
   .global-picker-search > svg { left: 12px; width: 18px; height: 18px; }
   .global-picker-search input { height: 44px; padding-right: 12px; padding-left: 38px; font-size: 16px; }
   .global-picker-search > kbd { display: none; }
