@@ -5,6 +5,20 @@ import { App } from "./App.tsx";
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing V2 application root");
 
+const syncVisibleViewport = () => {
+  const height = window.visualViewport?.height ?? window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${height}px`);
+};
+syncVisibleViewport();
+window.requestAnimationFrame(syncVisibleViewport);
+window.setTimeout(syncVisibleViewport, 250);
+window.addEventListener("resize", syncVisibleViewport);
+window.addEventListener("pageshow", syncVisibleViewport);
+window.visualViewport?.addEventListener("resize", syncVisibleViewport);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") syncVisibleViewport();
+});
+
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   let reloadOnControllerChange = navigator.serviceWorker.controller !== null;
   navigator.serviceWorker.addEventListener("controllerchange", () => {

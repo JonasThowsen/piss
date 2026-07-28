@@ -15,6 +15,7 @@
   --blue: #315f88;
   --danger: #a7433b;
   --danger-soft: #fff1ef;
+  --app-height: 100dvh;
   font-family: "Avenir Next", Avenir, "Noto Sans", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--canvas);
@@ -22,7 +23,7 @@
 }
 
 * { box-sizing: border-box; min-width: 0; }
-html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+html, body, #root { width: 100%; height: var(--app-height, 100dvh); margin: 0; overflow: hidden; }
 button, textarea, input, select { font: inherit; }
 button { color: inherit; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; padding: 0; margin: -1px; border: 0; clip: rect(0, 0, 0, 0); white-space: nowrap; }
@@ -672,7 +673,7 @@ button { color: inherit; }
 }
 
 @media (max-width: 760px) {
-  .shell { height: 100dvh; display: block; padding-top: 62px; }
+  .shell { height: 100%; display: block; padding-top: 62px; }
   .masthead { position: fixed; inset: 0 0 auto; height: 62px; padding: 0 13px; justify-content: flex-start; gap: 11px; }
   .mobile-menu { width: 42px; height: 42px; flex: none; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 17px; cursor: pointer; box-shadow: 0 2px 8px rgba(32, 35, 31, .06); }
   .brand { flex: 1; max-width: none; justify-content: center; overflow: hidden; }
@@ -691,7 +692,7 @@ button { color: inherit; }
   .rail { position: fixed; inset: 62px auto 0 0; z-index: 6; width: min(88vw, 340px); border-radius: 0 8px 8px 0; box-shadow: 14px 0 45px rgba(32, 35, 31, .16); transform: translateX(-105%); transition: transform .2s ease; overflow: hidden; }
   .rail.mobile-open { transform: translateX(0); }
   .rail-label { height: 56px; padding-top: 10px; }
-  .workspace { height: calc(100dvh - 62px); }
+  .workspace { height: calc(100% - 62px); }
   .session-view { grid-template-rows: 52px minmax(0, 1fr) auto; }
   .capability-tabs { padding: 6px 10px; }
   .capability-tabs button { height: 38px; padding: 0 12px; font-size: 11px; }

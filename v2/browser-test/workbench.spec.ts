@@ -696,6 +696,41 @@ test("idle sessions can change their reasoning level", async ({ page }) => {
   await expect(high).toHaveAttribute("aria-pressed", "true");
 });
 
+test("mobile shell keeps bottom controls inside the visible viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  await expect(page.locator(".control-meta")).toBeVisible();
+
+  const viewportLayout = () => page.evaluate(() => {
+    const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
+    const shell = document.querySelector<HTMLElement>(".shell")!.getBoundingClientRect();
+    const controls = document.querySelector<HTMLElement>(".control-meta")!.getBoundingClientRect();
+    const composer = document.querySelector<HTMLElement>(".composer")!.getBoundingClientRect();
+    return {
+      configuredHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
+      visibleHeight,
+      shellBottom: shell.bottom,
+      controlsBottom: controls.bottom,
+      composerBottom: composer.bottom,
+    };
+  });
+  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 700, configuredHeight: 700 });
+  let layout = await viewportLayout();
+  expect(layout.shellBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+  expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+  expect(layout.composerBottom).toBeLessThan(layout.controlsBottom);
+
+  await page.setViewportSize({ width: 390, height: 520 });
+  await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520 });
+  layout = await viewportLayout();
+  expect(layout.shellBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+  expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+});
+
 test("mobile workbench keeps creation, models, queues, and navigation functional", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const api = await installApi(page);
