@@ -370,8 +370,13 @@ test("empty first-run mobile state exposes workspace creation directly", async (
 
   await expect(page.locator(".brand b")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No workspaces" })).toBeVisible();
-  await page.getByRole("button", { name: "CREATE WORKSPACE" }).click();
-  await expect(page.getByRole("dialog", { name: "New workspace" })).toBeVisible();
+  const createWorkspace = page.getByRole("button", { name: "CREATE WORKSPACE" });
+  await createWorkspace.click();
+  const dialog = page.getByRole("dialog", { name: "New workspace" });
+  await expect(dialog).toBeVisible();
+  await page.mouse.click(2, 2);
+  await expect(dialog).toBeHidden();
+  await expect(createWorkspace).toBeFocused();
 });
 
 test("long workspace paths keep their final directories visible", async ({ page }) => {
@@ -420,6 +425,9 @@ test("long workspace paths keep their final directories visible", async ({ page 
     containerDirection: "rtl",
     textDirection: "ltr",
   });
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".rail")).toHaveAttribute("data-closed", "");
+  await expect(page.getByRole("button", { name: "Open workspaces and sessions" })).toBeFocused();
 });
 
 test("global picker fuzzily finds and opens sessions across workspaces", async ({ page }) => {
@@ -450,20 +458,21 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
 
   await page.getByLabel("Message Pi").focus();
   await page.keyboard.press("Meta+k");
-  const picker = page.getByRole("dialog", { name: "Sessions" });
+  const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
   const search = picker.getByLabel("Search sessions");
   const options = picker.getByRole("option");
   await expect(picker).toBeVisible();
   await expect(search).toBeFocused();
-  await expect(options.first()).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Control+n");
-  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(options.first()).toHaveCSS("background-color", "rgb(231, 240, 234)");
+  await page.keyboard.press("Control+n");
+  await expect(options.nth(1)).toHaveCSS("background-color", "rgb(231, 240, 234)");
   await page.keyboard.press("Control+p");
-  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await expect(options.first()).toHaveCSS("background-color", "rgb(231, 240, 234)");
   await page.keyboard.press("ArrowDown");
-  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(options.nth(1)).toHaveCSS("background-color", "rgb(231, 240, 234)");
   await page.keyboard.press("ArrowUp");
-  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await expect(options.first()).toHaveCSS("background-color", "rgb(231, 240, 234)");
   await search.fill("pay inv");
   await expect(picker.getByRole("option", { name: /Invoice migration.*payments/i })).toBeVisible();
   await expect(picker.getByRole("option", { name: /Authentication refactor/i })).toHaveCount(0);
@@ -471,7 +480,7 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
 
   await expect(page).toHaveURL(/session=session-2/);
   await expect(page.locator(".brand b")).toHaveText("Invoice migration");
-  await expect(picker).toHaveCount(0);
+  await expect(picker).toBeHidden();
 
   await page.getByLabel("Message Pi").focus();
   await page.keyboard.press("Meta+k");
@@ -479,11 +488,15 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await search.fill("auth feat");
   await expect(picker.getByRole("option", { name: /Authentication refactor.*feat\/browser-test/i })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(picker).toHaveCount(0);
+  await expect(picker).toBeHidden();
   await expect(page.getByLabel("Message Pi")).toBeFocused();
 
-  await page.getByRole("button", { name: "Search sessions" }).click();
+  const pickerTrigger = page.getByRole("button", { name: "Search sessions" });
+  await pickerTrigger.click();
   await expect(picker.getByRole("option")).toHaveCount(2);
+  await page.mouse.click(2, 2);
+  await expect(picker).toBeHidden();
+  await expect(pickerTrigger).toBeFocused();
 });
 
 test("slash picker discovers and runs commands through the owned Pi runtime", async ({ page }) => {
@@ -532,11 +545,11 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await page.keyboard.press("Enter");
   await expect(composer).toHaveValue("/resume ");
   await page.getByRole("button", { name: "Run Pi command" }).click();
-  const sessionPicker = page.getByRole("dialog", { name: "Sessions" });
+  const sessionPicker = page.getByRole("dialog", { name: "Sessions", exact: true });
   await expect(sessionPicker).toBeVisible();
   expect(api.commands).toHaveLength(0);
   await page.keyboard.press("Escape");
-  await expect(sessionPicker).toHaveCount(0);
+  await expect(sessionPicker).toBeHidden();
   await expect(composer).toHaveValue("");
 
   await composer.fill("/");
@@ -601,6 +614,7 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
   });
   expect(menuBounds.menuTop).toBeGreaterThanOrEqual(menuBounds.viewportTop - 1);
   expect(menuBounds.menuBottom).toBeLessThanOrEqual(menuBounds.viewportBottom + 1);
+  await page.keyboard.press("ArrowDown");
   await expect(renameItem).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(removeItem).toBeFocused();
@@ -617,7 +631,7 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
 
   await page.getByRole("button", { name: "Workspace settings for renamed-project" }).click();
   await page.getByRole("menuitem", { name: "REMOVE" }).click();
-  const removeDialog = page.getByRole("dialog", { name: "Remove workspace?" });
+  const removeDialog = page.getByRole("alertdialog", { name: "Remove workspace?" });
   await expect(removeDialog).toContainText("directory and files will remain untouched");
   await removeDialog.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
   await expect(removeDialog).toBeHidden();
@@ -652,7 +666,6 @@ test("session menus stay above neighboring controls and flip away from the sideb
   await sessionSettings.click();
   const menu = page.getByRole("menu", { name: "Edge session session settings" });
   await expect(menu).toBeVisible();
-  await expect(menu).not.toHaveClass(/open-upward/);
   const overlap = await menu.evaluate((element, neighboringLabel) => {
     const menuBounds = element.getBoundingClientRect();
     const neighbor = document.querySelector<HTMLElement>(`[aria-label="${neighboringLabel}"]`)!;
@@ -674,7 +687,6 @@ test("session menus stay above neighboring controls and flip away from the sideb
 
   await page.setViewportSize({ width: 390, height: 360 });
   await sessionSettings.scrollIntoViewIfNeeded();
-  await expect(menu).toHaveClass(/open-upward/);
   const edgeBounds = await menu.evaluate((element) => {
     const menuBounds = element.getBoundingClientRect();
     const triggerBounds = document.querySelector<HTMLElement>("[aria-label='Session settings for Edge session']")!.getBoundingClientRect();
@@ -690,6 +702,9 @@ test("session menus stay above neighboring controls and flip away from the sideb
   expect(edgeBounds.menuTop).toBeLessThan(edgeBounds.triggerTop);
   expect(edgeBounds.menuTop).toBeGreaterThanOrEqual(edgeBounds.viewportTop);
   expect(edgeBounds.menuBottom).toBeLessThanOrEqual(edgeBounds.viewportBottom);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(sessionSettings).toBeFocused();
 });
 
 test("selecting a session shows loading feedback while its details load", async ({ page }) => {
@@ -931,7 +946,7 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   expect(modelSections.currentBottom).toBeLessThanOrEqual(modelSections.catalogTop + 1);
   await modelDialog.getByRole("button", { name: "high" }).click();
   await expect(modelDialog.getByRole("button", { name: "high" })).toHaveAttribute("aria-pressed", "true");
-  await modelDialog.getByRole("button", { name: /GPT-5.6/ }).click();
+  await modelDialog.getByRole("option", { name: /GPT-5.6/ }).click();
   await expect(modelDialog.locator(".model-current > b")).toHaveText("GPT-5.6");
   await expect(modelDialog.getByRole("button", { name: "off" })).toHaveAttribute("aria-pressed", "true");
   await modelDialog.getByRole("button", { name: "DONE" }).click();
@@ -957,7 +972,7 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await expect(page.getByRole("button", { name: "New session in erp" })).toBeEnabled();
   await page.getByRole("button", { name: "Workspace settings for erp" }).click();
   await page.getByRole("menuitem", { name: "REMOVE" }).click();
-  const blockedRemoval = page.getByRole("dialog", { name: "Remove workspace?" });
+  const blockedRemoval = page.getByRole("alertdialog", { name: "Remove workspace?" });
   await expect(blockedRemoval).toContainText("Delete 1 session first");
   await expect(blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" })).toBeDisabled();
   await blockedRemoval.getByRole("button", { name: "CANCEL" }).click();
@@ -1029,8 +1044,7 @@ test("session drafts and delayed command failures stay scoped to their session",
   const firstSettings = page.getByRole("button", { name: "Session settings for First" });
   await firstSettings.click();
   await page.getByRole("menuitem", { name: "ARCHIVE" }).click();
-  await expect(page.locator(".sidebar-scrim")).toHaveAttribute("inert", "");
-  const archiveDialog = page.getByRole("dialog", { name: "Archive session?" });
+  const archiveDialog = page.getByRole("alertdialog", { name: "Archive session?" });
   await expect(archiveDialog).toContainText("will stop running and be removed from PISS");
   await archiveDialog.getByRole("button", { name: "ARCHIVE SESSION" }).click();
   await expect(firstSettings).toHaveCount(0);
@@ -1201,15 +1215,12 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   const archiveButton = page.getByRole("menuitem", { name: "ARCHIVE" });
   await expect(archiveButton).toBeVisible();
   await archiveButton.click();
-  const archiveDialog = page.getByRole("dialog", { name: "Archive session?" });
+  const archiveDialog = page.getByRole("alertdialog", { name: "Archive session?" });
   const closeArchive = archiveDialog.getByRole("button", { name: "Close" });
   const cancelArchive = archiveDialog.getByRole("button", { name: "CANCEL" });
   const confirmArchive = archiveDialog.getByRole("button", { name: "ARCHIVE SESSION" });
   await expect(archiveDialog).toContainText("will stop running and be removed from PISS");
   await expect(archiveDialog).toContainText("conversation file will remain on disk for recovery");
-  await expect(page.locator(".masthead")).toHaveAttribute("inert", "");
-  await expect(page.locator(".rail")).toHaveAttribute("inert", "");
-  await expect(page.locator(".workspace")).toHaveAttribute("inert", "");
   await expect(cancelArchive).toBeFocused();
   await closeArchive.focus();
   await page.keyboard.press("Shift+Tab");
@@ -1229,7 +1240,7 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
 
   await sessionSettings.click();
   await page.getByRole("menuitem", { name: "ARCHIVE" }).click();
-  await page.getByRole("dialog", { name: "Archive session?" }).getByRole("button", { name: "ARCHIVE SESSION" }).click();
+  await page.getByRole("alertdialog", { name: "Archive session?" }).getByRole("button", { name: "ARCHIVE SESSION" }).click();
   await expect(archiveDialog).toBeHidden();
   await expect(sessionSettings).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Desktop utility/i })).toHaveCount(0);
@@ -1484,7 +1495,7 @@ test("session details show real usage and control Pi compaction", async ({ page 
 
   const compact = details.getByRole("button", { name: "COMPACT NOW" });
   await compact.click();
-  const confirm = page.getByRole("dialog", { name: "Compact session context?" });
+  const confirm = page.getByRole("alertdialog", { name: "Compact session context?" });
   await expect(confirm).toContainText("lossy");
   await expect(confirm).toContainText("complete append-only Pi transcript remains on disk");
   await confirm.getByRole("button", { name: "COMPACT NOW" }).click();

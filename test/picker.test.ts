@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fuzzySubsequenceMatcher, pickerNavigationOffset, searchPickerItems, type PickerMatcher } from "../web/src/picker.ts";
+import { fuzzySubsequenceMatcher, searchPickerItems, type PickerMatcher } from "../web/src/picker.ts";
 import { sessionPickerItems } from "../web/src/sessionPicker.ts";
 
 const workspaces = [
@@ -38,14 +38,4 @@ test("picker matcher is replaceable without changing picker items", () => {
 
   assert.deepEqual(searchPickerItems(items, "ERP", exactMatcher).map((match) => match.item.action.sessionId), ["auth"]);
   assert.deepEqual(searchPickerItems(items, "erp", exactMatcher), []);
-});
-
-test("picker navigation supports arrows and Emacs-style control keys", () => {
-  const event = { key: "ArrowDown", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
-  assert.equal(pickerNavigationOffset(event), 1);
-  assert.equal(pickerNavigationOffset({ ...event, key: "ArrowUp" }), -1);
-  assert.equal(pickerNavigationOffset({ ...event, key: "n", ctrlKey: true }), 1);
-  assert.equal(pickerNavigationOffset({ ...event, key: "P", ctrlKey: true }), -1);
-  assert.equal(pickerNavigationOffset({ ...event, key: "n" }), undefined);
-  assert.equal(pickerNavigationOffset({ ...event, key: "p", ctrlKey: true, altKey: true }), undefined);
 });
