@@ -89,6 +89,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   let failNextCommand = false;
   let delayNextCommand = false;
   let delayNextMentionSearch = false;
+  let delayedSessionLoadId: string | undefined;
   let reviewRequests = 0;
 
   await page.route("**/api/v2/**", async (route: Route) => {
@@ -188,6 +189,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     const sessionIndex = sessions.findIndex((session) => session.id === sessionId);
     const session = sessions[sessionIndex];
     if (session && path === `/api/v2/sessions/${session.id}` && method === "GET") {
+      if (delayedSessionLoadId === session.id) {
+        delayedSessionLoadId = undefined;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       await route.fulfill({ json: { session } });
       return;
     }
@@ -339,6 +344,9 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     },
     delayNextMentionSearch() {
       delayNextMentionSearch = true;
+    },
+    delaySessionLoad(name: string) {
+      delayedSessionLoadId = sessions.find((session) => session.name === name)?.id;
     },
     reviewRequestCount() {
       return reviewRequests;
@@ -533,6 +541,30 @@ test("session menus stay above neighboring controls and flip away from the sideb
   expect(edgeBounds.menuTop).toBeLessThan(edgeBounds.triggerTop);
   expect(edgeBounds.menuTop).toBeGreaterThanOrEqual(edgeBounds.viewportTop);
   expect(edgeBounds.menuBottom).toBeLessThanOrEqual(edgeBounds.viewportBottom);
+});
+
+test("selecting a session shows loading feedback while its details load", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  const createSession = async (name: string) => {
+    await page.getByRole("button", { name: "New session in erp" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session" });
+    await dialog.getByLabel("Session name").fill(name);
+    await dialog.getByRole("button", { name: /start session/i }).click();
+  };
+  await createSession("First session");
+  await createSession("Second session");
+
+  api.delaySessionLoad("First session");
+  await page.getByRole("button", { name: /First session.*finished/i }).click();
+  const loading = page.locator(".session-loading");
+  await expect(loading.getByRole("heading", { name: "Loading session" })).toBeVisible();
+  await expect(loading).toContainText("Opening First session");
+  await expect(page.getByRole("heading", { name: "No session selected" })).toHaveCount(0);
+  await expect(page.locator(".brand b")).toHaveText("First session");
+  await expect(loading).toHaveCount(0);
 });
 
 test("idle sessions can change their reasoning level", async ({ page }) => {

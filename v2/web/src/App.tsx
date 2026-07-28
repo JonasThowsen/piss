@@ -1028,6 +1028,9 @@ export function App() {
     }
   };
 
+  const selectedSessionSummary = state._tag === "Ready" && selectedSessionId
+    ? state.sessions.find((session) => session.id === selectedSessionId)
+    : undefined;
   const selectedWorkspace = state._tag === "Ready" && selectedSession
     ? state.workspaces.find((workspace) => workspace.id === selectedSession.workspaceId)
     : undefined;
@@ -1359,6 +1362,10 @@ export function App() {
               <span className="sr-only" aria-live="polite">{selectedSession.name} is {ATTENTION_STATE_LABELS[selectedSession.status]}</span>
             </div>
           </section>
+        </div> : selectedSessionId ? <div className="blank-state session-loading" role="status" aria-live="polite">
+          <span aria-hidden="true"><i /></span>
+          <h1>Loading session</h1>
+          <p>Opening {selectedSessionSummary?.name ?? "session"}…</p>
         </div> : state._tag === "Failed" ? <div className="blank-state offline-shell" role="status">
           <h1>Control plane unavailable</h1>
           <p>The app shell is offline. Commands cannot be sent.</p>
