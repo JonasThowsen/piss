@@ -24,6 +24,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Enable Bubblewrap review sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
@@ -47,5 +52,7 @@ jobs:
       - uses: cachix/install-nix-action@b4b293eae0b79aac8a161bb32925a5508c9cca93 # v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Enable Bubblewrap review sandbox
+        run: sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
       - run: nix flake check
       - run: nix build .#piss
