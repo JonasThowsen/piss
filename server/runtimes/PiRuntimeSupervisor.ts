@@ -241,6 +241,55 @@ export function projectEventData(type: string, data: unknown): unknown {
   return base;
 }
 
+function eventBytes(event: OwnedSessionEvent): number {
+  return Buffer.byteLength(JSON.stringify(event));
+}
+
+function eventToolCallId(event: OwnedSessionEvent): string | undefined {
+  if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return;
+  const toolCallId = (event.data as Record<string, unknown>).toolCallId;
+  return typeof toolCallId === "string" ? toolCallId : undefined;
+}
+
+export function appendBoundedEvent(
+  current: ReadonlyArray<OwnedSessionEvent>,
+  currentBytes: number,
+  event: OwnedSessionEvent,
+): { readonly events: Array<OwnedSessionEvent>; readonly bytes: number } {
+  const events = [...current];
+  let bytes = currentBytes;
+  const removeAt = (index: number) => {
+    const [removed] = events.splice(index, 1);
+    if (removed) bytes -= eventBytes(removed);
+  };
+
+  const toolCallId = eventToolCallId(event);
+  if (toolCallId && (event.type === "tool_execution_update" || event.type === "tool_execution_end")) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index]!;
+      if (eventToolCallId(candidate) !== toolCallId) continue;
+      if (candidate.type === "tool_execution_update" || event.type === "tool_execution_end" && candidate.type === "tool_execution_start") {
+        removeAt(index);
+      }
+    }
+  }
+
+  if (event.type === "message_end") {
+    const previousMessage = events.findLastIndex((candidate) => candidate.type === "message_end");
+    for (let index = events.length - 1; index > previousMessage; index -= 1) {
+      if (events[index]?.type === "message_start" || events[index]?.type === "message_update") removeAt(index);
+    }
+  }
+
+  events.push(event);
+  bytes += eventBytes(event);
+  while (events.length > MAX_EVENTS || bytes > MAX_EVENT_BYTES) {
+    const disposable = events.findIndex((candidate) => candidate.type !== "message_end");
+    removeAt(disposable >= 0 ? disposable : 0);
+  }
+  return { events, bytes };
+}
+
 function isRpcMessage(value: unknown): value is RpcMessage {
   return typeof value === "object" && value !== null && !Array.isArray(value) &&
     typeof (value as Record<string, unknown>).type === "string";
@@ -652,13 +701,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         timestamp,
         data: projectEventData(type, data),
       };
-      const events = [...session.snapshot.events, event];
-      session.eventBytes += Buffer.byteLength(JSON.stringify(event));
-      while (events.length > MAX_EVENTS || session.eventBytes > MAX_EVENT_BYTES) {
-        const removed = events.shift();
-        if (!removed) break;
-        session.eventBytes -= Buffer.byteLength(JSON.stringify(removed));
-      }
+      const retained = appendBoundedEvent(session.snapshot.events, session.eventBytes, event);
+      session.eventBytes = retained.bytes;
       const previousStatus = session.snapshot.status;
       session.snapshot = {
         ...session.snapshot,
@@ -668,7 +712,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             ? transitionAttentionState(previousStatus, "agentSettled")
             : previousStatus,
         lastActivityAt: timestamp,
-        events,
+        events: retained.events,
       };
       if (type === "agent_settled" && !session.sessionFileIdentity && session.snapshot.sessionFile && session.snapshot.piSessionId) {
         void Effect.runPromise(Effect.gen(function* () {
@@ -1644,10 +1688,16 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               return yield* Effect.fail(new SessionNotFoundError({ sessionId: session.snapshot.id }));
             }
             if (!TERMINAL_STATUSES.has(session.snapshot.status)) {
-              return yield* Effect.fail(new PiCommandError({
-                sessionId: session.snapshot.id,
-                message: "Stop the session before deleting it",
-              }));
+              session.resumeAfterRestart = false;
+              for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
+              session.interactiveTimers.clear();
+              session.snapshot = {
+                ...session.snapshot,
+                status: transitionAttentionState(session.snapshot.status, "stopRequested"),
+                interactiveRequests: [],
+                lastActivityAt: now(),
+              };
+              failPending(session, "Pi runtime was archived");
             }
             yield* terminate(session);
             if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
@@ -1656,6 +1706,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
                 message: "Pi process exit could not be confirmed; the session remains supervised",
               }));
             }
+            session.child = null;
             sessions.delete(session.snapshot.id);
             yield* persist();
             if (![...sessions.values()].some((candidate) => candidate.snapshot.workspaceId === session.snapshot.workspaceId)) {

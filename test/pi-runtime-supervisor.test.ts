@@ -10,11 +10,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
-import { WorkspaceId, type Workspace } from "../shared/domain.ts";
+import { WorkspaceId, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
 
 const decodeWorkspaceId = Schema.decodeUnknownSync(WorkspaceId);
 
@@ -148,6 +148,45 @@ function runtimeLayer(config: AppConfigShape, workspace: Workspace) {
   );
   return PiRuntimeSupervisorLive.pipe(Layer.provideMerge(dependencies));
 }
+
+test("completed messages survive noisy streams while redundant progress is coalesced", () => {
+  let events: ReadonlyArray<OwnedSessionEvent> = [];
+  let bytes = 0;
+  const append = (sequence: number, type: string, data: unknown) => {
+    const retained = appendBoundedEvent(events, bytes, {
+      sequence,
+      type,
+      timestamp: new Date(sequence * 1_000).toISOString(),
+      data,
+    });
+    events = retained.events;
+    bytes = retained.bytes;
+  };
+
+  append(1, "message_end", { message: { role: "user", content: [{ type: "text", text: "Keep my latest prompt" }] } });
+  append(2, "message_start", { message: { role: "assistant", content: [] } });
+  for (let sequence = 3; sequence <= 1_002; sequence += 1) {
+    append(sequence, "message_update", { assistantMessageEvent: { type: "text_delta", delta: "x" } });
+  }
+  assert.equal(events.length, 750);
+  assert.ok(events.some((event) => event.sequence === 1), "completed user messages are retained ahead of streaming noise");
+  assert.equal(events.at(-1)?.sequence, 1_002);
+
+  append(1_003, "tool_execution_start", { toolCallId: "tool-1", toolName: "bash", args: { command: "test" } });
+  append(1_004, "tool_execution_update", { toolCallId: "tool-1", toolName: "bash", partialResult: "partial" });
+  append(1_005, "tool_execution_update", { toolCallId: "tool-1", toolName: "bash", partialResult: "newer" });
+  assert.equal(events.filter((event) => event.type === "tool_execution_update").length, 1);
+  append(1_006, "tool_execution_end", { toolCallId: "tool-1", toolName: "bash", result: "done" });
+  append(1_007, "message_update", { assistantMessageEvent: { type: "text_delta", delta: "done" } });
+  append(1_008, "message_end", { message: { role: "assistant", content: [{ type: "text", text: "Done" }] } });
+
+  assert.equal(events.filter((event) => event.type === "message_update").length, 0);
+  assert.equal(events.filter((event) => event.type === "message_start").length, 0);
+  assert.equal(events.filter((event) => event.type === "tool_execution_update").length, 0);
+  assert.equal(events.filter((event) => event.type === "tool_execution_start").length, 0);
+  assert.deepEqual(events.filter((event) => event.type === "message_end").map((event) => event.sequence), [1, 1_008]);
+  assert.equal(events.find((event) => event.type === "tool_execution_end")?.sequence, 1_006);
+});
 
 test("bounded tool events retain lifecycle correlation identifiers", () => {
   const projected = projectEventData("tool_execution_update", {
@@ -296,23 +335,28 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             yield* Effect.sleep("10 millis");
             interactiveTimedOut = yield* supervisor.get(created.id);
           }
-          const second = yield* supervisor.create({ workspaceId, name: "Second" });
-          const activeRemovalResult = yield* supervisor.remove({ sessionId: created.id, runtimeId: created.runtimeId }).pipe(
+          const archived = yield* supervisor.create({ workspaceId, name: "Archived while active" });
+          const activeRemovalResult = yield* supervisor.remove({ sessionId: archived.id, runtimeId: archived.runtimeId }).pipe(
+            Effect.as("archived"),
+            Effect.catch((error) => Effect.succeed(error._tag)),
+          );
+          const archivedLookup = yield* supervisor.get(archived.id).pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
           );
-          yield* supervisor.stop({ sessionId: second.id, runtimeId: second.runtimeId });
+          const concurrentTarget = yield* supervisor.create({ workspaceId, name: "Concurrent archive" });
+          yield* supervisor.stop({ sessionId: concurrentTarget.id, runtimeId: concurrentTarget.runtimeId });
           const concurrentRemovalResults = yield* Effect.all([
-            supervisor.remove({ sessionId: second.id, runtimeId: second.runtimeId }).pipe(
+            supervisor.remove({ sessionId: concurrentTarget.id, runtimeId: concurrentTarget.runtimeId }).pipe(
               Effect.as("removed"),
               Effect.catch((error) => Effect.succeed(error._tag)),
             ),
-            supervisor.remove({ sessionId: second.id, runtimeId: second.runtimeId }).pipe(
+            supervisor.remove({ sessionId: concurrentTarget.id, runtimeId: concurrentTarget.runtimeId }).pipe(
               Effect.as("removed"),
               Effect.catch((error) => Effect.succeed(error._tag)),
             ),
           ], { concurrency: "unbounded" });
-          const removedLookup = yield* supervisor.get(second.id).pipe(
+          const removedLookup = yield* supervisor.get(concurrentTarget.id).pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
           );
@@ -355,7 +399,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, second, activeRemovalResult, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -393,9 +437,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.deepEqual(result.interactiveTimedOut.interactiveRequests, []);
     assert.match(result.interactiveTimedOut.error ?? "", /timed out/i);
     assert.equal(result.staleInteractive, "StaleRuntimeGenerationError");
-    assert.equal(result.second.workspaceId, result.current.workspaceId);
-    assert.equal(result.second.status, "idle");
-    assert.equal(result.activeRemovalResult, "PiCommandError");
+    assert.equal(result.archived.workspaceId, result.current.workspaceId);
+    assert.equal(result.archived.status, "idle");
+    assert.equal(result.activeRemovalResult, "archived");
+    assert.equal(result.archivedLookup, "SessionNotFoundError");
     assert.deepEqual([...result.concurrentRemovalResults].sort(), ["SessionNotFoundError", "removed"]);
     assert.equal(result.removedLookup, "SessionNotFoundError");
     assert.equal(result.stopped.status, "stopped");

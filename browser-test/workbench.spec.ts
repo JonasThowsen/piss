@@ -208,12 +208,8 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       return;
     }
     if (session && path === `/api/sessions/${session.id}` && method === "DELETE") {
-      if (session.status !== "stopped" && session.status !== "crashed") {
-        await route.fulfill({ status: 409, json: { error: "Stop the session before deleting it" } });
-      } else {
-        sessions.splice(sessionIndex, 1);
-        await route.fulfill({ json: { deleted: true } });
-      }
+      sessions.splice(sessionIndex, 1);
+      await route.fulfill({ json: { deleted: true } });
       return;
     }
     if (session && path === `/api/sessions/${session.id}/mentions` && method === "GET") {
@@ -1030,13 +1026,13 @@ test("session drafts and delayed command failures stay scoped to their session",
   await expect(page.locator(".operation-error")).toContainText("simulated failure");
   await expect(page.locator(".outbox-message")).toContainText("command from first");
 
-  await page.getByRole("button", { name: "STOP SESSION" }).click();
-  await page.getByRole("dialog", { name: "Stop session?" }).getByRole("button", { name: "STOP SESSION" }).click();
   const firstSettings = page.getByRole("button", { name: "Session settings for First" });
   await firstSettings.click();
-  await page.getByRole("menuitem", { name: "DELETE" }).click();
+  await page.getByRole("menuitem", { name: "ARCHIVE" }).click();
   await expect(page.locator(".sidebar-scrim")).toHaveAttribute("inert", "");
-  await page.getByRole("dialog", { name: "Delete session?" }).getByRole("button", { name: "DELETE SESSION" }).click();
+  const archiveDialog = page.getByRole("dialog", { name: "Archive session?" });
+  await expect(archiveDialog).toContainText("will stop running and be removed from PISS");
+  await archiveDialog.getByRole("button", { name: "ARCHIVE SESSION" }).click();
   await expect(firstSettings).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => localStorage.getItem("piss:draft:session-1"))).toBeNull();
   await expect(page.locator(".brand b")).toHaveText("Second");
@@ -1199,64 +1195,44 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   const dimensions = await page.locator(".shell").evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
   expect(dimensions.scroll).toBe(dimensions.client);
   await modelDialog.getByRole("button", { name: "DONE" }).click();
-  const stopButton = page.getByRole("button", { name: "STOP SESSION" });
+  await expect(page.getByRole("button", { name: "STOP SESSION" })).toHaveCount(0);
   const sessionSettings = page.getByRole("button", { name: "Session settings for Desktop utility" });
   await sessionSettings.click();
-  await expect(page.getByRole("menuitem", { name: "DELETE" })).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  api.setStatus("stopping");
-  await expect(page.locator(".runtime-state")).toContainText("Stopping", { timeout: 5_000 });
-  await expect(stopButton).toHaveCount(0);
-  api.setStatus("crashed");
-  await expect(page.locator(".runtime-state")).toContainText("Crashed", { timeout: 5_000 });
-  await expect(stopButton).toHaveCount(0);
-  api.setStatus("finished");
-  await expect(stopButton).toBeVisible({ timeout: 5_000 });
-  await stopButton.click();
-  const stopDialog = page.getByRole("dialog", { name: "Stop session?" });
-  const closeStop = stopDialog.getByRole("button", { name: "Close" });
-  const cancelStop = stopDialog.getByRole("button", { name: "CANCEL" });
-  const confirmStop = stopDialog.getByRole("button", { name: "STOP SESSION" });
-  await expect(stopDialog).toContainText("will stop running");
-  await expect(stopDialog).toContainText("can be resumed in a new protected runtime generation");
+  const archiveButton = page.getByRole("menuitem", { name: "ARCHIVE" });
+  await expect(archiveButton).toBeVisible();
+  await archiveButton.click();
+  const archiveDialog = page.getByRole("dialog", { name: "Archive session?" });
+  const closeArchive = archiveDialog.getByRole("button", { name: "Close" });
+  const cancelArchive = archiveDialog.getByRole("button", { name: "CANCEL" });
+  const confirmArchive = archiveDialog.getByRole("button", { name: "ARCHIVE SESSION" });
+  await expect(archiveDialog).toContainText("will stop running and be removed from PISS");
+  await expect(archiveDialog).toContainText("conversation file will remain on disk for recovery");
   await expect(page.locator(".masthead")).toHaveAttribute("inert", "");
   await expect(page.locator(".rail")).toHaveAttribute("inert", "");
   await expect(page.locator(".workspace")).toHaveAttribute("inert", "");
-  await expect(cancelStop).toBeFocused();
-  await closeStop.focus();
+  await expect(cancelArchive).toBeFocused();
+  await closeArchive.focus();
   await page.keyboard.press("Shift+Tab");
-  await expect(confirmStop).toBeFocused();
+  await expect(confirmArchive).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(closeStop).toBeFocused();
+  await expect(closeArchive).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(stopDialog).toBeHidden();
-  await expect(stopButton).toBeFocused();
+  await expect(archiveDialog).toBeHidden();
+  await expect(sessionSettings).toBeFocused();
 
-  await stopButton.click();
-  await stopDialog.getByRole("button", { name: "STOP SESSION" }).click();
-  await expect.poll(() => api.commands.at(-1)?.action).toBe("stop");
-  await expect(stopButton).toHaveCount(0);
-  await expect(page.getByLabel("Message Pi")).toBeDisabled();
-  await expect(page.locator(".brand")).toBeFocused();
+  api.setStatus("stopped");
+  await expect(page.locator(".runtime-state")).toContainText("Stopped", { timeout: 5_000 });
   const resumeButton = page.getByRole("button", { name: "RESUME SESSION" });
   await expect(resumeButton).toBeVisible();
   await resumeButton.click();
   await expect(page.getByLabel("Message Pi")).toBeEnabled();
-  await expect(stopButton).toBeVisible();
-  await stopButton.click();
-  await page.getByRole("dialog", { name: "Stop session?" }).getByRole("button", { name: "STOP SESSION" }).click();
 
   await sessionSettings.click();
-  const deleteButton = page.getByRole("menuitem", { name: "DELETE" });
-  await expect(deleteButton).toBeVisible();
-  await deleteButton.click();
-  const deleteDialog = page.getByRole("dialog", { name: "Delete session?" });
-  await expect(deleteDialog).toContainText("removed from PISS");
-  await expect(deleteDialog).toContainText("conversation file will remain on disk");
-  await deleteDialog.getByRole("button", { name: "DELETE SESSION" }).click();
-  await expect(deleteDialog).toBeHidden();
+  await page.getByRole("menuitem", { name: "ARCHIVE" }).click();
+  await page.getByRole("dialog", { name: "Archive session?" }).getByRole("button", { name: "ARCHIVE SESSION" }).click();
+  await expect(archiveDialog).toBeHidden();
   await expect(sessionSettings).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Desktop utility.*stopped/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Desktop utility/i })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No session selected" })).toBeVisible();
   await expect(page.locator(".brand")).toBeFocused();
 });

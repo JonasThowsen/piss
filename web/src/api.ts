@@ -142,7 +142,7 @@ export function renameOwnedSession(sessionId: string, runtimeId: string, name: s
   );
 }
 
-export function deleteOwnedSession(sessionId: string, runtimeId: string) {
+export function archiveOwnedSession(sessionId: string, runtimeId: string) {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}?runtimeId=${encodeURIComponent(runtimeId)}`, {
     method: "DELETE",
   }).pipe(Effect.asVoid);

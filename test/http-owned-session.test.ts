@@ -532,11 +532,22 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
       headers: { Origin: origin, ...identityHeaders },
     });
     assert.equal(staleDelete.status, 409);
-    const activeDelete = await fetch(`${base}/api/sessions/${created.session.id}?runtimeId=${created.session.runtimeId}`, {
+    const archiveTargetResponse = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ workspaceId: createdWorkspace.workspace.id, name: "Archive while active" }),
+    });
+    if (archiveTargetResponse.status !== 201) assert.fail(`Archive target creation failed: ${await archiveTargetResponse.text()}`);
+    const archiveTarget = await archiveTargetResponse.json() as { session: { id: string; runtimeId: string; status: string } };
+    assert.equal(archiveTarget.session.status, "idle");
+    const activeArchive = await fetch(`${base}/api/sessions/${archiveTarget.session.id}?runtimeId=${archiveTarget.session.runtimeId}`, {
       method: "DELETE",
       headers: { Origin: origin, ...identityHeaders },
     });
-    assert.equal(activeDelete.status, 409);
+    if (activeArchive.status !== 200) assert.fail(`Active session archive failed: ${await activeArchive.text()}`);
+    assert.deepEqual(await activeArchive.json(), { deleted: true });
+    const archivedDetail = await fetch(`${base}/api/sessions/${archiveTarget.session.id}`, { headers: identityHeaders });
+    assert.equal(archivedDetail.status, 404);
 
     const stale = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
       method: "POST",

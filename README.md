@@ -20,7 +20,7 @@ https://piss.<tailnet>.ts.net
 - Browser-created trusted workspaces and multiple supervised Pi sessions
 - Durable session metadata and validated resume from Pi JSONL transcripts
 - Native conversation and tool-event timelines
-- Prompt, steer, follow-up, abort, stop, and resume controls
+- Prompt, steer, follow-up, abort, archive, and resume controls
 - Runtime-generation and command-ID protection against stale or duplicate delivery
 - Model, thinking-level, context, usage, queue, and compaction controls
 - Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)

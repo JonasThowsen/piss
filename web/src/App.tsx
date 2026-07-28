@@ -7,7 +7,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { acknowledgeOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteOwnedSession, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel } from "./api.ts";
+import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
@@ -117,10 +117,6 @@ function displayStatus(status: OwnedSessionSummary["status"]): string {
   return status;
 }
 
-function canDeleteSession(status: OwnedSessionSummary["status"]): boolean {
-  return status === "stopped" || status === "crashed";
-}
-
 const modelOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 function newestModelsFirst(left: AvailableModel, right: AvailableModel): number {
@@ -195,12 +191,11 @@ export function App() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
-  const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<OwnedSessionSummary>();
-  const [deletePending, setDeletePending] = useState(false);
-  const [deleteError, setDeleteError] = useState<string>();
+  const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
+  const [archivePending, setArchivePending] = useState(false);
+  const [archiveError, setArchiveError] = useState<string>();
   const [renameSessionTarget, setRenameSessionTarget] = useState<OwnedSessionSummary>();
   const [renameWorkspaceTarget, setRenameWorkspaceTarget] = useState<Workspace>();
   const [removeWorkspaceTarget, setRemoveWorkspaceTarget] = useState<Workspace>();
@@ -262,9 +257,8 @@ export function App() {
   const creatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceCreatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const modelReturnFocusRef = useRef<HTMLElement | null>(null);
-  const stopReturnFocusRef = useRef<HTMLElement | null>(null);
   const compactionReturnFocusRef = useRef<HTMLElement | null>(null);
-  const deleteReturnFocusRef = useRef<HTMLElement | null>(null);
+  const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceActionReturnFocusRef = useRef<HTMLElement | null>(null);
   const creatorOpeningRef = useRef(false);
@@ -332,10 +326,9 @@ export function App() {
     setReviewState(undefined);
     setActiveView("agent");
     setModelDialogOpen(false);
-    setStopDialogOpen(false);
     setCompactionDialogOpen(false);
     setDetailsOpen(false);
-    setDeleteTarget(undefined);
+    setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
     setSelectedSessionId(sessionId);
     setSelectedSession(undefined);
@@ -399,9 +392,9 @@ export function App() {
   }, []);
 
   const globalPickerHotkeyEnabled = !globalPickerOpen
-    && !creatorOpen && !workspaceCreatorOpen && !modelDialogOpen && !stopDialogOpen && !compactionDialogOpen
+    && !creatorOpen && !workspaceCreatorOpen && !modelDialogOpen && !compactionDialogOpen
     && !selectedSession?.interactiveRequests[0] && !(isMobile && mentionMenu)
-    && !deleteTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
+    && !archiveTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
 
   useHotkey(HOTKEYS.openGlobalPicker, () => openGlobalPicker(), {
     enabled: Boolean(globalPickerHotkeyEnabled),
@@ -1232,26 +1225,26 @@ export function App() {
     else if (canAcceptPrompt(selectedSession.status)) void command("prompt");
   };
 
-  const deleteSession = async () => {
-    if (!deleteTarget || deletePending || !canDeleteSession(deleteTarget.status)) return;
-    setDeletePending(true);
-    setDeleteError(undefined);
+  const archiveSession = async () => {
+    if (!archiveTarget || archivePending) return;
+    setArchivePending(true);
+    setArchiveError(undefined);
     try {
-      await Effect.runPromise(deleteOwnedSession(deleteTarget.id, deleteTarget.runtimeId));
-      sessionUiStatesRef.current.delete(deleteTarget.id);
-      removeDraft(deleteTarget.id);
+      await Effect.runPromise(archiveOwnedSession(archiveTarget.id, archiveTarget.runtimeId));
+      sessionUiStatesRef.current.delete(archiveTarget.id);
+      removeDraft(archiveTarget.id);
       if (state._tag === "Ready") {
-        const remaining = state.sessions.filter((session) => session.id !== deleteTarget.id);
-        const nextInWorkspace = remaining.find((session) => session.workspaceId === deleteTarget.workspaceId);
+        const remaining = state.sessions.filter((session) => session.id !== archiveTarget.id);
+        const nextInWorkspace = remaining.find((session) => session.workspaceId === archiveTarget.workspaceId);
         setState({ ...state, sessions: remaining });
-        if (selectedSessionIdRef.current === deleteTarget.id) selectSession(nextInWorkspace?.id ?? remaining[0]?.id, false);
+        if (selectedSessionIdRef.current === archiveTarget.id) selectSession(nextInWorkspace?.id ?? remaining[0]?.id, false);
       }
-      setDeleteTarget(undefined);
+      setArchiveTarget(undefined);
       void refresh(false);
     } catch (cause) {
-      setDeleteError(errorMessage(cause));
+      setArchiveError(errorMessage(cause));
     } finally {
-      setDeletePending(false);
+      setArchivePending(false);
     }
   };
 
@@ -1268,7 +1261,7 @@ export function App() {
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem ? "offline" : state._tag === "Loading" ? "syncing" : "live";
   const networkLabel = networkState === "offline" ? "OFFLINE" : networkState === "syncing" ? "SYNCING" : "LIVE";
-  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || stopDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || Boolean(slashCommandMenu) || (isMobile && Boolean(mentionMenu)) || Boolean(deleteTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
+  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || Boolean(slashCommandMenu) || (isMobile && Boolean(mentionMenu)) || Boolean(archiveTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1359,11 +1352,11 @@ export function App() {
                           renameSessionReturnFocusRef.current = returnFocus;
                           setRenameSessionTarget(session);
                         } },
-                        ...(canDeleteSession(session.status) ? [{ label: "DELETE", danger: true, onSelect: (returnFocus: HTMLElement) => {
-                          deleteReturnFocusRef.current = returnFocus;
-                          setDeleteError(undefined);
-                          setDeleteTarget(session);
-                        } }] : []),
+                        { label: "ARCHIVE", danger: true, onSelect: (returnFocus) => {
+                          archiveReturnFocusRef.current = returnFocus;
+                          setArchiveError(undefined);
+                          setArchiveTarget(session);
+                        } },
                       ]}
                     />
                   </div>;
@@ -1649,7 +1642,6 @@ export function App() {
                 {selectedSession.status === "working" && <button className="abort" disabled={busy} onClick={() => void command("abort")} type="button"><Square aria-hidden="true" /> ABORT RUN</button>}
                 <button className="model-trigger" disabled={busy || !canConfigure} onClick={(event) => { modelReturnFocusRef.current = event.currentTarget; setModelDialogOpen(true); }} title={canConfigure ? "Change model and thinking level" : "Model changes are available when Pi is idle"} type="button">MODEL</button>
                 {(selectedSession.status === "stopped" || selectedSession.status === "crashed") && selectedSession.sessionFile && <button className="end-runtime" disabled={busy} onClick={() => void resumeSession()} type="button">{busy ? "RESUMING…" : "RESUME SESSION"}</button>}
-                {selectedSession.status !== "stopped" && selectedSession.status !== "stopping" && selectedSession.status !== "crashed" && <button className="end-runtime" disabled={busy} onClick={(event) => { stopReturnFocusRef.current = event.currentTarget; setStopDialogOpen(true); }} type="button">STOP SESSION</button>}
               </div>
               <span className={`runtime-state ${displayStatus(selectedSession.status)}`}><i />{ATTENTION_STATE_LABELS[selectedSession.status]}</span>
               <span className="sr-only" aria-live="polite">{selectedSession.name} is {ATTENTION_STATE_LABELS[selectedSession.status]}</span>
@@ -1790,25 +1782,15 @@ export function App() {
         }}
       />}
 
-      {deleteTarget && <DeleteSessionDialog
-        sessionName={deleteTarget.name}
-        pending={deletePending}
-        error={deleteError}
-        returnFocus={deleteReturnFocusRef.current}
+      {archiveTarget && <ArchiveSessionDialog
+        sessionName={archiveTarget.name}
+        active={archiveTarget.status !== "stopped" && archiveTarget.status !== "crashed"}
+        pending={archivePending}
+        error={archiveError}
+        returnFocus={archiveReturnFocusRef.current}
         fallbackFocus={sessionHeadingRef.current}
-        onClose={() => { if (!deletePending) setDeleteTarget(undefined); }}
-        onConfirm={() => void deleteSession()}
-      />}
-
-      {stopDialogOpen && selectedSession && <StopSessionDialog
-        sessionName={selectedSession.name}
-        returnFocus={stopReturnFocusRef.current}
-        fallbackFocus={sessionHeadingRef.current}
-        onClose={() => setStopDialogOpen(false)}
-        onConfirm={() => {
-          setStopDialogOpen(false);
-          void command("stop");
-        }}
+        onClose={() => { if (!archivePending) setArchiveTarget(undefined); }}
+        onConfirm={() => void archiveSession()}
       />}
 
       {compactionDialogOpen && selectedSession && <CompactionDialog
@@ -2182,8 +2164,9 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
   </div>;
 }
 
-function DeleteSessionDialog({ sessionName, pending, error, returnFocus, fallbackFocus, onClose, onConfirm }: {
+function ArchiveSessionDialog({ sessionName, active, pending, error, returnFocus, fallbackFocus, onClose, onConfirm }: {
   readonly sessionName: string;
+  readonly active: boolean;
   readonly pending: boolean;
   readonly error?: string;
   readonly returnFocus: HTMLElement | null;
@@ -2217,13 +2200,13 @@ function DeleteSessionDialog({ sessionName, pending, error, returnFocus, fallbac
   }, [fallbackFocus, returnFocus]);
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" ref={dialog}>
-      <header><div><b id="delete-session-title">Delete session?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
+    <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-session-title" ref={dialog}>
+      <header><div><b id="archive-session-title">Archive session?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
-        <p><b>{sessionName}</b> will be removed from PISS. Its Pi conversation file will remain on disk.</p>
+        <p><b>{sessionName}</b>{active ? " will stop running and" : " will"} be removed from PISS. Its Pi conversation file will remain on disk for recovery.</p>
         {error && <div className="dialog-error" role="alert">{error}</div>}
       </div>
-      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button" autoFocus>CANCEL</button><button className="danger" onClick={onConfirm} disabled={pending} type="button">{pending ? "DELETING…" : "DELETE SESSION"}</button></footer>
+      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button" autoFocus>CANCEL</button><button className="danger" onClick={onConfirm} disabled={pending} type="button">{pending ? "ARCHIVING…" : "ARCHIVE SESSION"}</button></footer>
     </section>
   </div>;
 }
@@ -2313,48 +2296,6 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
         {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>NO</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>YES</button></div>}
       </div>
       <footer><button className="cancel" disabled={pending} onClick={() => onRespond({ cancelled: true })} type="button">CANCEL</button>{request.method !== "confirm" && <button className="launch" disabled={pending || request.method === "select" && !value} onClick={submitValue} type="button">{pending ? "ANSWERING…" : "SUBMIT"}</button>}</footer>
-    </section>
-  </div>;
-}
-
-function StopSessionDialog({ sessionName, returnFocus, fallbackFocus, onClose, onConfirm }: {
-  readonly sessionName: string;
-  readonly returnFocus: HTMLElement | null;
-  readonly fallbackFocus: HTMLElement | null;
-  readonly onClose: () => void;
-  readonly onConfirm: () => void;
-}) {
-  const dialog = useRef<HTMLElement>(null);
-  const confirmedRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = confirmedRef.current || returnFocus?.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
-
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="stop-session-title" ref={dialog}>
-      <header><div><b id="stop-session-title">Stop session?</b></div><button onClick={onClose} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body">
-        <p><b>{sessionName}</b> will stop running. Pi’s conversation file remains on disk and can be resumed in a new protected runtime generation.</p>
-      </div>
-      <footer><button className="cancel" onClick={onClose} type="button" autoFocus>CANCEL</button><button className="danger" onClick={() => { confirmedRef.current = true; onConfirm(); }} type="button">STOP SESSION</button></footer>
     </section>
   </div>;
 }
