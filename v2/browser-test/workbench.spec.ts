@@ -116,9 +116,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       return;
     }
     if (path === "/api/v2/workspaces" && method === "POST") {
+      const name = typeof body?.name === "string" ? body.name : "new-project";
       const created = {
-        id: "new-project-deadbeef",
-        name: typeof body?.name === "string" ? body.name : "new-project",
+        id: `${name}-deadbeef`,
+        name,
         root: typeof body?.path === "string" ? body.path : "/home/jonas/coding/new-project",
         trustProjectResources: body?.trustProjectResources === true,
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -160,7 +161,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       const created: TestSession = {
         id: `session-${number}`,
         runtimeId: `runtime-${number}`,
-        workspaceId: workspace.id,
+        workspaceId: typeof body?.workspaceId === "string" ? body.workspaceId : workspace.id,
         name: typeof body?.name === "string" ? body.name : "New session",
         branch: "feat/browser-test",
         status: "finished",
@@ -356,6 +357,54 @@ test("empty first-run mobile state exposes workspace creation directly", async (
   await expect(page.getByRole("dialog", { name: "New workspace" })).toBeVisible();
 });
 
+test("long workspace paths keep their final directories visible", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page);
+  await page.goto("/");
+  const root = "/home/jonas/coding/worktrees/sirkusagio/deeply-nested/visible-tail";
+  await page.evaluate(async ({ root }) => {
+    await fetch("/api/v2/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "tail-project", path: root, trustProjectResources: true }),
+    });
+  }, { root });
+  await page.reload();
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+
+  const path = page.getByRole("button", { name: /tail-project.*visible-tail/i }).locator(".workspace-path");
+  await expect(path).toHaveText(root);
+  await expect(path).toHaveAttribute("title", root);
+  const clipping = await path.evaluate((element) => {
+    const text = element.querySelector("span")!.firstChild!;
+    const bounds = element.getBoundingClientRect();
+    const segmentBounds = (start: number, end: number) => {
+      const range = document.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, end);
+      return range.getBoundingClientRect();
+    };
+    const beginning = segmentBounds(0, "/home".length);
+    const tailStart = text.textContent!.lastIndexOf("visible-tail");
+    const tail = segmentBounds(tailStart, text.textContent!.length);
+    const intersects = (segment: DOMRect) => segment.right > bounds.left && segment.left < bounds.right;
+    return {
+      overflows: element.scrollWidth > element.clientWidth,
+      beginningVisible: intersects(beginning),
+      tailVisible: intersects(tail),
+      containerDirection: getComputedStyle(element).direction,
+      textDirection: getComputedStyle(element.querySelector("span")!).direction,
+    };
+  });
+  expect(clipping).toEqual({
+    overflows: true,
+    beginningVisible: false,
+    tailVisible: true,
+    containerDirection: "rtl",
+    textDirection: "ltr",
+  });
+});
+
 test("workspace creation stays stable and defaults project trust on", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installApi(page);
@@ -390,7 +439,7 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
   await expect(settingsMenu).toBeVisible();
   const menuBounds = await settingsMenu.evaluate((element) => {
     const menu = element.getBoundingClientRect();
-    const viewport = element.closest(".workspace-list")!.getBoundingClientRect();
+    const viewport = document.querySelector<HTMLElement>(".workspace-list")!.getBoundingClientRect();
     return { menuTop: menu.top, menuBottom: menu.bottom, viewportTop: viewport.top, viewportBottom: viewport.bottom };
   });
   expect(menuBounds.menuTop).toBeGreaterThanOrEqual(menuBounds.viewportTop - 1);
@@ -417,6 +466,73 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
   await expect(removeDialog).toBeHidden();
   await expect(page.getByRole("button", { name: /renamed-project.*home\/jonas\/coding\/new-project/i })).toHaveCount(0);
   await expect(page.locator(".brand")).toBeFocused();
+});
+
+test("session menus stay above neighboring controls and flip away from the sidebar edge", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    const createWorkspace = (name: string) => fetch("/api/v2/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, path: `/home/jonas/coding/${name}`, trustProjectResources: true }),
+    }).then((response) => response.json());
+    const target = await createWorkspace("target-project");
+    await fetch("/api/v2/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: target.workspace.id, name: "Edge session" }),
+    });
+    await createWorkspace("neighbor-project");
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+
+  const sessionSettings = page.getByRole("button", { name: "Session settings for Edge session" });
+  const neighboringSettings = page.getByRole("button", { name: "Workspace settings for neighbor-project" });
+  await sessionSettings.click();
+  const menu = page.getByRole("menu", { name: "Edge session session settings" });
+  await expect(menu).toBeVisible();
+  await expect(menu).not.toHaveClass(/open-upward/);
+  const overlap = await menu.evaluate((element, neighboringLabel) => {
+    const menuBounds = element.getBoundingClientRect();
+    const neighbor = document.querySelector<HTMLElement>(`[aria-label="${neighboringLabel}"]`)!;
+    const neighborBounds = neighbor.getBoundingClientRect();
+    const left = Math.max(menuBounds.left, neighborBounds.left);
+    const right = Math.min(menuBounds.right, neighborBounds.right);
+    const top = Math.max(menuBounds.top, neighborBounds.top);
+    const bottom = Math.min(menuBounds.bottom, neighborBounds.bottom);
+    const point = { x: (left + right) / 2, y: (top + bottom) / 2 };
+    return {
+      width: right - left,
+      height: bottom - top,
+      menuOwnsTopLayer: element.contains(document.elementFromPoint(point.x, point.y)),
+    };
+  }, "Workspace settings for neighbor-project");
+  expect(overlap.width).toBeGreaterThan(0);
+  expect(overlap.height).toBeGreaterThan(0);
+  expect(overlap.menuOwnsTopLayer).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 360 });
+  await sessionSettings.scrollIntoViewIfNeeded();
+  await expect(menu).toHaveClass(/open-upward/);
+  const edgeBounds = await menu.evaluate((element) => {
+    const menuBounds = element.getBoundingClientRect();
+    const triggerBounds = document.querySelector<HTMLElement>("[aria-label='Session settings for Edge session']")!.getBoundingClientRect();
+    const viewportBounds = document.querySelector<HTMLElement>(".workspace-list")!.getBoundingClientRect();
+    return {
+      menuTop: menuBounds.top,
+      menuBottom: menuBounds.bottom,
+      triggerTop: triggerBounds.top,
+      viewportTop: viewportBounds.top,
+      viewportBottom: viewportBounds.bottom,
+    };
+  });
+  expect(edgeBounds.menuTop).toBeLessThan(edgeBounds.triggerTop);
+  expect(edgeBounds.menuTop).toBeGreaterThanOrEqual(edgeBounds.viewportTop);
+  expect(edgeBounds.menuBottom).toBeLessThanOrEqual(edgeBounds.viewportBottom);
 });
 
 test("mobile workbench keeps creation, models, queues, and navigation functional", async ({ page }) => {

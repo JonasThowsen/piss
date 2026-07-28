@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import * as Effect from "effect/Effect";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -1086,7 +1087,7 @@ export function App() {
                   else next.add(workspace.id);
                   return next;
                 })} type="button" aria-expanded={!collapsed}>
-                  <i aria-hidden="true">›</i><span><b>{workspace.name}</b><small>{workspace.root}</small></span>
+                  <i aria-hidden="true">›</i><span><b>{workspace.name}</b><small className="workspace-path" title={workspace.root}><span>{workspace.root}</span></small></span>
                 </button>
                 <ActionMenu
                   className="workspace-actions"
@@ -1547,40 +1548,67 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
   readonly actions: ReadonlyArray<ActionMenuItem>;
 }) {
   const [open, setOpen] = useState(false);
-  const [openUpward, setOpenUpward] = useState(false);
+  const [placement, setPlacement] = useState<{ readonly top: number; readonly left: number; readonly opensUpward: boolean }>();
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     if (!open) return;
+    const viewport = container.current?.closest<HTMLElement>(".workspace-list");
     const place = () => {
       const triggerBounds = trigger.current?.getBoundingClientRect();
-      const menuHeight = menu.current?.getBoundingClientRect().height;
-      const viewportBounds = container.current?.closest(".workspace-list")?.getBoundingClientRect();
-      if (!triggerBounds || !menuHeight || !viewportBounds) return;
-      const roomAbove = triggerBounds.top - viewportBounds.top;
-      const roomBelow = viewportBounds.bottom - triggerBounds.bottom;
-      setOpenUpward(roomBelow < menuHeight + 3 && roomAbove > roomBelow);
+      const menuBounds = menu.current?.getBoundingClientRect();
+      const viewportBounds = viewport?.getBoundingClientRect();
+      if (!triggerBounds || !menuBounds || !viewportBounds) return;
+
+      const edgeGap = 4;
+      const menuGap = 3;
+      const viewportTop = Math.max(0, viewportBounds.top) + edgeGap;
+      const viewportBottom = Math.min(window.innerHeight, viewportBounds.bottom) - edgeGap;
+      const roomAbove = triggerBounds.top - menuGap - viewportTop;
+      const roomBelow = viewportBottom - triggerBounds.bottom - menuGap;
+      const opensUpward = roomBelow < menuBounds.height && roomAbove > roomBelow;
+      const naturalTop = opensUpward
+        ? triggerBounds.top - menuGap - menuBounds.height
+        : triggerBounds.bottom + menuGap;
+      const maximumTop = Math.max(viewportTop, viewportBottom - menuBounds.height);
+      const top = Math.min(Math.max(naturalTop, viewportTop), maximumTop);
+      const viewportLeft = Math.max(0, viewportBounds.left) + edgeGap;
+      const viewportRight = Math.min(window.innerWidth, viewportBounds.right) - edgeGap;
+      const maximumLeft = Math.max(viewportLeft, viewportRight - menuBounds.width);
+      const left = Math.min(Math.max(triggerBounds.right - menuBounds.width, viewportLeft), maximumLeft);
+
+      setPlacement((current) => current?.top === top && current.left === left && current.opensUpward === opensUpward
+        ? current
+        : { top, left, opensUpward });
     };
+
     place();
-    const viewport = container.current?.closest(".workspace-list");
+    const resizeObserver = new ResizeObserver(place);
+    if (trigger.current) resizeObserver.observe(trigger.current);
+    if (menu.current) resizeObserver.observe(menu.current);
+    if (viewport) resizeObserver.observe(viewport);
     window.addEventListener("resize", place);
     viewport?.addEventListener("scroll", place, { passive: true });
     return () => {
+      resizeObserver.disconnect();
       window.removeEventListener("resize", place);
       viewport?.removeEventListener("scroll", place);
     };
-  }, [open]);
+  }, [actions.length, open]);
 
   useEffect(() => {
     if (!open) return;
-    window.requestAnimationFrame(() => container.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus());
+    const containerElement = container.current;
+    const menuElement = menu.current;
+    window.requestAnimationFrame(() => menuElement?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus());
+    const contains = (node: Node | null) => Boolean(node && (containerElement?.contains(node) || menuElement?.contains(node)));
     const closeOutside = (event: MouseEvent) => {
-      if (!container.current?.contains(event.target as Node)) setOpen(false);
+      if (!contains(event.target as Node)) setOpen(false);
     };
     const closeOnFocusOut = (event: FocusEvent) => {
-      if (!container.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
+      if (!contains(event.relatedTarget as Node | null)) setOpen(false);
     };
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -1589,33 +1617,67 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
         trigger.current?.focus();
         return;
       }
-      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && container.current?.contains(document.activeElement)) {
+      const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [])];
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && current >= 0) {
         event.preventDefault();
-        const items = [...container.current.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-        const current = items.indexOf(document.activeElement as HTMLButtonElement);
         const offset = event.key === "ArrowDown" ? 1 : -1;
         items[(current + offset + items.length) % items.length]?.focus();
+        return;
+      }
+      if (event.key === "Tab" && current >= 0) {
+        const next = current + (event.shiftKey ? -1 : 1);
+        if (items[next]) {
+          event.preventDefault();
+          items[next].focus();
+          return;
+        }
+        event.preventDefault();
+        setOpen(false);
+        window.requestAnimationFrame(() => {
+          if (event.shiftKey) {
+            trigger.current?.focus();
+            return;
+          }
+          const focusable = [...document.querySelectorAll<HTMLElement>("button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
+            .filter((element) => !menu.current?.contains(element) && !element.closest("[inert]"));
+          const triggerIndex = trigger.current ? focusable.indexOf(trigger.current) : -1;
+          focusable[triggerIndex + 1]?.focus();
+        });
       }
     };
     document.addEventListener("mousedown", closeOutside);
     document.addEventListener("keydown", handleKey);
-    container.current?.addEventListener("focusout", closeOnFocusOut);
+    containerElement?.addEventListener("focusout", closeOnFocusOut);
+    menuElement?.addEventListener("focusout", closeOnFocusOut);
     return () => {
       document.removeEventListener("mousedown", closeOutside);
       document.removeEventListener("keydown", handleKey);
-      container.current?.removeEventListener("focusout", closeOnFocusOut);
+      containerElement?.removeEventListener("focusout", closeOnFocusOut);
+      menuElement?.removeEventListener("focusout", closeOnFocusOut);
     };
   }, [open]);
 
-  return <div className={className} ref={container}>
-    <button className={triggerClassName} ref={trigger} onClick={() => setOpen((current) => !current)} type="button" aria-label={triggerLabel} aria-haspopup="menu" aria-expanded={open}>⋯</button>
-    {open && <div className={`workspace-menu ${openUpward ? "open-upward" : ""}`} ref={menu} role="menu" aria-label={menuLabel}>
+  return <>
+    <div className={className} ref={container}>
+      <button className={triggerClassName} ref={trigger} onClick={() => {
+        setPlacement(undefined);
+        setOpen((current) => !current);
+      }} type="button" aria-label={triggerLabel} aria-haspopup="menu" aria-expanded={open}>⋯</button>
+    </div>
+    {open && createPortal(<div
+      className={`workspace-menu ${placement?.opensUpward ? "open-upward" : ""}`}
+      ref={menu}
+      role="menu"
+      aria-label={menuLabel}
+      style={{ top: placement?.top ?? 0, left: placement?.left ?? 0, visibility: placement ? "visible" : "hidden" }}
+    >
       {actions.map((action) => <button className={action.danger ? "danger" : undefined} key={action.label} type="button" role="menuitem" onClick={() => {
         setOpen(false);
         if (trigger.current) action.onSelect(trigger.current);
       }}>{action.label}</button>)}
-    </div>}
-  </div>;
+    </div>, document.body)}
+  </>;
 }
 
 function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onRenamed }: {
