@@ -48,6 +48,16 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL("./dist/public", import.meta.url)),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react/jsx-runtime", "react-dom", "react-dom/client"],
+          "base-ui": ["@base-ui/react"],
+          effect: ["effect"],
+          markdown: ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
   },
   server: {
     host: "127.0.0.1",
