@@ -449,7 +449,7 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(page.getByLabel("Message Pi")).toBeVisible();
 
   await page.getByLabel("Message Pi").focus();
-  await page.keyboard.press("Control+/");
+  await page.keyboard.press("Meta+k");
   const picker = page.getByRole("dialog", { name: "Sessions" });
   const search = picker.getByLabel("Search sessions");
   const options = picker.getByRole("option");
@@ -474,7 +474,7 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(picker).toHaveCount(0);
 
   await page.getByLabel("Message Pi").focus();
-  await page.keyboard.press("Control+/");
+  await page.keyboard.press("Meta+k");
   await expect(search).toBeFocused();
   await search.fill("auth feat");
   await expect(picker.getByRole("option", { name: /Authentication refactor.*feat\/browser-test/i })).toBeVisible();
