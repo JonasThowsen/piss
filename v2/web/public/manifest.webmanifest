@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "PISS V2 — Pi sin sidecar",
-  "short_name": "PISS V2",
+  "name": "PISS",
+  "short_name": "PISS",
   "description": "Private mobile control for owned Pi coding sessions",
   "start_url": "/",
   "scope": "/",

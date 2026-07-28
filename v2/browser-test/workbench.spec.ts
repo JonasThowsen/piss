@@ -1246,8 +1246,9 @@ test("production PWA caches one complete build, updates atomically, and preserve
     await page.evaluate(() => navigator.serviceWorker.ready);
     if (!await page.evaluate(() => navigator.serviceWorker.controller !== null)) await page.reload();
     await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
-    const manifest = await (await page.request.get(`${origin}/manifest.webmanifest`)).json() as { name: string; display: string; icons: unknown[] };
-    expect(manifest.name).toContain("PISS V2");
+    const manifest = await (await page.request.get(`${origin}/manifest.webmanifest`)).json() as { name: string; short_name: string; display: string; icons: unknown[] };
+    expect(manifest.name).toBe("PISS");
+    expect(manifest.short_name).toBe("PISS");
     expect(manifest.display).toBe("standalone");
     expect(manifest.icons).toHaveLength(2);
 
