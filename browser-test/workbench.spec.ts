@@ -708,12 +708,16 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   const viewportLayout = () => page.evaluate(() => {
     const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
     const shell = document.querySelector<HTMLElement>(".shell")!.getBoundingClientRect();
+    const workspace = document.querySelector<HTMLElement>(".workspace")!.getBoundingClientRect();
+    const deck = document.querySelector<HTMLElement>(".control-deck")!.getBoundingClientRect();
     const controls = document.querySelector<HTMLElement>(".control-meta")!.getBoundingClientRect();
     const composer = document.querySelector<HTMLElement>(".composer")!.getBoundingClientRect();
     return {
       configuredHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
       visibleHeight,
       shellBottom: shell.bottom,
+      workspaceBottom: workspace.bottom,
+      deckBottom: deck.bottom,
       controlsBottom: controls.bottom,
       composerBottom: composer.bottom,
     };
@@ -721,6 +725,8 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 700, configuredHeight: 700 });
   let layout = await viewportLayout();
   expect(layout.shellBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+  expect(layout.workspaceBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
+  expect(layout.deckBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
   expect(layout.composerBottom).toBeLessThan(layout.controlsBottom);
 
@@ -728,6 +734,8 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520 });
   layout = await viewportLayout();
   expect(layout.shellBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+  expect(layout.workspaceBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
+  expect(layout.deckBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
 });
 

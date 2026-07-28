@@ -1,3 +1,4 @@
+import { ArrowDown, ArrowUp, CornerDownLeft } from "lucide-react";
 import type { PiSlashCommand } from "../../shared/domain.ts";
 
 const SOURCE_LABELS: Readonly<Record<PiSlashCommand["source"], string>> = {
@@ -29,7 +30,7 @@ export function SlashCommandMenu({
     aria-label={hasOptions ? "Pi commands" : undefined}
     aria-live={hasOptions ? undefined : "polite"}
   >
-    <header><span><i aria-hidden="true">/</i><b>PI COMMANDS</b></span><small><kbd>↑↓</kbd> PICK <kbd>↵</kbd> INSERT</small></header>
+    <header><span><i aria-hidden="true">/</i><b>PI COMMANDS</b></span><small><kbd aria-label="Up Arrow"><ArrowUp aria-hidden="true" /></kbd><kbd aria-label="Down Arrow"><ArrowDown aria-hidden="true" /></kbd> PICK <kbd aria-label="Enter"><CornerDownLeft aria-hidden="true" /></kbd> INSERT</small></header>
     <div className="slash-command-results">
       {loading && <div className="slash-command-state"><i className="loading" />Reading this runtime’s commands…</div>}
       {!loading && error && <div className="slash-command-state error">{error}</div>}

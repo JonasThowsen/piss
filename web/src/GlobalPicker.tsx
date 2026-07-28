@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, CornerDownLeft, ExternalLink, Search, X } from "lucide-react";
 import { pickerNavigationOffset, searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
 export function GlobalPicker<Action>({
@@ -130,7 +130,7 @@ export function GlobalPicker<Action>({
           {item.meta && <em>{item.meta}</em>}
         </button>)}
       </div>
-      <footer><span><kbd>↑</kbd><kbd>↓</kbd><kbd>C-N</kbd><kbd>C-P</kbd> MOVE</span><span><kbd>↵</kbd> OPEN</span><b>{matches.length} / {items.length}</b></footer>
+      <footer><span><kbd aria-label="Up Arrow"><ArrowUp aria-hidden="true" /></kbd><kbd aria-label="Down Arrow"><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> MOVE</span><span><kbd aria-label="Enter"><CornerDownLeft aria-hidden="true" /></kbd> OPEN</span><b>{matches.length} / {items.length}</b></footer>
     </section>
   </div>, document.body);
 }
