@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactElement, type ReactNode, type RefObject } from "react";
 import * as Effect from "effect/Effect";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
+import { Collapsible } from "@base-ui/react/collapsible";
+import { Combobox } from "@base-ui/react/combobox";
+import { Dialog } from "@base-ui/react/dialog";
+import { Drawer } from "@base-ui/react/drawer";
+import { Menu as BaseMenu } from "@base-ui/react/menu";
+import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
 import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
@@ -57,7 +63,6 @@ type SlashCommandMenuState = {
   readonly commands: ReadonlyArray<SlashCommandItem>;
   readonly loading: boolean;
   readonly error?: string;
-  readonly highlighted: number;
 };
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -224,6 +229,7 @@ export function App() {
   const [updateRegistration, setUpdateRegistration] = useState<ServiceWorkerRegistration>();
   const notifications = useNotifications();
   const previousMobileLayoutRef = useRef(isMobile);
+  const isMobileRef = useRef(isMobile);
   const selectedSessionIdRef = useRef<string | undefined>(undefined);
   const requestedSessionIdRef = useRef(new URLSearchParams(window.location.search).get("session") ?? undefined);
   const workspaceIdRef = useRef<string | undefined>(undefined);
@@ -235,13 +241,14 @@ export function App() {
   const timelinePointerScrollingRef = useRef(false);
   const timelineTouchYRef = useRef<number | undefined>(undefined);
   const composerRef = useRef<HTMLDivElement>(null);
-  const mentionPickerRef = useRef<HTMLElement>(null);
-  const slashCommandPickerRef = useRef<HTMLElement>(null);
+  const mentionSearchInputRef = useRef<HTMLInputElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionReturnCursorRef = useRef<number | undefined>(undefined);
   const mentionSearchTimerRef = useRef(0);
   const copyFeedbackTimerRef = useRef(0);
   const mentionSearchGenerationRef = useRef(0);
+  const lastMentionMenuRef = useRef<MentionMenuState | undefined>(undefined);
+  const requestMentionSearchRef = useRef<(active: ActiveFileMention, query: string) => void>(() => undefined);
   const slashCommandCatalogRef = useRef(new Map<string, ReadonlyArray<PiSlashCommand>>());
   const slashCommandRequestsRef = useRef(new Map<string, Promise<ReadonlyArray<PiSlashCommand>>>());
   const dismissedSlashCommandRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
@@ -249,11 +256,11 @@ export function App() {
   const suppressMentionSelectionRef = useRef(false);
   const imagesRef = useRef<ReadonlyArray<ComposerImage>>([]);
   const imageSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const railRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const sessionHeadingRef = useRef<HTMLDivElement>(null);
   const globalPickerReturnFocusRef = useRef<HTMLElement | null>(null);
-  const dialogRef = useRef<HTMLFormElement>(null);
+  const newSessionInputRef = useRef<HTMLInputElement>(null);
   const creatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceCreatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const modelReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -261,16 +268,15 @@ export function App() {
   const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceActionReturnFocusRef = useRef<HTMLElement | null>(null);
-  const creatorOpeningRef = useRef(false);
-  const operationBusyRef = useRef(false);
   const followingRef = useRef(true);
   const detailGeneration = useRef(0);
   const reviewGeneration = useRef(0);
   const sessionUiStatesRef = useRef(new Map<string, SessionUiState>());
   const currentSessionUiRef = useRef<SessionUiState>(emptySessionUiState());
   currentSessionUiRef.current = { commandText, images, delivery, busy, operationError, outbox };
+  isMobileRef.current = isMobile;
+  if (mentionMenu) lastMentionMenuRef.current = mentionMenu;
   imagesRef.current = images;
-  operationBusyRef.current = busy;
 
   const dismissMentionMenu = useCallback(() => {
     window.clearTimeout(mentionSearchTimerRef.current);
@@ -402,12 +408,6 @@ export function App() {
     meta: { name: "Search sessions", description: "Open the global picker" },
   });
 
-  useEffect(() => {
-    if (globalPickerOpen) return;
-    globalPickerReturnFocusRef.current?.focus();
-    globalPickerReturnFocusRef.current = null;
-  }, [globalPickerOpen]);
-
   useLayoutEffect(() => {
     const cursor = mentionReturnCursorRef.current;
     if (mentionMenu || cursor === undefined) return;
@@ -439,7 +439,11 @@ export function App() {
     const media = window.matchMedia("(max-width: 760px)");
     const updateLayout = () => {
       setIsMobile(media.matches);
-      if (!media.matches) setSidebarOpen(false);
+      if (!media.matches) {
+        setSidebarOpen(false);
+        const mention = lastMentionMenuRef.current;
+        if (mention) window.setTimeout(() => requestMentionSearchRef.current(mention.active, mention.active.query), 50);
+      }
     };
     media.addEventListener("change", updateLayout);
     return () => {
@@ -470,60 +474,9 @@ export function App() {
   }, [detailsOpen, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
 
   useEffect(() => {
-    if (!workspaceCreatorOpen) return;
-    window.requestAnimationFrame(() => { creatorOpeningRef.current = false; });
-  }, [workspaceCreatorOpen]);
-
-  useEffect(() => {
     if (modelDialogOpen && selectedSession && !canConfigureSession(selectedSession.status)) setModelDialogOpen(false);
     if (selectedSession && !isWritableRuntime(selectedSession.status)) dismissMentionMenu();
   }, [dismissMentionMenu, modelDialogOpen, selectedSession?.status]);
-
-  useEffect(() => {
-    if (!creatorOpen) return;
-    creatorOpeningRef.current = false;
-    window.requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>("input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)")?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !operationBusyRef.current) setCreatorOpen(false);
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [creatorOpen]);
-
-  useEffect(() => {
-    if (creatorOpen) return;
-    creatorReturnFocusRef.current?.focus();
-    creatorReturnFocusRef.current = null;
-  }, [creatorOpen]);
-
-  useEffect(() => {
-    if (!sidebarOpen || !isMobile || !railRef.current) return;
-    const rail = railRef.current;
-    const focusable = () => [...rail.querySelectorAll<HTMLElement>("button:not(:disabled), [href], [tabindex]:not([tabindex='-1'])")];
-    window.requestAnimationFrame(() => focusable()[0]?.focus());
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setSidebarOpen(false); return; }
-      if (event.key !== "Tab") return;
-      const controls = focusable();
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      if (!creatorOpeningRef.current) mobileMenuRef.current?.focus();
-    };
-  }, [sidebarOpen, isMobile]);
 
   const timeline = useMemo(() => eventTimeline(selectedSession?.events ?? []), [selectedSession]);
 
@@ -621,56 +574,19 @@ export function App() {
   }, [mentionMenu?.highlighted, mentionMenu?.mentions]);
 
   useEffect(() => {
-    if (!slashCommandMenu || matchingSlashCommands.length === 0) return;
-    if (slashCommandMenu.highlighted >= matchingSlashCommands.length) {
-      setSlashCommandMenu((current) => current ? { ...current, highlighted: Math.max(0, matchingSlashCommands.length - 1) } : current);
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      document.getElementById(`pi-command-${slashCommandMenu.highlighted}`)?.scrollIntoView({ block: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [matchingSlashCommands.length, slashCommandMenu?.highlighted]);
-
-  useEffect(() => {
     const wasMobile = previousMobileLayoutRef.current;
     previousMobileLayoutRef.current = isMobile;
-    if (wasMobile && !isMobile && mentionMenu) {
-      const cursor = mentionMenu.active.end;
-      window.requestAnimationFrame(() => {
+    const rotatingMention = mentionMenu ?? lastMentionMenuRef.current;
+    if (wasMobile && !isMobile && rotatingMention) {
+      const active = rotatingMention.active;
+      const cursor = active.end;
+      window.setTimeout(() => requestMentionSearchRef.current(active, active.query), 50);
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
         composerTextareaRef.current?.focus();
         composerTextareaRef.current?.setSelectionRange(cursor, cursor);
-      });
+      }));
     }
   }, [isMobile, mentionMenu?.active.end]);
-
-  useEffect(() => {
-    if (!isMobile || !mentionMenu || !mentionPickerRef.current) return;
-    const picker = mentionPickerRef.current;
-    window.requestAnimationFrame(() => picker.querySelector<HTMLInputElement>("input")?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        const cursor = mentionMenu.active.end;
-        dismissMentionMenu();
-        window.requestAnimationFrame(() => {
-          composerTextareaRef.current?.focus();
-          composerTextareaRef.current?.setSelectionRange(cursor, cursor);
-        });
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const controls = [...picker.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [dismissMentionMenu, isMobile, mentionMenu?.active.end]);
 
   useEffect(() => () => {
     window.clearTimeout(mentionSearchTimerRef.current);
@@ -701,6 +617,8 @@ export function App() {
       );
     }, 100);
   }, [selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
+
+  requestMentionSearchRef.current = requestMentionSearch;
 
   const scheduleMentionSearch = useCallback((text: string, cursor: number) => {
     const completed = completedMentionRef.current;
@@ -742,7 +660,6 @@ export function App() {
       runtimeId,
       commands: cached ? slashCommandCatalog(cached) : (current?.runtimeId === runtimeId ? current.commands : slashCommandCatalog([])),
       loading: !cached,
-      highlighted: 0,
     }));
     if (cached) return;
 
@@ -756,13 +673,13 @@ export function App() {
         slashCommandRequestsRef.current.delete(runtimeId);
         slashCommandCatalogRef.current.set(runtimeId, commands);
         setSlashCommandMenu((current) => current?.runtimeId === runtimeId
-          ? { ...current, commands: slashCommandCatalog(commands), loading: false, highlighted: 0 }
+          ? { ...current, commands: slashCommandCatalog(commands), loading: false }
           : current);
       },
       (cause) => {
         slashCommandRequestsRef.current.delete(runtimeId);
         setSlashCommandMenu((current) => current?.runtimeId === runtimeId
-          ? { ...current, commands: slashCommandCatalog([]), loading: false, error: errorMessage(cause), highlighted: 0 }
+          ? { ...current, commands: slashCommandCatalog([]), loading: false, error: errorMessage(cause) }
           : current);
       },
     );
@@ -804,8 +721,11 @@ export function App() {
     setCommandText(applied.text);
     setSlashCommandMenu(undefined);
     window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(applied.cursor, applied.cursor);
+      setCommandText((current) => current === `/${item.name}` ? `${current} ` : current);
+      window.requestAnimationFrame(() => {
+        composerTextareaRef.current?.focus();
+        composerTextareaRef.current?.setSelectionRange(applied.cursor, applied.cursor);
+      });
     });
   };
 
@@ -844,11 +764,12 @@ export function App() {
     const { start, end } = mentionMenu.active;
     const next = `${commandText.slice(0, start)}${commandText.slice(end)}`;
     setCommandText(next);
+    mentionReturnCursorRef.current = start;
     dismissMentionMenu();
-    window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       composerTextareaRef.current?.focus();
       composerTextareaRef.current?.setSelectionRange(start, start);
-    });
+    }));
   };
 
   const closeMentionPicker = () => {
@@ -923,7 +844,6 @@ export function App() {
   };
 
   const openWorkspaceCreator = () => {
-    creatorOpeningRef.current = true;
     workspaceCreatorReturnFocusRef.current = isMobile && sidebarOpen
       ? mobileMenuRef.current
       : document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -932,7 +852,6 @@ export function App() {
   };
 
   const openCreator = (nextWorkspaceId: string) => {
-    creatorOpeningRef.current = true;
     creatorReturnFocusRef.current = isMobile && sidebarOpen
       ? mobileMenuRef.current
       : document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1240,6 +1159,9 @@ export function App() {
         if (selectedSessionIdRef.current === archiveTarget.id) selectSession(nextInWorkspace?.id ?? remaining[0]?.id, false);
       }
       setArchiveTarget(undefined);
+      window.requestAnimationFrame(() => {
+        if (!archiveReturnFocusRef.current?.isConnected) sessionHeadingRef.current?.focus();
+      });
       void refresh(false);
     } catch (cause) {
       setArchiveError(errorMessage(cause));
@@ -1261,13 +1183,16 @@ export function App() {
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem ? "offline" : state._tag === "Loading" ? "syncing" : "live";
   const networkLabel = networkState === "offline" ? "OFFLINE" : networkState === "syncing" ? "SYNCING" : "LIVE";
-  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || Boolean(slashCommandMenu) || (isMobile && Boolean(mentionMenu)) || Boolean(archiveTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
-    <div className="shell">
-      <header className="masthead" inert={blockingDialogOpen ? true : undefined}>
-        <button className="mobile-menu" ref={mobileMenuRef} onClick={() => setSidebarOpen((open) => !open)} aria-label="Open workspaces and sessions" aria-expanded={sidebarOpen}><Menu aria-hidden="true" /></button>
+    <Drawer.Root open={isMobile ? sidebarOpen : true} modal={isMobile} swipeDirection="left" onOpenChange={(open, details) => {
+      if (!isMobile) { details.cancel(); return; }
+      setSidebarOpen(open);
+    }}>
+    <div className="shell" ref={shellRef}>
+      <header className="masthead">
+        <Drawer.Trigger className="mobile-menu" ref={mobileMenuRef} aria-label="Open workspaces and sessions"><Menu aria-hidden="true" /></Drawer.Trigger>
         <div className={`brand ${selectedSession ? "session-brand" : ""}`} title={selectedWorkspace?.root} ref={sessionHeadingRef} tabIndex={-1}>
           {selectedSession && <>
             <span className="brand-mark">π</span>
@@ -1282,8 +1207,10 @@ export function App() {
         <div className={`network ${networkState}`} role="status"><i />{networkLabel}</div>
       </header>
 
-      <button className={`sidebar-scrim ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} aria-label="Close navigation" inert={blockingDialogOpen ? true : undefined} tabIndex={sidebarOpen && !blockingDialogOpen ? 0 : -1} />
-      <aside className={`rail ${sidebarOpen ? "mobile-open" : ""}`} aria-hidden={isMobile && !sidebarOpen} inert={(isMobile && !sidebarOpen) || blockingDialogOpen ? true : undefined} ref={railRef} aria-label="Workspaces and sessions">
+      <Drawer.Portal container={isMobile ? undefined : shellRef}>
+      <Drawer.Backdrop className={`sidebar-scrim ${sidebarOpen ? "visible" : ""}`} />
+      <Drawer.Popup className={`rail ${sidebarOpen ? "mobile-open" : ""}`} role={isMobile ? "dialog" : "complementary"} initialFocus={true} finalFocus={mobileMenuRef} render={<aside aria-label="Workspaces and sessions" />}>
+        <Drawer.Close className="sr-only">Close navigation</Drawer.Close>
         <div className="rail-label">
           <span>WORKSPACES</span>
           <button className="add-workspace" onClick={openWorkspaceCreator} type="button" aria-label="Create workspace" title="Create workspace"><Plus aria-hidden="true" /></button>
@@ -1306,15 +1233,16 @@ export function App() {
             const sessions = state.sessions.filter((session) => session.workspaceId === workspace.id);
             const collapsed = collapsedWorkspaceIds.has(workspace.id);
             return <section className={`workspace-group ${collapsed ? "collapsed" : ""}`} key={workspace.id}>
+              <Collapsible.Root open={!collapsed} onOpenChange={(open) => setCollapsedWorkspaceIds((current) => {
+                const next = new Set(current);
+                if (open) next.delete(workspace.id);
+                else next.add(workspace.id);
+                return next;
+              })}>
               <header className="workspace-heading">
-                <button className="workspace-toggle" onClick={() => setCollapsedWorkspaceIds((current) => {
-                  const next = new Set(current);
-                  if (current.has(workspace.id)) next.delete(workspace.id);
-                  else next.add(workspace.id);
-                  return next;
-                })} type="button" aria-expanded={!collapsed}>
+                <Collapsible.Trigger className="workspace-toggle">
                   <i aria-hidden="true"><ChevronRight /></i><span><b>{workspace.name}</b><small className="workspace-path" title={workspace.root}><span>{workspace.root}</span></small></span>
-                </button>
+                </Collapsible.Trigger>
                 <ActionMenu
                   className="workspace-actions"
                   triggerClassName="workspace-menu-trigger"
@@ -1333,7 +1261,7 @@ export function App() {
                 />
                 <button className="add-session" onClick={() => openCreator(workspace.id)} title={`New session in ${workspace.name}`} aria-label={`New session in ${workspace.name}`} type="button"><Plus aria-hidden="true" /></button>
               </header>
-              {!collapsed && <div className="session-list">
+              <Collapsible.Panel className="session-list">
                 {sessions.length === 0 && <div className="empty-workspace">No sessions</div>}
                 {sessions.map((session) => {
                   const status = displayStatus(session.status);
@@ -1361,28 +1289,26 @@ export function App() {
                     />
                   </div>;
                 })}
-              </div>}
+              </Collapsible.Panel>
+              </Collapsible.Root>
             </section>;
           })}
         </div>
-      </aside>
+      </Drawer.Popup>
+      </Drawer.Portal>
 
-      <main className="workspace" inert={(isMobile && sidebarOpen) || blockingDialogOpen ? true : undefined}>
+      <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
-        {selectedSession ? <div className="session-view">
-          <nav className="capability-tabs" aria-label="Session views" role="tablist" onKeyDown={(event) => {
-            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-            event.preventDefault();
-            const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=tab]")];
-            const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
-            const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-            tabs[next]?.focus();
-            tabs[next]?.click();
-          }}>
-            <button className={activeView === "agent" ? "active" : ""} onClick={() => setActiveView("agent")} type="button" role="tab" tabIndex={activeView === "agent" ? 0 : -1} aria-selected={activeView === "agent"} aria-controls="session-view-panel"><Bot aria-hidden="true" /> Agent</button>
-            <button className={activeView === "changes" ? "active" : ""} onClick={() => { setActiveView("changes"); void requestReview(selectedSession); }} type="button" role="tab" tabIndex={activeView === "changes" ? 0 : -1} aria-selected={activeView === "changes"} aria-controls="session-view-panel"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && reviewState.snapshot.totalFiles > 0 && <em>{reviewState.snapshot.totalFiles}</em>}</button>
-          </nav>
-          <div className="timeline-wrap">
+        {selectedSession ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
+          const next = value as "agent" | "changes";
+          setActiveView(next);
+          if (next === "changes") void requestReview(selectedSession);
+        }}>
+          <Tabs.List className="capability-tabs" aria-label="Session views">
+            <Tabs.Tab className={activeView === "agent" ? "active" : ""} value="agent"><Bot aria-hidden="true" /> Agent</Tabs.Tab>
+            <Tabs.Tab className={activeView === "changes" ? "active" : ""} value="changes"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && reviewState.snapshot.totalFiles > 0 && <em>{reviewState.snapshot.totalFiles}</em>}</Tabs.Tab>
+          </Tabs.List>
+          <Tabs.Panel className="timeline-wrap" value={activeView}>
             <section
               className={`timeline ${activeView === "changes" ? "review-stream" : ""}`}
               id="session-view-panel"
@@ -1439,11 +1365,12 @@ export function App() {
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
             </section>
             {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
-          </div>
+          </Tabs.Panel>
 
           <section className="control-deck">
-            <button className="session-details-toggle" type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((open) => !open)}><span>SESSION DETAILS</span><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b><i aria-hidden="true">{detailsOpen ? <ChevronUp /> : <ChevronDown />}</i></button>
-            {detailsOpen && <section className="session-details" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
+            <Collapsible.Root open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <Collapsible.Trigger className="session-details-toggle"><span>SESSION DETAILS</span><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b><i aria-hidden="true">{detailsOpen ? <ChevronUp /> : <ChevronDown />}</i></Collapsible.Trigger>
+            <Collapsible.Panel className="session-details" role="region" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
               <div className="usage-metrics">
                 <span><small>CONTEXT</small><b>{selectedSession.usage?.contextUsage?.tokens === null ? "Recalculating" : selectedSession.usage?.contextUsage ? `${selectedSession.usage.contextUsage.tokens.toLocaleString()} / ${selectedSession.usage.contextUsage.contextWindow.toLocaleString()}` : "Not reported"}</b></span>
                 <span><small>TOKENS IN / OUT</small><b>{selectedSession.usage ? `${selectedSession.usage.tokens.input.toLocaleString()} / ${selectedSession.usage.tokens.output.toLocaleString()}` : "Not reported"}</b></span>
@@ -1457,7 +1384,8 @@ export function App() {
                 <button type="button" aria-pressed={selectedSession.autoCompactionEnabled === true} disabled={busy || !canConfigure || selectedSession.autoCompactionEnabled === null} onClick={() => void changeAutoCompaction(selectedSession.autoCompactionEnabled !== true)}>AUTO COMPACT: {selectedSession.autoCompactionEnabled === null ? "UNKNOWN" : selectedSession.autoCompactionEnabled ? "ON" : "OFF"}</button>
                 <button type="button" disabled={busy || !canConfigure || selectedSession.compaction.status === "running"} onClick={(event) => { compactionReturnFocusRef.current = event.currentTarget; setCompactionDialogOpen(true); }}>{selectedSession.compaction.status === "running" ? "COMPACTING…" : "COMPACT NOW"}</button>
               </div>
-            </section>}
+            </Collapsible.Panel>
+            </Collapsible.Root>
             {outbox.length > 0 && <section className="outbox-tray" aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -1471,7 +1399,7 @@ export function App() {
                   ? "Reading Pi commands"
                   : slashCommandMenu
                     ? matchingSlashCommands.length
-                      ? `${matchingSlashCommands.length} Pi command options. Slash ${matchingSlashCommands[slashCommandMenu.highlighted]?.name ?? "command"} selected. Use the up and down arrows, then Enter to insert.`
+                      ? `${matchingSlashCommands.length} Pi command options. Use the up and down arrows, then Enter to insert.`
                       : slashCommandMenu.error ?? "No matching Pi commands"
                     : mentionMenu?.loading
                       ? "Searching workspace files"
@@ -1484,51 +1412,22 @@ export function App() {
                 query={slashCommandMenu.active.query}
                 loading={slashCommandMenu.loading}
                 error={slashCommandMenu.error}
-                highlighted={slashCommandMenu.highlighted}
-                pickerRef={slashCommandPickerRef}
                 onQueryChange={updateSlashCommandQuery}
                 onChoose={chooseSlashCommand}
-                onHighlight={(highlighted) => setSlashCommandMenu((current) => current ? { ...current, highlighted } : current)}
-                onNavigate={(direction) => setSlashCommandMenu((current) => current && matchingSlashCommands.length > 0 ? {
-                  ...current,
-                  highlighted: (current.highlighted + direction + matchingSlashCommands.length) % matchingSlashCommands.length,
-                } : current)}
                 onDismiss={dismissSlashCommandMenu}
                 onRemoveTrigger={removeSlashCommandTrigger}
               />}
-              {mentionMenu && !isMobile && <div
-                className="mention-menu"
-                id="file-mention-options"
-                role={mentionMenu.mentions.length > 0 ? "listbox" : "status"}
-                aria-label={mentionMenu.mentions.length > 0 ? "Workspace files" : undefined}
-                aria-live={mentionMenu.mentions.length > 0 ? undefined : "polite"}
-              >
+              {mentionMenu && !isMobile && <div className="mention-menu" id="file-mention-options" role={mentionMenu.mentions.length > 0 ? "listbox" : "status"} aria-label={mentionMenu.mentions.length > 0 ? "Workspace files" : undefined} aria-live={mentionMenu.mentions.length > 0 ? undefined : "polite"}>
                 {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
                 {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
                 {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
-                {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button
-                  className={index === mentionMenu.highlighted ? "active" : ""}
-                  id={`file-mention-${index}`}
-                  key={`${item.kind}:${item.path}`}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => chooseMention(item)}
-                  onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)}
-                  role="option"
-                  aria-selected={index === mentionMenu.highlighted}
-                  tabIndex={-1}
-                  type="button"
-                >
-                  <i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i>
-                  <span><b>{item.name}</b><small>{item.path}</small></span>
-                </button>)}
+                {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} tabIndex={-1} type="button"><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
               </div>}
               <textarea
                 ref={composerTextareaRef}
                 value={commandText}
                 aria-label="Message Pi"
                 aria-describedby="composer-picker-status"
-                aria-controls={slashCommandMenu && matchingSlashCommands.length > 0 ? "pi-command-options" : !isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? "file-mention-options" : undefined}
-                aria-activedescendant={slashCommandMenu && matchingSlashCommands.length > 0 ? `pi-command-${slashCommandMenu.highlighted}` : !isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? `file-mention-${mentionMenu.highlighted}` : undefined}
                 disabled={busy || !canWrite}
                 onChange={(event) => {
                   suppressMentionSelectionRef.current = false;
@@ -1554,53 +1453,19 @@ export function App() {
                   scheduleMentionSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                 }}
                 onBlur={() => window.setTimeout(() => {
-                  if (!composerRef.current?.contains(document.activeElement) && !mentionPickerRef.current?.contains(document.activeElement) && !slashCommandPickerRef.current?.contains(document.activeElement)) {
-                    dismissMentionMenu();
-                    setSlashCommandMenu(undefined);
-                  }
+                  if (!isMobile && !slashCommandMenu && !composerRef.current?.contains(document.activeElement)) dismissMentionMenu();
                 })}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
-                  const highlightedSlashCommand = matchingSlashCommands[slashCommandMenu?.highlighted ?? 0];
-                  if (slashCommandMenu && matchingSlashCommands.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                    event.preventDefault();
-                    const direction = event.key === "ArrowDown" ? 1 : -1;
-                    setSlashCommandMenu((current) => current ? {
-                      ...current,
-                      highlighted: (current.highlighted + direction + matchingSlashCommands.length) % matchingSlashCommands.length,
-                    } : current);
-                    return;
-                  }
-                  if (slashCommandMenu && event.key === "Escape") {
-                    event.preventDefault();
-                    setSlashCommandMenu(undefined);
-                    return;
-                  }
-                  if (slashCommandMenu && highlightedSlashCommand && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) {
-                    event.preventDefault();
-                    chooseSlashCommand(highlightedSlashCommand);
-                    return;
-                  }
                   const highlightedMention = mentionMenu?.mentions[mentionMenu.highlighted];
                   if (mentionMenu && mentionMenu.mentions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                     event.preventDefault();
                     const direction = event.key === "ArrowDown" ? 1 : -1;
-                    setMentionMenu((current) => current ? {
-                      ...current,
-                      highlighted: (current.highlighted + direction + current.mentions.length) % current.mentions.length,
-                    } : current);
+                    setMentionMenu((current) => current ? { ...current, highlighted: (current.highlighted + direction + current.mentions.length) % current.mentions.length } : current);
                     return;
                   }
-                  if (mentionMenu && event.key === "Escape") {
-                    event.preventDefault();
-                    dismissMentionMenu();
-                    return;
-                  }
-                  if (mentionMenu && highlightedMention && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) {
-                    event.preventDefault();
-                    chooseMention(highlightedMention);
-                    return;
-                  }
+                  if (mentionMenu && event.key === "Escape") { event.preventDefault(); dismissMentionMenu(); return; }
+                  if (mentionMenu && highlightedMention && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); chooseMention(highlightedMention); return; }
                   if (!window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     submitCommand();
@@ -1647,7 +1512,7 @@ export function App() {
               <span className="sr-only" aria-live="polite">{selectedSession.name} is {ATTENTION_STATE_LABELS[selectedSession.status]}</span>
             </div>
           </section>
-        </div> : selectedSessionId ? <div className="blank-state session-loading" role="status" aria-live="polite">
+        </Tabs.Root> : selectedSessionId ? <div className="blank-state session-loading" role="status" aria-live="polite">
           <span aria-hidden="true"><i /></span>
           <h1>Loading session</h1>
           <p>Opening {selectedSessionSummary?.name ?? "session"}…</p>
@@ -1673,6 +1538,7 @@ export function App() {
         emptyHint="Try a session, workspace, branch, or status."
         onChoose={chooseGlobalPickerAction}
         onClose={closeGlobalPicker}
+        finalFocus={() => globalPickerReturnFocusRef.current}
       />}
 
       {interactiveRequest && selectedSession && <InteractiveRequestDialog
@@ -1685,38 +1551,52 @@ export function App() {
         onRespond={(response) => void answerInteractive(interactiveRequest, response)}
       />}
 
-      {isMobile && mentionMenu && <div className="mention-picker-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) closeMentionPicker(); }}>
-        <section className="mention-picker" role="dialog" aria-modal="true" aria-labelledby="mention-picker-title" ref={mentionPickerRef}>
-          <header><div><span>WORKSPACE FILES</span><b id="mention-picker-title">Mention a file</b></div><button onClick={closeMentionPicker} type="button" aria-label="Close file mentions"><X aria-hidden="true" /></button></header>
-          <label className="mention-search"><span className="sr-only">Search workspace files</span><Search aria-hidden="true" /><input
-            autoFocus
-            value={mentionPickerQuery}
-            onChange={(event) => updateMentionQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return;
-              const highlighted = mentionMenu.mentions[mentionMenu.highlighted];
-              if (event.key === "Backspace" && mentionPickerQuery.length === 0) {
-                event.preventDefault();
-                event.stopPropagation();
-                removeActiveMention();
-              } else if (mentionMenu.mentions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                event.preventDefault();
-                const direction = event.key === "ArrowDown" ? 1 : -1;
-                setMentionMenu((current) => current ? { ...current, highlighted: (current.highlighted + direction + current.mentions.length) % current.mentions.length } : current);
-              } else if (event.key === "Enter" && highlighted) { event.preventDefault(); chooseMention(highlighted); }
-            }}
-            aria-controls={mentionMenu.mentions.length > 0 ? "file-mention-picker-options" : undefined}
-            aria-activedescendant={mentionMenu.mentions.length > 0 ? `file-mention-${mentionMenu.highlighted}` : undefined}
-            placeholder="Search files"
-          /></label>
-          <div className="mention-picker-results" id="file-mention-picker-options" role={mentionMenu.mentions.length > 0 ? "listbox" : "status"} aria-label={mentionMenu.mentions.length > 0 ? "Workspace files" : undefined}>
-            {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
-            {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
-            {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
-            {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} type="button"><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
-          </div>
-        </section>
-      </div>}
+      {isMobile && mentionMenu && <Dialog.Root key={`${mentionMenu.active.start}:${mentionMenu.active.end}`} open onOpenChange={(open) => { if (!open && isMobileRef.current) closeMentionPicker(); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="mention-picker-backdrop" />
+          <Dialog.Viewport className="mention-picker-layer">
+            <Dialog.Popup className="mention-picker" initialFocus={mentionSearchInputRef} finalFocus={composerTextareaRef}>
+              <header><div><span>WORKSPACE FILES</span><Dialog.Title render={<b />}>Mention a file</Dialog.Title></div><Dialog.Close aria-label="Close file mentions"><X aria-hidden="true" /></Dialog.Close></header>
+              <Combobox.Root
+                items={mentionMenu.mentions}
+                filteredItems={mentionMenu.mentions}
+                inputValue={mentionPickerQuery}
+                inline
+                open
+                autoHighlight
+                itemToStringLabel={(item: FileMention) => item.path}
+                onInputValueChange={(value, details) => { if (details.event instanceof InputEvent && details.event.inputType) updateMentionQuery(value); }}
+                onItemHighlighted={(item) => setMentionMenu((current) => current ? { ...current, highlighted: Math.max(0, current.mentions.indexOf(item!)) } : current)}
+                onValueChange={(item) => { if (item) chooseMention(item); }}
+              >
+                <label className="mention-search"><span className="sr-only">Search workspace files</span><Search aria-hidden="true" /><Combobox.Input
+                  ref={mentionSearchInputRef}
+                  aria-label="Search workspace files"
+                  placeholder="Search files"
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing) return;
+                    if (event.key === "Backspace" && mentionPickerQuery.length === 0) {
+                      event.preventDefault();
+                      removeActiveMention();
+                    } else if (event.key === "Enter" && mentionMenu.mentions.length > 0) {
+                      event.preventDefault();
+                      chooseMention(mentionMenu.mentions[mentionMenu.highlighted] ?? mentionMenu.mentions[0]!);
+                    }
+                  }}
+                /></label>
+                <Combobox.List className="mention-picker-results" aria-label="Workspace files">
+                  <Combobox.Status className="mention-status">
+                    {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
+                    {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
+                    {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
+                  </Combobox.Status>
+                  {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <Combobox.Item className="mention-option" index={index} key={`${item.kind}:${item.path}`} value={item} nativeButton render={<button type="button" />}><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></Combobox.Item>)}
+                </Combobox.List>
+              </Combobox.Root>
+            </Dialog.Popup>
+          </Dialog.Viewport>
+        </Dialog.Portal>
+      </Dialog.Root>}
 
       {workspaceCreatorOpen && <WorkspaceDialog
         returnFocus={workspaceCreatorReturnFocusRef.current}
@@ -1811,21 +1691,20 @@ export function App() {
         }}
       />}
 
-      {creatorOpen && state._tag === "Ready" && <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) closeCreator(); }}>
-        <form className="session-dialog" onSubmit={createSession} role="dialog" aria-modal="true" aria-labelledby="new-session-title" ref={dialogRef}>
-          <header><div><b id="new-session-title">New session</b></div><button onClick={closeCreator} disabled={busy} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-          <div className="dialog-body">
-            {chosenWorkspace && <div className="session-workspace">
-              <span>WORKSPACE</span><b>{chosenWorkspace.name}</b><small>{chosenWorkspace.root}</small>
-              {chosenWorkspace.activeSessionCount > 0 && <em className="workspace-activity" role="note"><i />{chosenWorkspace.activeSessionCount} other writable {chosenWorkspace.activeSessionCount === 1 ? "session is" : "sessions are"} already using this checkout. Concurrent edits may conflict.</em>}
-            </div>}
-            <label>Session name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="New session" autoFocus /></label>
-            {creatorError && <div className="dialog-error" role="alert">{creatorError}</div>}
-          </div>
-          <footer><button className="cancel" onClick={closeCreator} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !workspaceId} type="submit">{busy ? "STARTING…" : <>START SESSION <ExternalLink aria-hidden="true" /></>}</button></footer>
-        </form>
-      </div>}
+      {creatorOpen && state._tag === "Ready" && <DialogSurface className="session-dialog" pending={busy} returnFocus={creatorReturnFocusRef.current} fallbackFocus={sessionHeadingRef.current} initialFocus={newSessionInputRef} onClose={closeCreator} render={<form onSubmit={createSession} />}>
+        <header><div><Dialog.Title render={<b />}>New session</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
+        <div className="dialog-body">
+          {chosenWorkspace && <div className="session-workspace">
+            <span>WORKSPACE</span><b>{chosenWorkspace.name}</b><small>{chosenWorkspace.root}</small>
+            {chosenWorkspace.activeSessionCount > 0 && <em className="workspace-activity" role="note"><i />{chosenWorkspace.activeSessionCount} other writable {chosenWorkspace.activeSessionCount === 1 ? "session is" : "sessions are"} already using this checkout. Concurrent edits may conflict.</em>}
+          </div>}
+          <label>Session name<input ref={newSessionInputRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="New session" /></label>
+          {creatorError && <div className="dialog-error" role="alert">{creatorError}</div>}
+        </div>
+        <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch" disabled={busy || !workspaceId} type="submit">{busy ? "STARTING…" : <>START SESSION <ExternalLink aria-hidden="true" /></>}</button></footer>
+      </DialogSurface>}
     </div>
+    </Drawer.Root>
   );
 }
 
@@ -1842,137 +1721,99 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
   readonly menuLabel: string;
   readonly actions: ReadonlyArray<ActionMenuItem>;
 }) {
-  const [open, setOpen] = useState(false);
-  const [placement, setPlacement] = useState<{ readonly top: number; readonly left: number; readonly opensUpward: boolean }>();
-  const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
 
-  useLayoutEffect(() => {
-    if (!open) return;
-    const viewport = container.current?.closest<HTMLElement>(".workspace-list");
-    const place = () => {
-      const triggerBounds = trigger.current?.getBoundingClientRect();
-      const menuBounds = menu.current?.getBoundingClientRect();
-      const viewportBounds = viewport?.getBoundingClientRect();
-      if (!triggerBounds || !menuBounds || !viewportBounds) return;
-
-      const edgeGap = 4;
-      const menuGap = 3;
-      const viewportTop = Math.max(0, viewportBounds.top) + edgeGap;
-      const viewportBottom = Math.min(window.innerHeight, viewportBounds.bottom) - edgeGap;
-      const roomAbove = triggerBounds.top - menuGap - viewportTop;
-      const roomBelow = viewportBottom - triggerBounds.bottom - menuGap;
-      const opensUpward = roomBelow < menuBounds.height && roomAbove > roomBelow;
-      const naturalTop = opensUpward
-        ? triggerBounds.top - menuGap - menuBounds.height
-        : triggerBounds.bottom + menuGap;
-      const maximumTop = Math.max(viewportTop, viewportBottom - menuBounds.height);
-      const top = Math.min(Math.max(naturalTop, viewportTop), maximumTop);
-      const viewportLeft = Math.max(0, viewportBounds.left) + edgeGap;
-      const viewportRight = Math.min(window.innerWidth, viewportBounds.right) - edgeGap;
-      const maximumLeft = Math.max(viewportLeft, viewportRight - menuBounds.width);
-      const left = Math.min(Math.max(triggerBounds.right - menuBounds.width, viewportLeft), maximumLeft);
-
-      setPlacement((current) => current?.top === top && current.left === left && current.opensUpward === opensUpward
-        ? current
-        : { top, left, opensUpward });
-    };
-
-    place();
-    const resizeObserver = new ResizeObserver(place);
-    if (trigger.current) resizeObserver.observe(trigger.current);
-    if (menu.current) resizeObserver.observe(menu.current);
-    if (viewport) resizeObserver.observe(viewport);
-    window.addEventListener("resize", place);
-    viewport?.addEventListener("scroll", place, { passive: true });
-    return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", place);
-      viewport?.removeEventListener("scroll", place);
-    };
-  }, [actions.length, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const containerElement = container.current;
-    const menuElement = menu.current;
-    window.requestAnimationFrame(() => menuElement?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus());
-    const contains = (node: Node | null) => Boolean(node && (containerElement?.contains(node) || menuElement?.contains(node)));
-    const closeOutside = (event: MouseEvent) => {
-      if (!contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnFocusOut = (event: FocusEvent) => {
-      if (!contains(event.relatedTarget as Node | null)) setOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setOpen(false);
-        trigger.current?.focus();
-        return;
-      }
-      const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [])];
-      const current = items.indexOf(document.activeElement as HTMLButtonElement);
-      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && current >= 0) {
-        event.preventDefault();
-        const offset = event.key === "ArrowDown" ? 1 : -1;
-        items[(current + offset + items.length) % items.length]?.focus();
-        return;
-      }
-      if (event.key === "Tab" && current >= 0) {
-        const next = current + (event.shiftKey ? -1 : 1);
-        if (items[next]) {
-          event.preventDefault();
-          items[next].focus();
-          return;
-        }
-        event.preventDefault();
-        setOpen(false);
-        window.requestAnimationFrame(() => {
-          if (event.shiftKey) {
-            trigger.current?.focus();
-            return;
-          }
-          const focusable = [...document.querySelectorAll<HTMLElement>("button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
-            .filter((element) => !menu.current?.contains(element) && !element.closest("[inert]"));
-          const triggerIndex = trigger.current ? focusable.indexOf(trigger.current) : -1;
-          focusable[triggerIndex + 1]?.focus();
-        });
-      }
-    };
-    document.addEventListener("mousedown", closeOutside);
-    document.addEventListener("keydown", handleKey);
-    containerElement?.addEventListener("focusout", closeOnFocusOut);
-    menuElement?.addEventListener("focusout", closeOnFocusOut);
-    return () => {
-      document.removeEventListener("mousedown", closeOutside);
-      document.removeEventListener("keydown", handleKey);
-      containerElement?.removeEventListener("focusout", closeOnFocusOut);
-      menuElement?.removeEventListener("focusout", closeOnFocusOut);
-    };
-  }, [open]);
-
-  return <>
-    <div className={className} ref={container}>
-      <button className={triggerClassName} ref={trigger} onClick={() => {
-        setPlacement(undefined);
-        setOpen((current) => !current);
-      }} type="button" aria-label={triggerLabel} aria-haspopup="menu" aria-expanded={open}><MoreHorizontal aria-hidden="true" /></button>
+  return <BaseMenu.Root>
+    <div className={className}>
+      <BaseMenu.Trigger className={triggerClassName} ref={trigger} aria-label={triggerLabel}>
+        <MoreHorizontal aria-hidden="true" />
+      </BaseMenu.Trigger>
     </div>
-    {open && createPortal(<div
-      className={`workspace-menu ${placement?.opensUpward ? "open-upward" : ""}`}
-      ref={menu}
-      role="menu"
-      aria-label={menuLabel}
-      style={{ top: placement?.top ?? 0, left: placement?.left ?? 0, visibility: placement ? "visible" : "hidden" }}
-    >
-      {actions.map((action) => <button className={action.danger ? "danger" : undefined} key={action.label} type="button" role="menuitem" onClick={() => {
-        setOpen(false);
-        if (trigger.current) action.onSelect(trigger.current);
-      }}>{action.label}</button>)}
-    </div>, document.body)}
-  </>;
+    <BaseMenu.Portal>
+      <BaseMenu.Positioner
+        className="workspace-menu-positioner"
+        side="bottom"
+        align="end"
+        sideOffset={3}
+        collisionPadding={4}
+        positionMethod="fixed"
+      >
+        <BaseMenu.Popup className="workspace-menu" aria-label={menuLabel} aria-labelledby="">
+          {actions.map((action) => <BaseMenu.Item
+            className={action.danger ? "danger" : undefined}
+            key={action.label}
+            nativeButton
+            render={<button type="button" />}
+            onClick={() => {
+              if (trigger.current) action.onSelect(trigger.current);
+            }}
+          >{action.label}</BaseMenu.Item>)}
+        </BaseMenu.Popup>
+      </BaseMenu.Positioner>
+    </BaseMenu.Portal>
+  </BaseMenu.Root>;
+}
+
+type ModalSurfaceProps = {
+  readonly className: string;
+  readonly pending?: boolean;
+  readonly returnFocus?: HTMLElement | null;
+  readonly fallbackFocus?: HTMLElement | null;
+  readonly initialFocus?: RefObject<HTMLElement | null> | true;
+  readonly onClose: () => void;
+  readonly render?: ReactElement;
+  readonly children: ReactNode;
+};
+
+function focusAfterModal(returnFocus?: HTMLElement | null, fallbackFocus?: HTMLElement | null): HTMLElement | null {
+  return returnFocus?.isConnected && !returnFocus.matches(":disabled") ? returnFocus : fallbackFocus?.isConnected ? fallbackFocus : null;
+}
+
+function DialogSurface({ className, pending = false, returnFocus, fallbackFocus, initialFocus = true, onClose, render, children }: ModalSurfaceProps) {
+  return <Dialog.Root
+    open
+    disablePointerDismissal={pending}
+    onOpenChange={(open, details) => {
+      if (open) return;
+      if (pending) { details.cancel(); return; }
+      onClose();
+    }}
+  >
+    <Dialog.Portal>
+      <Dialog.Backdrop className="dialog-backdrop" />
+      <Dialog.Viewport className="dialog-layer">
+        <Dialog.Popup
+          className={className}
+          initialFocus={initialFocus}
+          finalFocus={() => focusAfterModal(returnFocus, fallbackFocus)}
+          render={render}
+        >{children}</Dialog.Popup>
+      </Dialog.Viewport>
+    </Dialog.Portal>
+  </Dialog.Root>;
+}
+
+function AlertDialogSurface({ className, pending = false, returnFocus, fallbackFocus, initialFocus = true, onClose, render, children }: ModalSurfaceProps) {
+  return <AlertDialog.Root
+    open
+    onOpenChange={(open, details) => {
+      if (open) return;
+      if (pending) { details.cancel(); return; }
+      onClose();
+    }}
+  >
+    <AlertDialog.Portal>
+      <AlertDialog.Backdrop className="dialog-backdrop" />
+      <AlertDialog.Viewport className="dialog-layer">
+        <AlertDialog.Popup
+          className={className}
+          initialFocus={initialFocus}
+          finalFocus={() => focusAfterModal(returnFocus, fallbackFocus)}
+          render={render}
+        >{children}</AlertDialog.Popup>
+      </AlertDialog.Viewport>
+    </AlertDialog.Portal>
+  </AlertDialog.Root>;
 }
 
 function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onRenamed }: {
@@ -1985,30 +1826,7 @@ function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onR
   const [name, setName] = useState(session.name);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const dialog = useRef<HTMLFormElement>(null);
-  const pendingRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  pendingRef.current = pending;
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = !returnFocus?.isConnected || returnFocus.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -2026,16 +1844,14 @@ function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onR
     }
   };
 
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <form className="session-dialog workspace-action-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="rename-session-title" ref={dialog}>
-      <header><div><b id="rename-session-title">Rename session</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body">
-        <label>Session name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus /></label>
-        {error && <div className="dialog-error" role="alert">{error}</div>}
-      </div>
-      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button">CANCEL</button><button className="launch" disabled={pending || !name.trim()} type="submit">{pending ? "SAVING…" : "SAVE"}</button></footer>
-    </form>
-  </div>;
+  return <DialogSurface className="session-dialog workspace-action-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={inputRef} onClose={onClose} render={<form onSubmit={submit} />}>
+    <header><div><Dialog.Title render={<b />}>Rename session</Dialog.Title></div><Dialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
+    <div className="dialog-body">
+      <label>Session name<input ref={inputRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={120} /></label>
+      {error && <div className="dialog-error" role="alert">{error}</div>}
+    </div>
+    <footer><Dialog.Close className="cancel" disabled={pending}>CANCEL</Dialog.Close><button className="launch" disabled={pending || !name.trim()} type="submit">{pending ? "SAVING…" : "SAVE"}</button></footer>
+  </DialogSurface>;
 }
 
 function RenameWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose, onRenamed }: {
@@ -2048,30 +1864,7 @@ function RenameWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
   const [name, setName] = useState(workspace.name);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const dialog = useRef<HTMLFormElement>(null);
-  const pendingRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  pendingRef.current = pending;
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = !returnFocus?.isConnected || returnFocus.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -2089,17 +1882,15 @@ function RenameWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
     }
   };
 
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <form className="session-dialog workspace-action-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="rename-workspace-title" ref={dialog}>
-      <header><div><b id="rename-workspace-title">Rename workspace</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body">
-        <label>Workspace name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus /></label>
-        <small className="workspace-path">{workspace.root}</small>
-        {error && <div className="dialog-error" role="alert">{error}</div>}
-      </div>
-      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button">CANCEL</button><button className="launch" disabled={pending || !name.trim()} type="submit">{pending ? "SAVING…" : "SAVE"}</button></footer>
-    </form>
-  </div>;
+  return <DialogSurface className="session-dialog workspace-action-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={inputRef} onClose={onClose} render={<form onSubmit={submit} />}>
+    <header><div><Dialog.Title render={<b />}>Rename workspace</Dialog.Title></div><Dialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
+    <div className="dialog-body">
+      <label>Workspace name<input ref={inputRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={120} /></label>
+      <small className="workspace-path">{workspace.root}</small>
+      {error && <div className="dialog-error" role="alert">{error}</div>}
+    </div>
+    <footer><Dialog.Close className="cancel" disabled={pending}>CANCEL</Dialog.Close><button className="launch" disabled={pending || !name.trim()} type="submit">{pending ? "SAVING…" : "SAVE"}</button></footer>
+  </DialogSurface>;
 }
 
 function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose, onRemoved }: {
@@ -2111,31 +1902,8 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const dialog = useRef<HTMLElement>(null);
-  const pendingRef = useRef(false);
-  const onCloseRef = useRef(onClose);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const blocked = workspace.sessionCount > 0;
-  pendingRef.current = pending;
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = !returnFocus?.isConnected || returnFocus.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
 
   const remove = async () => {
     if (blocked || pending) return;
@@ -2144,6 +1912,7 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
     try {
       await Effect.runPromise(deleteWorkspace(workspace.id));
       onRemoved();
+      window.requestAnimationFrame(() => fallbackFocus?.focus());
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -2151,17 +1920,15 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
     }
   };
 
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <section className="session-dialog workspace-action-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-workspace-title" ref={dialog}>
-      <header><div><b id="remove-workspace-title">Remove workspace?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body">
-        <p><b>{workspace.name}</b> will be removed from PISS. Its directory and files will remain untouched.</p>
-        {blocked && <div className="dialog-error" role="alert">Delete {workspace.sessionCount} {workspace.sessionCount === 1 ? "session" : "sessions"} first.</div>}
-        {error && <div className="dialog-error" role="alert">{error}</div>}
-      </div>
-      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button" autoFocus>CANCEL</button><button className="danger" onClick={() => void remove()} disabled={blocked || pending} type="button">{pending ? "REMOVING…" : "REMOVE WORKSPACE"}</button></footer>
-    </section>
-  </div>;
+  return <AlertDialogSurface className="session-dialog workspace-action-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={cancelRef} onClose={onClose}>
+    <header><div><AlertDialog.Title render={<b />}>Remove workspace?</AlertDialog.Title></div><AlertDialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></AlertDialog.Close></header>
+    <div className="dialog-body">
+      <AlertDialog.Description render={<p />}><b>{workspace.name}</b> will be removed from PISS. Its directory and files will remain untouched.</AlertDialog.Description>
+      {blocked && <div className="dialog-error" role="alert">Delete {workspace.sessionCount} {workspace.sessionCount === 1 ? "session" : "sessions"} first.</div>}
+      {error && <div className="dialog-error" role="alert">{error}</div>}
+    </div>
+    <footer><AlertDialog.Close className="cancel" ref={cancelRef} disabled={pending}>CANCEL</AlertDialog.Close><button className="danger" onClick={() => void remove()} disabled={blocked || pending} type="button">{pending ? "REMOVING…" : "REMOVE WORKSPACE"}</button></footer>
+  </AlertDialogSurface>;
 }
 
 function ArchiveSessionDialog({ sessionName, active, pending, error, returnFocus, fallbackFocus, onClose, onConfirm }: {
@@ -2174,41 +1941,16 @@ function ArchiveSessionDialog({ sessionName, active, pending, error, returnFocus
   readonly onClose: () => void;
   readonly onConfirm: () => void;
 }) {
-  const dialog = useRef<HTMLElement>(null);
-  const pendingRef = useRef(pending);
-  const onCloseRef = useRef(onClose);
-  pendingRef.current = pending;
-  onCloseRef.current = onClose;
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = !returnFocus?.isConnected || returnFocus.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
-
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-session-title" ref={dialog}>
-      <header><div><b id="archive-session-title">Archive session?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body">
-        <p><b>{sessionName}</b>{active ? " will stop running and" : " will"} be removed from PISS. Its Pi conversation file will remain on disk for recovery.</p>
-        {error && <div className="dialog-error" role="alert">{error}</div>}
-      </div>
-      <footer><button className="cancel" onClick={onClose} disabled={pending} type="button" autoFocus>CANCEL</button><button className="danger" onClick={onConfirm} disabled={pending} type="button">{pending ? "ARCHIVING…" : "ARCHIVE SESSION"}</button></footer>
-    </section>
-  </div>;
+  return <AlertDialogSurface className="session-dialog stop-session-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={cancelRef} onClose={onClose}>
+    <header><div><AlertDialog.Title render={<b />}>Archive session?</AlertDialog.Title></div><AlertDialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></AlertDialog.Close></header>
+    <div className="dialog-body">
+      <AlertDialog.Description render={<p />}><b>{sessionName}</b>{active ? " will stop running and" : " will"} be removed from PISS. Its Pi conversation file will remain on disk for recovery.</AlertDialog.Description>
+      {error && <div className="dialog-error" role="alert">{error}</div>}
+    </div>
+    <footer><AlertDialog.Close className="cancel" ref={cancelRef} disabled={pending}>CANCEL</AlertDialog.Close><button className="danger" onClick={onConfirm} disabled={pending} type="button">{pending ? "ARCHIVING…" : "ARCHIVE SESSION"}</button></footer>
+  </AlertDialogSurface>;
 }
 
 function CompactionDialog({ returnFocus, fallbackFocus, onClose, onConfirm }: {
@@ -2217,31 +1959,12 @@ function CompactionDialog({ returnFocus, fallbackFocus, onClose, onConfirm }: {
   readonly onClose: () => void;
   readonly onConfirm: () => void;
 }) {
-  const dialog = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    window.requestAnimationFrame(() => element.querySelector<HTMLElement>("button")?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); }
-      if (event.key !== "Tab") return;
-      const controls = [...element.querySelectorAll<HTMLElement>("button:not(:disabled)")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => { document.removeEventListener("keydown", onKeyDown); (returnFocus?.isConnected ? returnFocus : fallbackFocus)?.focus(); };
-  }, [fallbackFocus, onClose, returnFocus]);
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="compact-session-title" ref={dialog}>
-      <header><div><b id="compact-session-title">Compact session context?</b></div><button onClick={onClose} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
-      <div className="dialog-body"><p>Compaction is lossy for the active model context. The complete append-only Pi transcript remains on disk.</p></div>
-      <footer><button className="cancel" onClick={onClose} type="button">CANCEL</button><button className="launch" onClick={onConfirm} type="button">COMPACT NOW</button></footer>
-    </section>
-  </div>;
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  return <AlertDialogSurface className="session-dialog stop-session-dialog" returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={cancelRef} onClose={onClose}>
+    <header><div><AlertDialog.Title render={<b />}>Compact session context?</AlertDialog.Title></div><AlertDialog.Close aria-label="Close"><X aria-hidden="true" /></AlertDialog.Close></header>
+    <div className="dialog-body"><AlertDialog.Description render={<p />}>Compaction is lossy for the active model context. The complete append-only Pi transcript remains on disk.</AlertDialog.Description></div>
+    <footer><AlertDialog.Close className="cancel" ref={cancelRef}>CANCEL</AlertDialog.Close><button className="launch" onClick={onConfirm} type="button">COMPACT NOW</button></footer>
+  </AlertDialogSurface>;
 }
 
 function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, fallbackFocus, onRespond }: {
@@ -2253,51 +1976,22 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
   readonly onRespond: (response: { readonly cancelled?: boolean; readonly value?: string; readonly confirmed?: boolean }) => void;
 }) {
   const [value, setValue] = useState(request.method === "select" ? request.options?.[0] ?? "" : request.prefill ?? "");
-  const dialog = useRef<HTMLElement>(null);
-  const pendingRef = useRef(pending);
-  pendingRef.current = pending;
-
-  useEffect(() => {
-    const element = dialog.current;
-    if (!element) return;
-    window.requestAnimationFrame(() => element.querySelector<HTMLElement>("select, input, textarea, button:not(:disabled)")?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) {
-        event.preventDefault();
-        onRespond({ cancelled: true });
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = [...element.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      (returnFocus?.isConnected ? returnFocus : fallbackFocus)?.focus();
-    };
-  }, [fallbackFocus, request.id, returnFocus]);
 
   const submitValue = () => onRespond({ value });
-  return <div className="dialog-layer interactive-request-layer">
-    <section className="session-dialog interactive-request-dialog" role="dialog" aria-modal="true" aria-labelledby="interactive-request-title" aria-describedby={request.message ? "interactive-request-message" : undefined} ref={dialog}>
-      <header><div><span>PI REQUEST · {request.method.toUpperCase()}</span><b id="interactive-request-title">{request.title || "Pi needs input"}</b></div></header>
-      <div className="dialog-body">
-        {request.message && <p id="interactive-request-message" className="interactive-message">{request.message}</p>}
-        {queuedCount > 0 && <p className="interactive-queue">{queuedCount} more request{queuedCount === 1 ? " is" : "s are"} queued</p>}
-        {request.timeout && <p className="interactive-timeout">This request expires automatically after {Math.ceil(request.timeout / 1000)} seconds.</p>}
-        {request.method === "select" && <label>Choose one<select value={value} disabled={pending} onChange={(event) => setValue(event.target.value)}>{request.options?.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>}
-        {request.method === "input" && <label>Response<input value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submitValue(); } }} /></label>}
-        {request.method === "editor" && <label>Response<textarea value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} rows={9} onChange={(event) => setValue(event.target.value)} /></label>}
-        {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>NO</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>YES</button></div>}
-      </div>
-      <footer><button className="cancel" disabled={pending} onClick={() => onRespond({ cancelled: true })} type="button">CANCEL</button>{request.method !== "confirm" && <button className="launch" disabled={pending || request.method === "select" && !value} onClick={submitValue} type="button">{pending ? "ANSWERING…" : "SUBMIT"}</button>}</footer>
-    </section>
-  </div>;
+  const cancel = () => onRespond({ cancelled: true });
+  return <DialogSurface className="session-dialog interactive-request-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} onClose={cancel}>
+    <header><div><span>PI REQUEST · {request.method.toUpperCase()}</span><Dialog.Title render={<b />}>{request.title || "Pi needs input"}</Dialog.Title></div></header>
+    <div className="dialog-body">
+      {request.message && <Dialog.Description className="interactive-message">{request.message}</Dialog.Description>}
+      {queuedCount > 0 && <p className="interactive-queue">{queuedCount} more request{queuedCount === 1 ? " is" : "s are"} queued</p>}
+      {request.timeout && <p className="interactive-timeout">This request expires automatically after {Math.ceil(request.timeout / 1000)} seconds.</p>}
+      {request.method === "select" && <label>Choose one<select value={value} disabled={pending} onChange={(event) => setValue(event.target.value)}>{request.options?.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>}
+      {request.method === "input" && <label>Response<input value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submitValue(); } }} /></label>}
+      {request.method === "editor" && <label>Response<textarea value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} rows={9} onChange={(event) => setValue(event.target.value)} /></label>}
+      {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>NO</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>YES</button></div>}
+    </div>
+    <footer><Dialog.Close className="cancel" disabled={pending}>CANCEL</Dialog.Close>{request.method !== "confirm" && <button className="launch" disabled={pending || request.method === "select" && !value} onClick={submitValue} type="button">{pending ? "ANSWERING…" : "SUBMIT"}</button>}</footer>
+  </DialogSurface>;
 }
 
 function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }: {
@@ -2312,11 +2006,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const dialog = useRef<HTMLDivElement>(null);
-  const pendingRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  pendingRef.current = pending;
-  onCloseRef.current = onClose;
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const loadModels = useCallback(async () => {
     setLoading(true);
@@ -2332,26 +2022,6 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
   }, [session.id, session.runtimeId]);
 
   useEffect(() => { void loadModels(); }, [loadModels]);
-
-  useEffect(() => {
-    window.requestAnimationFrame(() => dialog.current?.querySelector<HTMLInputElement>(".model-search input")?.focus());
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      const target = returnFocus?.matches(":disabled") ? fallbackFocus : returnFocus;
-      target?.focus();
-    };
-  }, [fallbackFocus, returnFocus]);
 
   const applyModel = async (model: AvailableModel) => {
     if (pending || !canConfigureSession(session.status) || session.model?.provider === model.provider && session.model.id === model.id) return;
@@ -2386,9 +2056,8 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
     .filter((model) => `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()))
     .toSorted(newestModelsFirst);
 
-  return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
-    <section className="model-dialog" role="dialog" aria-modal="true" aria-labelledby="model-dialog-title" ref={dialog}>
-      <header><div><b id="model-dialog-title">Model &amp; thinking</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
+  return <DialogSurface className="model-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={searchRef} onClose={onClose}>
+    <header><div><Dialog.Title render={<b />}>Model &amp; thinking</Dialog.Title></div><Dialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
       <div className="model-dialog-body">
         <section className="model-current">
           <span>CURRENT MODEL</span><b>{currentModel?.name ?? "No model selected"}</b><small>{currentModel ? `${currentModel.provider} / ${currentModel.id}` : "Pi did not report a model"}</small>
@@ -2397,25 +2066,41 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
             <div>{(currentModel?.thinkingLevels ?? []).map((level) => <button key={level} className={session.thinkingLevel === level ? "active" : ""} disabled={pending} onClick={() => void applyThinkingLevel(level)} type="button" aria-pressed={session.thinkingLevel === level}>{level}</button>)}</div>
           </div>
         </section>
-        <section className="model-catalog">
-          <label className="model-search"><span>AVAILABLE MODELS</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter models…" autoComplete="off" /></label>
-          <div className="model-options">
-            {loading && <div className="model-state" role="status">Loading models…</div>}
-            {!loading && error && models.length === 0 && <div className="model-state error" role="alert">{error}</div>}
-            {!loading && !error && filtered.length === 0 && <div className="model-state">No matching models.</div>}
-            {!loading && filtered.map((model) => {
-              const active = currentModel?.provider === model.provider && currentModel.id === model.id;
-              return <button className={`model-option ${active ? "active" : ""}`} disabled={pending} onClick={() => void applyModel(model)} type="button" aria-pressed={active} key={`${model.provider}/${model.id}`}>
-                <i aria-hidden="true">{active ? <CircleCheck /> : <Circle />}</i><span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span><em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
-              </button>;
-            })}
-          </div>
-        </section>
+        <Combobox.Root
+          items={filtered}
+          filteredItems={filtered}
+          inputValue={query}
+          value={filtered.find((model) => currentModel?.provider === model.provider && currentModel.id === model.id) ?? null}
+          onInputValueChange={(value, details) => { if (details.event instanceof InputEvent && details.event.inputType) setQuery(value); }}
+          onValueChange={(model) => { if (model) void applyModel(model); }}
+          itemToStringLabel={(model: AvailableModel) => model.name}
+          isItemEqualToValue={(model, value) => model.provider === value.provider && model.id === value.id}
+          inline
+          open
+          autoHighlight
+          disabled={pending}
+        >
+          <section className="model-catalog">
+            <label className="model-search"><span>AVAILABLE MODELS</span><Combobox.Input ref={searchRef} placeholder="Filter models…" autoComplete="off" /></label>
+            <Combobox.List className="model-options" aria-label="Available models">
+              <Combobox.Status className="model-status">
+                {loading && <div className="model-state">Loading models…</div>}
+                {!loading && error && models.length === 0 && <div className="model-state error" role="alert">{error}</div>}
+                {!loading && !error && filtered.length === 0 && <div className="model-state">No matching models.</div>}
+              </Combobox.Status>
+              {!loading && filtered.map((model, index) => {
+                const active = currentModel?.provider === model.provider && currentModel.id === model.id;
+                return <Combobox.Item className={`model-option ${active ? "active" : ""}`} disabled={pending} index={index} value={model} key={`${model.provider}/${model.id}`}>
+                  <i aria-hidden="true">{active ? <CircleCheck /> : <Circle />}</i><span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span><em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
+                </Combobox.Item>;
+              })}
+            </Combobox.List>
+          </section>
+        </Combobox.Root>
         {error && models.length > 0 && <div className="dialog-error" role="alert">{error}</div>}
       </div>
-      <footer><button onClick={() => void loadModels()} disabled={loading || pending} type="button">REFRESH</button><button className="launch" onClick={onClose} disabled={pending} type="button">DONE</button></footer>
-    </section>
-  </div>;
+    <footer><button onClick={() => void loadModels()} disabled={loading || pending} type="button">REFRESH</button><Dialog.Close className="launch" disabled={pending}>DONE</Dialog.Close></footer>
+  </DialogSurface>;
 }
 
 function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
@@ -2434,12 +2119,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
   const [searching, setSearching] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const dialog = useRef<HTMLFormElement>(null);
-  const busyRef = useRef(false);
-  const onCloseRef = useRef(onClose);
-  const returnFocusRef = useRef(returnFocus);
-  busyRef.current = busy;
-  onCloseRef.current = onClose;
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2452,25 +2132,6 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
     }, 180);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [query]);
-
-  useEffect(() => {
-    window.requestAnimationFrame(() => dialog.current?.querySelector<HTMLInputElement>("input")?.focus());
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busyRef.current) { event.preventDefault(); onCloseRef.current(); return; }
-      if (event.key !== "Tab" || !dialog.current) return;
-      const controls = [...dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      returnFocusRef.current?.focus();
-    };
-  }, []);
 
   const choose = (candidate: DirectoryCandidate) => {
     setSelected(candidate);
@@ -2504,16 +2165,15 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
     }
   };
 
-  return <div className="dialog-layer workspace-dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <form className="session-dialog workspace-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="new-workspace-title" ref={dialog}>
-      <header><div><b id="new-workspace-title">New workspace</b></div><button onClick={onClose} disabled={busy} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
+  return <DialogSurface className="session-dialog workspace-dialog" pending={busy} returnFocus={returnFocus} initialFocus={searchRef} onClose={onClose} render={<form onSubmit={submit} />}>
+    <header><div><Dialog.Title render={<b />}>New workspace</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
       <div className="dialog-body workspace-dialog-body">
         <div className="workspace-mode" aria-label="Workspace directory mode">
           <button className={mode === "existing" ? "active" : ""} onClick={() => { setMode("existing"); setSelected(undefined); setQuery(""); }} type="button" aria-pressed={mode === "existing"}>EXISTING DIRECTORY</button>
           <button className={mode === "create" ? "active" : ""} onClick={() => { setMode("create"); setSelected(undefined); setQuery(""); }} type="button" aria-pressed={mode === "create"}>CREATE FOLDER</button>
         </div>
         <label>{mode === "create" ? "Parent directory" : "Directory"}
-          <input value={query} onChange={(event) => { setQuery(event.target.value); setSelected(undefined); }} placeholder="Fuzzy search approved directories…" autoComplete="off" />
+          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setSelected(undefined); }} placeholder="Fuzzy search approved directories…" autoComplete="off" />
         </label>
         <div className="directory-results" aria-label="Matching directories" aria-busy={searching}>
           {searching && <div className="directory-state" role="status">Searching directories…</div>}
@@ -2528,7 +2188,6 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
         <label className="trust-toggle"><input checked={trustProjectResources} onChange={(event) => setTrustProjectResources(event.target.checked)} type="checkbox" /><span><b>Trust project-local Pi resources</b><small>Load settings, extensions, skills, and packages from this directory.</small></span></label>
         {error && <div className="dialog-error" role="alert">{error}</div>}
       </div>
-      <footer><button className="cancel" onClick={onClose} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !selected || !name.trim() || (mode === "create" && !folderName.trim())} type="submit">{busy ? "CREATING…" : <>CREATE WORKSPACE <ArrowRight aria-hidden="true" /></>}</button></footer>
-    </form>
-  </div>;
+    <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch" disabled={busy || !selected || !name.trim() || (mode === "create" && !folderName.trim())} type="submit">{busy ? "CREATING…" : <>CREATE WORKSPACE <ArrowRight aria-hidden="true" /></>}</button></footer>
+  </DialogSurface>;
 }

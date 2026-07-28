@@ -25,7 +25,7 @@
             };
           common = {
             version = "0.1.0";
-            npmDepsHash = "sha256-TYRDyqdZ7P0asxqs5u54JtJbUzHyMPpdxLfybUVFZkQ=";
+            npmDepsHash = "sha256-73rUCd7l2SyuZtCvl9MPwEqWINmsKRIIbR3RDbIpD8I=";
             npmDepsFetcherVersion = 2;
           };
         in

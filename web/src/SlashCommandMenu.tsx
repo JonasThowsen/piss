@@ -1,6 +1,7 @@
+import { Combobox } from "@base-ui/react/combobox";
+import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, Search, X } from "lucide-react";
-import { useEffect, useRef, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { useRef, useState } from "react";
 import type { SlashCommandItem } from "./slashCommands.ts";
 
 const SOURCE_LABELS: Readonly<Record<SlashCommandItem["source"], string>> = {
@@ -15,12 +16,8 @@ export function SlashCommandMenu({
   query,
   loading,
   error,
-  highlighted,
-  pickerRef,
   onQueryChange,
   onChoose,
-  onHighlight,
-  onNavigate,
   onDismiss,
   onRemoveTrigger,
 }: {
@@ -28,104 +25,90 @@ export function SlashCommandMenu({
   readonly query: string;
   readonly loading: boolean;
   readonly error?: string;
-  readonly highlighted: number;
-  readonly pickerRef: RefObject<HTMLElement | null>;
   readonly onQueryChange: (query: string) => void;
   readonly onChoose: (command: SlashCommandItem) => void;
-  readonly onHighlight: (index: number) => void;
-  readonly onNavigate: (direction: 1 | -1) => void;
   readonly onDismiss: () => void;
   readonly onRemoveTrigger: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
-  const hasOptions = commands.length > 0;
-  const selected = commands[highlighted];
+  const selectingRef = useRef(false);
+  const [highlighted, setHighlighted] = useState<SlashCommandItem>();
 
-  useEffect(() => {
-    window.requestAnimationFrame(() => {
-      searchRef.current?.focus();
-      searchRef.current?.setSelectionRange(query.length, query.length);
-    });
-  }, []);
-
-  return createPortal(<div
-    className="slash-command-layer"
-    onMouseDown={(event) => {
-      if (event.target !== event.currentTarget) return;
-      event.preventDefault();
-      onDismiss();
-    }}
-  >
-    <section className="slash-command-menu" ref={pickerRef} role="dialog" aria-modal="true" aria-label="Pi commands">
-      <header>
-        <div><span>RUNTIME CATALOG</span><b>Pi commands</b></div>
-        <button type="button" onClick={onDismiss} aria-label="Close Pi commands"><X aria-hidden="true" /></button>
-      </header>
-      <label className="slash-command-search">
-        <Search aria-hidden="true" />
-        <span aria-hidden="true">/</span>
-        <input
-          ref={searchRef}
-          value={query}
-          aria-label="Filter Pi commands"
-          aria-controls={hasOptions ? "pi-command-options" : undefined}
-          aria-activedescendant={selected ? `pi-command-${highlighted}` : undefined}
-          autoComplete="off"
-          autoCapitalize="none"
-          spellCheck={false}
-          placeholder="Type a command name"
-          onChange={(event) => onQueryChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            if (hasOptions && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-              event.preventDefault();
-              onNavigate(event.key === "ArrowDown" ? 1 : -1);
-              return;
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onDismiss();
-              return;
-            }
-            if (event.key === "Backspace" && query.length === 0) {
-              event.preventDefault();
-              onRemoveTrigger();
-              return;
-            }
-            if (selected && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey || event.key === " ")) {
-              event.preventDefault();
-              onChoose(selected);
-            }
-          }}
-        />
-        <small>{loading ? "…" : commands.length}</small>
-      </label>
-      <div
-        className="slash-command-results"
-        id="pi-command-options"
-        role={hasOptions ? "listbox" : "status"}
-        aria-label={hasOptions ? "Pi commands" : undefined}
-        aria-live={hasOptions ? undefined : "polite"}
-      >
-        {loading && <div className="slash-command-state"><i className="loading" />Reading this runtime’s commands…</div>}
-        {!loading && error && <div className="slash-command-state error">{error}</div>}
-        {!loading && !error && !hasOptions && <div className="slash-command-state">No matching commands in this runtime</div>}
-        {!loading && commands.map((command, index) => <button
-          className={`${index === highlighted ? "active" : ""} source-${command.source}`}
-          id={`pi-command-${index}`}
-          key={`${command.source}:${command.name}`}
-          type="button"
-          role="option"
-          aria-selected={index === highlighted}
-          onMouseEnter={() => onHighlight(index)}
-          onClick={() => onChoose(command)}
-        >
-          <span className="slash-command-mark" aria-hidden="true">/</span>
-          <span className="slash-command-copy"><b>{command.name}</b><small>{command.description || "No description provided"}</small></span>
-          <span className="slash-command-meta"><em>{SOURCE_LABELS[command.source]}</em>{command.scope && <small>{command.scope}</small>}</span>
-        </button>)}
-      </div>
-      <footer className="slash-command-footer"><span><kbd><ArrowUp aria-hidden="true" /><ArrowDown aria-hidden="true" /></kbd> move</span><span><kbd><CornerDownLeft aria-hidden="true" /></kbd> insert command</span><span><kbd>esc</kbd> close</span></footer>
-    </section>
-  </div>, document.body);
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onDismiss(); }}>
+    <Dialog.Portal>
+      <Dialog.Backdrop className="slash-command-backdrop" />
+      <Dialog.Viewport className="slash-command-layer">
+        <Dialog.Popup className="slash-command-menu" initialFocus={searchRef} finalFocus={false}>
+          <header>
+            <div><span>RUNTIME CATALOG</span><Dialog.Title render={<b />}>Pi commands</Dialog.Title></div>
+            <Dialog.Close aria-label="Close Pi commands"><X aria-hidden="true" /></Dialog.Close>
+          </header>
+          <Combobox.Root
+            items={commands}
+            filteredItems={commands}
+            inputValue={query}
+            onItemHighlighted={setHighlighted}
+            onValueChange={(command) => {
+              if (command) {
+                selectingRef.current = true;
+                onChoose(command);
+              }
+            }}
+            itemToStringLabel={(command: SlashCommandItem) => command.name}
+            inline
+            open
+            autoHighlight
+          >
+            <label className="slash-command-search">
+              <Search aria-hidden="true" />
+              <span aria-hidden="true">/</span>
+              <Combobox.Input
+                ref={searchRef}
+                aria-label="Filter Pi commands"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                placeholder="Type a command name"
+                onInput={(event) => {
+                  if (!selectingRef.current && event.nativeEvent.isTrusted) onQueryChange(event.currentTarget.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Backspace" && query.length === 0) {
+                    event.preventDefault();
+                    onRemoveTrigger();
+                  } else if ((highlighted ?? commands[0]) && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey || event.key === " ")) {
+                    event.preventDefault();
+                    selectingRef.current = true;
+                    onChoose(highlighted ?? commands[0]!);
+                  }
+                }}
+              />
+              <small>{loading ? "…" : commands.length}</small>
+            </label>
+            <Combobox.List className="slash-command-results" aria-label="Pi commands">
+              <Combobox.Status className="slash-command-status">
+                {loading && <div className="slash-command-state"><i className="loading" />Reading this runtime’s commands…</div>}
+                {!loading && error && <div className="slash-command-state error">{error}</div>}
+                {!loading && !error && commands.length === 0 && <div className="slash-command-state">No matching commands in this runtime</div>}
+              </Combobox.Status>
+              {!loading && commands.map((command, index) => <Combobox.Item
+                className={`slash-command-option source-${command.source}`}
+                index={index}
+                key={`${command.source}:${command.name}`}
+                value={command}
+                nativeButton
+                render={<button type="button" />}
+              >
+                <span className="slash-command-mark" aria-hidden="true">/</span>
+                <span className="slash-command-copy"><b>{command.name}</b><small>{command.description || "No description provided"}</small></span>
+                <span className="slash-command-meta"><em>{SOURCE_LABELS[command.source]}</em>{command.scope && <small>{command.scope}</small>}</span>
+              </Combobox.Item>)}
+            </Combobox.List>
+          </Combobox.Root>
+          <footer className="slash-command-footer"><span><kbd><ArrowUp aria-hidden="true" /><ArrowDown aria-hidden="true" /></kbd> move</span><span><kbd><CornerDownLeft aria-hidden="true" /></kbd> insert command</span><span><kbd>esc</kbd> close</span></footer>
+        </Dialog.Popup>
+      </Dialog.Viewport>
+    </Dialog.Portal>
+  </Dialog.Root>;
 }

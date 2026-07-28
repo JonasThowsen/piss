@@ -91,16 +91,3 @@ export function searchPickerItems<Action>(
       || left.index - right.index,
   ).map(({ item, score }) => ({ item, score }));
 }
-
-export function pickerNavigationOffset(event: {
-  readonly key: string;
-  readonly ctrlKey: boolean;
-  readonly metaKey: boolean;
-  readonly altKey: boolean;
-  readonly shiftKey: boolean;
-}): -1 | 1 | undefined {
-  if (event.metaKey || event.altKey || event.shiftKey) return undefined;
-  if (event.key === "ArrowDown" || event.ctrlKey && event.key.toLocaleLowerCase() === "n") return 1;
-  if (event.key === "ArrowUp" || event.ctrlKey && event.key.toLocaleLowerCase() === "p") return -1;
-  return undefined;
-}

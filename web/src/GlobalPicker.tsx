@@ -1,7 +1,8 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { createPortal } from "react-dom";
+import { Combobox } from "@base-ui/react/combobox";
+import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, ExternalLink, Search, X } from "lucide-react";
-import { pickerNavigationOffset, searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
+import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
 export function GlobalPicker<Action>({
   title,
@@ -15,6 +16,7 @@ export function GlobalPicker<Action>({
   matcher,
   onChoose,
   onClose,
+  finalFocus,
 }: {
   readonly title: string;
   readonly items: ReadonlyArray<PickerItem<Action>>;
@@ -27,110 +29,92 @@ export function GlobalPicker<Action>({
   readonly matcher?: PickerMatcher;
   readonly onChoose: (action: Action) => void;
   readonly onClose: () => void;
+  readonly finalFocus: () => HTMLElement | null;
 }) {
   const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(0);
+  const [highlighted, setHighlighted] = useState<PickerItem<Action>>();
   const inputRef = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLElement>(null);
-  const instanceId = useId().replaceAll(":", "");
-  const resultsId = `${instanceId}-results`;
-  const matches = useMemo(() => searchPickerItems(items, query, matcher).slice(0, 50), [items, matcher, query]);
-  const highlightedMatch = matches[highlighted];
+  const matches = useMemo(() => searchPickerItems(items, query, matcher).slice(0, 50).map(({ item }) => item), [items, matcher, query]);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    if (highlighted < matches.length) return;
-    setHighlighted(Math.max(0, matches.length - 1));
-  }, [highlighted, matches.length]);
-
-  useEffect(() => {
-    dialogRef.current?.querySelector<HTMLElement>(`#${instanceId}-option-${highlighted}`)?.scrollIntoView({ block: "nearest" });
-  }, [highlighted, instanceId]);
-
-  const choose = (index: number) => {
-    const match = matches[index];
-    if (match) onChoose(match.item.action);
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+  const moveWithEmacsKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    const navigationOffset = pickerNavigationOffset(event);
-    if (matches.length > 0 && navigationOffset !== undefined) {
-      event.preventDefault();
-      setHighlighted((current) => (current + navigationOffset + matches.length) % matches.length);
-      return;
-    }
-    if (event.key === "Enter" && highlightedMatch) {
-      event.preventDefault();
-      choose(highlighted);
-      return;
-    }
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled):not([tabindex='-1']), input:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    if (!event.ctrlKey || (event.key !== "n" && event.key !== "p")) return;
+    event.preventDefault();
+    event.currentTarget.dispatchEvent(new KeyboardEvent("keydown", {
+      key: event.key === "n" ? "ArrowDown" : "ArrowUp",
+      bubbles: true,
+    }));
   };
 
-  return createPortal(<div className="global-picker-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="global-picker" role="dialog" aria-modal="true" aria-labelledby={`${instanceId}-title`} ref={dialogRef} onKeyDown={handleKeyDown}>
-      <header>
-        <div><span>GO TO</span><b id={`${instanceId}-title`}>{title}</b></div>
-        <button type="button" onClick={onClose} aria-label={`Close ${title.toLocaleLowerCase()} picker`}><X aria-hidden="true" /></button>
-      </header>
-      <label className="global-picker-search">
-        <Search aria-hidden="true" />
-        <span className="sr-only">{searchLabel}</span>
-        <input
-          ref={inputRef}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded="true"
-          aria-controls={resultsId}
-          aria-activedescendant={highlightedMatch ? `${instanceId}-option-${highlighted}` : undefined}
-          value={query}
-          onChange={(event) => { setQuery(event.target.value); setHighlighted(0); }}
-          placeholder={placeholder}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <kbd>ESC</kbd>
-      </label>
-      <div className="global-picker-results" id={resultsId} role={matches.length > 0 ? "listbox" : "status"} aria-label={matches.length > 0 ? title : undefined}>
-        {matches.length === 0 && <div className="global-picker-empty"><i aria-hidden="true"><Search /></i><b>{items.length === 0 ? noItemsLabel : emptyLabel}</b><span>{items.length === 0 ? noItemsHint : emptyHint}</span></div>}
-        {matches.map(({ item }, index) => <button
-          className={index === highlighted ? "active" : ""}
-          id={`${instanceId}-option-${index}`}
-          key={item.id}
-          type="button"
-          role="option"
-          tabIndex={-1}
-          aria-selected={index === highlighted}
-          onMouseDown={(event) => event.preventDefault()}
-          onMouseEnter={() => setHighlighted(index)}
-          onClick={() => choose(index)}
-        >
-          <span className="global-picker-glyph" aria-hidden="true"><ExternalLink /></span>
-          <span className="global-picker-copy"><b>{item.label}</b>{item.description && <small>{item.description}</small>}</span>
-          {item.meta && <em>{item.meta}</em>}
-        </button>)}
-      </div>
-      <footer><span><kbd aria-label="Up Arrow"><ArrowUp aria-hidden="true" /></kbd><kbd aria-label="Down Arrow"><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> MOVE</span><span><kbd aria-label="Enter"><CornerDownLeft aria-hidden="true" /></kbd> OPEN</span><b>{matches.length} / {items.length}</b></footer>
-    </section>
-  </div>, document.body);
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Portal>
+      <Dialog.Backdrop className="global-picker-backdrop" />
+      <Dialog.Viewport className="global-picker-layer">
+        <Dialog.Popup className="global-picker" initialFocus={inputRef} finalFocus={finalFocus}>
+          <header>
+            <div><span>GO TO</span><Dialog.Title render={<b />}>{title}</Dialog.Title></div>
+            <Dialog.Close aria-label={`Close ${title.toLocaleLowerCase()} picker`}><X aria-hidden="true" /></Dialog.Close>
+          </header>
+          <Combobox.Root
+            items={matches}
+            filteredItems={matches}
+            inputValue={query}
+            onOpenChange={(open) => { if (!open) onClose(); }}
+            onInputValueChange={(value, details) => {
+              if (details.event instanceof InputEvent && details.event.inputType) {
+                setHighlighted(undefined);
+                setQuery(value);
+              }
+            }}
+            onItemHighlighted={setHighlighted}
+            onValueChange={(item) => { if (item) onChoose(item.action); }}
+            itemToStringLabel={(item: PickerItem<Action>) => item.label}
+            inline
+            open
+            autoHighlight
+          >
+            <label className="global-picker-search">
+              <Search aria-hidden="true" />
+              <span className="sr-only">{searchLabel}</span>
+              <Combobox.Input
+                ref={inputRef}
+                aria-label={searchLabel}
+                placeholder={placeholder}
+                autoComplete="off"
+                spellCheck={false}
+                onKeyDownCapture={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onClose();
+                  } else if (event.key === "Enter" && matches.length > 0) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onChoose((highlighted && matches.includes(highlighted) ? highlighted : matches[0]!).action);
+                  }
+                }}
+                onKeyDown={moveWithEmacsKey}
+              />
+              <kbd>ESC</kbd>
+            </label>
+            <Combobox.List className="global-picker-results" aria-label={title}>
+              {matches.length === 0 && <div className="global-picker-empty"><i aria-hidden="true"><Search /></i><b>{items.length === 0 ? noItemsLabel : emptyLabel}</b><span>{items.length === 0 ? noItemsHint : emptyHint}</span></div>}
+              {matches.map((item, index) => <Combobox.Item
+                className="global-picker-option"
+                key={item.id}
+                value={item}
+                index={index}
+              >
+                <span className="global-picker-glyph" aria-hidden="true"><ExternalLink /></span>
+                <span className="global-picker-copy"><b>{item.label}</b>{item.description && <small>{item.description}</small>}</span>
+                {item.meta && <em>{item.meta}</em>}
+              </Combobox.Item>)}
+            </Combobox.List>
+          </Combobox.Root>
+          <footer><span><kbd aria-label="Up Arrow"><ArrowUp aria-hidden="true" /></kbd><kbd aria-label="Down Arrow"><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> MOVE</span><span><kbd aria-label="Enter"><CornerDownLeft aria-hidden="true" /></kbd> OPEN</span><b>{matches.length} / {items.length}</b></footer>
+        </Dialog.Popup>
+      </Dialog.Viewport>
+    </Dialog.Portal>
+  </Dialog.Root>;
 }
