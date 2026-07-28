@@ -1,0 +1,99 @@
+# PISS architecture
+
+Status: **accepted and implemented foundation**.
+
+PISS is the primary interface and lifecycle owner for Pi. Pi remains the coding harness and durable session format; PISS adds secure remote ownership, supervision, organization, and a browser interface.
+
+## Product boundary
+
+PISS is a Pi-native remote workspace, not a generic IDE. It owns:
+
+- trusted workspace registration;
+- Pi process lifecycle;
+- browser authentication and command routing;
+- session discovery, status, and attention state;
+- web views of Pi messages, tools, queues, statistics, review data, and extension UI.
+
+It does not own a general-purpose terminal, arbitrary browser-triggered process execution, provider-neutral agent adapters, or collaborative editing.
+
+## Domain model
+
+```text
+Host
+└── Workspace
+    ├── trusted root and launch policy
+    └── Sessions
+        ├── one durable Pi JSONL transcript
+        └── zero or one active Runtime
+```
+
+A **workspace** is a PISS-owned registration of an explicitly authorized root. A **session** is a durable Pi conversation associated with one workspace. A **runtime** is an ephemeral Pi process generation with RPC transport and live state. Runtime identity is never used as durable session identity, and one session has at most one writable runtime.
+
+Standard Git checkouts and registered worktrees can be workspace roots. Browser-managed worktree creation is a future workflow.
+
+## Process model
+
+```text
+Browser ── HTTPS ── PISS server ── JSONL stdin/stdout ── pi --mode rpc
+```
+
+The server owns multiple Pi RPC child processes. RPC exposes prompts, queues, models, compaction, statistics, extension commands, and interactive extension requests while retaining process isolation per active session.
+
+Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. A server restart stops direct children and can resume durable sessions in a new runtime generation. Transparent survival of an in-flight tool across server-binary replacement is intentionally deferred.
+
+## Effect architecture
+
+The server uses a pinned Effect 4 beta. Domain operations return typed `Effect` values, capabilities are declared with `Context.Service`, implementations are assembled with `Layer`, and unknown data is decoded with `Schema` at trust boundaries.
+
+```text
+shared/                    Effect schemas and shared state rules
+server/
+├── config.ts              validated environment configuration
+├── workspaces/            authorization, discovery, and persistence
+├── runtimes/              Pi process supervision and durable resume
+├── files/                 authorized file mention search
+├── reviews/               bounded Bubblewrap Git review
+├── notifications/         persisted Web Push delivery
+├── http.ts                authenticated Node HTTP adapter
+└── main.ts                layer assembly and runtime edge
+web/                       React client and PWA worker
+```
+
+Node HTTP, filesystem, process, and sandbox APIs remain in infrastructure services. React components render state and initiate use cases; Effect Schema decodes server responses at the browser boundary.
+
+## Deployment architecture
+
+The flake exposes:
+
+- `piss-server`, the runtime-owning process;
+- `piss-web`, the independently updatable browser shell;
+- `piss`, a combined package used by the default app and build checks;
+- `nixosModules.default`, the sole NixOS module.
+
+The module exposes one canonical `services.piss` service on loopback. An independent userspace Tailscale node supplies HTTPS and authenticated identity headers. The web package is linked through a stable `/etc/piss/public` path so browser-only releases do not restart active Pi runtimes.
+
+## Data ownership
+
+| Data | Source of truth |
+| --- | --- |
+| Pi conversation and tree | Pi JSONL session file |
+| Current Pi stream | owned runtime / RPC events |
+| Workspace definitions | PISS state store |
+| Workspace-to-session association | PISS state store |
+| Runtime state | in-memory supervisor, reconciled with processes |
+| Browser drafts and outgoing tray | browser local storage |
+| Browser reconnect view | bounded event projection and transcript reconstruction |
+
+## Security invariants
+
+- Production binds only to loopback and is exposed through the dedicated Tailscale Serve node.
+- Browser access requires a Tailscale identity and an explicit allowlist by default.
+- Mutations require a same-origin HTTPS request in production.
+- Workspace roots are server-authorized; browser input cannot select an arbitrary working directory.
+- Browser requests cannot supply arbitrary Pi CLI arguments.
+- Project-local Pi resources require explicit workspace trust.
+- Runtime-targeted commands include a generation token, and accepted command IDs are bounded and persisted.
+- Image type, signature, count, and aggregate size are validated before RPC delivery.
+- Git review uses fixed commands in a bounded, networkless Bubblewrap sandbox.
+- API responses and private runtime data are never cached by the service worker.
+- Tailscale Funnel and direct public exposure are unsupported.

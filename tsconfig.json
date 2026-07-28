@@ -12,5 +12,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["extensions", "server", "shared", "web", "test", "v2", "vite.config.ts", "playwright.config.ts"]
+  "include": ["server", "shared", "web", "test", "browser-test", "vite.config.ts", "playwright.config.ts"]
 }

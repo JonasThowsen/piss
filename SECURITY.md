@@ -9,7 +9,8 @@ The only supported production boundary is:
 1. the PISS application binds to loopback;
 2. the NixOS module's independent Tailscale node provides HTTPS;
 3. Tailscale Serve supplies authenticated identity headers;
-4. `services.piss.allowedUsers` restricts browser access.
+4. `services.piss.allowedUsers` restricts browser access;
+5. configured workspace roots bound the directories in which PISS may launch Pi.
 
 The following are explicitly unsupported:
 
@@ -17,32 +18,27 @@ The following are explicitly unsupported:
 - direct public internet exposure;
 - a reverse proxy that permits clients to forge Tailscale identity headers;
 - a non-loopback `PISS_HOST`;
-- production use with `PISS_DEV_BYPASS_AUTH=1`.
+- production use with `PISS_DEV_BYPASS_AUTH=1`;
+- broadly authorizing sensitive home or filesystem roots as workspaces.
 
-PISS deliberately refuses non-loopback binds and refuses the development bypass when `NODE_ENV=production`. In development, identity may be bypassed but browser WebSockets still require the configured local Vite origin (`PISS_DEV_ALLOWED_ORIGINS`, or the loopback defaults for `PISS_DEV_WEB_PORT`).
+PISS refuses non-loopback binds and refuses the development bypass when `NODE_ENV=production`. State-changing production requests also require a matching HTTPS origin.
 
 ## Secrets and local data
 
-- The bridge credential is generated at `~/.local/state/piss/bridge-token` with mode `0600` and must never be committed.
 - Tailscale state is stored under `~/.local/state/piss/tailscale` and must never be copied into the repository.
 - Use a secret manager for `services.piss.tailscale.authKeyFile`; never put an auth key in Nix source.
-- Text drafts are stored in the browser's local storage for up to 30 days. Do not use an untrusted browser profile.
-- Image bytes are validated at both trust boundaries and are not retained in the server's history cache.
-- Web Push VAPID keys and opted-in device subscriptions are stored under `~/.local/state/piss` with mode `0600`. Push delivery necessarily reveals the device's push endpoint and an encrypted payload to its browser vendor; PISS payloads contain only session label, branch, completion state, and session ID, never conversation content or credentials.
+- PISS ownership metadata, workspace registrations, VAPID keys, and push subscriptions are stored under `~/.local/state/piss` with restrictive permissions.
+- Pi JSONL transcripts remain in Pi's session storage and may contain prompts, model output, tool results, and paths.
+- Text drafts are stored in browser local storage for up to 30 days. Do not use an untrusted browser profile.
+- Image count, base64 encoding, signature, and aggregate size are validated before delivery to Pi.
+- Web Push reveals the device push endpoint and an encrypted generic payload to the browser vendor. Payloads do not contain prompts, output, workspace names, errors, absolute paths, or credentials.
+- The PWA caches only fixed public shell assets; API and session responses are excluded.
 
 ## Reporting a vulnerability
 
-Please use GitHub's **Report a vulnerability** feature under the repository's Security tab. Do not open a public issue for authentication bypasses, credential exposure, command-routing flaws, or cross-site scripting.
+Use GitHub's **Report a vulnerability** feature under the repository's Security tab. Do not open a public issue for authentication bypasses, credential exposure, command-routing flaws, workspace escapes, sandbox escapes, or cross-site scripting.
 
-Include:
-
-- the affected commit or release;
-- deployment details;
-- reproduction steps;
-- impact;
-- any suggested mitigation.
-
-You should receive an acknowledgement within seven days. There is currently no bug bounty.
+Include the affected commit, deployment details, reproduction steps, impact, and any suggested mitigation. You should receive an acknowledgement within seven days. There is currently no bug bounty.
 
 ## Supported versions
 

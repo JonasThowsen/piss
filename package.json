@@ -2,7 +2,7 @@
   "name": "piss",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi sin sidecar — a Tailscale-native web control surface for live Pi sessions",
+  "description": "Pi sin sidecar — a Tailscale-native web workspace for owned Pi sessions",
   "license": "MIT",
   "author": "Jonas Ådland Thowsen",
   "homepage": "https://github.com/JonasThowsen/piss#readme",
@@ -17,36 +17,22 @@
   },
   "packageManager": "npm@11.12.1",
   "keywords": [
-    "pi-package",
     "pi",
     "coding-agent",
     "tailscale",
     "nixos"
   ],
-  "pi": {
-    "extensions": [
-      "./extensions/index.ts"
-    ]
-  },
   "scripts": {
     "build": "npm run clean && npm run build:server && npm run build:web",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/server.js",
+    "build:server": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/server.js",
     "build:web": "vite build",
-    "build:v2": "npm run clean:v2 && npm run build:v2:server && npm run build:v2:web",
-    "build:v2:server": "esbuild v2/server/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist-v2/server.js",
-    "build:v2:web": "vite build --config v2/vite.config.ts",
     "audit": "npm audit --omit=dev --audit-level=high",
     "check": "npm run typecheck && npm run test",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "clean:v2": "rm -rf dist-v2",
-    "dev": "PISS_DEV_BYPASS_AUTH=1 concurrently -k -n server,web -c cyan,green \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
-    "dev:v2": "PISS_V2_DEV_BYPASS_AUTH=1 concurrently -k -n server-v2,web-v2 -c yellow,magenta \"tsx watch v2/server/main.ts\" \"vite --config v2/vite.config.ts\"",
-    "dev:tailnet": "bash scripts/dev-tailnet.sh",
-    "dev:tailnet:run": "concurrently -k -n server,web -c cyan,green \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev": "PISS_DEV_BYPASS_AUTH=1 concurrently -k -n server,web -c cyan,green \"tsx watch server/main.ts\" \"vite\"",
     "start": "node dist/server.js",
-    "start:v2": "node dist-v2/server.js",
-    "test": "node --import tsx --test test/**/*.test.ts v2/test/**/*.test.ts",
+    "test": "node --import tsx --test test/**/*.test.ts",
     "test:browser": "playwright test"
   },
   "dependencies": {
@@ -55,25 +41,14 @@
     "effect": "4.0.0-beta.101",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
-    "web-push": "^3.6.7",
-    "ws": "^8.18.3"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    }
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.10",
     "@playwright/test": "1.62.0",
     "@types/node": "^24.0.15",
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
     "@types/web-push": "^3.6.4",
-    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.0",
     "esbuild": "^0.25.8",

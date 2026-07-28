@@ -1,18 +1,16 @@
 {
   "id": "/",
-  "name": "PISS · Pi sin sidecar",
+  "name": "PISS",
   "short_name": "PISS",
-  "description": "Pi sin sidecar — private remote operations for Pi coding agents",
+  "description": "Private mobile control for owned Pi coding sessions",
   "start_url": "/",
   "scope": "/",
+  "gcm_sender_id": "103953800507",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
-  "orientation": "any",
-  "background_color": "#fdfdfd",
-  "theme_color": "#fafafa",
+  "background_color": "#f6f8f3",
+  "theme_color": "#f6f8f3",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }

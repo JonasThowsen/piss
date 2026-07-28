@@ -36,7 +36,6 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
       - run: npm run build
-      - run: npm run build:v2
       - run: npm run audit
 
   nix:
@@ -50,4 +49,3 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - run: nix flake check
       - run: nix build .#piss
-      - run: nix build .#piss-v2

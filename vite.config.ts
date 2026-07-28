@@ -1,92 +1,62 @@
-import { defineConfig, type Plugin } from "vite";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import { defineConfig, type Plugin } from "vite";
 
-function portFromEnvironment(name: string, fallback: number): number {
+function renderServiceWorker(cacheName: string, assets: ReadonlyArray<string>): string {
+  const template = readFileSync(fileURLToPath(new URL("./web/service-worker.js", import.meta.url)), "utf8");
+  return template
+    .replace("__PISS_CACHE_NAME__", JSON.stringify(cacheName))
+    .replace("__PISS_ASSETS__", JSON.stringify(assets));
+}
+
+function serviceWorkerPlugin(): Plugin {
+  return {
+    name: "piss-service-worker",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split("?", 1)[0] !== "/service-worker.js") return next();
+        response.statusCode = 200;
+        response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        response.setHeader("Cache-Control", "no-cache");
+        response.end(renderServiceWorker("piss-shell-development", []));
+      });
+    },
+    generateBundle(_options, bundle) {
+      const executableAssets = Object.values(bundle)
+        .map((entry) => entry.fileName)
+        .filter((fileName) => fileName.endsWith(".js") || fileName.endsWith(".css"))
+        .sort();
+      if (!executableAssets.some((fileName) => fileName.endsWith(".js"))) throw new Error("service worker requires a JavaScript entry asset");
+      const version = createHash("sha256").update(executableAssets.join("\n")).digest("hex").slice(0, 16);
+      const source = renderServiceWorker(`piss-shell-${version}`, executableAssets.map((fileName) => `/${fileName}`));
+      this.emitFile({ type: "asset", fileName: "service-worker.js", source });
+    },
+  };
+}
+
+function port(name: string, fallback: number): number {
   const value = Number(process.env[name] ?? fallback);
-  if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`${name} must be a valid TCP port`);
+  if (!Number.isInteger(value) || value < 1 || value > 65_535) throw new Error(`${name} must be a valid port`);
   return value;
 }
 
-const devServerId = `${Date.now().toString(36)}-${process.pid}`;
-const devBootRecovery: Plugin = {
-  name: "piss-dev-boot-recovery",
-  apply: "serve",
-  transformIndexHtml: {
-    order: "pre",
-    handler: () => [
-      {
-        tag: "style",
-        injectTo: "head-prepend",
-        children: "#root>.boot-state{height:100vh;display:grid;place-content:center;justify-items:center;gap:8px;color:#6b6b73}#root>.boot-state strong{color:#c2410c;font:700 12px sans-serif;letter-spacing:.16em}#root>.boot-state p{margin:0;font:12px sans-serif}",
-      },
-      {
-        tag: "script",
-        injectTo: "head-prepend",
-        children: `(() => {
-          const serverId = ${JSON.stringify(devServerId)};
-          const attemptsKey = "piss:dev-boot-attempts:" + serverId;
-          let timer;
-          window.__PISS_MARK_BOOTED__ = () => {
-            clearTimeout(timer);
-            sessionStorage.removeItem(attemptsKey);
-          };
-          const clearWorker = async () => {
-            if ("serviceWorker" in navigator) {
-              const registrations = await navigator.serviceWorker.getRegistrations();
-              await Promise.all(registrations.map((registration) => registration.unregister()));
-            }
-            if ("caches" in window) {
-              const keys = await caches.keys();
-              await Promise.all(keys.filter((key) => key.startsWith("piss-shell-")).map((key) => caches.delete(key)));
-            }
-          };
-          const recover = async () => {
-            await clearWorker().catch(() => undefined);
-            const attempts = Number(sessionStorage.getItem(attemptsKey) || "0");
-            const status = document.querySelector(".boot-state p");
-            if (attempts >= 3) {
-              if (status) status.textContent = "Development client failed to start. Restart the dev server, then reload.";
-              return;
-            }
-            try {
-              const paths = ["/src/main.tsx", "/src/App.tsx", "/src/styles.css"];
-              const responses = await Promise.all(paths.map((path) => fetch(path + "?boot=" + Date.now(), { cache: "no-store" })));
-              if (!responses.every((response) => response.ok)) throw new Error("development modules unavailable");
-              sessionStorage.setItem(attemptsKey, String(attempts + 1));
-              location.reload();
-            } catch {
-              if (status) status.textContent = "Reconnecting to the development server…";
-              timer = setTimeout(recover, 2500);
-            }
-          };
-          void clearWorker().catch(() => undefined);
-          timer = setTimeout(recover, 4000);
-        })();`,
-      },
-    ],
+export default defineConfig({
+  plugins: [react(), serviceWorkerPlugin()],
+  root: fileURLToPath(new URL("./web", import.meta.url)),
+  build: {
+    outDir: fileURLToPath(new URL("./dist/public", import.meta.url)),
+    emptyOutDir: true,
   },
-};
-
-export default defineConfig(() => {
-  const backendPort = portFromEnvironment("PISS_PORT", 4317);
-  const webPort = portFromEnvironment("PISS_DEV_WEB_PORT", 5173);
-  const tailnetHost = process.env.PISS_DEV_HOST?.replace(/\.$/, "");
-
-  return {
-    plugins: [devBootRecovery, react()],
-    root: "web",
-    build: {
-      outDir: "../dist/public",
-      emptyOutDir: true,
-    },
-    server: {
-      port: webPort,
-      strictPort: true,
-      allowedHosts: tailnetHost ? [tailnetHost] : [],
-      hmr: tailnetHost ? { protocol: "wss", host: tailnetHost, clientPort: 443 } : undefined,
-      proxy: {
-        "/api": { target: `http://127.0.0.1:${backendPort}`, ws: true },
+  server: {
+    host: "127.0.0.1",
+    port: port("PISS_DEV_WEB_PORT", 5173),
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${port("PISS_PORT", 4317)}`,
       },
     },
-  };
+  },
 });

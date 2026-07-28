@@ -17,14 +17,97 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          source =
+            files:
+            nixpkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = nixpkgs.lib.fileset.unions files;
+            };
+          common = {
+            version = "0.1.0";
+            npmDepsHash = "sha256-WSfHFuG2XjDvR0QroKCsV8hXyBRaDC3RTYaN7VqS+js=";
+            npmDepsFetcherVersion = 2;
+          };
         in
         rec {
-          piss = pkgs.buildNpmPackage {
-            pname = "piss";
-            version = "0.1.0";
-            src = nixpkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = nixpkgs.lib.fileset.unions [
+          piss-server = pkgs.buildNpmPackage (
+            common
+            // {
+              pname = "piss-server";
+              src = source [
+                ./package.json
+                ./package-lock.json
+                ./server
+                ./shared
+              ];
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              npmBuildScript = "build:server";
+              doCheck = false;
+              installPhase = ''
+                runHook preInstall
+
+                mkdir -p $out/bin $out/lib/piss
+                cp dist/server.js $out/lib/piss/server.js
+                npm prune --omit=dev --offline
+                cp -r node_modules $out/lib/piss/node_modules
+
+                makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
+                  --add-flags $out/lib/piss/server.js \
+                  --prefix NODE_PATH : $out/lib/piss/node_modules \
+                  --prefix PATH : ${
+                    nixpkgs.lib.makeBinPath [
+                      pkgs.gitMinimal
+                      pkgs.bubblewrap
+                    ]
+                  }
+
+                runHook postInstall
+              '';
+              meta = {
+                description = "Effect-based PISS runtime server";
+                homepage = "https://github.com/JonasThowsen/piss";
+                license = nixpkgs.lib.licenses.mit;
+                mainProgram = "piss";
+                platforms = systems;
+              };
+            }
+          );
+
+          piss-web = pkgs.buildNpmPackage (
+            common
+            // {
+              pname = "piss-web";
+              src = source [
+                ./package.json
+                ./package-lock.json
+                ./vite.config.ts
+                ./shared
+                ./web
+              ];
+              npmBuildScript = "build:web";
+              doCheck = false;
+              installPhase = ''
+                runHook preInstall
+
+                mkdir -p $out/share/piss
+                cp -r dist/public $out/share/piss/public
+
+                runHook postInstall
+              '';
+              meta = {
+                description = "PISS browser shell";
+                homepage = "https://github.com/JonasThowsen/piss";
+                license = nixpkgs.lib.licenses.mit;
+                platforms = systems;
+              };
+            }
+          );
+
+          piss = pkgs.buildNpmPackage (
+            common
+            // {
+              pname = "piss";
+              src = source [
                 ./CONTRIBUTING.md
                 ./LICENSE
                 ./README.md
@@ -34,209 +117,61 @@
                 ./playwright.config.ts
                 ./tsconfig.json
                 ./vite.config.ts
-                ./extensions
+                ./browser-test
                 ./server
                 ./shared
                 ./test
-                ./v2
                 ./web
               ];
-            };
-            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
-            npmDepsFetcherVersion = 2;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            nativeCheckInputs = [
-              pkgs.gitMinimal
-              pkgs.bubblewrap
-            ];
-            npmBuildScript = "build";
-            doCheck = true;
-            checkPhase = ''
-              runHook preCheck
-              npm run check
-              runHook postCheck
-            '';
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/bin $out/lib/piss
-              cp dist/server.js $out/lib/piss/server.js
-              cp -r dist/public $out/lib/piss/public
-
-              # Keep the Pi package at the output root. Pi provides the optional
-              # coding-agent peer; prune and retain PISS's server dependencies.
-              cp CONTRIBUTING.md LICENSE README.md SECURITY.md package.json $out/
-              cp -r extensions shared $out/
-              npm prune --omit=dev --offline
-              cp -r node_modules $out/node_modules
-
-              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
-                --add-flags $out/lib/piss/server.js
-
-              runHook postInstall
-            '';
-            meta = {
-              description = "Pi sin sidecar — private web control for live Pi sessions";
-              homepage = "https://github.com/JonasThowsen/piss";
-              license = nixpkgs.lib.licenses.mit;
-              mainProgram = "piss";
-              platforms = systems;
-            };
-          };
-
-          # Keep the V2 server and browser shell in separate derivations. The
-          # NixOS module can then update browser assets without restarting the
-          # process that owns active Pi runtimes.
-          piss-v2-server = pkgs.buildNpmPackage {
-            pname = "piss-v2-server";
-            version = "0.0.1";
-            src = nixpkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = nixpkgs.lib.fileset.unions [
-                ./package.json
-                ./package-lock.json
-                ./server/browser-auth.ts
-                ./shared
-                ./v2/server
-                ./v2/shared
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              nativeCheckInputs = [
+                pkgs.chromium
+                pkgs.fontconfig
+                pkgs.dejavu_fonts
+                pkgs.gitMinimal
+                pkgs.bubblewrap
               ];
-            };
-            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
-            npmDepsFetcherVersion = 2;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            npmBuildScript = "build:v2:server";
-            doCheck = false;
-            installPhase = ''
-              runHook preInstall
+              PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
+              FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
+              npmBuildScript = "build";
+              doCheck = true;
+              checkPhase = ''
+                runHook preCheck
+                npm run check
+                npm run test:browser
+                runHook postCheck
+              '';
+              installPhase = ''
+                runHook preInstall
 
-              mkdir -p $out/bin $out/lib/piss-v2
-              cp dist-v2/server.js $out/lib/piss-v2/server.js
-              npm prune --omit=dev --offline
-              cp -r node_modules $out/lib/piss-v2/node_modules
+                mkdir -p $out/bin $out/lib/piss
+                cp dist/server.js $out/lib/piss/server.js
+                cp -r dist/public $out/lib/piss/public
+                npm prune --omit=dev --offline
+                cp -r node_modules $out/lib/piss/node_modules
 
-              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss-v2 \
-                --add-flags $out/lib/piss-v2/server.js \
-                --prefix NODE_PATH : $out/lib/piss-v2/node_modules \
-                --prefix PATH : ${
-                  nixpkgs.lib.makeBinPath [
-                    pkgs.gitMinimal
-                    pkgs.bubblewrap
-                  ]
-                }
+                makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
+                  --add-flags $out/lib/piss/server.js \
+                  --set PISS_PUBLIC_DIR $out/lib/piss/public \
+                  --prefix NODE_PATH : $out/lib/piss/node_modules \
+                  --prefix PATH : ${
+                    nixpkgs.lib.makeBinPath [
+                      pkgs.gitMinimal
+                      pkgs.bubblewrap
+                    ]
+                  }
 
-              runHook postInstall
-            '';
-            meta = {
-              description = "Effect-based PISS V2 runtime server";
-              homepage = "https://github.com/JonasThowsen/piss";
-              license = nixpkgs.lib.licenses.mit;
-              mainProgram = "piss-v2";
-              platforms = systems;
-            };
-          };
-
-          piss-v2-web = pkgs.buildNpmPackage {
-            pname = "piss-v2-web";
-            version = "0.0.1";
-            src = nixpkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = nixpkgs.lib.fileset.unions [
-                ./package.json
-                ./package-lock.json
-                ./v2/vite.config.ts
-                ./v2/shared
-                ./v2/web
-              ];
-            };
-            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
-            npmDepsFetcherVersion = 2;
-            npmBuildScript = "build:v2:web";
-            doCheck = false;
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/share/piss-v2
-              cp -r dist-v2/public $out/share/piss-v2/public
-
-              runHook postInstall
-            '';
-            meta = {
-              description = "PISS V2 browser shell";
-              homepage = "https://github.com/JonasThowsen/piss";
-              license = nixpkgs.lib.licenses.mit;
-              platforms = systems;
-            };
-          };
-
-          piss-v2 = pkgs.buildNpmPackage {
-            pname = "piss-v2";
-            version = "0.0.1";
-            src = nixpkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = nixpkgs.lib.fileset.unions [
-                ./package.json
-                ./package-lock.json
-                ./playwright.config.ts
-                ./tsconfig.json
-                ./vite.config.ts
-                ./extensions
-                ./server
-                ./shared
-                ./test
-                ./v2
-                ./web
-              ];
-            };
-            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
-            npmDepsFetcherVersion = 2;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            nativeCheckInputs = [
-              pkgs.chromium
-              pkgs.fontconfig
-              pkgs.dejavu_fonts
-              pkgs.gitMinimal
-              pkgs.bubblewrap
-            ];
-            PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
-            FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
-            npmBuildScript = "build:v2";
-            doCheck = true;
-            checkPhase = ''
-              runHook preCheck
-              npm run check
-              npm run test:browser
-              runHook postCheck
-            '';
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/bin $out/lib/piss-v2
-              cp dist-v2/server.js $out/lib/piss-v2/server.js
-              cp -r dist-v2/public $out/lib/piss-v2/public
-              npm prune --omit=dev --offline
-              cp -r node_modules $out/lib/piss-v2/node_modules
-
-              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss-v2 \
-                --add-flags $out/lib/piss-v2/server.js \
-                --set PISS_V2_PUBLIC_DIR $out/lib/piss-v2/public \
-                --prefix NODE_PATH : $out/lib/piss-v2/node_modules \
-                --prefix PATH : ${
-                  nixpkgs.lib.makeBinPath [
-                    pkgs.gitMinimal
-                    pkgs.bubblewrap
-                  ]
-                }
-
-              runHook postInstall
-            '';
-            meta = {
-              description = "Effect-based PISS V2 workspace control plane";
-              homepage = "https://github.com/JonasThowsen/piss";
-              license = nixpkgs.lib.licenses.mit;
-              mainProgram = "piss-v2";
-              platforms = systems;
-            };
-          };
+                runHook postInstall
+              '';
+              meta = {
+                description = "Effect-based PISS workspace control plane";
+                homepage = "https://github.com/JonasThowsen/piss";
+                license = nixpkgs.lib.licenses.mit;
+                mainProgram = "piss";
+                platforms = systems;
+              };
+            }
+          );
 
           default = piss;
         }
@@ -246,12 +181,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.piss}/bin/piss";
-          meta.description = "Run PISS on loopback";
-        };
-        v2 = {
-          type = "app";
-          program = "${self.packages.${system}.piss-v2}/bin/piss-v2";
-          meta.description = "Run the Effect-based PISS V2 control plane";
+          meta.description = "Run the Effect-based PISS control plane";
         };
       });
 
@@ -284,11 +214,9 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
       overlays.default = final: _prev: {
         piss = self.packages.${final.stdenv.hostPlatform.system}.piss;
-        piss-v2 = self.packages.${final.stdenv.hostPlatform.system}.piss-v2;
+        piss-server = self.packages.${final.stdenv.hostPlatform.system}.piss-server;
+        piss-web = self.packages.${final.stdenv.hostPlatform.system}.piss-web;
       };
-      nixosModules = {
-        default = import ./nix/nixos-module.nix self;
-        v2 = import ./nix/nixos-v2-module.nix self;
-      };
+      nixosModules.default = import ./nix/nixos-module.nix self;
     };
 }

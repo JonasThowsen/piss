@@ -2,52 +2,48 @@
 
 [![CI](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml)
 
-**PISS** — **Pi sin sidecar** — is a private, mobile-first web interface for live [Pi](https://github.com/earendil-works/pi-mono) coding-agent sessions.
+**PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) coding-agent sessions.
 
-It streams Pi's native messages and tool events instead of mirroring a terminal. From a phone or laptop you can inspect multiple sessions, send prompts, steer between tool calls, queue follow-ups, abort work, paste or upload images, and install the interface as a PWA.
+PISS owns and supervises Pi RPC runtimes. From a phone or laptop you can create trusted workspaces, run multiple sessions, inspect native messages and tool events, send prompts, steer or queue work, review changes, and install the interface as a PWA.
 
-PISS is intentionally designed for **NixOS + Tailscale**. The NixOS module runs the application and an independent userspace Tailscale node, giving it a dedicated URL without consuming the host's normal Tailscale Serve configuration:
+PISS is designed for **NixOS + Tailscale**. Its NixOS module runs the application behind an independent userspace Tailscale node:
 
 ```text
 https://piss.<tailnet>.ts.net
 ```
 
 > [!WARNING]
-> Remote Pi control is equivalent to remote access to your user account. PISS is a privileged administration interface. Never expose it with Tailscale Funnel or an unauthenticated public proxy.
+> Remote Pi control is equivalent to remote access to your user account. Never expose PISS with Tailscale Funnel or an unauthenticated public proxy.
 
 ## Features
 
-- Native Pi message and tool-event streaming
-- Git branch-aware session labels for distinguishing worktrees
-- Color-coded working, idle, blocked, finished, and offline agent status
-- Prompt, steer, follow-up, and abort controls
-- Remote model and effort-level selection for idle agents
-- Opt-in PWA push notifications when agents finish or need attention
-- Phone image upload and desktop clipboard screenshots
-- Per-session persistent drafts
-- Controlled follow-to-bottom scrolling
-- Mobile session drawer and installable PWA
-- Immediate archiving of stale offline session cards
-- Read-only staged, unstaged, and untracked Git review with bounded unified diffs
+- Browser-created trusted workspaces and multiple supervised Pi sessions
+- Durable session metadata and validated resume from Pi JSONL transcripts
+- Native conversation and tool-event timelines
+- Prompt, steer, follow-up, abort, stop, and resume controls
+- Runtime-generation and command-ID protection against stale or duplicate delivery
+- Model, thinking-level, context, usage, queue, and compaction controls
+- Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)
+- Workspace-scoped file mentions and read-only Git review in a Bubblewrap sandbox
+- PNG, JPEG, GIF, and WebP attachments with signature and size validation
+- Per-session browser drafts and an update-safe offline application shell
+- Opt-in privacy-safe Web Push notifications
+- Mobile navigation, keyboard shortcuts, and global session picking
 - Tailscale identity authentication with a secure-by-default allowlist
-- Independent Tailscale hostname and HTTPS certificate
-- Runtime-generation protection against stale commands
-- Runtime protocol validation, payload limits, backpressure, and image signature checks
-- Reproducible Nix package, NixOS module, and development shell
-- Type checking with the stable TypeScript 7 native Go compiler (`tsc`)
+- Reproducible Nix packages, NixOS module, development shell, and browser tests
+
+See [the architecture](./docs/ARCHITECTURE.md) and [tracer roadmap](./docs/ROADMAP.md) for implementation details and known limitations.
 
 ## Requirements
 
 - NixOS with flakes enabled
 - Pi installed for the desktop user
 - A Tailscale tailnet with MagicDNS and HTTPS certificates enabled
-- Node.js is only required for development; the Nix package supplies its runtime
+- Node.js only for development; the Nix package supplies its runtime
 
 ## Install on NixOS
 
 ### 1. Add the flake input
-
-In your NixOS `flake.nix`:
 
 ```nix
 {
@@ -60,8 +56,6 @@ In your NixOS `flake.nix`:
 
 ### 2. Enable the service
 
-Import the module and allow your Tailscale login:
-
 ```nix
 { inputs, ... }:
 {
@@ -70,12 +64,28 @@ Import the module and allow your Tailscale login:
   services.piss = {
     enable = true;
     allowedUsers = [ "you@example.com" ];
+    piCommand = "/home/you/.npm-global/bin/pi";
+    workspaceDiscoveryRoots = [ "/home/you/coding" ];
     tailscale.hostname = "piss";
   };
 }
 ```
 
 `allowedUsers` is required by default. To deliberately rely only on tailnet policy, set `allowAllTailnetUsers = true`.
+
+PISS starts without seeded workspaces. Use **+** in the workspace navigation to select or create a directory below `workspaceDiscoveryRoots`. You can also seed trusted roots declaratively:
+
+```nix
+services.piss.workspaces = [
+  {
+    name = "PISS";
+    path = "/home/you/coding/piss";
+    trustProjectResources = false;
+  }
+];
+```
+
+Set `trustProjectResources = true` only when Pi may load that workspace's local settings, extensions, skills, and packages.
 
 Apply the configuration:
 
@@ -85,19 +95,11 @@ sudo nixos-rebuild switch --flake ~/nixos#your-host
 
 ### 3. Authenticate the dedicated Tailscale node
 
-On first installation:
-
 ```bash
 piss-tailscale-login
 ```
 
-Open the displayed login URL. PISS then becomes available at:
-
-```text
-https://piss.<tailnet>.ts.net
-```
-
-The login persists under `~/.local/state/piss/tailscale`. If the hostname already exists, remove or rename the stale node in the Tailscale admin console.
+Open the displayed login URL. Authentication state persists under `~/.local/state/piss/tailscale`.
 
 For unattended enrollment, use a secret file readable by the desktop user:
 
@@ -105,31 +107,13 @@ For unattended enrollment, use a secret file readable by the desktop user:
 services.piss.tailscale.authKeyFile = "/run/secrets/piss-tailscale-auth-key";
 ```
 
-### 4. Install the Pi bridge
+### 4. Install the PWA
 
-Once this repository is public:
+Open the HTTPS URL and choose **Install app** or **Add to Home Screen**. The service worker caches only fixed application-shell assets; private API and session data are never cached.
 
-```bash
-pi install git:github.com/JonasThowsen/piss
-```
-
-For a local checkout instead:
-
-```bash
-pi install /path/to/piss
-```
-
-Start a new Pi process, or run `/reload` in an existing one. The bridge connects over loopback using the mode-0600 credential at `~/.local/state/piss/bridge-token`.
-
-### 5. Install the PWA
-
-Open the HTTPS URL on your phone and choose **Install app** or **Add to Home Screen**. The service worker caches only the application shell; session data still requires a live authenticated connection.
-
-After installing, open the session drawer and enable **Task alerts**. The browser will ask for notification permission. Alerts use the browser vendor's Web Push service so they continue to work while the PWA is closed; the push payload contains only the session label, branch, completion state, and session ID—never prompts, model output, or bridge credentials. The host needs outbound HTTPS access to the device's push service.
+Enable task alerts from the application if desired. Notification payloads contain an opaque session ID and generic attention state, not prompts, output, workspace names, paths, or credentials.
 
 ## Updating
-
-Update the Nix input and switch generations:
 
 ```bash
 cd ~/nixos
@@ -137,11 +121,7 @@ nix flake update piss
 sudo nixos-rebuild switch --flake .#your-host
 ```
 
-Update a Pi Git package with:
-
-```bash
-pi update --extensions
-```
+Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update gracefully stops direct child processes and resumes durable sessions from their Pi transcripts; an in-flight tool cannot currently survive that process replacement.
 
 ## Operations
 
@@ -151,56 +131,7 @@ journalctl --user -u piss -f
 journalctl --user -u piss-tailscale-serve -f
 ```
 
-Only offline sessions can be archived from the session list. Archiving dismisses the cached card; if that Pi runtime reconnects, it appears again automatically.
-
-Use **Review changes** at the bottom of a live session to inspect staged, unstaged, and untracked files. Git commands are fixed and read-only, execute in that session's working directory through its authenticated bridge, and enforce file-count, file-size, patch-size, and total-buffer limits.
-
-## Experimental V2: owned Pi workspaces
-
-V2 is being developed alongside the stable bridge-based application. Its architecture and tracer roadmap are documented in [`docs/V2_ARCHITECTURE.md`](./docs/V2_ARCHITECTURE.md) and [`docs/V2_ROADMAP.md`](./docs/V2_ROADMAP.md).
-
-V2 is an Effect-based owned-session workbench on an independent application and Tailscale node. It supports durable browser-created workspaces, multiple supervised Pi RPC runtimes, conversation and native-event views, prompt/steer/follow-up controls, and authenticated model/thinking selection. Import both modules to run V1 and V2 concurrently:
-
-```nix
-{ inputs, ... }:
-{
-  imports = [
-    inputs.piss.nixosModules.default
-    inputs.piss.nixosModules.v2
-  ];
-
-  services.piss = {
-    enable = true;
-    allowedUsers = [ "you@example.com" ];
-    tailscale.hostname = "piss";
-  };
-
-  services.piss-v2 = {
-    enable = true;
-    allowedUsers = [ "you@example.com" ];
-    tailscale.hostname = "piss-v2";
-    piCommand = "/home/you/.npm-global/bin/pi";
-    workspaceDiscoveryRoots = [ "/home/you/coding" ];
-  };
-}
-```
-
-V2 starts without seeded workspaces. Use **+** in its workspace navigation to choose or create a directory beneath `workspaceDiscoveryRoots`; browser-created workspaces persist in the V2 state directory.
-
-After switching the NixOS generation, authenticate the second dedicated node once:
-
-```bash
-piss-v2-tailscale-login
-```
-
-V1 remains at `https://piss.<tailnet>.ts.net`; V2 is available independently at `https://piss-v2.<tailnet>.ts.net`. V2 uses port `4318` and `~/.local/state/piss-v2`, so it does not replace V1's process, port, credentials, or Tailscale state.
-
-For local V2 development:
-
-```bash
-npm run dev:v2
-npm run build:v2
-```
+PISS state is stored under `~/.local/state/piss`. Pi's own JSONL session files remain the source of truth for conversation history.
 
 ## Development
 
@@ -209,20 +140,15 @@ git clone https://github.com/JonasThowsen/piss
 cd piss
 nix develop
 npm ci
+npm run dev
 ```
 
-The dev shell adds `node_modules/.bin` to `PATH`. The pinned `typescript@7.0.2` package is the stable native Go compiler:
-
-```bash
-tsc --version   # Version 7.0.2; used locally and in CI
-```
+`npm run dev` binds both servers to loopback and enables the local identity bypass. Production refuses that bypass.
 
 Common commands:
 
 ```bash
-npm run dev
-npm run typecheck
-npm test
+npm run check
 npm run test:browser
 npm run build
 npm run audit
@@ -230,51 +156,38 @@ nix flake check
 nix build .#piss
 ```
 
-`npm run dev` enables identity bypass only for its loopback development server, while still restricting browser WebSockets to the local Vite origin. Production refuses the bypass entirely.
+The canonical source layout is:
 
-### Hot reload through the dedicated tailnet URL
-
-When the NixOS service is already installed and running, develop against the same URL used by the phone without rebuilding NixOS:
-
-```bash
-npm run dev:tailnet
+```text
+server/        Effect services, HTTP adapter, and Pi runtime supervision
+shared/        Effect schemas and shared state rules
+web/           React PWA
+browser-test/  Playwright coverage
+test/          Node integration and unit tests
+nix/           NixOS module
 ```
-
-This command:
-
-1. reads the hostname, port, and browser allowlist from the installed `piss.service`;
-2. stops the immutable application service while leaving its dedicated Tailscale node running;
-3. points Tailscale Serve at the local Vite server;
-4. starts the backend with `tsx watch` and the frontend with Vite HMR; and
-5. restores the production service and Serve target when you press Ctrl-C.
-
-Open the existing `https://piss.<tailnet>.ts.net` URL on the phone. The development client removes the production service worker and reloads once so it cannot hide Vite updates. React and CSS edits then update in place; server edits restart the backend and the Pi bridge reconnects automatically. Browser/API access remains protected by the Tailscale identity header and inherits `PISS_ALLOWED_USERS` from the systemd service.
-
-If the development process is killed without running its cleanup trap, restore production with:
-
-```bash
-systemctl --user start piss.service
-systemctl --user restart piss-tailscale-serve.service
-```
-
-After returning to production, reload the PWA once so it installs the production service worker again. Extension changes in a local Pi package still require `/reload` in Pi.
 
 ## Module options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `services.piss.enable` | `false` | Enable PISS |
-| `services.piss.package` | flake package | Package to run |
-| `services.piss.port` | `4317` | Loopback application and bridge port |
+| `services.piss.package` | `piss-server` | Runtime server package |
+| `services.piss.webPackage` | `piss-web` | Independently updatable browser shell |
+| `services.piss.port` | `4317` | Loopback application port |
+| `services.piss.piCommand` | `"pi"` | Pi CLI executable |
 | `services.piss.allowedUsers` | `[]` | Explicit Tailscale login allowlist |
-| `services.piss.allowAllTailnetUsers` | `false` | Explicitly permit all identities allowed by tailnet policy |
+| `services.piss.allowAllTailnetUsers` | `false` | Permit every identity allowed by tailnet policy |
+| `services.piss.workspaceDiscoveryRoots` | `[]` | Roots available for workspace discovery and creation |
+| `services.piss.workspaces` | `[]` | Declaratively trusted workspace roots |
 | `services.piss.tailscale.enable` | `true` | Run the independent userspace node |
 | `services.piss.tailscale.hostname` | `"piss"` | Dedicated tailnet hostname |
+| `services.piss.tailscale.stateName` | `"piss"` | Tailscale state/runtime directory name |
 | `services.piss.tailscale.authKeyFile` | `null` | Optional unattended enrollment key file |
 
 ## Security
 
-See [SECURITY.md](./SECURITY.md) for the supported deployment boundary and vulnerability reporting. The architecture and threat model are expanded in [PLAN.md](./PLAN.md).
+See [SECURITY.md](./SECURITY.md) for the supported deployment boundary and vulnerability reporting.
 
 ## License
 
