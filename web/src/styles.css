@@ -468,6 +468,7 @@ button { color: inherit; }
 .slash-command-copy small { color: var(--muted); font-size: 10px; }
 .slash-command-meta { min-width: 72px; display: grid; justify-items: end; gap: 4px; }
 .slash-command-meta em { padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 7px; font-style: normal; font-weight: 750; letter-spacing: .06em; }
+.source-builtin .slash-command-meta em { border-color: #8fa79a; background: var(--accent); color: white; }
 .source-extension .slash-command-meta em { border-color: #a9c3b0; background: #edf5ef; color: var(--accent); }
 .source-prompt .slash-command-meta em { border-color: #b8c8d7; background: #eef4f9; color: var(--blue); }
 .source-skill .slash-command-meta em { border-color: #d7c39d; background: #faf4e8; color: #805d22; }

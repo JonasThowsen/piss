@@ -17,7 +17,7 @@ import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
-import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, type ActiveSlashCommand } from "./slashCommands.ts";
+import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
 import "./styles.css";
 
 type LoadState =
@@ -54,7 +54,7 @@ type MentionMenuState = {
 type SlashCommandMenuState = {
   readonly active: ActiveSlashCommand;
   readonly runtimeId: string;
-  readonly commands: ReadonlyArray<PiSlashCommand>;
+  readonly commands: ReadonlyArray<SlashCommandItem>;
   readonly loading: boolean;
   readonly error?: string;
   readonly highlighted: number;
@@ -747,7 +747,7 @@ export function App() {
     setSlashCommandMenu((current) => ({
       active,
       runtimeId,
-      commands: cached ?? (current?.runtimeId === runtimeId ? current.commands : []),
+      commands: cached ? slashCommandCatalog(cached) : (current?.runtimeId === runtimeId ? current.commands : slashCommandCatalog([])),
       loading: !cached,
       highlighted: 0,
     }));
@@ -763,13 +763,13 @@ export function App() {
         slashCommandRequestsRef.current.delete(runtimeId);
         slashCommandCatalogRef.current.set(runtimeId, commands);
         setSlashCommandMenu((current) => current?.runtimeId === runtimeId
-          ? { ...current, commands, loading: false, highlighted: 0 }
+          ? { ...current, commands: slashCommandCatalog(commands), loading: false, highlighted: 0 }
           : current);
       },
       (cause) => {
         slashCommandRequestsRef.current.delete(runtimeId);
         setSlashCommandMenu((current) => current?.runtimeId === runtimeId
-          ? { ...current, commands: [], loading: false, error: errorMessage(cause), highlighted: 0 }
+          ? { ...current, commands: slashCommandCatalog([]), loading: false, error: errorMessage(cause), highlighted: 0 }
           : current);
       },
     );
@@ -805,7 +805,7 @@ export function App() {
     scheduleSlashCommandSearch(text, cursor);
   };
 
-  const chooseSlashCommand = (item: PiSlashCommand) => {
+  const chooseSlashCommand = (item: SlashCommandItem) => {
     if (!slashCommandMenu) return;
     const applied = applySlashCommand(commandText, slashCommandMenu.active, item.name);
     setCommandText(applied.text);
@@ -1186,8 +1186,47 @@ export function App() {
     }
   };
 
+  const runNativeSlashCommand = (nativeCommand: NativeSlashCommandName) => {
+    if (!selectedSession) return;
+    setCommandText("");
+    setSlashCommandMenu(undefined);
+    switch (nativeCommand) {
+      case "resume":
+        openGlobalPicker(composerTextareaRef.current);
+        return;
+      case "new":
+        openCreator(selectedSession.workspaceId);
+        return;
+      case "model":
+        modelReturnFocusRef.current = composerTextareaRef.current;
+        setModelDialogOpen(true);
+        return;
+      case "compact":
+        compactionReturnFocusRef.current = composerTextareaRef.current;
+        setCompactionDialogOpen(true);
+        return;
+      case "name": {
+        const summary = state._tag === "Ready" ? state.sessions.find(({ id }) => id === selectedSession.id) : undefined;
+        if (summary) {
+          renameSessionReturnFocusRef.current = composerTextareaRef.current;
+          setRenameSessionTarget(summary);
+        }
+        return;
+      }
+      case "session":
+        setDetailsOpen(true);
+        window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".session-details-toggle")?.focus());
+        return;
+    }
+  };
+
   const submitCommand = () => {
     if (!selectedSession || imageSelectionPending || (!commandText.trim() && images.length === 0)) return;
+    const nativeCommand = nativeSlashCommand(commandText);
+    if (nativeCommand) {
+      runNativeSlashCommand(nativeCommand);
+      return;
+    }
     if (isSlashCommandInput(commandText)) void command("prompt");
     else if (selectedSession.status === "working") void command(delivery);
     else if (canAcceptPrompt(selectedSession.status)) void command("prompt");

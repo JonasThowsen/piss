@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PiSlashCommand } from "../shared/domain.ts";
-import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput } from "../web/src/slashCommands.ts";
+import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog } from "../web/src/slashCommands.ts";
 
 const commands: ReadonlyArray<PiSlashCommand> = [
   { name: "review", description: "Review the current changes", source: "extension", scope: null },
@@ -33,4 +33,14 @@ test("filters commands by name and description and recognizes command submission
   assert.equal(isSlashCommandInput("/review"), true);
   assert.equal(isSlashCommandInput("/review staged"), true);
   assert.equal(isSlashCommandInput("Please /review"), false);
+});
+
+test("adds supported Pi built-ins without shadowing their native client behavior", () => {
+  const catalog = slashCommandCatalog(commands);
+  assert.equal(catalog[0]?.name, "resume");
+  assert.deepEqual(filterSlashCommands(catalog, "resume").map(({ name, source }) => [name, source]), [["resume", "builtin"]]);
+  assert.equal(nativeSlashCommand("/resume"), "resume");
+  assert.equal(nativeSlashCommand("/resume "), "resume");
+  assert.equal(nativeSlashCommand("/resume something"), undefined);
+  assert.equal(nativeSlashCommand("/review"), undefined);
 });

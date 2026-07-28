@@ -508,7 +508,8 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   const commandList = commandDialog.getByRole("listbox", { name: "Pi commands" });
   await expect(commandDialog).toBeVisible();
   await expect(commandSearch).toBeFocused();
-  await expect(commandList.getByRole("option")).toHaveCount(3);
+  await expect(commandList.getByRole("option")).toHaveCount(9);
+  await expect(commandList.getByRole("option", { name: /resume.*built-in/i })).toBeVisible();
   await expect(commandList.getByRole("option", { name: /review.*extension/i })).toBeVisible();
 
   await commandSearch.press("Backspace");
@@ -519,7 +520,7 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await composer.fill("/");
   await expect(commandDialog).toBeVisible();
   await expect(commandSearch).toBeFocused();
-  await expect(commandList.getByRole("option")).toHaveCount(3);
+  await expect(commandList.getByRole("option")).toHaveCount(9);
   const commandLayout = await commandDialog.evaluate((dialog) => {
     const first = dialog.querySelector<HTMLElement>("[role=option]")!.getBoundingClientRect();
     const bounds = dialog.getBoundingClientRect();
@@ -530,6 +531,20 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   expect(commandLayout.firstTop).toBeGreaterThanOrEqual(commandLayout.top);
   expect(commandLayout.firstBottom).toBeLessThanOrEqual(commandLayout.bottom);
 
+  await commandSearch.fill("resume");
+  await expect(commandList.getByRole("option", { name: /resume.*built-in/i })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(composer).toHaveValue("/resume ");
+  await page.getByRole("button", { name: "Run Pi command" }).click();
+  const sessionPicker = page.getByRole("dialog", { name: "Sessions" });
+  await expect(sessionPicker).toBeVisible();
+  expect(api.commands).toHaveLength(0);
+  await page.keyboard.press("Escape");
+  await expect(sessionPicker).toHaveCount(0);
+  await expect(composer).toHaveValue("");
+
+  await composer.fill("/");
+  await expect(commandDialog).toBeVisible();
   await commandSearch.fill("fix");
   await expect(commandList.getByRole("option", { name: /fix-tests.*prompt.*project/i })).toBeVisible();
   await expect(commandList.getByRole("option")).toHaveCount(1);

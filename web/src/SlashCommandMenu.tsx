@@ -1,9 +1,10 @@
 import { ArrowDown, ArrowUp, CornerDownLeft, Search, X } from "lucide-react";
 import { useEffect, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import type { PiSlashCommand } from "../../shared/domain.ts";
+import type { SlashCommandItem } from "./slashCommands.ts";
 
-const SOURCE_LABELS: Readonly<Record<PiSlashCommand["source"], string>> = {
+const SOURCE_LABELS: Readonly<Record<SlashCommandItem["source"], string>> = {
+  builtin: "BUILT-IN",
   extension: "EXTENSION",
   prompt: "PROMPT",
   skill: "SKILL",
@@ -23,14 +24,14 @@ export function SlashCommandMenu({
   onDismiss,
   onRemoveTrigger,
 }: {
-  readonly commands: ReadonlyArray<PiSlashCommand>;
+  readonly commands: ReadonlyArray<SlashCommandItem>;
   readonly query: string;
   readonly loading: boolean;
   readonly error?: string;
   readonly highlighted: number;
   readonly pickerRef: RefObject<HTMLElement | null>;
   readonly onQueryChange: (query: string) => void;
-  readonly onChoose: (command: PiSlashCommand) => void;
+  readonly onChoose: (command: SlashCommandItem) => void;
   readonly onHighlight: (index: number) => void;
   readonly onNavigate: (direction: 1 | -1) => void;
   readonly onDismiss: () => void;
