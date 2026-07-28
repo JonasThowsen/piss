@@ -237,7 +237,7 @@ export function App() {
   const timelineScrollFrameRef = useRef(0);
   const timelineScrollTopRef = useRef(0);
   const timelinePointerScrollingRef = useRef(false);
-  const timelineTouchYRef = useRef<number>();
+  const timelineTouchYRef = useRef<number | undefined>(undefined);
   const composerRef = useRef<HTMLDivElement>(null);
   const mentionPickerRef = useRef<HTMLElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
