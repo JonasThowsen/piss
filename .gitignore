@@ -1,6 +1,9 @@
 node_modules/
 dist/
+dist-v2/
 coverage/
+playwright-report/
+test-results/
 result
 .direnv/
 .env
@@ -10,3 +13,4 @@ result
 *.pem
 *.key
 .DS_Store
+/.html

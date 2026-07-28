@@ -34,7 +34,7 @@ https://piss.<tailnet>.ts.net
 - Runtime-generation protection against stale commands
 - Runtime protocol validation, payload limits, backpressure, and image signature checks
 - Reproducible Nix package, NixOS module, and development shell
-- Type checking with the TypeScript 7 native Go compiler (`tsgo`)
+- Type checking with the stable TypeScript 7 native Go compiler (`tsc`)
 
 ## Requirements
 
@@ -155,6 +155,53 @@ Only offline sessions can be archived from the session list. Archiving dismisses
 
 Use **Review changes** at the bottom of a live session to inspect staged, unstaged, and untracked files. Git commands are fixed and read-only, execute in that session's working directory through its authenticated bridge, and enforce file-count, file-size, patch-size, and total-buffer limits.
 
+## Experimental V2: owned Pi workspaces
+
+V2 is being developed alongside the stable bridge-based application. Its architecture and tracer roadmap are documented in [`docs/V2_ARCHITECTURE.md`](./docs/V2_ARCHITECTURE.md) and [`docs/V2_ROADMAP.md`](./docs/V2_ROADMAP.md).
+
+V2 is an Effect-based owned-session workbench on an independent application and Tailscale node. It supports durable browser-created workspaces, multiple supervised Pi RPC runtimes, conversation and native-event views, prompt/steer/follow-up controls, and authenticated model/thinking selection. Import both modules to run V1 and V2 concurrently:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [
+    inputs.piss.nixosModules.default
+    inputs.piss.nixosModules.v2
+  ];
+
+  services.piss = {
+    enable = true;
+    allowedUsers = [ "you@example.com" ];
+    tailscale.hostname = "piss";
+  };
+
+  services.piss-v2 = {
+    enable = true;
+    allowedUsers = [ "you@example.com" ];
+    tailscale.hostname = "piss-v2";
+    piCommand = "/home/you/.npm-global/bin/pi";
+    workspaceDiscoveryRoots = [ "/home/you/coding" ];
+  };
+}
+```
+
+V2 starts without seeded workspaces. Use **+** in its workspace navigation to choose or create a directory beneath `workspaceDiscoveryRoots`; browser-created workspaces persist in the V2 state directory.
+
+After switching the NixOS generation, authenticate the second dedicated node once:
+
+```bash
+piss-v2-tailscale-login
+```
+
+V1 remains at `https://piss.<tailnet>.ts.net`; V2 is available independently at `https://piss-v2.<tailnet>.ts.net`. V2 uses port `4318` and `~/.local/state/piss-v2`, so it does not replace V1's process, port, credentials, or Tailscale state.
+
+For local V2 development:
+
+```bash
+npm run dev:v2
+npm run build:v2
+```
+
 ## Development
 
 ```bash
@@ -164,12 +211,10 @@ nix develop
 npm ci
 ```
 
-The dev shell adds `node_modules/.bin` to `PATH`, so both TypeScript commands are directly available after `npm ci`:
+The dev shell adds `node_modules/.bin` to `PATH`. The pinned `typescript@7.0.2` package is the stable native Go compiler:
 
 ```bash
-tsgo --version   # TypeScript 7 native Go implementation used by CI
-# Compatibility compiler, also installed as a dev dependency:
-tsc --version
+tsc --version   # Version 7.0.2; used locally and in CI
 ```
 
 Common commands:
@@ -177,8 +222,8 @@ Common commands:
 ```bash
 npm run dev
 npm run typecheck
-npm run typecheck:tsc
 npm test
+npm run test:browser
 npm run build
 npm run audit
 nix flake check

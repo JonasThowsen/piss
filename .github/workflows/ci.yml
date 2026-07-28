@@ -25,9 +25,18 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm run check
-      - run: npm run typecheck:tsc
+      - run: npm run test:browser
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-results
+          path: test-results/
+          if-no-files-found: ignore
       - run: npm run build
+      - run: npm run build:v2
       - run: npm run audit
 
   nix:
@@ -41,3 +50,4 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - run: nix flake check
       - run: nix build .#piss
+      - run: nix build .#piss-v2

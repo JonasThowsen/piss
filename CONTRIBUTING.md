@@ -8,11 +8,15 @@ PISS is security-sensitive. Keep changes narrow, typed, and covered by tests whe
 nix develop
 npm ci
 npm run check
+npm run test:browser
 npm run build
+npm run build:v2
 nix flake check
+nix build .#piss
+nix build .#piss-v2
 ```
 
-Use `npm run typecheck:tsc` when changing TypeScript syntax or configuration to check compatibility with the JavaScript compiler in addition to the native `tsgo` checker.
+`npm run typecheck` uses the pinned stable TypeScript 7 native Go compiler (`tsc`).
 
 ## Pull requests
 

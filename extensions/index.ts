@@ -71,6 +71,8 @@ function safeValue(value: unknown): unknown {
 }
 
 export default function pissExtension(pi: ExtensionAPI) {
+  if (process.env.PISS_V2_OWNED_RUNTIME === "1") return;
+
   let socket: WebSocket | undefined;
   let reconnectTimer: NodeJS.Timeout | undefined;
   let reconnectDelay = 250;
