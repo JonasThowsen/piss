@@ -319,7 +319,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           yield* supervisor.stop({ sessionId: created.id, runtimeId: created.runtimeId });
           const stopped = yield* supervisor.get(created.id);
           const capacitySessions = yield* Effect.forEach(
-            Array.from({ length: 8 }, (_, index) => index),
+            Array.from({ length: 50 }, (_, index) => index),
             (index) => supervisor.create({ workspaceId, name: `Capacity ${index + 1}` }),
           );
           const activeLimitResult = yield* supervisor.create({ workspaceId, name: "Over capacity" }).pipe(
