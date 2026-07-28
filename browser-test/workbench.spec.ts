@@ -510,6 +510,16 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await expect(commandSearch).toBeFocused();
   await expect(commandList.getByRole("option")).toHaveCount(3);
   await expect(commandList.getByRole("option", { name: /review.*extension/i })).toBeVisible();
+
+  await commandSearch.press("Backspace");
+  await expect(commandDialog).toHaveCount(0);
+  await expect(composer).toBeFocused();
+  await expect(composer).toHaveValue("");
+
+  await composer.fill("/");
+  await expect(commandDialog).toBeVisible();
+  await expect(commandSearch).toBeFocused();
+  await expect(commandList.getByRole("option")).toHaveCount(3);
   const commandLayout = await commandDialog.evaluate((dialog) => {
     const first = dialog.querySelector<HTMLElement>("[role=option]")!.getBoundingClientRect();
     const bounds = dialog.getBoundingClientRect();

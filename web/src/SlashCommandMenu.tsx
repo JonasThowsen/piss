@@ -21,6 +21,7 @@ export function SlashCommandMenu({
   onHighlight,
   onNavigate,
   onDismiss,
+  onRemoveTrigger,
 }: {
   readonly commands: ReadonlyArray<PiSlashCommand>;
   readonly query: string;
@@ -33,6 +34,7 @@ export function SlashCommandMenu({
   readonly onHighlight: (index: number) => void;
   readonly onNavigate: (direction: 1 | -1) => void;
   readonly onDismiss: () => void;
+  readonly onRemoveTrigger: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const hasOptions = commands.length > 0;
@@ -82,6 +84,11 @@ export function SlashCommandMenu({
             if (event.key === "Escape") {
               event.preventDefault();
               onDismiss();
+              return;
+            }
+            if (event.key === "Backspace" && query.length === 0) {
+              event.preventDefault();
+              onRemoveTrigger();
               return;
             }
             if (selected && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey || event.key === " ")) {

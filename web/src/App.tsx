@@ -249,6 +249,7 @@ export function App() {
   const mentionSearchGenerationRef = useRef(0);
   const slashCommandCatalogRef = useRef(new Map<string, ReadonlyArray<PiSlashCommand>>());
   const slashCommandRequestsRef = useRef(new Map<string, Promise<ReadonlyArray<PiSlashCommand>>>());
+  const dismissedSlashCommandRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
   const completedMentionRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
   const suppressMentionSelectionRef = useRef(false);
   const imagesRef = useRef<ReadonlyArray<ComposerImage>>([]);
@@ -727,6 +728,12 @@ export function App() {
   }, [isMobile, requestMentionSearch]);
 
   const scheduleSlashCommandSearch = useCallback((text: string, cursor: number) => {
+    const dismissed = dismissedSlashCommandRef.current;
+    if (dismissed?.text === text && dismissed.cursor === cursor) {
+      setSlashCommandMenu(undefined);
+      return;
+    }
+    dismissedSlashCommandRef.current = undefined;
     const active = activeSlashCommand(text, cursor);
     const session = selectedSession;
     if (!active || !session || !isWritableRuntime(session.status) || session.status === "blocked") {
@@ -770,10 +777,23 @@ export function App() {
 
   const dismissSlashCommandMenu = () => {
     const cursor = slashCommandMenu?.active.end ?? commandText.length;
+    dismissedSlashCommandRef.current = { text: commandText, cursor };
     setSlashCommandMenu(undefined);
     window.requestAnimationFrame(() => {
       composerTextareaRef.current?.focus();
       composerTextareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const removeSlashCommandTrigger = () => {
+    if (!slashCommandMenu) return;
+    const text = commandText.slice(slashCommandMenu.active.end);
+    dismissedSlashCommandRef.current = undefined;
+    setCommandText(text);
+    setSlashCommandMenu(undefined);
+    window.requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(0, 0);
     });
   };
 
@@ -1442,6 +1462,7 @@ export function App() {
                   highlighted: (current.highlighted + direction + matchingSlashCommands.length) % matchingSlashCommands.length,
                 } : current)}
                 onDismiss={dismissSlashCommandMenu}
+                onRemoveTrigger={removeSlashCommandTrigger}
               />}
               {mentionMenu && !isMobile && <div
                 className="mention-menu"
@@ -1479,6 +1500,7 @@ export function App() {
                 disabled={busy || !canWrite}
                 onChange={(event) => {
                   suppressMentionSelectionRef.current = false;
+                  dismissedSlashCommandRef.current = undefined;
                   const text = event.target.value;
                   setCommandText(text);
                   scheduleSlashCommandSearch(text, event.target.selectionStart);
