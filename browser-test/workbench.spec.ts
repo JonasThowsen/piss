@@ -847,7 +847,7 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await createDialog.getByRole("button", { name: /start session/i }).click();
 
   await expect(createDialog).toBeHidden();
-  await expect(page.locator(".rail")).not.toHaveClass(/mobile-open/);
+  await expect(page.locator(".rail")).toBeHidden();
   await expect(page.locator(".brand b")).toHaveText("Utility session");
   const mobileChanges = page.locator(".capability-tabs").getByRole("tab", { name: /Changes/ });
   await expect(mobileChanges).toBeVisible();
@@ -876,15 +876,16 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
 
   await page.getByLabel("Message Pi").fill("Undo @");
   const emptyMentionPicker = page.getByRole("dialog", { name: "Mention a file" });
-  await expect(emptyMentionPicker.getByLabel("Search workspace files")).toHaveValue("");
-  await page.keyboard.press("Backspace");
+  const emptyMentionSearch = emptyMentionPicker.getByLabel("Search workspace files");
+  await expect(emptyMentionSearch).toHaveValue("");
+  await emptyMentionSearch.press("Backspace");
   await expect(emptyMentionPicker).toHaveCount(0);
   await expect(page.getByLabel("Message Pi")).toHaveValue("Undo ");
   await expect(page.getByLabel("Message Pi")).toBeFocused();
 
   await page.getByLabel("Message Pi").fill("Close @");
   await page.getByRole("button", { name: "Close file mentions" }).click();
-  await page.keyboard.press("Backspace");
+  await page.getByLabel("Message Pi").press("Backspace");
   await expect(page.getByLabel("Message Pi")).toHaveValue("Close ");
   await expect(page.getByRole("dialog", { name: "Mention a file" })).toHaveCount(0);
 

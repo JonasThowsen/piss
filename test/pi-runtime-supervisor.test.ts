@@ -91,7 +91,7 @@ process.stdin.on("data", (chunk) => {
       } else if (command.message === "Request timed input") {
         console.log(JSON.stringify({ type: "extension_ui_request", id: "request-timeout", method: "input", title: "Answer quickly", timeout: 20 }));
         setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 150);
-      } else {
+      } else if (command.message !== "Hold run open") {
         setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
       }
     }
@@ -385,7 +385,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             { discard: true },
           );
           const empty = yield* supervisor.create({ workspaceId, name: "" });
-          yield* supervisor.prompt({ sessionId: empty.id, runtimeId: empty.runtimeId }, "First message later");
+          yield* supervisor.prompt({ sessionId: empty.id, runtimeId: empty.runtimeId }, "Hold run open");
           const configurationWhileWorking = yield* supervisor.setModel({ sessionId: empty.id, runtimeId: empty.runtimeId }, "test", "model-a").pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
