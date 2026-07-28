@@ -21,6 +21,7 @@ import type {
   OwnedSessionEvent,
   OwnedSessionStatus,
   OwnedSessionSummary,
+  PiSlashCommand,
   SessionUsage,
   ThinkingLevel,
   Workspace,
@@ -115,6 +116,7 @@ export interface PiRuntimeSupervisorShape {
   readonly respondInteractive: (target: RuntimeTarget, input: { readonly requestId: string; readonly cancelled?: boolean; readonly value?: string; readonly confirmed?: boolean }) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly reviewWorkspace: (target: RuntimeTarget) => Effect.Effect<{ readonly workspaceId: WorkspaceId; readonly device: bigint; readonly inode: bigint }, RuntimeCommandError>;
   readonly listModels: (target: RuntimeTarget) => Effect.Effect<ReadonlyArray<AvailableModel>, RuntimeCommandError>;
+  readonly listCommands: (target: RuntimeTarget) => Effect.Effect<ReadonlyArray<PiSlashCommand>, RuntimeCommandError>;
   readonly searchMentions: (target: RuntimeTarget, query: string) => Effect.Effect<ReadonlyArray<FileMention>, RuntimeCommandError | WorkspaceNotFoundError | FileMentionSearchError>;
   readonly setModel: (target: RuntimeTarget, provider: string, modelId: string) => Effect.Effect<OwnedSession, RuntimeCommandError>;
   readonly setThinkingLevel: (target: RuntimeTarget, level: ThinkingLevel) => Effect.Effect<OwnedSession, RuntimeCommandError>;
@@ -335,6 +337,25 @@ function availableModel(value: unknown): AvailableModel | undefined {
     name: typeof model.name === "string" && model.name && model.name.length <= 1_024 ? model.name : model.id,
     reasoning,
     thinkingLevels,
+  };
+}
+
+function slashCommand(value: unknown): PiSlashCommand | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return;
+  const command = value as Record<string, unknown>;
+  if (typeof command.name !== "string" || !command.name || command.name.length > 1_024 || /[\s/]/u.test(command.name)) return;
+  if (command.source !== "extension" && command.source !== "prompt" && command.source !== "skill") return;
+  const sourceInfo = typeof command.sourceInfo === "object" && command.sourceInfo !== null && !Array.isArray(command.sourceInfo)
+    ? command.sourceInfo as Record<string, unknown>
+    : undefined;
+  const scope = sourceInfo?.scope === "user" || sourceInfo?.scope === "project" || sourceInfo?.scope === "temporary"
+    ? sourceInfo.scope
+    : null;
+  return {
+    name: command.name,
+    ...(typeof command.description === "string" && command.description.length <= 16 * 1_024 ? { description: command.description } : {}),
+    source: command.source,
+    scope,
   };
 }
 
@@ -1321,7 +1342,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       resolveTarget(target).pipe(
         Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {
           if (commandId && session.acceptedCommandIds.has(commandId)) return;
-          const available = type === "prompt" ? canAcceptPrompt(session.snapshot.status) : session.snapshot.status === "working";
+          const slashCommandPrompt = type === "prompt" && /^\/[^\s/]+(?:\s|$)/u.test(text);
+          const available = type === "prompt"
+            ? canAcceptPrompt(session.snapshot.status) || slashCommandPrompt && session.snapshot.status === "working"
+            : session.snapshot.status === "working";
           if (!available) {
             return yield* Effect.fail(new PiCommandError({
               sessionId: session.snapshot.id,
@@ -1400,6 +1424,19 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             const projected = availableModel(model);
             return projected ? [projected] : [];
           }).sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name));
+        }),
+      );
+
+    const listCommands = (target: RuntimeTarget) =>
+      resolveTarget(target).pipe(
+        Effect.flatMap((session) => request(session, { type: "get_commands" })),
+        Effect.map((response) => {
+          const commands = stateData(response)?.commands;
+          if (!Array.isArray(commands)) return [];
+          return commands.slice(0, 2_000).flatMap((command) => {
+            const projected = slashCommand(command);
+            return projected ? [projected] : [];
+          });
         }),
       );
 
@@ -1566,6 +1603,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }))),
       removeWorkspace,
       listModels,
+      listCommands,
       searchMentions,
       setModel,
       setThinkingLevel,

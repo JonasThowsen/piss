@@ -262,6 +262,25 @@ export const AvailableModelListResponse = Schema.Struct({
 });
 export type AvailableModelListResponse = typeof AvailableModelListResponse.Type;
 
+export const PiSlashCommandSource = Schema.Literals(["extension", "prompt", "skill"]);
+export type PiSlashCommandSource = typeof PiSlashCommandSource.Type;
+
+export const PiSlashCommandScope = Schema.Literals(["user", "project", "temporary"]);
+export type PiSlashCommandScope = typeof PiSlashCommandScope.Type;
+
+export const PiSlashCommand = Schema.Struct({
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_024), Schema.isPattern(/^[^\s/]+$/)),
+  description: Schema.optional(Schema.String.check(Schema.isMaxLength(16 * 1_024))),
+  source: PiSlashCommandSource,
+  scope: Schema.NullOr(PiSlashCommandScope),
+});
+export type PiSlashCommand = typeof PiSlashCommand.Type;
+
+export const PiSlashCommandListResponse = Schema.Struct({
+  commands: Schema.Array(PiSlashCommand).check(Schema.isMaxLength(2_000)),
+});
+export type PiSlashCommandListResponse = typeof PiSlashCommandListResponse.Type;
+
 export const FileMention = Schema.Struct({
   path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),

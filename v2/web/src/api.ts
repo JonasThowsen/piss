@@ -10,6 +10,7 @@ import {
   NotificationCapabilityResponse,
   OwnedSessionDetailResponse,
   OwnedSessionListResponse,
+  PiSlashCommandListResponse,
   ReviewSnapshotResponse,
   WorkspaceListResponse,
   type CreateOwnedSessionInput,
@@ -184,6 +185,15 @@ export function loadAvailableModels(sessionId: string, runtimeId: string) {
     Effect.mapError((cause) => cause instanceof ApiError
       ? cause
       : new ApiError({ message: "The model catalog did not match its schema", cause })),
+  );
+}
+
+export function loadSlashCommands(sessionId: string, runtimeId: string) {
+  return request(`/api/v2/sessions/${encodeURIComponent(sessionId)}/commands?runtimeId=${encodeURIComponent(runtimeId)}`).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(PiSlashCommandListResponse)),
+    Effect.mapError((cause) => cause instanceof ApiError
+      ? cause
+      : new ApiError({ message: "The Pi command catalog did not match its schema", cause })),
   );
 }
 

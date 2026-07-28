@@ -25,6 +25,7 @@ import {
   type FileMentionSearchResponse,
   type OwnedSessionDetailResponse,
   type OwnedSessionListResponse,
+  type PiSlashCommandListResponse,
   type ReviewSnapshotResponse,
   type WorkspaceListResponse,
 } from "../shared/domain.ts";
@@ -605,6 +606,21 @@ function makeRequestHandler() {
         }
 
         const commandMatch = /^\/api\/v2\/sessions\/([^/]+)\/commands$/.exec(pathname);
+        if (commandMatch && request.method === "GET") {
+          yield* requireBrowser(request, config, false);
+          const sessionId = yield* Effect.try({
+            try: () => decodeURIComponent(commandMatch[1]!),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed session ID", cause }),
+          });
+          const runtimeId = requestUrl.searchParams.get("runtimeId")?.trim();
+          if (!runtimeId || runtimeId.length > 128) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "A valid runtime ID is required" }));
+          }
+          const commands = yield* supervisor.listCommands({ sessionId, runtimeId });
+          json(response, 200, { commands } satisfies PiSlashCommandListResponse);
+          return;
+        }
+
         if (commandMatch && request.method === "POST") {
           yield* requireBrowser(request, config, true);
           const sessionId = yield* Effect.try({

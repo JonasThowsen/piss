@@ -44,6 +44,9 @@ process.stdin.on("data", (chunk) => {
     buffer = buffer.slice(newline + 1);
     if (command.type === "get_state") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_state", success: true, data: { sessionId: "http-pi-session", sessionFile, model: currentModel, thinkingLevel: currentThinking, isStreaming: false, autoCompactionEnabled: true, pendingMessageCount: 0 } }));
     if (command.type === "get_available_models") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_available_models", success: true, data: { models } }));
+    if (command.type === "get_commands") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_commands", success: true, data: { commands: [
+      { name: "review", description: "Review through HTTP", source: "extension", sourceInfo: { path: "/private/review.ts", source: "test", scope: "project", origin: "top-level" } }
+    ] } }));
     if (command.type === "get_session_stats") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_session_stats", success: true, data: { userMessages: 2, assistantMessages: 2, toolCalls: 3, toolResults: 3, totalMessages: 10, tokens: { input: 1000, output: 200, cacheRead: 500, cacheWrite: 50, total: 1750 }, cost: 0.25, contextUsage: { tokens: 30000, contextWindow: 200000, percent: 15 } } }));
     if (command.type === "compact") {
       console.log(JSON.stringify({ type: "compaction_start", reason: "manual" }));
@@ -431,6 +434,14 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     const models = await modelsResponse.json() as { models: Array<{ id: string; thinkingLevels: string[] }> };
     assert.deepEqual(models.models.map((model) => model.id), ["model-a", "model-b"]);
     assert.deepEqual(models.models[0]?.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
+
+    const unauthenticatedCommands = await fetch(`${base}/api/v2/sessions/${created.session.id}/commands?runtimeId=${created.session.runtimeId}`);
+    assert.equal(unauthenticatedCommands.status, 401);
+    const staleCommands = await fetch(`${base}/api/v2/sessions/${created.session.id}/commands?runtimeId=stale`, { headers: identityHeaders });
+    assert.equal(staleCommands.status, 409);
+    const commandsResponse = await fetch(`${base}/api/v2/sessions/${created.session.id}/commands?runtimeId=${created.session.runtimeId}`, { headers: identityHeaders });
+    if (commandsResponse.status !== 200) assert.fail(`Command catalog failed: ${await commandsResponse.text()}`);
+    assert.deepEqual(await commandsResponse.json(), { commands: [{ name: "review", description: "Review through HTTP", source: "extension", scope: "project" }] });
 
     const thinkingMutation = JSON.stringify({ runtimeId: created.session.runtimeId, action: "setThinkingLevel", level: "high" });
     const unauthenticatedConfiguration = await fetch(`${base}/api/v2/sessions/${created.session.id}/configuration`, {

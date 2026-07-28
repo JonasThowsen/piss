@@ -42,7 +42,7 @@
                 ./web
               ];
             };
-            npmDepsHash = "sha256-oJqs2sCjZ37c0fm/BYqrqBlGuEHPYKiJulT9g4IuBrg=";
+            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
             npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             nativeCheckInputs = [
@@ -101,7 +101,7 @@
                 ./v2/shared
               ];
             };
-            npmDepsHash = "sha256-oJqs2sCjZ37c0fm/BYqrqBlGuEHPYKiJulT9g4IuBrg=";
+            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
             npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build:v2:server";
@@ -148,7 +148,7 @@
                 ./v2/web
               ];
             };
-            npmDepsHash = "sha256-oJqs2sCjZ37c0fm/BYqrqBlGuEHPYKiJulT9g4IuBrg=";
+            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
             npmDepsFetcherVersion = 2;
             npmBuildScript = "build:v2:web";
             doCheck = false;
@@ -187,7 +187,7 @@
                 ./web
               ];
             };
-            npmDepsHash = "sha256-oJqs2sCjZ37c0fm/BYqrqBlGuEHPYKiJulT9g4IuBrg=";
+            npmDepsHash = "sha256-aPtK1blS3YLkZfxp1tGn4NIoJYwpfTqELmoiqXToOto=";
             npmDepsFetcherVersion = 2;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             nativeCheckInputs = [

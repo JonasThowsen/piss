@@ -83,6 +83,11 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   let sessions: TestSession[] = [];
   const workspaces: Array<typeof workspace> = options.empty ? [] : [{ ...workspace }];
   const commands: Array<Record<string, unknown>> = [];
+  const piCommands = [
+    { name: "review", description: "Review the current changes", source: "extension", scope: null },
+    { name: "fix-tests", description: "Fix failing tests", source: "prompt", scope: "project" },
+    { name: "skill:web-search", description: "Search the web", source: "skill", scope: "user" },
+  ];
   const mentionSearches: Array<{ readonly query: string; readonly runtimeId: string | null }> = [];
   const interactiveResponses: Array<Record<string, unknown>> = [];
   const notificationMutations: Array<Record<string, unknown>> = [];
@@ -303,6 +308,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       }
       return;
     }
+    if (session && path === `/api/v2/sessions/${session.id}/commands` && method === "GET") {
+      await route.fulfill({ json: { commands: piCommands } });
+      return;
+    }
     if (session && path === `/api/v2/sessions/${session.id}/commands` && method === "POST") {
       commands.push({ ...body, sessionId: session.id });
       if (body?.action === "stop") sessions[sessionIndex] = { ...session, status: "stopped", lastActivityAt: new Date().toISOString() };
@@ -411,6 +420,107 @@ test("long workspace paths keep their final directories visible", async ({ page 
     containerDirection: "rtl",
     textDirection: "ltr",
   });
+});
+
+test("global picker fuzzily finds and opens sessions across workspaces", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    const paymentResponse = await fetch("/api/v2/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "payments", path: "/home/jonas/coding/payments", trustProjectResources: true }),
+    });
+    const payment = await paymentResponse.json();
+    await fetch("/api/v2/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Authentication refactor" }),
+    });
+    await fetch("/api/v2/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: payment.workspace.id, name: "Invoice migration" }),
+    });
+  });
+  await page.reload();
+  await expect(page.getByLabel("Message Pi")).toBeVisible();
+
+  await page.getByLabel("Message Pi").focus();
+  await page.keyboard.press("Control+/");
+  const picker = page.getByRole("dialog", { name: "Sessions" });
+  const search = picker.getByLabel("Search sessions");
+  const options = picker.getByRole("option");
+  await expect(picker).toBeVisible();
+  await expect(search).toBeFocused();
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Control+n");
+  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Control+p");
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowDown");
+  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowUp");
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
+  await search.fill("pay inv");
+  await expect(picker.getByRole("option", { name: /Invoice migration.*payments/i })).toBeVisible();
+  await expect(picker.getByRole("option", { name: /Authentication refactor/i })).toHaveCount(0);
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/session=session-2/);
+  await expect(page.locator(".brand b")).toHaveText("Invoice migration");
+  await expect(picker).toHaveCount(0);
+
+  await page.getByLabel("Message Pi").focus();
+  await page.keyboard.press("Control+/");
+  await expect(search).toBeFocused();
+  await search.fill("auth feat");
+  await expect(picker.getByRole("option", { name: /Authentication refactor.*feat\/browser-test/i })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByLabel("Message Pi")).toBeFocused();
+
+  await page.getByRole("button", { name: "Search sessions" }).click();
+  await expect(picker.getByRole("option")).toHaveCount(2);
+});
+
+test("slash picker discovers and runs commands through the owned Pi runtime", async ({ page }) => {
+  await page.setViewportSize({ width: 980, height: 760 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  const createDialog = page.getByRole("dialog", { name: "New session" });
+  await createDialog.getByLabel("Session name").fill("Command session");
+  await createDialog.getByRole("button", { name: /start session/i }).click();
+
+  const composer = page.getByLabel("Message Pi");
+  await composer.fill("/");
+  const commandList = page.getByRole("listbox", { name: "Pi commands" });
+  await expect(commandList).toBeVisible();
+  await expect(commandList.getByRole("option")).toHaveCount(3);
+  await expect(commandList.getByRole("option", { name: /review.*extension/i })).toBeVisible();
+
+  await composer.fill("/fix");
+  await expect(commandList.getByRole("option", { name: /fix-tests.*prompt.*project/i })).toBeVisible();
+  await expect(commandList.getByRole("option")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(composer).toHaveValue("/fix-tests ");
+  await expect(commandList).toHaveCount(0);
+  await composer.fill("/fix-tests unit");
+  await page.getByRole("button", { name: "Run Pi command" }).click();
+  await expect.poll(() => api.commands.at(-1)?.text).toBe("/fix-tests unit");
+  await expect.poll(() => api.commands.at(-1)?.action).toBe("prompt");
+
+  api.setStatus("working");
+  await expect(page.getByRole("button", { name: "FOLLOW-UP" })).toBeVisible({ timeout: 5_000 });
+  await composer.fill("/review");
+  await expect(commandList.getByRole("option", { name: /review/i })).toBeVisible();
+  await page.getByRole("button", { name: "Run Pi command" }).click();
+  await expect.poll(() => api.commands.at(-1)?.text).toBe("/review");
+  await expect.poll(() => api.commands.at(-1)?.action).toBe("prompt");
 });
 
 test("workspace creation stays stable and defaults project trust on", async ({ page }) => {
@@ -832,6 +942,61 @@ test("session drafts and delayed command failures stay scoped to their session",
   await page.reload();
   await expect(page.locator(".brand b")).toHaveText("Second");
   await expect(page.getByLabel("Message Pi")).toHaveValue("draft for second");
+});
+
+test("timeline follows growing content until the user scrolls up", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  const api = await installApi(page);
+  await page.route("**/delayed-timeline-image.svg", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="500"><rect width="20" height="500" fill="#dfe8df"/></svg>',
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const timestamp = new Date().toISOString();
+  const events = Array.from({ length: 40 }, (_, index) => ({
+    sequence: index + 1,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: `History ${index + 1}` }] } },
+  }));
+  api.setEvents(events);
+  await expect(page.getByText("History 40", { exact: true })).toBeVisible();
+  const distanceFromBottom = () => page.locator(".timeline").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+  await expect.poll(distanceFromBottom).toBeLessThan(4);
+
+  api.setEvents([...events, {
+    sequence: 41,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: "Latest reply\n\n![Delayed chart](/delayed-timeline-image.svg)" }] } },
+  }]);
+  const delayedImage = page.getByAltText("Delayed chart");
+  await expect(delayedImage).toHaveJSProperty("complete", true);
+  await expect.poll(distanceFromBottom).toBeLessThan(4);
+
+  await page.locator(".timeline").hover();
+  await page.mouse.wheel(0, -24);
+  await expect(page.getByRole("button", { name: "Jump to latest message" })).not.toHaveClass(/at-bottom/);
+  const manualScrollTop = await page.locator(".timeline").evaluate((element) => element.scrollTop);
+  api.setEvents([...events, {
+    sequence: 41,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: "Latest reply\n\n![Delayed chart](/delayed-timeline-image.svg)" }] } },
+  }, {
+    sequence: 42,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: "Do not pull the reader down" }] } },
+  }]);
+  await expect(page.getByText("Do not pull the reader down", { exact: true })).toHaveCount(1);
+  await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(manualScrollTop + 1);
 });
 
 test("conversation renders coding content and remains usable at constrained heights", async ({ page }) => {

@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import * as Effect from "effect/Effect";
+import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
+import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { acknowledgeOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteOwnedSession, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel } from "./api.ts";
+import { acknowledgeOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteOwnedSession, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
 import { compact, eventTimeline } from "./timeline.ts";
 import { useV2Notifications } from "./notifications.ts";
+import { GlobalPicker } from "./GlobalPicker.tsx";
+import { HOTKEYS } from "./hotkeys.ts";
+import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
+import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
+import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, type ActiveSlashCommand } from "./slashCommands.ts";
 import "./styles.css";
 
 type LoadState =
@@ -39,6 +45,15 @@ type ReviewState = {
 type MentionMenuState = {
   readonly active: ActiveFileMention;
   readonly mentions: ReadonlyArray<FileMention>;
+  readonly loading: boolean;
+  readonly error?: string;
+  readonly highlighted: number;
+};
+
+type SlashCommandMenuState = {
+  readonly active: ActiveSlashCommand;
+  readonly runtimeId: string;
+  readonly commands: ReadonlyArray<PiSlashCommand>;
   readonly loading: boolean;
   readonly error?: string;
   readonly highlighted: number;
@@ -189,6 +204,7 @@ export function App() {
   const [renameWorkspaceTarget, setRenameWorkspaceTarget] = useState<Workspace>();
   const [removeWorkspaceTarget, setRemoveWorkspaceTarget] = useState<Workspace>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
   const [activeView, setActiveView] = useState<"agent" | "changes" | "events">("agent");
   const [reviewState, setReviewState] = useState<ReviewState>();
@@ -203,6 +219,7 @@ export function App() {
   const [refreshProblem, setRefreshProblem] = useState<string>();
   const [outbox, setOutbox] = useState<ReadonlyArray<OutboxItem>>([]);
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState>();
+  const [slashCommandMenu, setSlashCommandMenu] = useState<SlashCommandMenuState>();
   const [mentionPickerQuery, setMentionPickerQuery] = useState("");
   const [copyFeedback, setCopyFeedback] = useState<{ readonly key: string; readonly ok: boolean; readonly label: string }>();
   const [atBottom, setAtBottom] = useState(true);
@@ -218,12 +235,18 @@ export function App() {
   const refreshQueued = useRef(false);
   const timelineRef = useRef<HTMLElement>(null);
   const timelineScrollFrameRef = useRef(0);
+  const timelineScrollTopRef = useRef(0);
+  const timelinePointerScrollingRef = useRef(false);
+  const timelineTouchYRef = useRef<number>();
   const composerRef = useRef<HTMLDivElement>(null);
   const mentionPickerRef = useRef<HTMLElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const mentionReturnCursorRef = useRef<number | undefined>(undefined);
   const mentionSearchTimerRef = useRef(0);
   const copyFeedbackTimerRef = useRef(0);
   const mentionSearchGenerationRef = useRef(0);
+  const slashCommandCatalogRef = useRef(new Map<string, ReadonlyArray<PiSlashCommand>>());
+  const slashCommandRequestsRef = useRef(new Map<string, Promise<ReadonlyArray<PiSlashCommand>>>());
   const completedMentionRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
   const suppressMentionSelectionRef = useRef(false);
   const imagesRef = useRef<ReadonlyArray<ComposerImage>>([]);
@@ -231,6 +254,7 @@ export function App() {
   const railRef = useRef<HTMLElement>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const sessionHeadingRef = useRef<HTMLDivElement>(null);
+  const globalPickerReturnFocusRef = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLFormElement>(null);
   const creatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceCreatorReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -259,6 +283,24 @@ export function App() {
     setMentionMenu(undefined);
   }, []);
 
+  // TODO(tracer): Compose workspace and command sources here once their first
+  // picker actions have an end-to-end behavior worth exposing.
+  const globalPickerItems = useMemo(() => state._tag === "Ready" ? sessionPickerItems(state.sessions, state.workspaces) : [], [state]);
+  const matchingSlashCommands = useMemo(
+    () => slashCommandMenu ? filterSlashCommands(slashCommandMenu.commands, slashCommandMenu.active.query).slice(0, 50) : [],
+    [slashCommandMenu],
+  );
+
+  const openGlobalPicker = useCallback((returnFocus?: HTMLElement | null) => {
+    globalPickerReturnFocusRef.current = returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    dismissMentionMenu();
+    setSlashCommandMenu(undefined);
+    setSidebarOpen(false);
+    setGlobalPickerOpen(true);
+  }, [dismissMentionMenu]);
+
+  const closeGlobalPicker = useCallback(() => setGlobalPickerOpen(false), []);
+
   const selectSession = useCallback((sessionId: string | undefined, persistCurrent = true) => {
     const currentId = selectedSessionIdRef.current;
     if (currentId && persistCurrent) {
@@ -271,8 +313,10 @@ export function App() {
       : emptySessionUiState();
     detailGeneration.current += 1;
     dismissMentionMenu();
+    setSlashCommandMenu(undefined);
     selectedSessionIdRef.current = sessionId;
     followingRef.current = true;
+    timelineScrollTopRef.current = 0;
     setAtBottom(true);
     setCommandText(nextUi.commandText);
     imagesRef.current = nextUi.images;
@@ -350,6 +394,31 @@ export function App() {
     window.addEventListener("piss-v2-update-ready", ready);
     return () => window.removeEventListener("piss-v2-update-ready", ready);
   }, []);
+
+  const globalPickerHotkeyEnabled = !globalPickerOpen
+    && !creatorOpen && !workspaceCreatorOpen && !modelDialogOpen && !stopDialogOpen && !compactionDialogOpen
+    && !selectedSession?.interactiveRequests[0] && !(isMobile && mentionMenu)
+    && !deleteTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
+
+  useHotkey(HOTKEYS.openGlobalPicker, () => openGlobalPicker(), {
+    enabled: Boolean(globalPickerHotkeyEnabled),
+    ignoreInputs: false,
+    meta: { name: "Search sessions", description: "Open the global picker" },
+  });
+
+  useEffect(() => {
+    if (globalPickerOpen) return;
+    globalPickerReturnFocusRef.current?.focus();
+    globalPickerReturnFocusRef.current = null;
+  }, [globalPickerOpen]);
+
+  useLayoutEffect(() => {
+    const cursor = mentionReturnCursorRef.current;
+    if (mentionMenu || cursor === undefined) return;
+    mentionReturnCursorRef.current = undefined;
+    composerTextareaRef.current?.focus();
+    composerTextareaRef.current?.setSelectionRange(cursor, cursor);
+  }, [mentionMenu]);
 
   useEffect(() => {
     pruneDrafts();
@@ -462,18 +531,29 @@ export function App() {
 
   const timeline = useMemo(() => eventTimeline(selectedSession?.events ?? []), [selectedSession]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = timelineRef.current;
-    if (!element || !followingRef.current) return;
-    const firstFrame = window.requestAnimationFrame(() => {
-      const secondFrame = window.requestAnimationFrame(() => {
-        if (followingRef.current) element.scrollTop = element.scrollHeight;
+    if (!element) return;
+    const pinToBottom = () => {
+      if (!followingRef.current) return;
+      window.cancelAnimationFrame(timelineScrollFrameRef.current);
+      timelineScrollFrameRef.current = window.requestAnimationFrame(() => {
+        timelineScrollFrameRef.current = window.requestAnimationFrame(() => {
+          if (!followingRef.current) return;
+          element.scrollTop = element.scrollHeight;
+          timelineScrollTopRef.current = element.scrollTop;
+          setAtBottom(true);
+        });
       });
-      timelineScrollFrameRef.current = secondFrame;
-    });
-    timelineScrollFrameRef.current = firstFrame;
-    return () => window.cancelAnimationFrame(timelineScrollFrameRef.current);
-  }, [timeline]);
+    };
+    pinToBottom();
+    const resizeObserver = new ResizeObserver(pinToBottom);
+    for (const child of element.children) resizeObserver.observe(child);
+    return () => {
+      resizeObserver.disconnect();
+      window.cancelAnimationFrame(timelineScrollFrameRef.current);
+    };
+  }, [activeView, selectedSession?.runtimeId, timeline]);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -543,6 +623,18 @@ export function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [mentionMenu?.highlighted, mentionMenu?.mentions]);
+
+  useEffect(() => {
+    if (!slashCommandMenu || matchingSlashCommands.length === 0) return;
+    if (slashCommandMenu.highlighted >= matchingSlashCommands.length) {
+      setSlashCommandMenu((current) => current ? { ...current, highlighted: Math.max(0, matchingSlashCommands.length - 1) } : current);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`pi-command-${slashCommandMenu.highlighted}`)?.scrollIntoView({ block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [matchingSlashCommands.length, slashCommandMenu?.highlighted]);
 
   useEffect(() => {
     const wasMobile = previousMobileLayoutRef.current;
@@ -632,6 +724,59 @@ export function App() {
     requestMentionSearch(active, active.query);
   }, [isMobile, requestMentionSearch]);
 
+  const scheduleSlashCommandSearch = useCallback((text: string, cursor: number) => {
+    const active = activeSlashCommand(text, cursor);
+    const session = selectedSession;
+    if (!active || !session || !isWritableRuntime(session.status) || session.status === "blocked") {
+      setSlashCommandMenu(undefined);
+      return;
+    }
+
+    dismissMentionMenu();
+    const runtimeId = session.runtimeId;
+    const cached = slashCommandCatalogRef.current.get(runtimeId);
+    setSlashCommandMenu((current) => ({
+      active,
+      runtimeId,
+      commands: cached ?? (current?.runtimeId === runtimeId ? current.commands : []),
+      loading: !cached,
+      highlighted: 0,
+    }));
+    if (cached) return;
+
+    let pending = slashCommandRequestsRef.current.get(runtimeId);
+    if (!pending) {
+      pending = Effect.runPromise(loadSlashCommands(session.id, runtimeId)).then(({ commands }) => commands);
+      slashCommandRequestsRef.current.set(runtimeId, pending);
+    }
+    void pending.then(
+      (commands) => {
+        slashCommandRequestsRef.current.delete(runtimeId);
+        slashCommandCatalogRef.current.set(runtimeId, commands);
+        setSlashCommandMenu((current) => current?.runtimeId === runtimeId
+          ? { ...current, commands, loading: false, highlighted: 0 }
+          : current);
+      },
+      (cause) => {
+        slashCommandRequestsRef.current.delete(runtimeId);
+        setSlashCommandMenu((current) => current?.runtimeId === runtimeId
+          ? { ...current, commands: [], loading: false, error: errorMessage(cause), highlighted: 0 }
+          : current);
+      },
+    );
+  }, [dismissMentionMenu, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
+
+  const chooseSlashCommand = (item: PiSlashCommand) => {
+    if (!slashCommandMenu) return;
+    const applied = applySlashCommand(commandText, slashCommandMenu.active, item.name);
+    setCommandText(applied.text);
+    setSlashCommandMenu(undefined);
+    window.requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(applied.cursor, applied.cursor);
+    });
+  };
+
   const updateMentionQuery = (query: string) => {
     if (!mentionMenu || query.length > 200) return;
     setMentionPickerQuery(query);
@@ -675,12 +820,8 @@ export function App() {
   };
 
   const closeMentionPicker = () => {
-    const cursor = mentionMenu?.active.end ?? commandText.length;
+    mentionReturnCursorRef.current = mentionMenu?.active.end ?? commandText.length;
     dismissMentionMenu();
-    window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(cursor, cursor);
-    });
   };
 
   const chooseMention = (item: FileMention) => {
@@ -796,6 +937,12 @@ export function App() {
     }
   };
 
+  const chooseGlobalPickerAction = (action: SelectSessionAction) => {
+    setGlobalPickerOpen(false);
+    globalPickerReturnFocusRef.current = sessionHeadingRef.current;
+    if (action._tag === "SelectSession") void openSession(action.sessionId);
+  };
+
   const selectImages = (files: FileList | ReadonlyArray<File>): Promise<void> => {
     const selected = Array.from(files);
     const targetSessionId = selectedSessionIdRef.current;
@@ -871,6 +1018,7 @@ export function App() {
     if (outgoing) {
       setOutbox((items) => [...items, outgoing]);
       dismissMentionMenu();
+      setSlashCommandMenu(undefined);
     }
     setBusy(true);
     setOperationError(undefined);
@@ -1001,7 +1149,8 @@ export function App() {
 
   const submitCommand = () => {
     if (!selectedSession || imageSelectionPending || (!commandText.trim() && images.length === 0)) return;
-    if (selectedSession.status === "working") void command(delivery);
+    if (isSlashCommandInput(commandText)) void command("prompt");
+    else if (selectedSession.status === "working") void command(delivery);
     else if (canAcceptPrompt(selectedSession.status)) void command("prompt");
   };
 
@@ -1037,10 +1186,12 @@ export function App() {
   const interactiveRequest = selectedSession?.interactiveRequests[0];
   const canWrite = selectedSession ? isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
   const canConfigure = selectedSession ? canConfigureSession(selectedSession.status) : false;
+  const slashCommandMode = isSlashCommandInput(commandText);
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem ? "offline" : state._tag === "Loading" ? "syncing" : "live";
   const networkLabel = networkState === "offline" ? "OFFLINE" : networkState === "syncing" ? "SYNCING" : "LIVE";
-  const blockingDialogOpen = creatorOpen || workspaceCreatorOpen || modelDialogOpen || stopDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || (isMobile && Boolean(mentionMenu)) || Boolean(deleteTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
+  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || stopDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || (isMobile && Boolean(mentionMenu)) || Boolean(deleteTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
+  const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
     <div className="shell">
@@ -1055,6 +1206,7 @@ export function App() {
             </div>
           </>}
         </div>
+        <button className="global-picker-trigger" type="button" onClick={(event) => openGlobalPicker(event.currentTarget)} aria-label="Search sessions" title={`Search sessions (${pickerShortcutLabel})`}><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg><span>SEARCH SESSIONS</span><kbd>{pickerShortcutLabel}</kbd></button>
         {updateRegistration?.waiting && <button className="update-ready" type="button" disabled={busy} onClick={() => updateRegistration.waiting?.postMessage({ type: "SKIP_WAITING" })}>{busy ? "UPDATE WAITING" : "APPLY UPDATE"}</button>}
         <div className={`network ${networkState}`} role="status"><i />{networkLabel}</div>
       </header>
@@ -1167,10 +1319,32 @@ export function App() {
               role="tabpanel"
               ref={timelineRef}
               aria-live={activeView === "changes" ? "off" : "polite"}
+              onWheel={(event) => {
+                if (event.deltaY < 0) {
+                  followingRef.current = false;
+                  setAtBottom(false);
+                }
+              }}
+              onPointerDown={() => { timelinePointerScrollingRef.current = true; }}
+              onPointerUp={() => { timelinePointerScrollingRef.current = false; }}
+              onPointerCancel={() => { timelinePointerScrollingRef.current = false; }}
+              onTouchStart={(event) => { timelineTouchYRef.current = event.touches[0]?.clientY; }}
+              onTouchMove={(event) => {
+                const nextY = event.touches[0]?.clientY;
+                if (nextY !== undefined && timelineTouchYRef.current !== undefined && nextY > timelineTouchYRef.current + 1) {
+                  followingRef.current = false;
+                  setAtBottom(false);
+                }
+                timelineTouchYRef.current = nextY;
+              }}
+              onTouchEnd={() => { timelineTouchYRef.current = undefined; }}
               onScroll={(event) => {
                 const element = event.currentTarget;
-                const nextAtBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
-                followingRef.current = nextAtBottom;
+                const nextAtBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 4;
+                const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current - 1;
+                timelineScrollTopRef.current = element.scrollTop;
+                if (draggedUp) followingRef.current = false;
+                else if (nextAtBottom) followingRef.current = true;
                 setAtBottom(nextAtBottom);
               }}
             >
@@ -1202,7 +1376,7 @@ export function App() {
                 </details>)}
               </div>}
             </section>
-            {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; }} aria-label="Jump to latest message" type="button"><span>↓</span><small>LATEST</small></button>}
+            {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><span>↓</span><small>LATEST</small></button>}
           </div>
 
           <section className="control-deck">
@@ -1230,13 +1404,27 @@ export function App() {
               </article>)}
             </section>}
             <div className="composer" ref={composerRef}>
-              <span className="sr-only" id="file-mention-status" aria-live="polite">
-                {mentionMenu?.loading
-                  ? "Searching workspace files"
-                  : mentionMenu?.mentions.length
-                    ? `${mentionMenu.mentions.length} workspace file options. ${mentionMenu.mentions[mentionMenu.highlighted]?.name ?? "First option"} selected. Use the up and down arrows, then Enter to select.`
-                    : mentionMenu?.error ?? (mentionMenu ? "No matching workspace files" : "Type at to mention a workspace file")}
+              <span className="sr-only" id="composer-picker-status" aria-live="polite">
+                {slashCommandMenu?.loading
+                  ? "Reading Pi commands"
+                  : slashCommandMenu
+                    ? matchingSlashCommands.length
+                      ? `${matchingSlashCommands.length} Pi command options. Slash ${matchingSlashCommands[slashCommandMenu.highlighted]?.name ?? "command"} selected. Use the up and down arrows, then Enter to insert.`
+                      : slashCommandMenu.error ?? "No matching Pi commands"
+                    : mentionMenu?.loading
+                      ? "Searching workspace files"
+                      : mentionMenu?.mentions.length
+                        ? `${mentionMenu.mentions.length} workspace file options. ${mentionMenu.mentions[mentionMenu.highlighted]?.name ?? "First option"} selected. Use the up and down arrows, then Enter to select.`
+                        : mentionMenu?.error ?? (mentionMenu ? "No matching workspace files" : "Type slash for Pi commands or at to mention a workspace file")}
               </span>
+              {slashCommandMenu && <SlashCommandMenu
+                commands={matchingSlashCommands}
+                loading={slashCommandMenu.loading}
+                error={slashCommandMenu.error}
+                highlighted={slashCommandMenu.highlighted}
+                onChoose={chooseSlashCommand}
+                onHighlight={(highlighted) => setSlashCommandMenu((current) => current ? { ...current, highlighted } : current)}
+              />}
               {mentionMenu && !isMobile && <div
                 className="mention-menu"
                 id="file-mention-options"
@@ -1267,14 +1455,15 @@ export function App() {
                 ref={composerTextareaRef}
                 value={commandText}
                 aria-label="Message Pi"
-                aria-describedby="file-mention-status"
-                aria-controls={!isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? "file-mention-options" : undefined}
-                aria-activedescendant={!isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? `file-mention-${mentionMenu.highlighted}` : undefined}
+                aria-describedby="composer-picker-status"
+                aria-controls={slashCommandMenu && matchingSlashCommands.length > 0 ? "pi-command-options" : !isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? "file-mention-options" : undefined}
+                aria-activedescendant={slashCommandMenu && matchingSlashCommands.length > 0 ? `pi-command-${slashCommandMenu.highlighted}` : !isMobile && mentionMenu && mentionMenu.mentions.length > 0 ? `file-mention-${mentionMenu.highlighted}` : undefined}
                 disabled={busy || !canWrite}
                 onChange={(event) => {
                   suppressMentionSelectionRef.current = false;
                   const text = event.target.value;
                   setCommandText(text);
+                  scheduleSlashCommandSearch(text, event.target.selectionStart);
                   scheduleMentionSearch(text, event.target.selectionStart);
                 }}
                 onPaste={(event) => {
@@ -1289,13 +1478,37 @@ export function App() {
                     suppressMentionSelectionRef.current = false;
                     return;
                   }
+                  scheduleSlashCommandSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                   scheduleMentionSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                 }}
                 onBlur={() => window.setTimeout(() => {
-                  if (!composerRef.current?.contains(document.activeElement) && !mentionPickerRef.current?.contains(document.activeElement)) dismissMentionMenu();
+                  if (!composerRef.current?.contains(document.activeElement) && !mentionPickerRef.current?.contains(document.activeElement)) {
+                    dismissMentionMenu();
+                    setSlashCommandMenu(undefined);
+                  }
                 })}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
+                  const highlightedSlashCommand = matchingSlashCommands[slashCommandMenu?.highlighted ?? 0];
+                  if (slashCommandMenu && matchingSlashCommands.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                    event.preventDefault();
+                    const direction = event.key === "ArrowDown" ? 1 : -1;
+                    setSlashCommandMenu((current) => current ? {
+                      ...current,
+                      highlighted: (current.highlighted + direction + matchingSlashCommands.length) % matchingSlashCommands.length,
+                    } : current);
+                    return;
+                  }
+                  if (slashCommandMenu && event.key === "Escape") {
+                    event.preventDefault();
+                    setSlashCommandMenu(undefined);
+                    return;
+                  }
+                  if (slashCommandMenu && highlightedSlashCommand && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) {
+                    event.preventDefault();
+                    chooseSlashCommand(highlightedSlashCommand);
+                    return;
+                  }
                   const highlightedMention = mentionMenu?.mentions[mentionMenu.highlighted];
                   if (mentionMenu && mentionMenu.mentions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                     event.preventDefault();
@@ -1321,7 +1534,7 @@ export function App() {
                     submitCommand();
                   }
                 }}
-                placeholder={canWrite ? "Message Pi or @ a file…" : "This runtime is no longer writable"}
+                placeholder={canWrite ? "Message Pi · / for commands · @ for files" : "This runtime is no longer writable"}
                 rows={2}
               />
               <div className="composer-footer">
@@ -1331,6 +1544,7 @@ export function App() {
                     <span aria-hidden="true">{imageSelectionPending ? "…" : <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>}</span>
                   </label>
                   <button className="mention-trigger" disabled={busy || !canWrite} onClick={insertMentionTrigger} type="button" aria-label="Mention a file" title="Mention a file"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" /></svg></button>
+                  {slashCommandMode && <span className="command-mode"><i aria-hidden="true">/</i> COMMAND · IMMEDIATE</span>}
                   {images.length > 0 && <div className="composer-images" aria-label="Attached images">
                     {images.map((image, index) => <button
                       key={`${image.name ?? image.mediaType}:${index}`}
@@ -1344,12 +1558,12 @@ export function App() {
                     ><img src={image.preview} alt="" /><span aria-hidden="true">×</span></button>)}
                   </div>}
                 </div>
-                <button className="send-button" disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? "…" : "↑"}</span></button>
+                <button className={`send-button ${slashCommandMode ? "command" : ""}`} disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={slashCommandMode ? "Run Pi command" : selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? "…" : slashCommandMode ? "/" : "↑"}</span></button>
               </div>
             </div>
             <div className="control-meta">
               <div className="control-actions">
-                {selectedSession.status === "working" && <div className="delivery-toggle">
+                {selectedSession.status === "working" && !slashCommandMode && <div className="delivery-toggle">
                   <button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")} type="button" aria-pressed={delivery === "steer"} title="Deliver after the current tool call, before Pi continues">STEER NEXT</button>
                   <button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")} type="button" aria-pressed={delivery === "followUp"} title="Wait until the current agent run fully settles">FOLLOW-UP</button>
                 </div>}
@@ -1376,6 +1590,19 @@ export function App() {
           {state._tag === "Ready" && state.workspaces.length === 0 && <button type="button" onClick={openWorkspaceCreator}>CREATE WORKSPACE</button>}
         </div>}
       </main>
+
+      {globalPickerOpen && <GlobalPicker
+        title="Sessions"
+        items={globalPickerItems}
+        placeholder="Search sessions, workspaces, branches…"
+        searchLabel="Search sessions"
+        emptyLabel="No matching sessions"
+        noItemsLabel="No sessions yet"
+        noItemsHint="Create a session from a workspace to make it searchable here."
+        emptyHint="Try a session, workspace, branch, or status."
+        onChoose={chooseGlobalPickerAction}
+        onClose={closeGlobalPicker}
+      />}
 
       {interactiveRequest && selectedSession && <InteractiveRequestDialog
         key={interactiveRequest.id}

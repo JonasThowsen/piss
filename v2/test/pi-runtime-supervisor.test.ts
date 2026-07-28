@@ -50,6 +50,10 @@ process.stdin.on("data", (chunk) => {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "get_state", success: true, data: { sessionId: "pi-test-session", sessionFile, model: currentModel, thinkingLevel: currentThinking, isStreaming: false, autoCompactionEnabled: true, pendingMessageCount: 0 } }));
     }
     if (command.type === "get_available_models") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_available_models", success: true, data: { models } }));
+    if (command.type === "get_commands") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_commands", success: true, data: { commands: [
+      { name: "review", description: "Review changes", source: "extension", sourceInfo: { path: "/secret/extension.ts", source: "test", scope: "user", origin: "top-level" } },
+      { name: "fix-tests", description: "Fix tests", source: "prompt", sourceInfo: { path: "/secret/fix-tests.md", source: "test", scope: "project", origin: "top-level" } }
+    ] } }));
     if (command.type === "get_session_stats") console.log(JSON.stringify({ id: command.id, type: "response", command: "get_session_stats", success: true, data: { userMessages: 2, assistantMessages: 2, toolCalls: 3, toolResults: 3, totalMessages: 10, tokens: { input: 1000, output: 200, cacheRead: 500, cacheWrite: 50, total: 1750 }, cost: 0.25, contextUsage: { tokens: 30000, contextWindow: 200000, percent: 15 } } }));
     if (command.type === "compact") {
       compactAttempts += 1;
@@ -251,6 +255,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             current = yield* supervisor.get(created.id);
           }
           const models = yield* supervisor.listModels({ sessionId: created.id, runtimeId: created.runtimeId });
+          const slashCommands = yield* supervisor.listCommands({ sessionId: created.id, runtimeId: created.runtimeId });
           const mentions = yield* supervisor.searchMentions({ sessionId: created.id, runtimeId: created.runtimeId }, "app");
           const configuredThinking = yield* supervisor.setThinkingLevel({ sessionId: created.id, runtimeId: created.runtimeId }, "high");
           const configuredModel = yield* supervisor.setModel({ sessionId: created.id, runtimeId: created.runtimeId }, "test", "model-b");
@@ -341,6 +346,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
           );
+          yield* supervisor.prompt({ sessionId: empty.id, runtimeId: empty.runtimeId }, "/review");
           yield* supervisor.steer({ sessionId: empty.id, runtimeId: empty.runtimeId }, "Steer while working");
           yield* supervisor.followUp({ sessionId: empty.id, runtimeId: empty.runtimeId }, "Follow up after settling");
           let prompted = yield* supervisor.get(empty.id);
@@ -349,7 +355,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, models, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, second, activeRemovalResult, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, second, activeRemovalResult, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -360,6 +366,11 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.ok(result.current.events.some((event) => event.type === "message_update"));
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
     assert.deepEqual(result.models[0]?.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
+    assert.deepEqual(result.slashCommands, [
+      { name: "review", description: "Review changes", source: "extension", scope: "user" },
+      { name: "fix-tests", description: "Fix tests", source: "prompt", scope: "project" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(result.slashCommands), /secret/);
     assert.deepEqual(result.mentions, [{ path: "src/app.ts", name: "app.ts", kind: "file" }]);
     assert.equal(result.configuredThinking.thinkingLevel, "high");
     assert.equal(result.configuredModel.model?.id, "model-b");
