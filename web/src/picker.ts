@@ -86,8 +86,8 @@ export function searchPickerItems<Action>(
   });
 
   return ranked.sort((left, right) =>
-    right.score - left.score
-      || (right.item.priority ?? 0) - (left.item.priority ?? 0)
+    (right.item.priority ?? 0) - (left.item.priority ?? 0)
+      || right.score - left.score
       || left.index - right.index,
   ).map(({ item, score }) => ({ item, score }));
 }

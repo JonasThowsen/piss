@@ -23,12 +23,20 @@ test("session picker source stays separate from fuzzy ranking", () => {
   assert.deepEqual(searchPickerItems(items, "auth pass").map((match) => match.item.action.sessionId), ["auth"]);
 });
 
-test("fuzzy search ranks strong label matches and uses recency only as a tie-breaker", () => {
-  const items = sessionPickerItems(sessions, workspaces);
+test("fuzzy search filters matches and orders them by most recent activity", () => {
+  const recentAuth = {
+    id: "recent-auth",
+    workspaceId: "erp",
+    name: "Passkey cleanup",
+    branch: "auth/follow-up",
+    status: "finished" as const,
+    lastActivityAt: "2026-01-04T00:00:00.000Z",
+  };
+  const items = sessionPickerItems([...sessions, recentAuth], workspaces);
 
   assert.equal(fuzzySubsequenceMatcher("atn", "Authentication refactor") !== undefined, true);
-  assert.equal(searchPickerItems(items, "auth")[0]?.item.action.sessionId, "auth");
-  assert.deepEqual(searchPickerItems(items, "").map((match) => match.item.action.sessionId), ["invoice", "auth"]);
+  assert.deepEqual(searchPickerItems(items, "auth").map((match) => match.item.action.sessionId), ["recent-auth", "auth"]);
+  assert.deepEqual(searchPickerItems(items, "").map((match) => match.item.action.sessionId), ["recent-auth", "invoice", "auth"]);
   assert.deepEqual(searchPickerItems(items, "missing").map((match) => match.item.action.sessionId), []);
 });
 
