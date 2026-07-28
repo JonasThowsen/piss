@@ -1084,7 +1084,7 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
 
   await expect(page.locator(".add-workspace svg")).toBeVisible();
   await expect(page.locator(".add-session svg")).toBeVisible();
-  await expect(page.locator(".add-workspace svg path")).toHaveCSS("stroke", "rgb(49, 92, 70)");
+  await expect(page.locator(".add-workspace svg path").first()).toHaveCSS("stroke", "rgb(49, 92, 70)");
   await page.getByRole("button", { name: "New session in erp" }).click();
   const createDialog = page.getByRole("dialog", { name: "New session" });
   await createDialog.getByLabel("Session name").fill("Desktop utility");

@@ -39,6 +39,7 @@
     "@ff-labs/fff-node": "0.8.4",
     "@tanstack/react-hotkeys": "0.10.0",
     "effect": "4.0.0-beta.101",
+    "lucide-react": "1.27.0",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
     "web-push": "^3.6.7"

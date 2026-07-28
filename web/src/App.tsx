@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import * as Effect from "effect/Effect";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
+import { Activity, ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -163,7 +164,7 @@ function ReviewFileView({ file, initiallyOpen }: { readonly file: ReviewFile; re
   const slash = file.path.lastIndexOf("/");
   const status = file.indexStatus === "?" ? { mark: "U", label: "Untracked file" } : file.worktreeStatus === "D" || file.indexStatus === "D" ? { mark: "D", label: "Deleted file" } : { mark: "M", label: "Modified file" };
   return <details className="review-file" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary><span className="review-file-status"><span aria-hidden="true">{status.mark}</span><span className="sr-only">{status.label}</span></span><span className="review-file-path">{slash >= 0 && <small>{file.path.slice(0, slash + 1)}</small>}<b>{file.path.slice(slash + 1)}</b></span><span className="review-counts"><em>+{counts.additions}</em><em>−{counts.deletions}</em></span><strong aria-hidden="true">⌄</strong></summary>
+    <summary><span className="review-file-status"><span aria-hidden="true">{status.mark}</span><span className="sr-only">{status.label}</span></span><span className="review-file-path">{slash >= 0 && <small>{file.path.slice(0, slash + 1)}</small>}<b>{file.path.slice(slash + 1)}</b></span><span className="review-counts"><em>+{counts.additions}</em><em>−{counts.deletions}</em></span><strong aria-hidden="true"><ChevronDown /></strong></summary>
     <div className="review-file-meta"><span>{reviewLabels(file).map((label) => <i key={label}>{label}</i>)}{file.binary && <i>BINARY</i>}{file.truncated && <i>BOUNDED</i>}</span></div>
     {file.patch ? <DiffPatch patch={file.patch} /> : <div className="review-empty-patch">No textual patch is available for this change.</div>}
   </details>;
@@ -175,11 +176,11 @@ function ReviewView({ state, onRefresh }: { readonly state?: ReviewState; readon
     <span className="sr-only" aria-live="polite">{state?.loading ? "Reading repository changes" : state?.error ? `Review unavailable: ${state.error}` : review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"} loaded` : ""}</span>
     <header className="review-overview">
       <div><span>WORKTREE REVIEW</span><h2>Changes</h2><p>{review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"}` : "Staged, unstaged, and untracked work"}</p></div>
-      <button onClick={onRefresh} disabled={state?.loading} type="button" aria-label="Refresh changes"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg><span>{state?.loading ? "READING" : "REFRESH"}</span></button>
+      <button onClick={onRefresh} disabled={state?.loading} type="button" aria-label="Refresh changes"><RefreshCw aria-hidden="true" className={state?.loading ? "icon-spin" : undefined} /><span>{state?.loading ? "READING" : "REFRESH"}</span></button>
     </header>
     {state?.loading && <div className="review-loading"><i /><div><b>Reading repository</b><span>Collecting staged, unstaged, and untracked patches…</span></div></div>}
     {!state?.loading && state?.error && <div className="review-state error"><b>Review unavailable</b><span>{state.error}</span><button type="button" onClick={onRefresh}>TRY AGAIN</button></div>}
-    {!state?.loading && review?.files.length === 0 && <div className="review-state clean"><i>✓</i><b>Working tree is clean</b><span>There are no staged, unstaged, or untracked files.</span></div>}
+    {!state?.loading && review?.files.length === 0 && <div className="review-state clean"><i aria-hidden="true"><Check /></i><b>Working tree is clean</b><span>There are no staged, unstaged, or untracked files.</span></div>}
     {!state?.loading && review?.truncated && <div className="review-warning">Review limits were reached. Some files or patch content are omitted.</div>}
     {!state?.loading && review && review.files.length > 0 && <div className="review-files">{review.files.map((file, index) => <ReviewFileView file={file} initiallyOpen={review.files.length === 1 || index === 0} key={file.path} />)}</div>}
   </section>;
@@ -1196,7 +1197,7 @@ export function App() {
   return (
     <div className="shell">
       <header className="masthead" inert={blockingDialogOpen ? true : undefined}>
-        <button className="mobile-menu" ref={mobileMenuRef} onClick={() => setSidebarOpen((open) => !open)} aria-label="Open workspaces and sessions" aria-expanded={sidebarOpen}>☰</button>
+        <button className="mobile-menu" ref={mobileMenuRef} onClick={() => setSidebarOpen((open) => !open)} aria-label="Open workspaces and sessions" aria-expanded={sidebarOpen}><Menu aria-hidden="true" /></button>
         <div className={`brand ${selectedSession ? "session-brand" : ""}`} title={selectedWorkspace?.root} ref={sessionHeadingRef} tabIndex={-1}>
           {selectedSession && <>
             <span className="brand-mark">π</span>
@@ -1206,7 +1207,7 @@ export function App() {
             </div>
           </>}
         </div>
-        <button className="global-picker-trigger" type="button" onClick={(event) => openGlobalPicker(event.currentTarget)} aria-label="Search sessions" title={`Search sessions (${pickerShortcutLabel})`}><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg><span>SEARCH SESSIONS</span><kbd>{pickerShortcutLabel}</kbd></button>
+        <button className="global-picker-trigger" type="button" onClick={(event) => openGlobalPicker(event.currentTarget)} aria-label="Search sessions" title={`Search sessions (${pickerShortcutLabel})`}><Search aria-hidden="true" /><span>SEARCH SESSIONS</span><kbd>{pickerShortcutLabel}</kbd></button>
         {updateRegistration?.waiting && <button className="update-ready" type="button" disabled={busy} onClick={() => updateRegistration.waiting?.postMessage({ type: "SKIP_WAITING" })}>{busy ? "UPDATE WAITING" : "APPLY UPDATE"}</button>}
         <div className={`network ${networkState}`} role="status"><i />{networkLabel}</div>
       </header>
@@ -1215,7 +1216,7 @@ export function App() {
       <aside className={`rail ${sidebarOpen ? "mobile-open" : ""}`} aria-hidden={isMobile && !sidebarOpen} inert={(isMobile && !sidebarOpen) || blockingDialogOpen ? true : undefined} ref={railRef} aria-label="Workspaces and sessions">
         <div className="rail-label">
           <span>WORKSPACES</span>
-          <button className="add-workspace" onClick={openWorkspaceCreator} type="button" aria-label="Create workspace" title="Create workspace"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+          <button className="add-workspace" onClick={openWorkspaceCreator} type="button" aria-label="Create workspace" title="Create workspace"><Plus aria-hidden="true" /></button>
         </div>
         <div className={`notification-control ${notifications.status}`}>
           <button
@@ -1224,7 +1225,7 @@ export function App() {
             disabled={notifications.status === "loading" || notifications.status === "enabling" || notifications.status === "enabled" || notifications.status === "unavailable" || notifications.status === "denied"}
             title={notifications.error ?? "Notify this device when a session finishes, needs input, or crashes"}
             onClick={() => void notifications.enable()}
-          ><i aria-hidden="true">{notifications.status === "enabled" ? "●" : "○"}</i><span><b>ATTENTION ALERTS</b><small>{notifications.status === "enabled" ? "ON FOR THIS DEVICE" : notifications.status === "denied" ? "BLOCKED BY BROWSER" : notifications.status === "unavailable" ? "UNAVAILABLE" : notifications.status === "enabling" ? "ENABLING…" : notifications.status === "error" ? "SETUP FAILED · TAP TO RETRY" : notifications.status === "loading" ? "CHECKING…" : notifications.status === "permitted" ? "TAP TO FINISH SETUP" : notifications.status === "prompt" ? "TAP CROSSED-OUT BELL ABOVE" : "OFF FOR THIS DEVICE"}</small>{notifications.status === "error" && notifications.error && <em>{notifications.error}</em>}</span></button>
+          ><i aria-hidden="true">{notifications.status === "enabled" ? <BellRing /> : <Bell />}</i><span><b>ATTENTION ALERTS</b><small>{notifications.status === "enabled" ? "ON FOR THIS DEVICE" : notifications.status === "denied" ? "BLOCKED BY BROWSER" : notifications.status === "unavailable" ? "UNAVAILABLE" : notifications.status === "enabling" ? "ENABLING…" : notifications.status === "error" ? "SETUP FAILED · TAP TO RETRY" : notifications.status === "loading" ? "CHECKING…" : notifications.status === "permitted" ? "TAP TO FINISH SETUP" : notifications.status === "prompt" ? "TAP CROSSED-OUT BELL ABOVE" : "OFF FOR THIS DEVICE"}</small>{notifications.status === "error" && notifications.error && <em>{notifications.error}</em>}</span></button>
           {notifications.status === "enabled" && <button className="notification-disable" type="button" onClick={() => void notifications.disable()}>DISABLE</button>}
         </div>
         <div className="workspace-list">
@@ -1242,7 +1243,7 @@ export function App() {
                   else next.add(workspace.id);
                   return next;
                 })} type="button" aria-expanded={!collapsed}>
-                  <i aria-hidden="true">›</i><span><b>{workspace.name}</b><small className="workspace-path" title={workspace.root}><span>{workspace.root}</span></small></span>
+                  <i aria-hidden="true"><ChevronRight /></i><span><b>{workspace.name}</b><small className="workspace-path" title={workspace.root}><span>{workspace.root}</span></small></span>
                 </button>
                 <ActionMenu
                   className="workspace-actions"
@@ -1260,7 +1261,7 @@ export function App() {
                     } },
                   ]}
                 />
-                <button className="add-session" onClick={() => openCreator(workspace.id)} title={`New session in ${workspace.name}`} aria-label={`New session in ${workspace.name}`} type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+                <button className="add-session" onClick={() => openCreator(workspace.id)} title={`New session in ${workspace.name}`} aria-label={`New session in ${workspace.name}`} type="button"><Plus aria-hidden="true" /></button>
               </header>
               {!collapsed && <div className="session-list">
                 {sessions.length === 0 && <div className="empty-workspace">No sessions</div>}
@@ -1297,7 +1298,7 @@ export function App() {
       </aside>
 
       <main className="workspace" inert={(isMobile && sidebarOpen) || blockingDialogOpen ? true : undefined}>
-        {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span>×</span></button>}
+        {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
         {selectedSession ? <div className="session-view">
           <nav className="capability-tabs" aria-label="Session views" role="tablist" onKeyDown={(event) => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -1308,9 +1309,9 @@ export function App() {
             tabs[next]?.focus();
             tabs[next]?.click();
           }}>
-            <button className={activeView === "agent" ? "active" : ""} onClick={() => setActiveView("agent")} type="button" role="tab" tabIndex={activeView === "agent" ? 0 : -1} aria-selected={activeView === "agent"} aria-controls="session-view-panel"><i>▤</i> Agent</button>
-            <button className={activeView === "changes" ? "active" : ""} onClick={() => { setActiveView("changes"); void requestReview(selectedSession); }} type="button" role="tab" tabIndex={activeView === "changes" ? 0 : -1} aria-selected={activeView === "changes"} aria-controls="session-view-panel"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M12 12v6m-3-3h6" /></svg> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && <em>{reviewState.snapshot.totalFiles}</em>}</button>
-            <button className={activeView === "events" ? "active" : ""} onClick={() => setActiveView("events")} type="button" role="tab" tabIndex={activeView === "events" ? 0 : -1} aria-selected={activeView === "events"} aria-controls="session-view-panel"><i>≋</i> Events</button>
+            <button className={activeView === "agent" ? "active" : ""} onClick={() => setActiveView("agent")} type="button" role="tab" tabIndex={activeView === "agent" ? 0 : -1} aria-selected={activeView === "agent"} aria-controls="session-view-panel"><Bot aria-hidden="true" /> Agent</button>
+            <button className={activeView === "changes" ? "active" : ""} onClick={() => { setActiveView("changes"); void requestReview(selectedSession); }} type="button" role="tab" tabIndex={activeView === "changes" ? 0 : -1} aria-selected={activeView === "changes"} aria-controls="session-view-panel"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && <em>{reviewState.snapshot.totalFiles}</em>}</button>
+            <button className={activeView === "events" ? "active" : ""} onClick={() => setActiveView("events")} type="button" role="tab" tabIndex={activeView === "events" ? 0 : -1} aria-selected={activeView === "events"} aria-controls="session-view-panel"><Activity aria-hidden="true" /> Events</button>
           </nav>
           <div className="timeline-wrap">
             <section
@@ -1353,17 +1354,17 @@ export function App() {
               {activeView === "agent" && timeline.length === 0 && selectedSession.status === "starting" && <div className="timeline-empty"><p>Starting…</p></div>}
               {activeView === "agent" && timeline.map((item) => item._tag === "message"
                 ? <article className={`message ${item.role} ${item.live ? "live" : ""}`} key={item.key}>
-                    <header><span>{item.role === "assistant" ? "PI" : "REMOTE"}</span>{item.live && <i>STREAMING</i>}<button className={`timeline-copy ${copyFeedback?.key === item.key ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(item.key, `${item.role === "assistant" ? "PI" : "REMOTE"} message`, item.text || `${item.imageCount} image${item.imageCount === 1 ? "" : "s"} attached`)} type="button" aria-label={`${copyFeedback?.key === item.key ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.role === "assistant" ? "PI" : "REMOTE"} message`}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg><b>{copyFeedback?.key === item.key ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></header>
+                    <header><span>{item.role === "assistant" ? "PI" : "REMOTE"}</span>{item.live && <i>STREAMING</i>}<button className={`timeline-copy ${copyFeedback?.key === item.key ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(item.key, `${item.role === "assistant" ? "PI" : "REMOTE"} message`, item.text || `${item.imageCount} image${item.imageCount === 1 ? "" : "s"} attached`)} type="button" aria-label={`${copyFeedback?.key === item.key ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.role === "assistant" ? "PI" : "REMOTE"} message`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === item.key ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></header>
                     {item.text && <div className="message-content"><Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>{item.text}</Markdown></div>}
-                    {item.imageCount > 0 && <div className="message-images">▧ {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
+                    {item.imageCount > 0 && <div className="message-images"><Image aria-hidden="true" /> {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
                   </article>
                 : item.state === "running"
                   ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
                     </div>
                   : <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key}>
-                      <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true">+</strong></summary>
-                      <div className="tool-result-actions"><button className={`timeline-copy ${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(`tool:${item.key}`, `${item.name} tool output`, item.detail)} type="button" aria-label={`${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.name} tool output`}><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg><b>{copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></div>
+                      <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
+                      <div className="tool-result-actions"><button className={`timeline-copy ${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(`tool:${item.key}`, `${item.name} tool output`, item.detail)} type="button" aria-label={`${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.name} tool output`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></div>
                       <pre>{item.detail}</pre>
                     </details>)}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
@@ -1376,11 +1377,11 @@ export function App() {
                 </details>)}
               </div>}
             </section>
-            {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><span>↓</span><small>LATEST</small></button>}
+            {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </div>
 
           <section className="control-deck">
-            <button className="session-details-toggle" type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((open) => !open)}><span>SESSION DETAILS</span><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b><i aria-hidden="true">{detailsOpen ? "⌃" : "⌄"}</i></button>
+            <button className="session-details-toggle" type="button" aria-expanded={detailsOpen} onClick={() => setDetailsOpen((open) => !open)}><span>SESSION DETAILS</span><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b><i aria-hidden="true">{detailsOpen ? <ChevronUp /> : <ChevronDown />}</i></button>
             {detailsOpen && <section className="session-details" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
               <div className="usage-metrics">
                 <span><small>CONTEXT</small><b>{selectedSession.usage?.contextUsage?.tokens === null ? "Recalculating" : selectedSession.usage?.contextUsage ? `${selectedSession.usage.contextUsage.tokens.toLocaleString()} / ${selectedSession.usage.contextUsage.contextWindow.toLocaleString()}` : "Not reported"}</b></span>
@@ -1400,7 +1401,7 @@ export function App() {
               <header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
                 <i /><div><header><b>{item.action === "followUp" ? "FOLLOW-UP" : item.action.toUpperCase()}</b><small>{item.status === "sending" ? "SENDING TO PI" : item.status === "accepted" ? "ACCEPTED BY PI" : item.status === "delivered" ? "SENT TO PI" : item.error ?? "REJECTED"}</small></header><p>{item.text || `${item.imageCount ?? 0} attached image${item.imageCount === 1 ? "" : "s"}`}</p></div>
-                {item.status === "rejected" && <button onClick={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} type="button" aria-label="Dismiss rejected message">×</button>}
+                {item.status === "rejected" && <button onClick={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} type="button" aria-label="Dismiss rejected message"><X aria-hidden="true" /></button>}
               </article>)}
             </section>}
             <div className="composer" ref={composerRef}>
@@ -1447,7 +1448,7 @@ export function App() {
                   tabIndex={-1}
                   type="button"
                 >
-                  <i aria-hidden="true">{item.kind === "directory" ? "⌑" : "≡"}</i>
+                  <i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i>
                   <span><b>{item.name}</b><small>{item.path}</small></span>
                 </button>)}
               </div>}
@@ -1541,9 +1542,9 @@ export function App() {
                 <div className="composer-insertions">
                   <label className={`attachment-trigger ${busy || !canWrite ? "disabled" : ""}`} title="Attach images">
                     <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={busy || !canWrite} onChange={(event) => { void selectImages(event.target.files ?? []); event.target.value = ""; }} aria-label="Attach images" />
-                    <span aria-hidden="true">{imageSelectionPending ? "…" : <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>}</span>
+                    <span aria-hidden="true">{imageSelectionPending ? <LoaderCircle className="icon-spin" /> : <ImagePlus />}</span>
                   </label>
-                  <button className="mention-trigger" disabled={busy || !canWrite} onClick={insertMentionTrigger} type="button" aria-label="Mention a file" title="Mention a file"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" /></svg></button>
+                  <button className="mention-trigger" disabled={busy || !canWrite} onClick={insertMentionTrigger} type="button" aria-label="Mention a file" title="Mention a file"><AtSign aria-hidden="true" /></button>
                   {slashCommandMode && <span className="command-mode"><i aria-hidden="true">/</i> COMMAND · IMMEDIATE</span>}
                   {images.length > 0 && <div className="composer-images" aria-label="Attached images">
                     {images.map((image, index) => <button
@@ -1555,10 +1556,10 @@ export function App() {
                       })}
                       type="button"
                       aria-label={`Remove ${image.name || `image ${index + 1}`}`}
-                    ><img src={image.preview} alt="" /><span aria-hidden="true">×</span></button>)}
+                    ><img src={image.preview} alt="" /><span aria-hidden="true"><X /></span></button>)}
                   </div>}
                 </div>
-                <button className={`send-button ${slashCommandMode ? "command" : ""}`} disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={slashCommandMode ? "Run Pi command" : selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? "…" : slashCommandMode ? "/" : "↑"}</span></button>
+                <button className={`send-button ${slashCommandMode ? "command" : ""}`} disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={slashCommandMode ? "Run Pi command" : selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? <LoaderCircle aria-hidden="true" className="icon-spin" /> : slashCommandMode ? "/" : <ArrowUp aria-hidden="true" />}</span></button>
               </div>
             </div>
             <div className="control-meta">
@@ -1567,7 +1568,7 @@ export function App() {
                   <button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")} type="button" aria-pressed={delivery === "steer"} title="Deliver after the current tool call, before Pi continues">STEER NEXT</button>
                   <button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")} type="button" aria-pressed={delivery === "followUp"} title="Wait until the current agent run fully settles">FOLLOW-UP</button>
                 </div>}
-                {selectedSession.status === "working" && <button className="abort" disabled={busy} onClick={() => void command("abort")} type="button"><i>■</i> ABORT RUN</button>}
+                {selectedSession.status === "working" && <button className="abort" disabled={busy} onClick={() => void command("abort")} type="button"><Square aria-hidden="true" /> ABORT RUN</button>}
                 <button className="model-trigger" disabled={busy || !canConfigure} onClick={(event) => { modelReturnFocusRef.current = event.currentTarget; setModelDialogOpen(true); }} title={canConfigure ? "Change model and thinking level" : "Model changes are available when Pi is idle"} type="button">MODEL</button>
                 {(selectedSession.status === "stopped" || selectedSession.status === "crashed") && selectedSession.sessionFile && <button className="end-runtime" disabled={busy} onClick={() => void resumeSession()} type="button">{busy ? "RESUMING…" : "RESUME SESSION"}</button>}
                 {selectedSession.status !== "stopped" && selectedSession.status !== "stopping" && selectedSession.status !== "crashed" && <button className="end-runtime" disabled={busy} onClick={(event) => { stopReturnFocusRef.current = event.currentTarget; setStopDialogOpen(true); }} type="button">STOP SESSION</button>}
@@ -1616,8 +1617,8 @@ export function App() {
 
       {isMobile && mentionMenu && <div className="mention-picker-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) closeMentionPicker(); }}>
         <section className="mention-picker" role="dialog" aria-modal="true" aria-labelledby="mention-picker-title" ref={mentionPickerRef}>
-          <header><div><span>WORKSPACE FILES</span><b id="mention-picker-title">Mention a file</b></div><button onClick={closeMentionPicker} type="button" aria-label="Close file mentions">×</button></header>
-          <label className="mention-search"><span className="sr-only">Search workspace files</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg><input
+          <header><div><span>WORKSPACE FILES</span><b id="mention-picker-title">Mention a file</b></div><button onClick={closeMentionPicker} type="button" aria-label="Close file mentions"><X aria-hidden="true" /></button></header>
+          <label className="mention-search"><span className="sr-only">Search workspace files</span><Search aria-hidden="true" /><input
             autoFocus
             value={mentionPickerQuery}
             onChange={(event) => updateMentionQuery(event.target.value)}
@@ -1642,7 +1643,7 @@ export function App() {
             {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
             {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
             {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
-            {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} type="button"><i aria-hidden="true">{item.kind === "directory" ? "⌑" : "≡"}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
+            {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} type="button"><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
           </div>
         </section>
       </div>}
@@ -1752,7 +1753,7 @@ export function App() {
 
       {creatorOpen && state._tag === "Ready" && <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) closeCreator(); }}>
         <form className="session-dialog" onSubmit={createSession} role="dialog" aria-modal="true" aria-labelledby="new-session-title" ref={dialogRef}>
-          <header><div><b id="new-session-title">New session</b></div><button onClick={closeCreator} disabled={busy} type="button" aria-label="Close">×</button></header>
+          <header><div><b id="new-session-title">New session</b></div><button onClick={closeCreator} disabled={busy} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
           <div className="dialog-body">
             {chosenWorkspace && <div className="session-workspace">
               <span>WORKSPACE</span><b>{chosenWorkspace.name}</b><small>{chosenWorkspace.root}</small>
@@ -1761,7 +1762,7 @@ export function App() {
             <label>Session name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="New session" autoFocus /></label>
             {creatorError && <div className="dialog-error" role="alert">{creatorError}</div>}
           </div>
-          <footer><button className="cancel" onClick={closeCreator} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !workspaceId} type="submit">{busy ? "STARTING…" : "START SESSION ↗"}</button></footer>
+          <footer><button className="cancel" onClick={closeCreator} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !workspaceId} type="submit">{busy ? "STARTING…" : <>START SESSION <ExternalLink aria-hidden="true" /></>}</button></footer>
         </form>
       </div>}
     </div>
@@ -1897,7 +1898,7 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
       <button className={triggerClassName} ref={trigger} onClick={() => {
         setPlacement(undefined);
         setOpen((current) => !current);
-      }} type="button" aria-label={triggerLabel} aria-haspopup="menu" aria-expanded={open}>⋯</button>
+      }} type="button" aria-label={triggerLabel} aria-haspopup="menu" aria-expanded={open}><MoreHorizontal aria-hidden="true" /></button>
     </div>
     {open && createPortal(<div
       className={`workspace-menu ${placement?.opensUpward ? "open-upward" : ""}`}
@@ -1967,7 +1968,7 @@ function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onR
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <form className="session-dialog workspace-action-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="rename-session-title" ref={dialog}>
-      <header><div><b id="rename-session-title">Rename session</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="rename-session-title">Rename session</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
         <label>Session name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus /></label>
         {error && <div className="dialog-error" role="alert">{error}</div>}
@@ -2030,7 +2031,7 @@ function RenameWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <form className="session-dialog workspace-action-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="rename-workspace-title" ref={dialog}>
-      <header><div><b id="rename-workspace-title">Rename workspace</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="rename-workspace-title">Rename workspace</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
         <label>Workspace name<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} autoFocus /></label>
         <small className="workspace-path">{workspace.root}</small>
@@ -2092,7 +2093,7 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <section className="session-dialog workspace-action-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-workspace-title" ref={dialog}>
-      <header><div><b id="remove-workspace-title">Remove workspace?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="remove-workspace-title">Remove workspace?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
         <p><b>{workspace.name}</b> will be removed from PISS. Its directory and files will remain untouched.</p>
         {blocked && <div className="dialog-error" role="alert">Delete {workspace.sessionCount} {workspace.sessionCount === 1 ? "session" : "sessions"} first.</div>}
@@ -2139,7 +2140,7 @@ function DeleteSessionDialog({ sessionName, pending, error, returnFocus, fallbac
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" ref={dialog}>
-      <header><div><b id="delete-session-title">Delete session?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="delete-session-title">Delete session?</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
         <p><b>{sessionName}</b> will be removed from PISS. Its Pi conversation file will remain on disk.</p>
         {error && <div className="dialog-error" role="alert">{error}</div>}
@@ -2175,7 +2176,7 @@ function CompactionDialog({ returnFocus, fallbackFocus, onClose, onConfirm }: {
   }, [fallbackFocus, onClose, returnFocus]);
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="compact-session-title" ref={dialog}>
-      <header><div><b id="compact-session-title">Compact session context?</b></div><button onClick={onClose} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="compact-session-title">Compact session context?</b></div><button onClick={onClose} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body"><p>Compaction is lossy for the active model context. The complete append-only Pi transcript remains on disk.</p></div>
       <footer><button className="cancel" onClick={onClose} type="button">CANCEL</button><button className="launch" onClick={onConfirm} type="button">COMPACT NOW</button></footer>
     </section>
@@ -2271,7 +2272,7 @@ function StopSessionDialog({ sessionName, returnFocus, fallbackFocus, onClose, o
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="session-dialog stop-session-dialog" role="dialog" aria-modal="true" aria-labelledby="stop-session-title" ref={dialog}>
-      <header><div><b id="stop-session-title">Stop session?</b></div><button onClick={onClose} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="stop-session-title">Stop session?</b></div><button onClick={onClose} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body">
         <p><b>{sessionName}</b> will stop running. Pi’s conversation file remains on disk and can be resumed in a new protected runtime generation.</p>
       </div>
@@ -2368,7 +2369,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
 
   return <div className="dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <section className="model-dialog" role="dialog" aria-modal="true" aria-labelledby="model-dialog-title" ref={dialog}>
-      <header><div><b id="model-dialog-title">Model &amp; thinking</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="model-dialog-title">Model &amp; thinking</b></div><button onClick={onClose} disabled={pending} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="model-dialog-body">
         <section className="model-current">
           <span>CURRENT MODEL</span><b>{currentModel?.name ?? "No model selected"}</b><small>{currentModel ? `${currentModel.provider} / ${currentModel.id}` : "Pi did not report a model"}</small>
@@ -2386,7 +2387,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
             {!loading && filtered.map((model) => {
               const active = currentModel?.provider === model.provider && currentModel.id === model.id;
               return <button className={`model-option ${active ? "active" : ""}`} disabled={pending} onClick={() => void applyModel(model)} type="button" aria-pressed={active} key={`${model.provider}/${model.id}`}>
-                <i>{active ? "●" : "○"}</i><span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span><em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
+                <i aria-hidden="true">{active ? <CircleCheck /> : <Circle />}</i><span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span><em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
               </button>;
             })}
           </div>
@@ -2486,7 +2487,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
 
   return <div className="dialog-layer workspace-dialog-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <form className="session-dialog workspace-dialog" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="new-workspace-title" ref={dialog}>
-      <header><div><b id="new-workspace-title">New workspace</b></div><button onClick={onClose} disabled={busy} type="button" aria-label="Close">×</button></header>
+      <header><div><b id="new-workspace-title">New workspace</b></div><button onClick={onClose} disabled={busy} type="button" aria-label="Close"><X aria-hidden="true" /></button></header>
       <div className="dialog-body workspace-dialog-body">
         <div className="workspace-mode" aria-label="Workspace directory mode">
           <button className={mode === "existing" ? "active" : ""} onClick={() => { setMode("existing"); setSelected(undefined); setQuery(""); }} type="button" aria-pressed={mode === "existing"}>EXISTING DIRECTORY</button>
@@ -2499,7 +2500,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
           {searching && <div className="directory-state" role="status">Searching directories…</div>}
           {!searching && candidates.length === 0 && <div className="directory-state" role="status">No matching directories inside the approved roots.</div>}
           {!searching && candidates.map((candidate) => <button className={selected?.path === candidate.path ? "selected" : ""} onClick={() => choose(candidate)} type="button" aria-pressed={selected?.path === candidate.path} key={candidate.path}>
-            <i>⌑</i><span><b>{candidate.name}</b><small>{candidate.relativePath === "." ? candidate.path : candidate.relativePath}</small></span>
+            <i aria-hidden="true"><Folder /></i><span><b>{candidate.name}</b><small>{candidate.relativePath === "." ? candidate.path : candidate.relativePath}</small></span>
           </button>)}
         </div>
         <div className={`selected-directory ${selected ? "" : "empty"}`} aria-live="polite"><span>{selected ? "SELECTED" : "DIRECTORY SELECTION"}</span><code>{selected?.path ?? "Choose a directory from the results above"}</code></div>
@@ -2508,7 +2509,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
         <label className="trust-toggle"><input checked={trustProjectResources} onChange={(event) => setTrustProjectResources(event.target.checked)} type="checkbox" /><span><b>Trust project-local Pi resources</b><small>Load settings, extensions, skills, and packages from this directory.</small></span></label>
         {error && <div className="dialog-error" role="alert">{error}</div>}
       </div>
-      <footer><button className="cancel" onClick={onClose} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !selected || !name.trim() || (mode === "create" && !folderName.trim())} type="submit">{busy ? "CREATING…" : "CREATE WORKSPACE →"}</button></footer>
+      <footer><button className="cancel" onClick={onClose} disabled={busy} type="button">CANCEL</button><button className="launch" disabled={busy || !selected || !name.trim() || (mode === "create" && !folderName.trim())} type="submit">{busy ? "CREATING…" : <>CREATE WORKSPACE <ArrowRight aria-hidden="true" /></>}</button></footer>
     </form>
   </div>;
 }

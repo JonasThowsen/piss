@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { ExternalLink, Search, X } from "lucide-react";
 import { pickerNavigationOffset, searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
 export function GlobalPicker<Action>({
@@ -90,10 +91,10 @@ export function GlobalPicker<Action>({
     <section className="global-picker" role="dialog" aria-modal="true" aria-labelledby={`${instanceId}-title`} ref={dialogRef} onKeyDown={handleKeyDown}>
       <header>
         <div><span>GO TO</span><b id={`${instanceId}-title`}>{title}</b></div>
-        <button type="button" onClick={onClose} aria-label={`Close ${title.toLocaleLowerCase()} picker`}>×</button>
+        <button type="button" onClick={onClose} aria-label={`Close ${title.toLocaleLowerCase()} picker`}><X aria-hidden="true" /></button>
       </header>
       <label className="global-picker-search">
-        <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg>
+        <Search aria-hidden="true" />
         <span className="sr-only">{searchLabel}</span>
         <input
           ref={inputRef}
@@ -111,7 +112,7 @@ export function GlobalPicker<Action>({
         <kbd>ESC</kbd>
       </label>
       <div className="global-picker-results" id={resultsId} role={matches.length > 0 ? "listbox" : "status"} aria-label={matches.length > 0 ? title : undefined}>
-        {matches.length === 0 && <div className="global-picker-empty"><i>∅</i><b>{items.length === 0 ? noItemsLabel : emptyLabel}</b><span>{items.length === 0 ? noItemsHint : emptyHint}</span></div>}
+        {matches.length === 0 && <div className="global-picker-empty"><i aria-hidden="true"><Search /></i><b>{items.length === 0 ? noItemsLabel : emptyLabel}</b><span>{items.length === 0 ? noItemsHint : emptyHint}</span></div>}
         {matches.map(({ item }, index) => <button
           className={index === highlighted ? "active" : ""}
           id={`${instanceId}-option-${index}`}
@@ -124,7 +125,7 @@ export function GlobalPicker<Action>({
           onMouseEnter={() => setHighlighted(index)}
           onClick={() => choose(index)}
         >
-          <span className="global-picker-glyph" aria-hidden="true">↗</span>
+          <span className="global-picker-glyph" aria-hidden="true"><ExternalLink /></span>
           <span className="global-picker-copy"><b>{item.label}</b>{item.description && <small>{item.description}</small>}</span>
           {item.meta && <em>{item.meta}</em>}
         </button>)}
