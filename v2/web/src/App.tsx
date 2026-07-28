@@ -2100,7 +2100,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
   }, [fallbackFocus, returnFocus]);
 
   const applyModel = async (model: AvailableModel) => {
-    if (pending || session.status !== "finished" || session.model?.provider === model.provider && session.model.id === model.id) return;
+    if (pending || !canConfigureSession(session.status) || session.model?.provider === model.provider && session.model.id === model.id) return;
     setPending(true);
     setError(undefined);
     try {
@@ -2114,7 +2114,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
   };
 
   const applyThinkingLevel = async (level: ThinkingLevel) => {
-    if (pending || session.status !== "finished" || session.thinkingLevel === level) return;
+    if (pending || !canConfigureSession(session.status) || session.thinkingLevel === level) return;
     setPending(true);
     setError(undefined);
     try {

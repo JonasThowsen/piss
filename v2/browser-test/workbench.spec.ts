@@ -658,6 +658,8 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.keyboard.press("Escape");
   await page.getByLabel("Message Pi").fill("");
 
+  api.setStatus("idle");
+  await expect(page.locator(".runtime-state")).toContainText(/idle/i, { timeout: 5_000 });
   await page.setViewportSize({ width: 360, height: 658 });
   await page.getByRole("button", { name: "MODEL" }).click();
   const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
