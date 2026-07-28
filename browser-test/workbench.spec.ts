@@ -896,6 +896,9 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.getByRole("button", { name: "Open settings" }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Settings" });
   await expect(settingsDialog.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  const settingsBackdrop = page.locator(".dialog-layer");
+  await expect(settingsBackdrop).toHaveCSS("background-color", "rgba(28, 31, 28, 0.5)");
+  await expect(settingsBackdrop).toHaveCSS("backdrop-filter", "blur(10px) saturate(0.7)");
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
   const mobileMenu = page.getByRole("button", { name: "Open workspaces and sessions" });
   await expect(mobileMenu).toBeFocused();
