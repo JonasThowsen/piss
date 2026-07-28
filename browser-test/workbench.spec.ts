@@ -79,7 +79,7 @@ function sessionSummary(session: TestSession) {
   return { ...summary, eventCount: events.length };
 }
 
-async function installApi(page: Page, options: { readonly empty?: boolean; readonly notifications?: boolean } = {}) {
+async function installApi(page: Page, options: { readonly empty?: boolean; readonly emptyReview?: boolean; readonly notifications?: boolean } = {}) {
   let sessions: TestSession[] = [];
   const workspaces: Array<typeof workspace> = options.empty ? [] : [{ ...workspace }];
   const commands: Array<Record<string, unknown>> = [];
@@ -230,6 +230,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     }
     if (session && path === `/api/sessions/${session.id}/review` && method === "GET") {
       reviewRequests += 1;
+      if (options.emptyReview) {
+        await route.fulfill({ json: { review: { generatedAt: Date.now(), totalFiles: 0, truncated: false, files: [] } } });
+        return;
+      }
       await route.fulfill({ json: { review: {
         generatedAt: Date.now(),
         totalFiles: 2,
@@ -739,6 +743,23 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
 });
 
+test("mobile session tabs omit events and hide an empty review count", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page, { emptyReview: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const tabs = page.locator(".capability-tabs").getByRole("tab");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.filter({ hasText: "Events" })).toHaveCount(0);
+  const changes = tabs.filter({ hasText: "Changes" });
+  await changes.click();
+  await expect(page.getByRole("region", { name: "Uncommitted changes" })).toContainText("Working tree is clean");
+  await expect(changes.locator("em")).toHaveCount(0);
+});
+
 test("mobile workbench keeps creation, models, queues, and navigation functional", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const api = await installApi(page);
@@ -1099,15 +1120,14 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   await createDialog.getByRole("button", { name: /start session/i }).click();
   await expect(createDialog).toBeHidden();
 
-  await expect(page.locator(".capability-tabs").getByRole("tab", { name: /Agent/ })).toBeVisible();
-  const eventsTab = page.locator(".capability-tabs").getByRole("tab", { name: /Events/ });
-  await expect(eventsTab).toBeVisible();
-  await eventsTab.click();
-  await expect(page.getByText("NATIVE PI EVENTS")).toBeVisible();
-  await page.locator(".capability-tabs").getByRole("tab", { name: /Agent/ }).click();
-  const changesTab = page.locator(".capability-tabs").getByRole("tab", { name: /Changes/ });
+  const sessionTabs = page.locator(".capability-tabs").getByRole("tab");
+  await expect(sessionTabs).toHaveCount(2);
+  await expect(sessionTabs.filter({ hasText: "Agent" })).toBeVisible();
+  await expect(sessionTabs.filter({ hasText: "Events" })).toHaveCount(0);
+  const changesTab = sessionTabs.filter({ hasText: "Changes" });
   await expect(changesTab).toBeVisible();
   await changesTab.click();
+  await expect(changesTab.locator("em")).toHaveText("2");
   await expect(page.getByRole("region", { name: "Uncommitted changes" })).toBeVisible();
   await expect(page.getByText("web/src/", { exact: true })).toBeVisible();
   await expect(page.getByText("App.tsx", { exact: true })).toBeVisible();

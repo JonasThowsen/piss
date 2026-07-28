@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import * as Effect from "effect/Effect";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { Activity, ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -207,7 +207,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [activeView, setActiveView] = useState<"agent" | "changes" | "events">("agent");
+  const [activeView, setActiveView] = useState<"agent" | "changes">("agent");
   const [reviewState, setReviewState] = useState<ReviewState>();
   const [name, setName] = useState("");
   const [commandText, setCommandText] = useState(() => routedSessionId ? readDraft(routedSessionId)?.text ?? "" : "");
@@ -1310,12 +1310,11 @@ export function App() {
             tabs[next]?.click();
           }}>
             <button className={activeView === "agent" ? "active" : ""} onClick={() => setActiveView("agent")} type="button" role="tab" tabIndex={activeView === "agent" ? 0 : -1} aria-selected={activeView === "agent"} aria-controls="session-view-panel"><Bot aria-hidden="true" /> Agent</button>
-            <button className={activeView === "changes" ? "active" : ""} onClick={() => { setActiveView("changes"); void requestReview(selectedSession); }} type="button" role="tab" tabIndex={activeView === "changes" ? 0 : -1} aria-selected={activeView === "changes"} aria-controls="session-view-panel"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && <em>{reviewState.snapshot.totalFiles}</em>}</button>
-            <button className={activeView === "events" ? "active" : ""} onClick={() => setActiveView("events")} type="button" role="tab" tabIndex={activeView === "events" ? 0 : -1} aria-selected={activeView === "events"} aria-controls="session-view-panel"><Activity aria-hidden="true" /> Events</button>
+            <button className={activeView === "changes" ? "active" : ""} onClick={() => { setActiveView("changes"); void requestReview(selectedSession); }} type="button" role="tab" tabIndex={activeView === "changes" ? 0 : -1} aria-selected={activeView === "changes"} aria-controls="session-view-panel"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && reviewState.snapshot.totalFiles > 0 && <em>{reviewState.snapshot.totalFiles}</em>}</button>
           </nav>
           <div className="timeline-wrap">
             <section
-              className={`timeline ${activeView === "events" ? "event-stream" : activeView === "changes" ? "review-stream" : ""}`}
+              className={`timeline ${activeView === "changes" ? "review-stream" : ""}`}
               id="session-view-panel"
               role="tabpanel"
               ref={timelineRef}
@@ -1368,14 +1367,6 @@ export function App() {
                       <pre>{item.detail}</pre>
                     </details>)}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
-              {activeView === "events" && <div className="native-events">
-                <header><span>NATIVE PI EVENTS</span><b>{selectedSession.events.length.toString().padStart(3, "0")}</b></header>
-                {selectedSession.events.length === 0 && <p>No events</p>}
-                {selectedSession.events.map((event) => <details key={event.sequence}>
-                  <summary><time>{event.sequence.toString().padStart(3, "0")}</time><b>{event.type}</b><span>{new Date(event.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span></summary>
-                  <pre>{JSON.stringify(event.data, null, 2)}</pre>
-                </details>)}
-              </div>}
             </section>
             {activeView !== "changes" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </div>
