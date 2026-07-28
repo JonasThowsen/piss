@@ -547,6 +547,19 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await page.getByRole("button", { name: "Run Pi command" }).click();
   const sessionPicker = page.getByRole("dialog", { name: "Sessions", exact: true });
   await expect(sessionPicker).toBeVisible();
+  const mobilePickerChrome = await sessionPicker.evaluate((picker) => {
+    const header = picker.querySelector<HTMLElement>(":scope > header")!;
+    const footer = picker.querySelector<HTMLElement>(":scope > footer")!;
+    const search = picker.querySelector<HTMLElement>(".global-picker-search")!;
+    return {
+      headerHeight: header.getBoundingClientRect().height,
+      searchHeight: search.getBoundingClientRect().height,
+      footerDisplay: getComputedStyle(footer).display,
+    };
+  });
+  expect(mobilePickerChrome.headerHeight).toBeLessThanOrEqual(43);
+  expect(mobilePickerChrome.searchHeight).toBeLessThanOrEqual(44);
+  expect(mobilePickerChrome.footerDisplay).toBe("none");
   expect(api.commands).toHaveLength(0);
   await page.keyboard.press("Escape");
   await expect(sessionPicker).toBeHidden();
@@ -766,6 +779,10 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
     const deck = document.querySelector<HTMLElement>(".control-deck")!.getBoundingClientRect();
     const controls = document.querySelector<HTMLElement>(".control-meta")!.getBoundingClientRect();
     const composer = document.querySelector<HTMLElement>(".composer")!.getBoundingClientRect();
+    const masthead = document.querySelector<HTMLElement>(".masthead")!.getBoundingClientRect();
+    const tabs = document.querySelector<HTMLElement>(".capability-tabs")!.getBoundingClientRect();
+    const timeline = document.querySelector<HTMLElement>(".timeline-wrap")!.getBoundingClientRect();
+    const details = document.querySelector<HTMLElement>(".session-details-toggle")!.getBoundingClientRect();
     return {
       configuredHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
       visibleHeight,
@@ -773,7 +790,13 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
       workspaceBottom: workspace.bottom,
       deckBottom: deck.bottom,
       controlsBottom: controls.bottom,
+      controlsHeight: controls.height,
       composerBottom: composer.bottom,
+      composerHeight: composer.height,
+      detailsHeight: details.height,
+      mastheadHeight: masthead.height,
+      tabsHeight: tabs.height,
+      timelineHeight: timeline.height,
     };
   });
   await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 700, configuredHeight: 700 });
@@ -783,6 +806,9 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   expect(layout.deckBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
   expect(layout.composerBottom).toBeLessThan(layout.controlsBottom);
+  expect(layout.mastheadHeight).toBeLessThanOrEqual(52);
+  expect(layout.tabsHeight).toBeLessThanOrEqual(44);
+  expect(layout.composerHeight).toBeLessThanOrEqual(104);
 
   await page.setViewportSize({ width: 390, height: 520 });
   await expect.poll(viewportLayout).toMatchObject({ visibleHeight: 520, configuredHeight: 520 });
@@ -791,6 +817,18 @@ test("mobile shell keeps bottom controls inside the visible viewport", async ({ 
   expect(layout.workspaceBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
   expect(layout.deckBottom).toBeGreaterThanOrEqual(layout.visibleHeight - 1);
   expect(layout.controlsBottom).toBeLessThanOrEqual(layout.visibleHeight + 1);
+
+  const restingTimelineHeight = layout.timelineHeight;
+  await page.getByLabel("Message Pi").focus();
+  await expect.poll(viewportLayout).toMatchObject({ mastheadHeight: 0, tabsHeight: 0, detailsHeight: 0 });
+  layout = await viewportLayout();
+  expect(layout.controlsHeight).toBeGreaterThanOrEqual(40);
+  expect(layout.timelineHeight).toBeGreaterThan(restingTimelineHeight + 100);
+
+  await page.getByLabel("Message Pi").fill("Maybe we should be trying to be better with the space for the chat interface as well, quite little space on mobile for the actual messages");
+  layout = await viewportLayout();
+  expect(layout.composerHeight).toBeLessThanOrEqual(178);
+  expect(layout.timelineHeight).toBeGreaterThanOrEqual(280);
 });
 
 test("mobile session tabs omit events and hide an empty review count", async ({ page }) => {
