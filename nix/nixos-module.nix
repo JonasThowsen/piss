@@ -198,6 +198,11 @@ in
 
     systemd.user.services.piss = {
       description = "PISS — Effect control plane";
+      # NixOS switches run against a persistent user manager. Restarting in one
+      # transaction prevents deploy-rs from disconnecting after the stop phase
+      # and leaving the changed service inactive.
+      stopIfChanged = false;
+      notSocketActivated = true;
       path = [
         pkgs.nodejs_24
         pkgs.bashInteractive
