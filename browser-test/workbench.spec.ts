@@ -892,6 +892,14 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   expect(plusLayout.workspaceSize).toBe(34);
   expect(plusLayout.workspaceTopGap).toBeGreaterThanOrEqual(12);
   expect(plusLayout.plusFontSize).toBe("17px");
+  await expect(page.getByRole("button", { name: /ATTENTION ALERTS/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(settingsDialog.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
+  const mobileMenu = page.getByRole("button", { name: "Open workspaces and sessions" });
+  await expect(mobileMenu).toBeFocused();
+  await mobileMenu.click();
   await expect(createSessionButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await createSessionButton.click();
 
@@ -1428,7 +1436,10 @@ test("notification permission and push subscription use separate user gestures",
   const api = await installApi(page, { notifications: true });
   await page.goto("/");
   await page.evaluate(() => navigator.serviceWorker.register("/service-worker.js", { scope: "/" }));
-  const toggle = page.getByRole("button", { name: /ATTENTION ALERTS/ });
+  await expect(page.getByRole("button", { name: /ATTENTION ALERTS/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
+  const toggle = settingsDialog.getByRole("button", { name: /ATTENTION ALERTS/ });
   await expect(toggle).toContainText("OFF FOR THIS DEVICE");
   await expect.poll(() => page.evaluate(() => (window as unknown as { notificationRequests: number }).notificationRequests)).toBe(0);
 
@@ -1441,7 +1452,7 @@ test("notification permission and push subscription use separate user gestures",
   await expect(toggle).toContainText("ON FOR THIS DEVICE");
   await expect.poll(() => api.notificationMutations.at(-1)?.action).toBe("subscribe");
   expect(await page.evaluate(() => (window as unknown as { subscriptionHadUserActivation: boolean }).subscriptionHadUserActivation)).toBe(true);
-  await page.getByRole("button", { name: "DISABLE" }).click();
+  await settingsDialog.getByRole("button", { name: "DISABLE" }).click();
   await expect(toggle).toContainText("TAP TO FINISH SETUP");
   await expect.poll(() => api.notificationMutations.at(-1)?.action).toBe("unsubscribe");
 
@@ -1453,6 +1464,7 @@ test("notification permission and push subscription use separate user gestures",
   await toggle.click();
   await expect(toggle).toContainText("BLOCKED BY BROWSER");
   await expect.poll(() => page.evaluate(() => (window as unknown as { notificationRequests: number }).notificationRequests)).toBe(2);
+  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
 
   await page.getByRole("button", { name: "New session in erp" }).click();
   let sessionDialog = page.getByRole("dialog", { name: "New session" });
@@ -1498,7 +1510,8 @@ test("Chrome's quiet address-bar prompt explains and completes notification setu
   const api = await installApi(page, { notifications: true });
   await page.goto("/");
   await page.evaluate(() => navigator.serviceWorker.register("/service-worker.js", { scope: "/" }));
-  const toggle = page.getByRole("button", { name: /ATTENTION ALERTS/ });
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const toggle = page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: /ATTENTION ALERTS/ });
   await toggle.click();
   await expect(toggle).toContainText("TAP CROSSED-OUT BELL ABOVE");
   expect(api.notificationMutations).toHaveLength(0);
@@ -1523,7 +1536,8 @@ test("notification setup failures expose the browser error instead of hiding it"
   await installApi(page, { notifications: true });
   await page.goto("/");
   await page.evaluate(() => navigator.serviceWorker.register("/service-worker.js", { scope: "/" }));
-  const toggle = page.getByRole("button", { name: /ATTENTION ALERTS/ });
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const toggle = page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: /ATTENTION ALERTS/ });
   await expect(toggle).toContainText("TAP TO FINISH SETUP");
   await toggle.click();
   await expect(toggle).toContainText("SETUP FAILED · TAP TO RETRY");

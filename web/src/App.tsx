@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -196,6 +196,7 @@ export function App() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -265,6 +266,7 @@ export function App() {
   const newSessionInputRef = useRef<HTMLInputElement>(null);
   const creatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceCreatorReturnFocusRef = useRef<HTMLElement | null>(null);
+  const settingsReturnFocusRef = useRef<HTMLElement | null>(null);
   const modelReturnFocusRef = useRef<HTMLElement | null>(null);
   const compactionReturnFocusRef = useRef<HTMLElement | null>(null);
   const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -400,7 +402,7 @@ export function App() {
   }, []);
 
   const globalPickerHotkeyEnabled = !globalPickerOpen
-    && !creatorOpen && !workspaceCreatorOpen && !modelDialogOpen && !compactionDialogOpen
+    && !creatorOpen && !workspaceCreatorOpen && !settingsOpen && !modelDialogOpen && !compactionDialogOpen
     && !selectedSession?.interactiveRequests[0] && !(isMobile && mentionMenu)
     && !archiveTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
 
@@ -1246,17 +1248,14 @@ export function App() {
         <Drawer.Close className="sr-only">Close navigation</Drawer.Close>
         <div className="rail-label">
           <span>WORKSPACES</span>
-          <button className="add-workspace" onClick={openWorkspaceCreator} type="button" aria-label="Create workspace" title="Create workspace"><Plus aria-hidden="true" /></button>
-        </div>
-        <div className={`notification-control ${notifications.status}`}>
-          <button
-            className={`notification-toggle ${notifications.status}`}
-            type="button"
-            disabled={notifications.status === "loading" || notifications.status === "enabling" || notifications.status === "enabled" || notifications.status === "unavailable" || notifications.status === "denied"}
-            title={notifications.error ?? "Notify this device when a session finishes, needs input, or crashes"}
-            onClick={() => void notifications.enable()}
-          ><i aria-hidden="true">{notifications.status === "enabled" ? <BellRing /> : <Bell />}</i><span><b>ATTENTION ALERTS</b><small>{notifications.status === "enabled" ? "ON FOR THIS DEVICE" : notifications.status === "denied" ? "BLOCKED BY BROWSER" : notifications.status === "unavailable" ? "UNAVAILABLE" : notifications.status === "enabling" ? "ENABLING…" : notifications.status === "error" ? "SETUP FAILED · TAP TO RETRY" : notifications.status === "loading" ? "CHECKING…" : notifications.status === "permitted" ? "TAP TO FINISH SETUP" : notifications.status === "prompt" ? "TAP CROSSED-OUT BELL ABOVE" : "OFF FOR THIS DEVICE"}</small>{notifications.status === "error" && notifications.error && <em>{notifications.error}</em>}</span></button>
-          {notifications.status === "enabled" && <button className="notification-disable" type="button" onClick={() => void notifications.disable()}>DISABLE</button>}
+          <div className="rail-actions">
+            <button className="open-settings" onClick={(event) => {
+              settingsReturnFocusRef.current = event.currentTarget;
+              if (isMobile) setSidebarOpen(false);
+              setSettingsOpen(true);
+            }} type="button" aria-label="Open settings" title="Settings"><Settings aria-hidden="true" /></button>
+            <button className="add-workspace" onClick={openWorkspaceCreator} type="button" aria-label="Create workspace" title="Create workspace"><Plus aria-hidden="true" /></button>
+          </div>
         </div>
         <div className="workspace-list">
           {state._tag === "Loading" && <div className="rail-state">Loading…</div>}
@@ -1575,6 +1574,34 @@ export function App() {
         onClose={closeGlobalPicker}
         finalFocus={() => globalPickerReturnFocusRef.current}
       />}
+
+      {settingsOpen && <DialogSurface
+        className="session-dialog settings-dialog"
+        returnFocus={isMobile ? mobileMenuRef.current : settingsReturnFocusRef.current}
+        fallbackFocus={sessionHeadingRef.current}
+        onClose={() => setSettingsOpen(false)}
+      >
+        <header>
+          <div><span>APPLICATION</span><Dialog.Title render={<b />}>Settings</Dialog.Title></div>
+          <Dialog.Close aria-label="Close settings"><X aria-hidden="true" /></Dialog.Close>
+        </header>
+        <div className="settings-dialog-body">
+          <section className="settings-section" aria-labelledby="notification-settings-title">
+            <header><span>DEVICE</span><h2 id="notification-settings-title">Notifications</h2><p>Choose whether this browser alerts you when a session finishes, needs input, or crashes.</p></header>
+            <div className={`notification-control ${notifications.status}`}>
+              <button
+                className={`notification-toggle ${notifications.status}`}
+                type="button"
+                disabled={notifications.status === "loading" || notifications.status === "enabling" || notifications.status === "enabled" || notifications.status === "unavailable" || notifications.status === "denied"}
+                title={notifications.error ?? "Notify this device when a session finishes, needs input, or crashes"}
+                onClick={() => void notifications.enable()}
+              ><i aria-hidden="true">{notifications.status === "enabled" ? <BellRing /> : <Bell />}</i><span><b>ATTENTION ALERTS</b><small>{notifications.status === "enabled" ? "ON FOR THIS DEVICE" : notifications.status === "denied" ? "BLOCKED BY BROWSER" : notifications.status === "unavailable" ? "UNAVAILABLE" : notifications.status === "enabling" ? "ENABLING…" : notifications.status === "error" ? "SETUP FAILED · TAP TO RETRY" : notifications.status === "loading" ? "CHECKING…" : notifications.status === "permitted" ? "TAP TO FINISH SETUP" : notifications.status === "prompt" ? "TAP CROSSED-OUT BELL ABOVE" : "OFF FOR THIS DEVICE"}</small>{notifications.status === "error" && notifications.error && <em>{notifications.error}</em>}</span></button>
+              {notifications.status === "enabled" && <button className="notification-disable" type="button" onClick={() => void notifications.disable()}>DISABLE</button>}
+            </div>
+            <p className="settings-note">Alerts include the session name and open that session directly. Prompts, paths, and tool output stay out of the notification.</p>
+          </section>
+        </div>
+      </DialogSurface>}
 
       {interactiveRequest && selectedSession && <InteractiveRequestDialog
         key={interactiveRequest.id}
