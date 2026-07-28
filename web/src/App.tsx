@@ -6,6 +6,7 @@ import { Combobox } from "@base-ui/react/combobox";
 import { Dialog } from "@base-ui/react/dialog";
 import { Drawer } from "@base-ui/react/drawer";
 import { Menu as BaseMenu } from "@base-ui/react/menu";
+import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
 import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Square, X } from "lucide-react";
@@ -1417,12 +1418,18 @@ export function App() {
                 onDismiss={dismissSlashCommandMenu}
                 onRemoveTrigger={removeSlashCommandTrigger}
               />}
-              {mentionMenu && !isMobile && <div className="mention-menu" id="file-mention-options" role={mentionMenu.mentions.length > 0 ? "listbox" : "status"} aria-label={mentionMenu.mentions.length > 0 ? "Workspace files" : undefined} aria-live={mentionMenu.mentions.length > 0 ? undefined : "polite"}>
-                {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
-                {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
-                {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
-                {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} tabIndex={-1} type="button"><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
-              </div>}
+              {mentionMenu && !isMobile && <Popover.Root open modal={false} onOpenChange={(open) => { if (!open) dismissMentionMenu(); }}>
+                <Popover.Portal>
+                  <Popover.Positioner className="mention-menu-positioner" anchor={composerTextareaRef} side="top" align="start" sideOffset={7} collisionPadding={8} positionMethod="fixed">
+                    <Popover.Popup className="mention-menu" id="file-mention-options" role={mentionMenu.mentions.length > 0 ? "listbox" : "status"} aria-label={mentionMenu.mentions.length > 0 ? "Workspace files" : undefined} aria-live={mentionMenu.mentions.length > 0 ? undefined : "polite"} initialFocus={false} finalFocus={false}>
+                      {mentionMenu.loading && <div className="mention-state">Searching files…</div>}
+                      {!mentionMenu.loading && mentionMenu.error && <div className="mention-state error">{mentionMenu.error}</div>}
+                      {!mentionMenu.loading && !mentionMenu.error && mentionMenu.mentions.length === 0 && <div className="mention-state">No matching files</div>}
+                      {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <button className={index === mentionMenu.highlighted ? "active" : ""} id={`file-mention-${index}`} key={`${item.kind}:${item.path}`} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(item)} onMouseEnter={() => setMentionMenu((current) => current ? { ...current, highlighted: index } : current)} role="option" aria-selected={index === mentionMenu.highlighted} tabIndex={-1} type="button"><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>}
               <textarea
                 ref={composerTextareaRef}
                 value={commandText}
@@ -1452,9 +1459,6 @@ export function App() {
                   scheduleSlashCommandSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                   scheduleMentionSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                 }}
-                onBlur={() => window.setTimeout(() => {
-                  if (!isMobile && !slashCommandMenu && !composerRef.current?.contains(document.activeElement)) dismissMentionMenu();
-                })}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   const highlightedMention = mentionMenu?.mentions[mentionMenu.highlighted];
@@ -1464,7 +1468,6 @@ export function App() {
                     setMentionMenu((current) => current ? { ...current, highlighted: (current.highlighted + direction + current.mentions.length) % current.mentions.length } : current);
                     return;
                   }
-                  if (mentionMenu && event.key === "Escape") { event.preventDefault(); dismissMentionMenu(); return; }
                   if (mentionMenu && highlightedMention && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); chooseMention(highlightedMention); return; }
                   if (!window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
