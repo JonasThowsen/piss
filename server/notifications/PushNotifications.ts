@@ -91,8 +91,10 @@ async function loadSubscriptions(path: string): Promise<StoredSubscription[]> {
 }
 
 export function notificationPayload(session: OwnedSession, status: Extract<OwnedSessionStatus, "finished" | "blocked" | "crashed">): string {
+  const normalizedName = session.name.replace(/\s+/g, " ").trim();
+  const sessionName = Array.from(normalizedName || "Pi session").slice(0, 80).join("");
   return JSON.stringify({
-    title: status === "blocked" ? "Pi session needs input" : status === "crashed" ? "Pi session crashed" : "Pi session finished",
+    title: status === "blocked" ? `${sessionName} needs input` : status === "crashed" ? `${sessionName} crashed` : `${sessionName} finished`,
     body: status === "blocked" ? "Open PISS to answer the pending request." : status === "crashed" ? "Open PISS to review the runtime failure." : "Open PISS to review the completed work.",
     tag: `piss-${session.id.slice(0, 128)}-${status}`,
     sessionId: session.id.slice(0, 128),

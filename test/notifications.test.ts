@@ -18,7 +18,7 @@ function session(): OwnedSession {
     id: "session-safe-id",
     runtimeId: "runtime-safe-id",
     workspaceId,
-    name: "private project name",
+    name: "Checkout refactor",
     branch: "private-branch",
     status: "finished",
     pid: 42,
@@ -38,15 +38,26 @@ function session(): OwnedSession {
   };
 }
 
-test("notification payloads route by opaque session ID without private content", () => {
+test("notification payloads identify and route to the session without exposing its work", () => {
+  const expectedTitles = {
+    finished: "Checkout refactor finished",
+    blocked: "Checkout refactor needs input",
+    crashed: "Checkout refactor crashed",
+  } as const;
   for (const status of ["finished", "blocked", "crashed"] as const) {
     const payload = notificationPayload(session(), status);
     const decoded = JSON.parse(payload) as { title: string; body: string; sessionId: string; url: string };
     assert.equal(decoded.sessionId, "session-safe-id");
     assert.equal(decoded.url, "/?session=session-safe-id");
-    assert.match(decoded.title, /Pi session/);
-    assert.doesNotMatch(payload, /private|secret|\/home|tool output|project name/);
+    assert.equal(decoded.title, expectedTitles[status]);
+    assert.doesNotMatch(payload, /private|secret|\/home|tool output|super secret prompt/);
   }
+});
+
+test("notification session names are single-line and bounded", () => {
+  const named = { ...session(), name: `  Mobile\n picker\t${"x".repeat(100)}  ` };
+  const decoded = JSON.parse(notificationPayload(named, "finished")) as { title: string };
+  assert.equal(decoded.title, `Mobile picker ${"x".repeat(66)} finished`);
 });
 
 test("notification delivery deduplicates transitions and removes expired subscriptions", async () => {
