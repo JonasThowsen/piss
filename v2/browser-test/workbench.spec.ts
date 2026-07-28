@@ -535,6 +535,25 @@ test("session menus stay above neighboring controls and flip away from the sideb
   expect(edgeBounds.menuBottom).toBeLessThanOrEqual(edgeBounds.viewportBottom);
 });
 
+test("idle sessions can change their reasoning level", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  const createDialog = page.getByRole("dialog", { name: "New session" });
+  await createDialog.getByLabel("Session name").fill("Reasoning controls");
+  await createDialog.getByRole("button", { name: /start session/i }).click();
+  api.setStatus("idle");
+  await expect(page.locator(".runtime-state")).toContainText(/idle/i, { timeout: 5_000 });
+
+  await page.getByRole("button", { name: "MODEL" }).click();
+  const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
+  const high = modelDialog.getByRole("button", { name: "high" });
+  await high.click();
+  await expect(high).toHaveAttribute("aria-pressed", "true");
+});
+
 test("mobile workbench keeps creation, models, queues, and navigation functional", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const api = await installApi(page);
@@ -658,8 +677,6 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.keyboard.press("Escape");
   await page.getByLabel("Message Pi").fill("");
 
-  api.setStatus("idle");
-  await expect(page.locator(".runtime-state")).toContainText(/idle/i, { timeout: 5_000 });
   await page.setViewportSize({ width: 360, height: 658 });
   await page.getByRole("button", { name: "MODEL" }).click();
   const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
