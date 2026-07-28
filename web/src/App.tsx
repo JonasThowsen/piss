@@ -241,6 +241,7 @@ export function App() {
   const timelineTouchYRef = useRef<number | undefined>(undefined);
   const composerRef = useRef<HTMLDivElement>(null);
   const mentionPickerRef = useRef<HTMLElement>(null);
+  const slashCommandPickerRef = useRef<HTMLElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionReturnCursorRef = useRef<number | undefined>(undefined);
   const mentionSearchTimerRef = useRef(0);
@@ -767,6 +768,23 @@ export function App() {
     );
   }, [dismissMentionMenu, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
 
+  const dismissSlashCommandMenu = () => {
+    const cursor = slashCommandMenu?.active.end ?? commandText.length;
+    setSlashCommandMenu(undefined);
+    window.requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const updateSlashCommandQuery = (query: string) => {
+    if (!slashCommandMenu || query.length > 200 || /\s/u.test(query)) return;
+    const text = `/${query}${commandText.slice(slashCommandMenu.active.end)}`;
+    const cursor = query.length + 1;
+    setCommandText(text);
+    scheduleSlashCommandSearch(text, cursor);
+  };
+
   const chooseSlashCommand = (item: PiSlashCommand) => {
     if (!slashCommandMenu) return;
     const applied = applySlashCommand(commandText, slashCommandMenu.active, item.name);
@@ -1191,7 +1209,7 @@ export function App() {
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem ? "offline" : state._tag === "Loading" ? "syncing" : "live";
   const networkLabel = networkState === "offline" ? "OFFLINE" : networkState === "syncing" ? "SYNCING" : "LIVE";
-  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || stopDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || (isMobile && Boolean(mentionMenu)) || Boolean(deleteTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
+  const blockingDialogOpen = globalPickerOpen || creatorOpen || workspaceCreatorOpen || modelDialogOpen || stopDialogOpen || compactionDialogOpen || Boolean(interactiveRequest) || Boolean(slashCommandMenu) || (isMobile && Boolean(mentionMenu)) || Boolean(deleteTarget || renameSessionTarget || renameWorkspaceTarget || removeWorkspaceTarget);
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1411,11 +1429,19 @@ export function App() {
               </span>
               {slashCommandMenu && <SlashCommandMenu
                 commands={matchingSlashCommands}
+                query={slashCommandMenu.active.query}
                 loading={slashCommandMenu.loading}
                 error={slashCommandMenu.error}
                 highlighted={slashCommandMenu.highlighted}
+                pickerRef={slashCommandPickerRef}
+                onQueryChange={updateSlashCommandQuery}
                 onChoose={chooseSlashCommand}
                 onHighlight={(highlighted) => setSlashCommandMenu((current) => current ? { ...current, highlighted } : current)}
+                onNavigate={(direction) => setSlashCommandMenu((current) => current && matchingSlashCommands.length > 0 ? {
+                  ...current,
+                  highlighted: (current.highlighted + direction + matchingSlashCommands.length) % matchingSlashCommands.length,
+                } : current)}
+                onDismiss={dismissSlashCommandMenu}
               />}
               {mentionMenu && !isMobile && <div
                 className="mention-menu"
@@ -1474,7 +1500,7 @@ export function App() {
                   scheduleMentionSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                 }}
                 onBlur={() => window.setTimeout(() => {
-                  if (!composerRef.current?.contains(document.activeElement) && !mentionPickerRef.current?.contains(document.activeElement)) {
+                  if (!composerRef.current?.contains(document.activeElement) && !mentionPickerRef.current?.contains(document.activeElement) && !slashCommandPickerRef.current?.contains(document.activeElement)) {
                     dismissMentionMenu();
                     setSlashCommandMenu(undefined);
                   }

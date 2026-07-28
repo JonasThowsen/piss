@@ -500,14 +500,27 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await createDialog.getByLabel("Session name").fill("Command session");
   await createDialog.getByRole("button", { name: /start session/i }).click();
 
+  await page.setViewportSize({ width: 390, height: 520 });
   const composer = page.getByLabel("Message Pi");
   await composer.fill("/");
-  const commandList = page.getByRole("listbox", { name: "Pi commands" });
-  await expect(commandList).toBeVisible();
+  const commandDialog = page.getByRole("dialog", { name: "Pi commands" });
+  const commandSearch = commandDialog.getByLabel("Filter Pi commands");
+  const commandList = commandDialog.getByRole("listbox", { name: "Pi commands" });
+  await expect(commandDialog).toBeVisible();
+  await expect(commandSearch).toBeFocused();
   await expect(commandList.getByRole("option")).toHaveCount(3);
   await expect(commandList.getByRole("option", { name: /review.*extension/i })).toBeVisible();
+  const commandLayout = await commandDialog.evaluate((dialog) => {
+    const first = dialog.querySelector<HTMLElement>("[role=option]")!.getBoundingClientRect();
+    const bounds = dialog.getBoundingClientRect();
+    return { top: bounds.top, bottom: bounds.bottom, firstTop: first.top, firstBottom: first.bottom };
+  });
+  expect(commandLayout.top).toBeGreaterThanOrEqual(0);
+  expect(commandLayout.bottom).toBeLessThanOrEqual(521);
+  expect(commandLayout.firstTop).toBeGreaterThanOrEqual(commandLayout.top);
+  expect(commandLayout.firstBottom).toBeLessThanOrEqual(commandLayout.bottom);
 
-  await composer.fill("/fix");
+  await commandSearch.fill("fix");
   await expect(commandList.getByRole("option", { name: /fix-tests.*prompt.*project/i })).toBeVisible();
   await expect(commandList.getByRole("option")).toHaveCount(1);
   await page.keyboard.press("Enter");
@@ -522,6 +535,7 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await expect(page.getByRole("button", { name: "FOLLOW-UP" })).toBeVisible({ timeout: 5_000 });
   await composer.fill("/review");
   await expect(commandList.getByRole("option", { name: /review/i })).toBeVisible();
+  await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Run Pi command" }).click();
   await expect.poll(() => api.commands.at(-1)?.text).toBe("/review");
   await expect.poll(() => api.commands.at(-1)?.action).toBe("prompt");
