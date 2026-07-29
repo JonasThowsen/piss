@@ -130,6 +130,36 @@ export function loadSession(sessionId: string, afterSequence?: number) {
   );
 }
 
+export function subscribeSession(
+  sessionId: string,
+  afterSequence: number | undefined,
+  onSession: (response: OwnedSessionDetailResponse, sequence: number) => void,
+  onConnectionChange?: (connected: boolean) => void,
+): () => void {
+  const query = afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(afterSequence)}`;
+  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events${query}`);
+  const onEvent = (event: Event) => {
+    try {
+      const message = event as MessageEvent<string>;
+      const response = Schema.decodeUnknownSync(OwnedSessionDetailResponse)(JSON.parse(message.data));
+      const sequence = Number(message.lastEventId);
+      if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("Session event cursor is invalid");
+      onConnectionChange?.(true);
+      onSession(response, sequence);
+    } catch {
+      onConnectionChange?.(false);
+    }
+  };
+  const onError = () => onConnectionChange?.(false);
+  source.addEventListener("session", onEvent);
+  source.addEventListener("error", onError);
+  return () => {
+    source.removeEventListener("session", onEvent);
+    source.removeEventListener("error", onError);
+    source.close();
+  };
+}
+
 export function renameOwnedSession(sessionId: string, runtimeId: string, name: string) {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",

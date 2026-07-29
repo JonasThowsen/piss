@@ -113,6 +113,7 @@ export interface PiRuntimeSupervisorShape {
   readonly listSummaries: Effect.Effect<ReadonlyArray<OwnedSessionSummary>>;
   readonly workspaceCounts: Effect.Effect<ReadonlyMap<string, { readonly sessions: number; readonly active: number }>>;
   readonly get: (id: string) => Effect.Effect<OwnedSession, SessionNotFoundError>;
+  readonly subscribe: (id: string, listener: (session: OwnedSession) => void) => Effect.Effect<() => void, SessionNotFoundError>;
   readonly rename: (target: RuntimeTarget, name: string) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly acknowledge: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly respondInteractive: (target: RuntimeTarget, input: { readonly requestId: string; readonly cancelled?: boolean; readonly value?: string; readonly confirmed?: boolean }) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
@@ -542,6 +543,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const fileMentions = yield* FileMentionSearch;
     const notifications = yield* PushNotifications;
     const sessions = new Map<string, MutableOwnedSession>();
+    const sessionSubscribers = new Map<string, Set<(session: OwnedSession) => void>>();
     const creationLock = yield* Semaphore.make(1);
     const storagePath = join(config.stateDir, "owned-sessions.json");
     const timelineDirectory = join(config.stateDir, "timelines");
@@ -736,6 +738,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     if (loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
     yield* Effect.addFinalizer(() => Effect.promise(() => Promise.all([...timelinePersistenceTails.values()])).pipe(Effect.asVoid));
 
+    const publishSession = (session: MutableOwnedSession): void => {
+      const snapshot = cloneSession(session.snapshot);
+      for (const listener of sessionSubscribers.get(snapshot.id) ?? []) {
+        try { listener(snapshot); }
+        catch (cause) { console.error(`Session subscriber failed for ${snapshot.id}`, cause); }
+      }
+    };
+
     const notifyAttention = (session: MutableOwnedSession): void => {
       const status = session.snapshot.status;
       if (status !== "finished" && status !== "blocked" && status !== "crashed") return;
@@ -779,6 +789,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end") {
         persistTimeline(session);
       }
+      publishSession(session);
       if (session.snapshot.status !== previousStatus) {
         notifyAttention(session);
         void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist owned-session state transition", cause));
@@ -1438,6 +1449,19 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         : Effect.fail(new SessionNotFoundError({ sessionId: id }));
     };
 
+    const subscribe: PiRuntimeSupervisorShape["subscribe"] = (id, listener) => {
+      const session = sessions.get(id);
+      if (!session) return Effect.fail(new SessionNotFoundError({ sessionId: id }));
+      const listeners = sessionSubscribers.get(id) ?? new Set<(session: OwnedSession) => void>();
+      listeners.add(listener);
+      sessionSubscribers.set(id, listeners);
+      listener(cloneSession(session.snapshot));
+      return Effect.succeed(() => {
+        listeners.delete(listener);
+        if (listeners.size === 0) sessionSubscribers.delete(id);
+      });
+    };
+
     const removeWorkspace: PiRuntimeSupervisorShape["removeWorkspace"] = (id) => creationLock.withPermit(Effect.gen(function* () {
       const sessionCount = [...sessions.values()].filter((session) => session.snapshot.workspaceId === id).length;
       if (sessionCount > 0) return yield* Effect.fail(new WorkspaceHasSessionsError({ workspaceId: id, sessionCount }));
@@ -1654,6 +1678,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return counts;
       }),
       get,
+      subscribe,
       rename: (target, name) => resolveTarget(target).pipe(
         Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {
           const previous = session.snapshot;

@@ -21,6 +21,31 @@ async function availablePort(): Promise<number> {
   });
 }
 
+async function* serverSentEvents(response: Response): AsyncGenerator<{ readonly id: number; readonly data: unknown }> {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      while (buffer.includes("\n\n")) {
+        const boundary = buffer.indexOf("\n\n");
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (!frame || frame.startsWith(":")) continue;
+        const id = Number(/^id: (\d+)$/mu.exec(frame)?.[1]);
+        const data = /^data: (.+)$/mu.exec(frame)?.[1];
+        if (Number.isSafeInteger(id) && data) yield { id, data: JSON.parse(data) };
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 async function fakePi(directory: string): Promise<string> {
   const path = join(directory, "fake-pi.mjs");
   await writeFile(path, `#!${process.execPath}
@@ -339,6 +364,38 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.deepEqual(incrementalDetail.session.events, []);
     const invalidIncrementalDetail = await fetch(`${base}/api/sessions/${created.session.id}?afterSequence=old`, { headers: identityHeaders });
     assert.equal(invalidIncrementalDetail.status, 400);
+
+    const eventAbort = new AbortController();
+    const eventResponse = await fetch(`${base}/api/sessions/${created.session.id}/events?afterSequence=${latestSequence}`, {
+      headers: identityHeaders,
+      signal: eventAbort.signal,
+    });
+    assert.equal(eventResponse.status, 200);
+    assert.match(eventResponse.headers.get("content-type") ?? "", /^text\/event-stream/u);
+    const eventStream = serverSentEvents(eventResponse);
+    const initialEvent = await eventStream.next();
+    assert.equal(initialEvent.done, false);
+    assert.equal(initialEvent.value?.id, latestSequence);
+    const liveCommand = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "prompt", text: "Stream this update" }),
+    });
+    assert.equal(liveCommand.status, 202);
+    let liveEvent: { readonly id: number; readonly data: unknown } | undefined;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const next = await eventStream.next();
+      if (next.done) break;
+      const response = next.value.data as { session?: { events?: Array<{ type?: string }> } };
+      if (response.session?.events?.some((event) => event.type === "agent_settled")) {
+        liveEvent = next.value;
+        break;
+      }
+    }
+    assert.ok(liveEvent, "session event stream pushes new timeline events");
+    assert.ok(liveEvent.id > latestSequence);
+    await eventStream.return(undefined);
+    eventAbort.abort();
 
     const staleRename = await fetch(`${base}/api/sessions/${created.session.id}`, {
       method: "PATCH",

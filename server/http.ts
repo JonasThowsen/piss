@@ -429,6 +429,45 @@ function makeRequestHandler() {
           return;
         }
 
+        const eventsMatch = /^\/api\/sessions\/([^/]+)\/events$/.exec(pathname);
+        if (eventsMatch && request.method === "GET") {
+          yield* requireBrowser(request, config, false);
+          const sessionId = yield* Effect.try({
+            try: () => decodeURIComponent(eventsMatch[1]!),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed session ID", cause }),
+          });
+          const lastEventIdHeader = Array.isArray(request.headers["last-event-id"])
+            ? request.headers["last-event-id"][0]
+            : request.headers["last-event-id"];
+          const rawAfterSequence = lastEventIdHeader ?? requestUrl.searchParams.get("afterSequence");
+          const parsedAfterSequence = rawAfterSequence === null || rawAfterSequence === undefined ? 0 : Number(rawAfterSequence);
+          if (!Number.isSafeInteger(parsedAfterSequence) || parsedAfterSequence < 0) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "afterSequence must be a non-negative integer" }));
+          }
+          let cursor = parsedAfterSequence;
+          response.writeHead(200, {
+            ...securityHeaders(),
+            "Cache-Control": "no-store",
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+          });
+          response.flushHeaders();
+          const unsubscribe = yield* supervisor.subscribe(sessionId, (session) => {
+            const events = session.events.filter((event) => event.sequence > cursor);
+            cursor = Math.max(cursor, events.at(-1)?.sequence ?? cursor);
+            response.write(`id: ${cursor}\nevent: session\ndata: ${JSON.stringify({ session: { ...session, events } } satisfies OwnedSessionDetailResponse)}\n\n`);
+          });
+          const heartbeat = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
+          heartbeat.unref();
+          yield* Effect.never.pipe(Effect.ensuring(Effect.sync(() => {
+            clearInterval(heartbeat);
+            unsubscribe();
+            if (!response.writableEnded) response.end();
+          })));
+          return;
+        }
+
         const detailMatch = /^\/api\/sessions\/([^/]+)$/.exec(pathname);
         if (detailMatch && request.method === "GET") {
           yield* requireBrowser(request, config, false);
@@ -654,7 +693,7 @@ function makeRequestHandler() {
           return;
         }
 
-        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
+        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || eventsMatch || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
           json(response, 405, { error: "Method not allowed" });
           return;
         }

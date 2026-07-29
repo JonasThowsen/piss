@@ -14,7 +14,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel } from "./api.ts";
+import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
@@ -222,6 +222,7 @@ export function App() {
   const [operationError, setOperationError] = useState<string>();
   const [creatorError, setCreatorError] = useState<string>();
   const [refreshProblem, setRefreshProblem] = useState<string>();
+  const [sessionSyncState, setSessionSyncState] = useState<"connecting" | "live" | "fallback">("connecting");
   const [outbox, setOutbox] = useState<ReadonlyArray<OutboxItem>>([]);
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState>();
   const [slashCommandMenu, setSlashCommandMenu] = useState<SlashCommandMenuState>();
@@ -386,7 +387,7 @@ export function App() {
           const afterSequence = currentDetail?.events.at(-1)?.sequence;
           const { session } = await Effect.runPromise(loadSession(nextId, afterSequence));
           if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) {
-            const nextSession = currentDetail?.runtimeId === session.runtimeId
+            const nextSession = currentDetail
               ? { ...session, events: mergeSessionEvents(currentDetail.events, session.events) }
               : session;
             selectedSessionRef.current = nextSession;
@@ -474,6 +475,31 @@ export function App() {
       window.removeEventListener("pageshow", refreshWhenVisible);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setSessionSyncState("connecting");
+      return;
+    }
+    setSessionSyncState("connecting");
+    const current = selectedSessionRef.current?.id === selectedSessionId ? selectedSessionRef.current : undefined;
+    return subscribeSession(
+      selectedSessionId,
+      current?.events.at(-1)?.sequence,
+      ({ session }, sequence) => {
+        if (selectedSessionIdRef.current !== selectedSessionId) return;
+        const previous = selectedSessionRef.current?.id === selectedSessionId ? selectedSessionRef.current : undefined;
+        const previousSequence = previous?.events.at(-1)?.sequence ?? 0;
+        if (sequence < previousSequence) return;
+        const next = previous
+          ? { ...session, events: mergeSessionEvents(previous.events, session.events) }
+          : session;
+        selectedSessionRef.current = next;
+        setSelectedSession(next);
+      },
+      (connected) => setSessionSyncState(connected ? "live" : "fallback"),
+    );
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -1234,8 +1260,18 @@ export function App() {
   const canConfigure = selectedSession ? canConfigureSession(selectedSession.status) : false;
   const slashCommandMode = isSlashCommandInput(commandText);
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
-  const networkState = state._tag === "Failed" || refreshProblem ? "offline" : state._tag === "Loading" ? "syncing" : "live";
-  const networkLabel = networkState === "offline" ? "OFFLINE" : networkState === "syncing" ? "SYNCING" : "LIVE";
+  const networkState = state._tag === "Failed" || refreshProblem
+    ? "offline"
+    : state._tag === "Loading" || Boolean(selectedSessionId && sessionSyncState !== "live")
+      ? "syncing"
+      : "live";
+  const networkLabel = networkState === "offline"
+    ? "OFFLINE"
+    : selectedSessionId && sessionSyncState === "fallback" && state._tag === "Ready"
+      ? "POLLING"
+      : networkState === "syncing"
+        ? "SYNCING"
+        : "LIVE";
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
