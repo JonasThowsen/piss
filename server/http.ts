@@ -436,8 +436,17 @@ function makeRequestHandler() {
             try: () => decodeURIComponent(detailMatch[1]!),
             catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed session ID", cause }),
           });
+          const afterSequenceParameter = requestUrl.searchParams.get("afterSequence");
+          const afterSequence = afterSequenceParameter === null ? undefined : Number(afterSequenceParameter);
+          if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "afterSequence must be a non-negative integer" }));
+          }
           const session = yield* supervisor.get(sessionId);
-          json(response, 200, { session });
+          json(response, 200, {
+            session: afterSequence === undefined
+              ? session
+              : { ...session, events: session.events.filter((event) => event.sequence > afterSequence) },
+          } satisfies OwnedSessionDetailResponse);
           return;
         }
 

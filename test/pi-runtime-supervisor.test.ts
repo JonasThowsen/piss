@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
@@ -196,6 +196,56 @@ test("completed messages survive noisy streams while redundant progress is coale
   assert.deepEqual(events.filter((event) => event.type === "message_end").map((event) => event.sequence), [1, 1_008]);
   assert.equal(events.find((event) => event.type === "tool_execution_end")?.sequence, 1_006);
 });
+
+test("reconstructs completed tool calls from a resumed Pi transcript", () => {
+  assert.deepEqual(replayEventsFromTranscriptEntry({
+    type: "message",
+    id: "tool-entry",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-restored",
+      toolName: "bash",
+      content: [{ type: "text", text: "restored output" }],
+      isError: false,
+    },
+  }), [{
+    type: "tool_execution_end",
+    data: {
+      toolCallId: "call-restored",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "restored output" }] },
+      isError: false,
+    },
+  }]);
+});
+
+test("bounded history does not discard newer completed tools ahead of older messages", () => {
+  let events: ReadonlyArray<OwnedSessionEvent> = [];
+  let bytes = 0;
+  const append = (event: OwnedSessionEvent) => {
+    const retained = appendBoundedEvent(events, bytes, event);
+    events = retained.events;
+    bytes = retained.bytes;
+  };
+
+  for (let sequence = 1; sequence <= 500; sequence += 1) {
+    append({ sequence, type: "message_end", timestamp: new Date(sequence * 1_000).toISOString(), data: { message: { role: "assistant", content: [{ type: "text", text: `message ${sequence}` }] } } });
+  }
+  append({ sequence: 501, type: "tool_execution_end", timestamp: new Date(501_000).toISOString(), data: { toolCallId: "important-tool", toolName: "bash", result: "done" } });
+  for (let sequence = 502; sequence <= 751; sequence += 1) {
+    append({ sequence, type: "message_end", timestamp: new Date(sequence * 1_000).toISOString(), data: { message: { role: "assistant", content: [{ type: "text", text: `message ${sequence}` }] } } });
+  }
+
+  assert.equal(events.length, 750);
+  assert.ok(events.some((event) => eventToolId(event) === "important-tool"));
+  assert.ok(!events.some((event) => event.sequence === 1));
+});
+
+function eventToolId(event: OwnedSessionEvent): string | undefined {
+  if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return;
+  const id = (event.data as Record<string, unknown>).toolCallId;
+  return typeof id === "string" ? id : undefined;
+}
 
 test("bounded tool events retain lifecycle correlation identifiers", () => {
   const projected = projectEventData("tool_execution_update", {

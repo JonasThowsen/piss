@@ -330,8 +330,15 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.equal(await readFile(join(directory, "fake-pi-cwd"), "utf8"), join(directory, "created-workspace"));
     const detailResponse = await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders });
     assert.equal(detailResponse.status, 200);
-    const detail = await detailResponse.json() as { session: { events: Array<{ type: string }> } };
+    const detail = await detailResponse.json() as { session: { events: Array<{ sequence: number; type: string }> } };
     assert.ok(detail.session.events.some((event) => event.type === "message_update"));
+    const latestSequence = detail.session.events.at(-1)?.sequence ?? 0;
+    const incrementalDetailResponse = await fetch(`${base}/api/sessions/${created.session.id}?afterSequence=${latestSequence}`, { headers: identityHeaders });
+    assert.equal(incrementalDetailResponse.status, 200);
+    const incrementalDetail = await incrementalDetailResponse.json() as { session: { events: unknown[] } };
+    assert.deepEqual(incrementalDetail.session.events, []);
+    const invalidIncrementalDetail = await fetch(`${base}/api/sessions/${created.session.id}?afterSequence=old`, { headers: identityHeaders });
+    assert.equal(invalidIncrementalDetail.status, 400);
 
     const staleRename = await fetch(`${base}/api/sessions/${created.session.id}`, {
       method: "PATCH",

@@ -18,7 +18,7 @@ import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwn
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
-import { compact, eventTimeline } from "./timeline.ts";
+import { compact, eventTimeline, mergeSessionEvents } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
@@ -236,6 +236,7 @@ export function App() {
   const previousMobileLayoutRef = useRef(isMobile);
   const isMobileRef = useRef(isMobile);
   const selectedSessionIdRef = useRef<string | undefined>(undefined);
+  const selectedSessionRef = useRef<OwnedSession | undefined>(undefined);
   const requestedSessionIdRef = useRef(initialRequestedSessionId);
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const refreshInFlight = useRef(false);
@@ -281,6 +282,7 @@ export function App() {
   const currentSessionUiRef = useRef<SessionUiState>(emptySessionUiState());
   currentSessionUiRef.current = { commandText, images, delivery, busy, operationError, outbox };
   isMobileRef.current = isMobile;
+  selectedSessionRef.current = selectedSession;
   if (mentionMenu) lastMentionMenuRef.current = mentionMenu;
   imagesRef.current = images;
 
@@ -342,6 +344,7 @@ export function App() {
     setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
     setSelectedSessionId(sessionId);
+    selectedSessionRef.current = undefined;
     setSelectedSession(undefined);
     writeLastOpenedSession(sessionId);
     const url = new URL(window.location.href);
@@ -379,8 +382,16 @@ export function App() {
       if (nextId && sessions.some((session) => session.id === nextId)) {
         const generation = ++detailGeneration.current;
         try {
-          const { session } = await Effect.runPromise(loadSession(nextId));
-          if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) setSelectedSession(session);
+          const currentDetail = selectedSessionRef.current?.id === nextId ? selectedSessionRef.current : undefined;
+          const afterSequence = currentDetail?.events.at(-1)?.sequence;
+          const { session } = await Effect.runPromise(loadSession(nextId, afterSequence));
+          if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) {
+            const nextSession = currentDetail?.runtimeId === session.runtimeId
+              ? { ...session, events: mergeSessionEvents(currentDetail.events, session.events) }
+              : session;
+            selectedSessionRef.current = nextSession;
+            setSelectedSession(nextSession);
+          }
         } catch (error) {
           if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) throw error;
         }
@@ -443,6 +454,7 @@ export function App() {
     const refreshTimer = window.setInterval(() => void refresh(false), 1_500);
     const clockTimer = window.setInterval(() => setNow(Date.now()), 15_000);
     const media = window.matchMedia("(max-width: 760px)");
+    const refreshWhenVisible = () => { if (document.visibilityState === "visible") void refresh(false); };
     const updateLayout = () => {
       setIsMobile(media.matches);
       if (!media.matches) {
@@ -452,10 +464,14 @@ export function App() {
       }
     };
     media.addEventListener("change", updateLayout);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("pageshow", refreshWhenVisible);
     return () => {
       window.clearInterval(refreshTimer);
       window.clearInterval(clockTimer);
       media.removeEventListener("change", updateLayout);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("pageshow", refreshWhenVisible);
     };
   }, [refresh]);
 

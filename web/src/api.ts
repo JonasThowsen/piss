@@ -120,8 +120,9 @@ export const loadSessions = request("/api/sessions").pipe(
     : new ApiError({ message: "The session response did not match its schema", cause })),
 );
 
-export function loadSession(sessionId: string) {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}`).pipe(
+export function loadSession(sessionId: string, afterSequence?: number) {
+  const query = afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(afterSequence)}`;
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}${query}`, { signal: AbortSignal.timeout(30_000) }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(OwnedSessionDetailResponse)),
     Effect.mapError((cause) => cause instanceof ApiError
       ? cause

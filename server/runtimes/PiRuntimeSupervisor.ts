@@ -242,6 +242,25 @@ export function projectEventData(type: string, data: unknown): unknown {
   return base;
 }
 
+export function replayEventsFromTranscriptEntry(entry: unknown): ReadonlyArray<{ readonly type: string; readonly data: unknown }> {
+  if (typeof entry !== "object" || entry === null || (entry as Record<string, unknown>).type !== "message") return [];
+  const message = (entry as Record<string, unknown>).message;
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
+  const record = message as Record<string, unknown>;
+  if (record.role === "toolResult" && typeof record.toolCallId === "string" && typeof record.toolName === "string") {
+    return [{
+      type: "tool_execution_end",
+      data: {
+        toolCallId: record.toolCallId,
+        toolName: record.toolName,
+        result: { content: record.content },
+        isError: record.isError === true,
+      },
+    }];
+  }
+  return [{ type: "message_end", data: { type: "message_end", message } }];
+}
+
 function eventBytes(event: OwnedSessionEvent): number {
   return Buffer.byteLength(JSON.stringify(event));
 }
@@ -285,7 +304,12 @@ export function appendBoundedEvent(
   events.push(event);
   bytes += eventBytes(event);
   while (events.length > MAX_EVENTS || bytes > MAX_EVENT_BYTES) {
-    const disposable = events.findIndex((candidate) => candidate.type !== "message_end");
+    // Drop superseded streaming activity first, but never sacrifice every tool
+    // result just because completed messages are present. Protect the newest
+    // event so an active call remains visible when the history is already full.
+    const disposable = events.findIndex((candidate, index) =>
+      index < events.length - 1 && candidate.type !== "message_end" && candidate.type !== "tool_execution_end"
+    );
     removeAt(disposable >= 0 ? disposable : 0);
   }
   return { events, bytes };
@@ -1307,9 +1331,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi did not return resumable transcript entries" }));
           }
           for (const entry of entries.slice(-250)) {
-            if (typeof entry !== "object" || entry === null || (entry as Record<string, unknown>).type !== "message") continue;
-            const message = (entry as Record<string, unknown>).message;
-            if (typeof message === "object" && message !== null) appendEvent(session, "message_end", { type: "message_end", message });
+            for (const replayed of replayEventsFromTranscriptEntry(entry)) appendEvent(session, replayed.type, replayed.data);
           }
         } else {
           const freshSessionId = typeof data?.sessionId === "string" ? data.sessionId : null;

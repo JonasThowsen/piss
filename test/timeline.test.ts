@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OwnedSessionEvent } from "../shared/domain.ts";
-import { eventTimeline } from "../web/src/timeline.ts";
+import { eventTimeline, mergeSessionEvents } from "../web/src/timeline.ts";
 
 function event(sequence: number, type: string, data: unknown): OwnedSessionEvent {
   return { sequence, type, data, timestamp: new Date(sequence * 1_000).toISOString() };
@@ -47,6 +47,25 @@ test("keeps image-only user messages visible without retaining image bytes", () 
     text: "",
     imageCount: 1,
   });
+});
+
+test("merges incremental polling responses and coalesces completed activity", () => {
+  const current = [
+    event(1, "message_start", { message: { role: "assistant", content: [] } }),
+    event(2, "message_update", { assistantMessageEvent: { type: "text_delta", delta: "Working" } }),
+    event(3, "tool_execution_start", { toolCallId: "call-1", toolName: "bash", args: { command: "npm test" } }),
+    event(4, "tool_execution_update", { toolCallId: "call-1", toolName: "bash", partialResult: "running" }),
+  ];
+  const merged = mergeSessionEvents(current, [
+    event(5, "tool_execution_end", { toolCallId: "call-1", toolName: "bash", result: "passed", isError: false }),
+    event(6, "message_end", { message: { role: "assistant", content: [{ type: "text", text: "Done" }] } }),
+  ]);
+
+  assert.deepEqual(merged.map((item) => [item.sequence, item.type]), [
+    [5, "tool_execution_end"],
+    [6, "message_end"],
+  ]);
+  assert.deepEqual(mergeSessionEvents(merged, merged), merged, "duplicate full responses are harmless");
 });
 
 test("correlates native tool lifecycle and keeps readable accumulated output", () => {
