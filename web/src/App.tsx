@@ -18,13 +18,14 @@ import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwn
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
-import { compact, eventTimeline, mergeSessionEvents, valueText } from "./timeline.ts";
+import { compact, eventTimeline, valueText } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
 import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
 import { readCachedSession, removeCachedSession, writeCachedSession } from "./sessionCache.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
+import { initialSessionSyncState, reduceSessionSync, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
 import "./styles.css";
@@ -281,6 +282,7 @@ export function App() {
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceActionReturnFocusRef = useRef<HTMLElement | null>(null);
   const followingRef = useRef(true);
+  const sessionSyncRef = useRef(initialSessionSyncState());
   const detailGeneration = useRef(0);
   const reviewGeneration = useRef(0);
   const sessionUiStatesRef = useRef(new Map<string, SessionUiState>());
@@ -290,6 +292,22 @@ export function App() {
   selectedSessionRef.current = selectedSession;
   if (mentionMenu) lastMentionMenuRef.current = mentionMenu;
   imagesRef.current = images;
+
+  const dispatchSessionSync = useCallback((input: SessionSyncInput) => {
+    const next = reduceSessionSync(sessionSyncRef.current, input);
+    sessionSyncRef.current = next;
+    if (next.sessionId === selectedSessionIdRef.current) {
+      selectedSessionRef.current = next.session;
+      setSelectedSession(next.session);
+      setSessionSyncState(next.transport === "live" ? "live" : next.transport === "connecting" ? "connecting" : "fallback");
+    }
+    return next;
+  }, []);
+
+  const acceptAuthoritativeSession = useCallback((session: OwnedSession) => {
+    const cursor = Math.max(sessionSyncRef.current.cursor, session.events.at(-1)?.sequence ?? 0);
+    dispatchSessionSync({ type: "runtimeGenerationChanged", session, cursor });
+  }, [dispatchSessionSync]);
 
   const dismissMentionMenu = useCallback(() => {
     window.clearTimeout(mentionSearchTimerRef.current);
@@ -331,6 +349,7 @@ export function App() {
     dismissMentionMenu();
     setSlashCommandMenu(undefined);
     selectedSessionIdRef.current = sessionId;
+    sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "select", sessionId });
     followingRef.current = true;
     timelineScrollTopRef.current = 0;
     setAtBottom(true);
@@ -349,13 +368,12 @@ export function App() {
     setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
     setSelectedSessionId(sessionId);
-    selectedSessionRef.current = undefined;
-    setSelectedSession(undefined);
+    selectedSessionRef.current = sessionSyncRef.current.session;
+    setSelectedSession(sessionSyncRef.current.session);
     if (sessionId) {
       void readCachedSession(sessionId).then((cached) => {
-        if (!cached || selectedSessionIdRef.current !== sessionId || selectedSessionRef.current) return;
-        selectedSessionRef.current = cached;
-        setSelectedSession(cached);
+        if (!cached || selectedSessionIdRef.current !== sessionId) return;
+        dispatchSessionSync({ type: "cachedSnapshot", session: cached });
       });
     }
     writeLastOpenedSession(sessionId);
@@ -363,7 +381,7 @@ export function App() {
     if (sessionId) url.searchParams.set("session", sessionId);
     else url.searchParams.delete("session");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [dismissMentionMenu]);
+  }, [dismissMentionMenu, dispatchSessionSync]);
 
   const refresh = useCallback(async (initial = false) => {
     if (refreshInFlight.current) {
@@ -391,18 +409,13 @@ export function App() {
       setState({ _tag: "Ready", workspaces, sessions });
       setRefreshProblem(undefined);
       if (nextId !== currentId) selectSession(nextId);
-      if (nextId && sessions.some((session) => session.id === nextId)) {
+      if (nextId && sessions.some((session) => session.id === nextId) && shouldPollSession(sessionSyncRef.current)) {
         const generation = ++detailGeneration.current;
+        const request = sessionSyncRequest(sessionSyncRef.current);
         try {
-          const currentDetail = selectedSessionRef.current?.id === nextId ? selectedSessionRef.current : undefined;
-          const afterSequence = currentDetail?.events.at(-1)?.sequence;
-          const { session } = await Effect.runPromise(loadSession(nextId, afterSequence));
+          const { session } = await Effect.runPromise(loadSession(nextId, request.cursor || undefined));
           if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) {
-            const nextSession = currentDetail
-              ? { ...session, events: mergeSessionEvents(currentDetail.events, session.events) }
-              : session;
-            selectedSessionRef.current = nextSession;
-            setSelectedSession(nextSession);
+            dispatchSessionSync({ type: "httpIncremental", session, request });
           }
         } catch (error) {
           if (selectedSessionIdRef.current === nextId && detailGeneration.current === generation) throw error;
@@ -418,7 +431,7 @@ export function App() {
         void refresh(false);
       }
     }
-  }, [selectSession]);
+  }, [dispatchSessionSync, selectSession]);
 
   useEffect(() => {
     const ready = (event: Event) => setUpdateRegistration((event as CustomEvent<ServiceWorkerRegistration>).detail);
@@ -466,7 +479,17 @@ export function App() {
     const refreshTimer = window.setInterval(() => void refresh(false), 1_500);
     const clockTimer = window.setInterval(() => setNow(Date.now()), 15_000);
     const media = window.matchMedia("(max-width: 760px)");
-    const refreshWhenVisible = () => { if (document.visibilityState === "visible") void refresh(false); };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        dispatchSessionSync({ type: "visibilityRestored" });
+        void refresh(false);
+      } else dispatchSessionSync({ type: "visibilityHidden" });
+    };
+    const networkDisconnected = () => dispatchSessionSync({ type: "networkDisconnected" });
+    const networkReconnected = () => {
+      dispatchSessionSync({ type: "networkReconnected" });
+      void refresh(false);
+    };
     const updateLayout = () => {
       setIsMobile(media.matches);
       if (!media.matches) {
@@ -478,19 +501,25 @@ export function App() {
     media.addEventListener("change", updateLayout);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     window.addEventListener("pageshow", refreshWhenVisible);
+    window.addEventListener("offline", networkDisconnected);
+    window.addEventListener("online", networkReconnected);
+    if (!navigator.onLine) networkDisconnected();
     return () => {
       window.clearInterval(refreshTimer);
       window.clearInterval(clockTimer);
       media.removeEventListener("change", updateLayout);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       window.removeEventListener("pageshow", refreshWhenVisible);
+      window.removeEventListener("offline", networkDisconnected);
+      window.removeEventListener("online", networkReconnected);
     };
-  }, [refresh]);
+  }, [dispatchSessionSync, refresh]);
 
   useEffect(() => {
-    if (!selectedSession || selectedSession.status === "starting" || selectedSession.status === "working" || selectedSession.status === "stopping") return;
-    void writeCachedSession(selectedSession).catch(() => undefined);
-  }, [selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status, selectedSession?.lastActivityAt, selectedSession?.events.at(-1)?.sequence]);
+    const cacheable = sessionForSettledCache(sessionSyncRef.current);
+    if (!cacheable || cacheable !== selectedSession) return;
+    void writeCachedSession(cacheable).catch(() => undefined);
+  }, [selectedSession]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -498,24 +527,16 @@ export function App() {
       return;
     }
     setSessionSyncState("connecting");
-    const current = selectedSessionRef.current?.id === selectedSessionId ? selectedSessionRef.current : undefined;
     return subscribeSession(
       selectedSessionId,
-      current?.events.at(-1)?.sequence,
+      sessionSyncRef.current.cursor || undefined,
       ({ session, reset }, sequence) => {
         if (selectedSessionIdRef.current !== selectedSessionId) return;
-        const previous = selectedSessionRef.current?.id === selectedSessionId ? selectedSessionRef.current : undefined;
-        const previousSequence = previous?.events.at(-1)?.sequence ?? 0;
-        if (!reset && sequence < previousSequence) return;
-        const next = previous && !reset
-          ? { ...session, events: mergeSessionEvents(previous.events, session.events) }
-          : session;
-        selectedSessionRef.current = next;
-        setSelectedSession(next);
+        dispatchSessionSync({ type: reset ? "snapshotReset" : "sseDelta", session, cursor: sequence, ...(reset ? { receivedAt: Date.now() } : {}) } as SessionSyncInput);
       },
-      (connected) => setSessionSyncState(connected ? "live" : "fallback"),
+      (connected) => dispatchSessionSync({ type: connected ? "streamValidated" : "streamFailed" }),
     );
-  }, [selectedSessionId]);
+  }, [dispatchSessionSync, selectedSessionId]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -553,13 +574,11 @@ export function App() {
     const sessionId = selectedSession.id;
     const runtimeId = selectedSession.runtimeId;
     let cancelled = false;
+    const request = sessionSyncRequest(sessionSyncRef.current);
     void Effect.runPromise(loadSessionUsage(sessionId, runtimeId)).then(
       ({ session }) => {
         if (cancelled || selectedSessionIdRef.current !== sessionId) return;
-        const current = selectedSessionRef.current?.id === sessionId ? selectedSessionRef.current : undefined;
-        const next = current ? { ...session, events: mergeSessionEvents(current.events, session.events) } : session;
-        selectedSessionRef.current = next;
-        setSelectedSession(next);
+        dispatchSessionSync({ type: "httpIncremental", session, request });
       },
       () => undefined,
     );
@@ -572,9 +591,10 @@ export function App() {
     const runtimeId = selectedSession.runtimeId;
     let cancelled = false;
     const load = () => {
+      const request = sessionSyncRequest(sessionSyncRef.current);
       void Effect.runPromise(loadSessionUsage(sessionId, runtimeId)).then(
         ({ session }) => {
-          if (!cancelled && selectedSessionIdRef.current === sessionId) setSelectedSession(session);
+          if (!cancelled && selectedSessionIdRef.current === sessionId) dispatchSessionSync({ type: "httpIncremental", session, request });
         },
         (cause) => {
           if (!cancelled && selectedSessionIdRef.current === sessionId) setOperationError(errorMessage(cause));
@@ -611,12 +631,7 @@ export function App() {
     void Effect.runPromise(loadTimelinePage(sessionId, oldestSequence)).then(
       (page) => {
         if (selectedSessionIdRef.current !== sessionId) return;
-        setSelectedSession((current) => {
-          if (!current || current.id !== sessionId) return current;
-          const events = new Map<number, typeof current.events[number]>();
-          for (const event of [...page.events, ...current.events]) events.set(event.sequence, event);
-          return { ...current, events: [...events.values()].sort((left, right) => left.sequence - right.sequence) };
-        });
+        dispatchSessionSync({ type: "historicalPage", events: page.events });
         setTimelineHistory({ loading: false, hasMore: page.hasMore });
       },
       (cause) => {
@@ -986,7 +1001,7 @@ export function App() {
       setBusy(false);
       currentSessionUiRef.current = { ...currentSessionUiRef.current, busy: false };
       selectSession(session.id);
-      setSelectedSession(session);
+      acceptAuthoritativeSession(session);
       creatorReturnFocusRef.current = null;
       setCreatorOpen(false);
       setSidebarOpen(false);
@@ -1046,7 +1061,7 @@ export function App() {
       const session = loaded.status === "finished"
         ? (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session
         : loaded;
-      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) setSelectedSession(session);
+      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) acceptAuthoritativeSession(session);
     } catch (error) {
       if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) setOperationError(errorMessage(error));
     }
@@ -1195,7 +1210,7 @@ export function App() {
     setOperationError(undefined);
     try {
       const { session } = await Effect.runPromise(setSessionAutoCompaction(selectedSession.id, selectedSession.runtimeId, enabled));
-      if (selectedSessionIdRef.current === targetId) setSelectedSession(session);
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(session);
       await refresh(false);
     } catch (cause) {
       if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
@@ -1212,7 +1227,7 @@ export function App() {
     setOperationError(undefined);
     try {
       const { session } = await Effect.runPromise(compactSession(selectedSession.id, selectedSession.runtimeId));
-      if (selectedSessionIdRef.current === targetId) setSelectedSession(session);
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(session);
       await refresh(false);
     } catch (cause) {
       if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
@@ -1234,7 +1249,7 @@ export function App() {
         requestId: request.id,
         ...response,
       }));
-      if (selectedSessionIdRef.current === targetId) setSelectedSession(session);
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(session);
       await refresh(false);
     } catch (cause) {
       if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
@@ -1251,7 +1266,7 @@ export function App() {
     setOperationError(undefined);
     try {
       const { session } = await Effect.runPromise(resumeOwnedSession(selectedSession.id, selectedSession.runtimeId));
-      if (selectedSessionIdRef.current === targetId) setSelectedSession(session);
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(session);
       await refresh(false);
       window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
     } catch (cause) {
@@ -1315,6 +1330,7 @@ export function App() {
     try {
       await Effect.runPromise(archiveOwnedSession(archiveTarget.id, archiveTarget.runtimeId));
       await removeCachedSession(archiveTarget.id).catch(() => undefined);
+      if (selectedSessionIdRef.current === archiveTarget.id) dispatchSessionSync({ type: "sessionDeleted" });
       sessionUiStatesRef.current.delete(archiveTarget.id);
       removeDraft(archiveTarget.id);
       if (state._tag === "Ready") {
@@ -1342,7 +1358,7 @@ export function App() {
     ? state.workspaces.find((workspace) => workspace.id === selectedSession.workspaceId)
     : undefined;
   const interactiveRequest = selectedSession?.interactiveRequests[0];
-  const runtimeIsCurrent = Boolean(selectedSession && selectedSessionSummary?.runtimeId === selectedSession.runtimeId && sessionSyncState !== "connecting");
+  const runtimeIsCurrent = Boolean(selectedSession && sessionSyncRef.current.runtimeGenerationConfirmed && selectedSessionSummary?.runtimeId === selectedSession.runtimeId && sessionSyncState !== "connecting");
   const canWrite = selectedSession ? runtimeIsCurrent && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
   const canConfigure = selectedSession ? runtimeIsCurrent && canConfigureSession(selectedSession.status) : false;
   const slashCommandMode = isSlashCommandInput(commandText);
@@ -1859,7 +1875,7 @@ export function App() {
           setState((current) => current._tag === "Ready"
             ? { ...current, sessions: current.sessions.map((candidate) => candidate.id === session.id ? { ...candidate, name: session.name } : candidate) }
             : current);
-          setSelectedSession((current) => current?.id === session.id ? session : current);
+          if (selectedSessionIdRef.current === session.id) acceptAuthoritativeSession(session);
           setRenameSessionTarget(undefined);
           void refresh(false);
         }}
@@ -1923,7 +1939,7 @@ export function App() {
         fallbackFocus={sessionHeadingRef.current}
         onClose={() => setModelDialogOpen(false)}
         onApplied={(session) => {
-          setSelectedSession(session);
+          acceptAuthoritativeSession(session);
           void refresh(false);
         }}
       />}

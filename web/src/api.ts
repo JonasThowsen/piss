@@ -159,23 +159,45 @@ export function subscribeSession(
 ): () => void {
   const query = afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(afterSequence)}`;
   const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events${query}`);
+  let validated = false;
+  let heartbeatTimer = 0;
+  const armHeartbeatTimeout = () => {
+    window.clearTimeout(heartbeatTimer);
+    heartbeatTimer = window.setTimeout(() => {
+      validated = false;
+      onConnectionChange?.(false);
+    }, 35_000);
+  };
   const onEvent = (event: Event) => {
     try {
       const message = event as MessageEvent<string>;
       const response = Schema.decodeUnknownSync(OwnedSessionStreamResponse)(JSON.parse(message.data));
       const sequence = Number(message.lastEventId);
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("Session event cursor is invalid");
-      onConnectionChange?.(true);
       onSession(response, sequence);
+      validated = true;
+      armHeartbeatTimeout();
+      onConnectionChange?.(true);
     } catch {
+      validated = false;
       onConnectionChange?.(false);
     }
   };
-  const onError = () => onConnectionChange?.(false);
+  const onHeartbeat = () => {
+    if (validated) armHeartbeatTimeout();
+  };
+  const onError = () => {
+    validated = false;
+    window.clearTimeout(heartbeatTimer);
+    onConnectionChange?.(false);
+  };
   source.addEventListener("session", onEvent);
+  source.addEventListener("heartbeat", onHeartbeat);
   source.addEventListener("error", onError);
   return () => {
+    window.clearTimeout(heartbeatTimer);
     source.removeEventListener("session", onEvent);
+    source.removeEventListener("heartbeat", onHeartbeat);
     source.removeEventListener("error", onError);
     source.close();
   };

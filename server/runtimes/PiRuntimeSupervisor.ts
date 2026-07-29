@@ -132,8 +132,8 @@ export interface PiRuntimeSupervisorShape {
   readonly listModels: (target: RuntimeTarget) => Effect.Effect<ReadonlyArray<AvailableModel>, RuntimeCommandError>;
   readonly listCommands: (target: RuntimeTarget) => Effect.Effect<ReadonlyArray<PiSlashCommand>, RuntimeCommandError>;
   readonly searchMentions: (target: RuntimeTarget, query: string) => Effect.Effect<ReadonlyArray<FileMention>, RuntimeCommandError | WorkspaceNotFoundError | FileMentionSearchError>;
-  readonly setModel: (target: RuntimeTarget, provider: string, modelId: string) => Effect.Effect<OwnedSession, RuntimeCommandError>;
-  readonly setThinkingLevel: (target: RuntimeTarget, level: ThinkingLevel) => Effect.Effect<OwnedSession, RuntimeCommandError>;
+  readonly setModel: (target: RuntimeTarget, provider: string, modelId: string) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
+  readonly setThinkingLevel: (target: RuntimeTarget, level: ThinkingLevel) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly refreshUsage: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly compact: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly setAutoCompaction: (target: RuntimeTarget, enabled: boolean) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
@@ -612,6 +612,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const timelinePersistenceTails = new Map<string, Promise<void>>();
     let persistenceTail = Promise.resolve();
 
+    const publishSession = (session: MutableOwnedSession): void => {
+      const snapshot = cloneSession(session.snapshot);
+      for (const listener of sessionSubscribers.get(snapshot.id) ?? []) {
+        try { listener(snapshot); }
+        catch (cause) { console.error(`Session subscriber failed for ${snapshot.id}`, cause); }
+      }
+    };
+
     const persistedRecords = (): ReadonlyArray<PersistedOwnedSession> => [...sessions.values()].map((session) => ({
       id: session.snapshot.id,
       runtimeId: session.snapshot.runtimeId,
@@ -705,7 +713,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return next;
       },
       catch: (cause) => new SessionStorageError({ message: "Could not persist owned-session metadata", cause }),
-    });
+    }).pipe(Effect.tap(() => Effect.sync(() => {
+      for (const session of sessions.values()) publishSession(session);
+    })));
+
 
     const persistProjectionEvent = (
       session: MutableOwnedSession,
@@ -810,14 +821,6 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     }), { discard: true });
     if (loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
     yield* Effect.addFinalizer(() => Effect.promise(() => Promise.all([...timelinePersistenceTails.values()])).pipe(Effect.asVoid));
-
-    const publishSession = (session: MutableOwnedSession): void => {
-      const snapshot = cloneSession(session.snapshot);
-      for (const listener of sessionSubscribers.get(snapshot.id) ?? []) {
-        try { listener(snapshot); }
-        catch (cause) { console.error(`Session subscriber failed for ${snapshot.id}`, cause); }
-      }
-    };
 
     const notifyAttention = (session: MutableOwnedSession): void => {
       const status = session.snapshot.status;
@@ -1631,6 +1634,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           };
           return cloneSession(session.snapshot);
         }),
+        Effect.tap(() => persist()),
       );
 
     const searchMentions: PiRuntimeSupervisorShape["searchMentions"] = (target, query) => Effect.gen(function* () {

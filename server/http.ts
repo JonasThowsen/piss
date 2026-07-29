@@ -501,7 +501,7 @@ function makeRequestHandler() {
             cursor = latestSequence;
             response.write(`id: ${cursor}\nevent: session\ndata: ${JSON.stringify({ session: { ...session, events }, reset } satisfies OwnedSessionStreamResponse)}\n\n`);
           });
-          const heartbeat = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
+          const heartbeat = setInterval(() => response.write("event: heartbeat\ndata: {}\n\n"), 15_000);
           heartbeat.unref();
           yield* Effect.never.pipe(Effect.ensuring(Effect.sync(() => {
             clearInterval(heartbeat);

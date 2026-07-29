@@ -426,7 +426,7 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     const compactSnapshotText = await compactSnapshotResponse.text();
     assert.ok(Buffer.byteLength(compactSnapshotText) < 512 * 1024, "normal snapshots exclude multi-megabyte tool output");
     assert.doesNotMatch(compactSnapshotText, /END-OF-HUGE-OUTPUT/u);
-    const compactSnapshot = JSON.parse(compactSnapshotText) as { session: { events: Array<{ data?: { outputRef?: string; outputBytes?: number } }> } };
+    const compactSnapshot = JSON.parse(compactSnapshotText) as { session: { events: Array<{ sequence: number; data?: { outputRef?: string; outputBytes?: number } }> } };
     const detached = compactSnapshot.session.events.find((item) => item.data?.outputRef)?.data;
     assert.ok(detached?.outputRef);
     assert.ok((detached.outputBytes ?? 0) > 2 * 1024 * 1024);
@@ -443,6 +443,14 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.deepEqual(timelinePage.events.map((item) => item.sequence), [...timelinePage.events].map((item) => item.sequence).sort((a, b) => a - b));
     assert.equal(timelinePage.nextBeforeSequence, timelinePage.events[0]?.sequence ?? null);
 
+    const metadataAbort = new AbortController();
+    const metadataResponse = await fetch(`${base}/api/sessions/${created.session.id}/events?afterSequence=${compactSnapshot.session.events.at(-1)?.sequence ?? 0}`, {
+      headers: identityHeaders,
+      signal: metadataAbort.signal,
+    });
+    const metadataStream = serverSentEvents(metadataResponse);
+    await metadataStream.next();
+
     const staleRename = await fetch(`${base}/api/sessions/${created.session.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
@@ -457,6 +465,10 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.equal(renameResponse.status, 200);
     const renamed = await renameResponse.json() as { session: { name: string } };
     assert.equal(renamed.session.name, "Renamed HTTP session");
+    const metadataEvent = await metadataStream.next();
+    assert.equal((metadataEvent.value?.data as { session?: { name?: string } }).session?.name, "Renamed HTTP session");
+    await metadataStream.return(undefined);
+    metadataAbort.abort();
 
     const reviewPath = `${base}/api/sessions/${created.session.id}/review?runtimeId=${created.session.runtimeId}`;
     const unauthenticatedReview = await fetch(reviewPath);
