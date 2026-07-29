@@ -87,6 +87,14 @@ process.stdin.on("data", (chunk) => {
         console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
         if (command.message === "Delay prompt acknowledgement") console.log(JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 190000, estimatedTokensAfter: 30000 }, aborted: false, willRetry: false }));
         console.log(JSON.stringify({ type: "agent_start" }));
+        if (command.message === "Recover context overflow") {
+          console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Your input exceeds the context window of this model" } }));
+          console.log(JSON.stringify({ type: "compaction_start", reason: "overflow" }));
+          console.log(JSON.stringify({ type: "compaction_end", reason: "overflow", result: { tokensBefore: 200000, estimatedTokensAfter: 24000 }, aborted: false, willRetry: true }));
+          console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Recovered" }], stopReason: "stop" } }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
         console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } }));
         if (command.message === "Request interactive input") {
           console.log(JSON.stringify({ type: "extension_ui_request", id: "request-select", method: "select", title: "Choose safely", options: ["Allow", "Block"] }));
@@ -358,6 +366,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             yield* Effect.sleep("10 millis");
             current = yield* supervisor.get(created.id);
           }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Recover context overflow");
+          let recoveredOverflow = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && recoveredOverflow.status !== "finished"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            recoveredOverflow = yield* supervisor.get(created.id);
+          }
           const models = yield* supervisor.listModels({ sessionId: created.id, runtimeId: created.runtimeId });
           const slashCommands = yield* supervisor.listCommands({ sessionId: created.id, runtimeId: created.runtimeId });
           const mentions = yield* supervisor.searchMentions({ sessionId: created.id, runtimeId: created.runtimeId }, "app");
@@ -464,7 +478,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -473,6 +487,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.current.piSessionId, "pi-test-session");
     assert.equal(result.current.sessionFile, join(directory, "pi-test.jsonl"));
     assert.ok(result.current.events.some((event) => event.type === "message_update"));
+    assert.equal(result.recoveredOverflow.status, "finished");
+    assert.equal(result.recoveredOverflow.error, null, "successful overflow recovery clears the transient provider error");
+    assert.equal(result.recoveredOverflow.compaction.status, "succeeded");
+    assert.equal(result.recoveredOverflow.compaction.reason, "overflow");
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
     assert.deepEqual(result.models[0]?.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
     assert.deepEqual(result.slashCommands, [

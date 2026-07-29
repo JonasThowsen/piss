@@ -874,6 +874,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (message.type === "compaction_start") {
         session.snapshot = {
           ...session.snapshot,
+          // A provider overflow is an intermediate failure while Pi compacts and
+          // retries, not a terminal runtime error.
+          error: message.reason === "overflow" ? null : session.snapshot.error,
           compaction: { status: "running", reason: typeof message.reason === "string" ? message.reason.slice(0, 64) : null, tokensBefore: null, estimatedTokensAfter: null, error: null, updatedAt: now() },
         };
         void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist compaction start", cause));
@@ -881,14 +884,22 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (message.type === "compaction_end") {
         const result = typeof message.result === "object" && message.result !== null && !Array.isArray(message.result) ? message.result as Record<string, unknown> : undefined;
         const failed = message.aborted === true || !result;
+        const compactionError = failed
+          ? typeof message.errorMessage === "string"
+            ? boundedText(message.errorMessage, MAX_STDERR_BYTES)
+            : message.aborted === true
+              ? "Compaction was cancelled"
+              : "Compaction failed"
+          : null;
         session.snapshot = {
           ...session.snapshot,
+          error: failed && message.reason === "overflow" ? compactionError : session.snapshot.error,
           compaction: {
             status: failed ? "failed" : "succeeded",
             reason: typeof message.reason === "string" ? message.reason.slice(0, 64) : session.snapshot.compaction.reason,
             tokensBefore: nonNegativeInteger(result?.tokensBefore) ?? null,
             estimatedTokensAfter: nonNegativeInteger(result?.estimatedTokensAfter) ?? null,
-            error: failed ? typeof message.errorMessage === "string" ? boundedText(message.errorMessage, MAX_STDERR_BYTES) : message.aborted === true ? "Compaction was cancelled" : "Compaction failed" : null,
+            error: compactionError,
             updatedAt: now(),
           },
         };
@@ -903,6 +914,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               ? boundedText(completed.errorMessage, MAX_STDERR_BYTES)
               : "Pi assistant response failed",
           };
+        } else if (completed.role === "assistant") {
+          session.snapshot = { ...session.snapshot, error: null };
         }
       }
       appendEvent(session, message.type, message);
