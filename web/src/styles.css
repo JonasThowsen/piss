@@ -309,9 +309,18 @@ button { color: inherit; }
 .tool-result summary > strong { display: grid; place-items: center; color: var(--muted); transition: transform .15s ease; }
 .tool-result summary > strong svg { width: 15px; height: 15px; }
 .tool-result[open] summary > strong { transform: rotate(45deg); }
+.tool-output-state { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px solid var(--line); background: #f4f6f2; color: var(--muted); font-size: 8px; }
+.tool-output-state small { margin-left: auto; color: var(--faint); }
+.tool-output-state button { max-width: 55%; overflow: hidden; padding: 3px 6px; border: 1px solid #d5aaa5; border-radius: 3px; background: var(--danger-soft); color: var(--danger); font: inherit; text-overflow: ellipsis; white-space: nowrap; }
 .tool-result-actions { display: flex; justify-content: flex-end; padding: 7px 9px 0; border-top: 1px solid var(--line); background: #f4f6f2; }
+.tool-output-state + .tool-result-actions { border-top: 0; }
 .tool-result-actions + pre { padding-top: 7px; border-top: 0; }
 .tool-result pre { max-height: 42vh; margin: 0; overflow: auto; padding: 13px; border-top: 1px solid var(--line); border-radius: 0 0 5px 5px; background: #f4f6f2; color: #3d413b; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.timeline-history-control { width: min(100%, 900px); display: grid; justify-items: center; gap: 6px; margin: 0 auto 16px; }
+.timeline-history-control button { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel); color: var(--muted); font: 700 8px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .08em; }
+.timeline-history-control button:disabled { opacity: .55; }
+.timeline-history-control svg { width: 12px; height: 12px; }
+.timeline-history-control small { color: var(--danger); font-size: 8px; }
 .active-operation { position: relative; width: min(100%, 900px); min-height: 64px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; overflow: hidden; margin: 0 auto 18px; padding: 11px 14px; border: 1px solid #cba96b; border-radius: 6px; background: linear-gradient(110deg, #fff9e9, #f7f1df); color: #70511f; box-shadow: 0 5px 18px rgba(94, 70, 29, .08); }
 .active-operation::after { content: ""; position: absolute; inset: auto 0 0; height: 2px; background: linear-gradient(90deg, transparent, #b7812f, transparent); animation: operation-scan 1.8s linear infinite; }
 .operation-glyph { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #d7ba83; border-radius: 50%; background: rgba(255, 255, 255, .7); }

@@ -26,6 +26,8 @@ import {
   type OwnedSessionDetailResponse,
   type OwnedSessionListResponse,
   type OwnedSessionStreamResponse,
+  type OwnedSessionTimelinePageResponse,
+  type OwnedSessionToolOutputResponse,
   type PiSlashCommandListResponse,
   type ReviewSnapshotResponse,
   type WorkspaceListResponse,
@@ -430,6 +432,43 @@ function makeRequestHandler() {
           return;
         }
 
+        const timelineMatch = /^\/api\/sessions\/([^/]+)\/timeline$/.exec(pathname);
+        if (timelineMatch && request.method === "GET") {
+          yield* requireBrowser(request, config, false);
+          const sessionId = yield* Effect.try({
+            try: () => decodeURIComponent(timelineMatch[1]!),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed session ID", cause }),
+          });
+          const rawBefore = requestUrl.searchParams.get("beforeSequence");
+          const beforeSequence = rawBefore === null ? undefined : Number(rawBefore);
+          const rawLimit = requestUrl.searchParams.get("limit");
+          const limit = rawLimit === null ? 100 : Number(rawLimit);
+          if (beforeSequence !== undefined && (!Number.isSafeInteger(beforeSequence) || beforeSequence < 1)) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "beforeSequence must be a positive integer" }));
+          }
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "limit must be between 1 and 200" }));
+          }
+          const page = yield* supervisor.timelinePage(sessionId, beforeSequence, limit);
+          json(response, 200, page satisfies OwnedSessionTimelinePageResponse);
+          return;
+        }
+
+        const outputMatch = /^\/api\/sessions\/([^/]+)\/outputs\/([^/]+)$/.exec(pathname);
+        if (outputMatch && request.method === "GET") {
+          yield* requireBrowser(request, config, false);
+          const values = yield* Effect.try({
+            try: () => ({ sessionId: decodeURIComponent(outputMatch[1]!), ref: decodeURIComponent(outputMatch[2]!) }),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed output reference", cause }),
+          });
+          if (!values.ref || values.ref.length > 256) {
+            return yield* Effect.fail(new HttpRequestError({ status: 400, message: "Output reference is invalid" }));
+          }
+          const output = yield* supervisor.toolOutput(values.sessionId, values.ref);
+          json(response, 200, { ref: values.ref, ...output } satisfies OwnedSessionToolOutputResponse);
+          return;
+        }
+
         const eventsMatch = /^\/api\/sessions\/([^/]+)\/events$/.exec(pathname);
         if (eventsMatch && request.method === "GET") {
           yield* requireBrowser(request, config, false);
@@ -487,7 +526,7 @@ function makeRequestHandler() {
           const session = yield* supervisor.get(sessionId);
           json(response, 200, {
             session: afterSequence === undefined
-              ? session
+              ? { ...session, events: session.events.slice(-150) }
               : { ...session, events: session.events.filter((event) => event.sequence > afterSequence) },
           } satisfies OwnedSessionDetailResponse);
           return;

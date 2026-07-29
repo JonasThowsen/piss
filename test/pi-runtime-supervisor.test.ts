@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, projectEventWithDetachedOutput, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
@@ -166,6 +166,23 @@ function runtimeLayer(config: AppConfigShape, workspace: Workspace) {
   );
   return PiRuntimeSupervisorLive.pipe(Layer.provideMerge(dependencies));
 }
+
+test("multi-megabyte tool output is detached from live event projections", () => {
+  const fullText = "🧪 large output\n".repeat(200_000);
+  const projected = projectEventWithDetachedOutput("session-large", 42, "tool_execution_end", {
+    type: "tool_execution_end",
+    toolCallId: "call-large",
+    toolName: "bash",
+    result: { content: [{ type: "text", text: fullText }] },
+    isError: false,
+  });
+  const data = projected.data as Record<string, unknown>;
+  assert.equal(data.outputRef, "session-large:42:tool-output");
+  assert.equal(data.outputTruncated, true);
+  assert.ok(Number(data.outputBytes) > 2 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected.data)) < 4 * 1024);
+  assert.equal((projected.output?.value as { content: Array<{ text: string }> }).content[0]?.text, fullText);
+});
 
 test("completed messages survive noisy streams while redundant progress is coalesced", () => {
   let events: ReadonlyArray<OwnedSessionEvent> = [];

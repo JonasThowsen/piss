@@ -2,7 +2,7 @@ import type { OwnedSessionEvent } from "../../shared/domain.ts";
 
 export type TimelineItem =
   | { readonly _tag: "message"; readonly key: string; readonly sequence: number; readonly role: "user" | "assistant"; readonly text: string; readonly imageCount: number; readonly live?: boolean }
-  | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done" }
+  | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
   | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" };
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -51,6 +51,14 @@ const MAX_CLIENT_EVENTS = 750;
 function toolCallId(event: OwnedSessionEvent): string | undefined {
   const id = record(event.data)?.toolCallId;
   return typeof id === "string" ? id : undefined;
+}
+
+function toolOutput(data: Record<string, unknown> | undefined): { readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean } {
+  return {
+    ...(typeof data?.outputRef === "string" ? { outputRef: data.outputRef } : {}),
+    ...(typeof data?.outputBytes === "number" ? { outputBytes: data.outputBytes } : {}),
+    ...(data?.outputTruncated === true ? { outputTruncated: true } : {}),
+  };
 }
 
 /** Merge an incremental session response while applying the same lifecycle
@@ -206,7 +214,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       const existing = tools.get(id);
       if (existing !== undefined) {
         const previous = items[existing];
-        if (previous?._tag === "tool") items[existing] = { ...previous, detail: valueText(data?.partialResult) || previous.detail };
+        if (previous?._tag === "tool") items[existing] = { ...previous, detail: valueText(data?.partialResult) || previous.detail, ...toolOutput(data) };
       } else {
         tools.set(id, items.length);
         items.push({
@@ -216,6 +224,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
           detail: valueText(data?.partialResult) || "Execution in progress…",
           error: false,
           state: "running",
+          ...toolOutput(data),
         });
       }
     }
@@ -229,6 +238,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
         detail: valueText(data?.result) || (data?.isError === true ? "Tool failed" : "Completed"),
         error: data?.isError === true,
         state: "done",
+        ...toolOutput(data),
       };
       if (existing === undefined) items.push(tool);
       else items[existing] = tool;

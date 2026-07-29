@@ -11,6 +11,8 @@ import {
   OwnedSessionDetailResponse,
   OwnedSessionListResponse,
   OwnedSessionStreamResponse,
+  OwnedSessionTimelinePageResponse,
+  OwnedSessionToolOutputResponse,
   PiSlashCommandListResponse,
   ReviewSnapshotResponse,
   WorkspaceListResponse,
@@ -128,6 +130,24 @@ export function loadSession(sessionId: string, afterSequence?: number) {
     Effect.mapError((cause) => cause instanceof ApiError
       ? cause
       : new ApiError({ message: "The session detail did not match its schema", cause })),
+  );
+}
+
+export function loadTimelinePage(sessionId: string, beforeSequence: number, limit = 100) {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?beforeSequence=${encodeURIComponent(beforeSequence)}&limit=${encodeURIComponent(limit)}`, { signal: AbortSignal.timeout(30_000) }).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(OwnedSessionTimelinePageResponse)),
+    Effect.mapError((cause) => cause instanceof ApiError
+      ? cause
+      : new ApiError({ message: "The timeline page did not match its schema", cause })),
+  );
+}
+
+export function loadToolOutput(sessionId: string, ref: string) {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/outputs/${encodeURIComponent(ref)}`, { signal: AbortSignal.timeout(30_000) }).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(OwnedSessionToolOutputResponse)),
+    Effect.mapError((cause) => cause instanceof ApiError
+      ? cause
+      : new ApiError({ message: "The tool output did not match its schema", cause })),
   );
 }
 

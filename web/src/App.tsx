@@ -14,11 +14,11 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
+import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
-import { compact, eventTimeline, mergeSessionEvents } from "./timeline.ts";
+import { compact, eventTimeline, mergeSessionEvents, valueText } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
@@ -230,6 +230,8 @@ export function App() {
   const [mentionPickerQuery, setMentionPickerQuery] = useState("");
   const [copyFeedback, setCopyFeedback] = useState<{ readonly key: string; readonly ok: boolean; readonly label: string }>();
   const [atBottom, setAtBottom] = useState(true);
+  const [timelineHistory, setTimelineHistory] = useState<{ readonly loading: boolean; readonly hasMore?: boolean; readonly error?: string }>({ loading: false });
+  const [toolOutputs, setToolOutputs] = useState<Readonly<Record<string, { readonly status: "loading" | "loaded" | "failed"; readonly text?: string; readonly error?: string }>>>({});
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
   const [mobileKeyboardOpen, setMobileKeyboardOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
@@ -248,6 +250,7 @@ export function App() {
   const timelineScrollTopRef = useRef(0);
   const timelinePointerScrollingRef = useRef(false);
   const timelineTouchYRef = useRef<number | undefined>(undefined);
+  const timelinePrependAnchorRef = useRef<{ readonly height: number; readonly top: number } | undefined>(undefined);
   const composerRef = useRef<HTMLDivElement>(null);
   const mentionSearchInputRef = useRef<HTMLInputElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -588,11 +591,62 @@ export function App() {
     if (selectedSession && !isWritableRuntime(selectedSession.status)) dismissMentionMenu();
   }, [dismissMentionMenu, modelDialogOpen, selectedSession?.status]);
 
+  useEffect(() => {
+    setTimelineHistory({ loading: false });
+    setToolOutputs({});
+  }, [selectedSession?.id]);
+
   const timeline = useMemo(() => eventTimeline(selectedSession?.events ?? []), [selectedSession]);
+  const oldestSequence = selectedSession?.events.at(0)?.sequence;
+  const hasOlderTimeline = timelineHistory.hasMore ?? (oldestSequence !== undefined && oldestSequence > 1);
+
+  const loadOlderTimeline = () => {
+    if (!selectedSession || oldestSequence === undefined || timelineHistory.loading || !hasOlderTimeline) return;
+    const element = timelineRef.current;
+    if (element) timelinePrependAnchorRef.current = { height: element.scrollHeight, top: element.scrollTop };
+    followingRef.current = false;
+    setAtBottom(false);
+    setTimelineHistory((current) => ({ ...current, loading: true, error: undefined }));
+    const sessionId = selectedSession.id;
+    void Effect.runPromise(loadTimelinePage(sessionId, oldestSequence)).then(
+      (page) => {
+        if (selectedSessionIdRef.current !== sessionId) return;
+        setSelectedSession((current) => {
+          if (!current || current.id !== sessionId) return current;
+          const events = new Map<number, typeof current.events[number]>();
+          for (const event of [...page.events, ...current.events]) events.set(event.sequence, event);
+          return { ...current, events: [...events.values()].sort((left, right) => left.sequence - right.sequence) };
+        });
+        setTimelineHistory({ loading: false, hasMore: page.hasMore });
+      },
+      (cause) => {
+        timelinePrependAnchorRef.current = undefined;
+        setTimelineHistory({ loading: false, hasMore: true, error: errorMessage(cause) });
+      },
+    );
+  };
+
+  const requestToolOutput = (sessionId: string, ref: string, force = false) => {
+    if (!force && toolOutputs[ref]) return;
+    setToolOutputs((current) => ({ ...current, [ref]: { status: "loading" } }));
+    void Effect.runPromise(loadToolOutput(sessionId, ref)).then(
+      (output) => {
+        if (selectedSessionIdRef.current !== sessionId) return;
+        setToolOutputs((current) => ({ ...current, [ref]: { status: "loaded", text: valueText(output.value) } }));
+      },
+      (cause) => setToolOutputs((current) => ({ ...current, [ref]: { status: "failed", error: errorMessage(cause) } })),
+    );
+  };
 
   useLayoutEffect(() => {
     const element = timelineRef.current;
     if (!element) return;
+    const anchor = timelinePrependAnchorRef.current;
+    if (anchor) {
+      element.scrollTop = anchor.top + element.scrollHeight - anchor.height;
+      timelineScrollTopRef.current = element.scrollTop;
+      timelinePrependAnchorRef.current = undefined;
+    }
     const pinToBottom = () => {
       if (!followingRef.current) return;
       window.cancelAnimationFrame(timelineScrollFrameRef.current);
@@ -1467,6 +1521,10 @@ export function App() {
               }}
             >
               <span className="sr-only" aria-live="polite">{copyFeedback ? `${copyFeedback.ok ? "Copied" : "Could not copy"} ${copyFeedback.label}` : ""}</span>
+              {activeView === "agent" && (hasOlderTimeline || timelineHistory.error) && <div className="timeline-history-control">
+                <button type="button" disabled={timelineHistory.loading} onClick={loadOlderTimeline}><ArrowUp aria-hidden="true" />{timelineHistory.loading ? "LOADING EARLIER ACTIVITY…" : timelineHistory.error ? "RETRY EARLIER ACTIVITY" : "LOAD EARLIER ACTIVITY"}</button>
+                {timelineHistory.error && <small role="alert">{timelineHistory.error}</small>}
+              </div>}
               {activeView === "agent" && selectedSession.compaction.status === "running" && <div className="active-operation compaction" role="status">
                 <span className="operation-glyph"><RefreshCw aria-hidden="true" /></span>
                 <div><b>{selectedSession.compaction.reason === "overflow" ? "RECOVERING CONTEXT" : "COMPACTING CONTEXT"}</b><span>{selectedSession.compaction.reason === "overflow" ? "Pi is compressing history, then it will retry automatically." : "Recent work stays verbatim while older history becomes a durable summary."}</span></div>
@@ -1489,11 +1547,18 @@ export function App() {
                   ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
                     </div>
-                  : <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key}>
-                      <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
-                      <div className="tool-result-actions"><button className={`timeline-copy ${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(`tool:${item.key}`, `${item.name} tool output`, item.detail)} type="button" aria-label={`${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.name} tool output`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></div>
-                      <pre>{item.detail}</pre>
-                    </details>)}
+                  : (() => {
+                      const output = item.outputRef ? toolOutputs[item.outputRef] : undefined;
+                      const text = output?.status === "loaded" ? output.text ?? "" : item.detail;
+                      return <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key} onToggle={(event) => {
+                        if (event.currentTarget.open && item.outputRef) requestToolOutput(selectedSession.id, item.outputRef);
+                      }}>
+                        <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
+                        {item.outputRef && <div className={`tool-output-state ${output?.status ?? "preview"}`}><span>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? "Full output unavailable" : output?.status === "loaded" ? "Full output loaded" : "Preview · full output loads when expanded"}</span><small>{item.outputBytes?.toLocaleString() ?? "?"} bytes</small>{output?.status === "failed" && <button type="button" onClick={() => requestToolOutput(selectedSession.id, item.outputRef!, true)}>RETRY</button>}</div>}
+                        <div className="tool-result-actions"><button className={`timeline-copy ${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(`tool:${item.key}`, `${item.name} tool output`, text)} type="button" aria-label={`${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.name} tool output`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></div>
+                        <pre>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? `${item.detail}\n\n[${output.error ?? "Full output could not be loaded"}]` : text}</pre>
+                      </details>;
+                    })())}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
               {activeView === "details" && <div className="details-view">
                 <header className="details-heading"><div><span>SESSION</span><h2>Details</h2></div><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b></header>

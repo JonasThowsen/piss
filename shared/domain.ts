@@ -139,6 +139,7 @@ export const InteractiveRequest = Schema.Struct({
 export type InteractiveRequest = typeof InteractiveRequest.Type;
 
 export const OwnedSessionEvent = Schema.Struct({
+  id: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256))),
   sequence: NonNegativeInt,
   type: Schema.String,
   timestamp: Schema.String,
@@ -237,6 +238,20 @@ export const OwnedSessionStreamResponse = Schema.Struct({
   reset: Schema.Boolean,
 });
 export type OwnedSessionStreamResponse = typeof OwnedSessionStreamResponse.Type;
+
+export const OwnedSessionTimelinePageResponse = Schema.Struct({
+  events: Schema.Array(OwnedSessionEvent).check(Schema.isMaxLength(200)),
+  hasMore: Schema.Boolean,
+  nextBeforeSequence: Schema.NullOr(NonNegativeInt),
+});
+export type OwnedSessionTimelinePageResponse = typeof OwnedSessionTimelinePageResponse.Type;
+
+export const OwnedSessionToolOutputResponse = Schema.Struct({
+  ref: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  byteCount: NonNegativeInt,
+  value: Schema.Unknown,
+});
+export type OwnedSessionToolOutputResponse = typeof OwnedSessionToolOutputResponse.Type;
 
 export const CreateOwnedSessionInput = Schema.Struct({
   workspaceId: WorkspaceId,

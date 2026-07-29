@@ -21,6 +21,7 @@ import type {
   OwnedSessionEvent,
   OwnedSessionStatus,
   OwnedSessionSummary,
+  OwnedSessionTimelinePageResponse,
   PiSlashCommand,
   SessionUsage,
   ThinkingLevel,
@@ -46,7 +47,15 @@ import { JsonlFramer } from "./JsonlFramer.ts";
 import { WorkspaceDirectory } from "../workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../workspaces/WorkspaceRepository.ts";
 import { loadOwnedSessions, persistOwnedSessions, type PersistedOwnedSession } from "./OwnedSessionStore.ts";
-import { loadOwnedSessionTimeline, persistOwnedSessionTimeline, removeOwnedSessionTimeline } from "./OwnedSessionTimelineStore.ts";
+import {
+  appendOwnedSessionTimelineEvent,
+  loadOwnedSessionTimeline,
+  loadOwnedSessionTimelinePage,
+  loadOwnedSessionToolOutput,
+  persistOwnedSessionTimeline,
+  persistOwnedSessionToolOutput,
+  removeOwnedSessionTimeline,
+} from "./OwnedSessionTimelineStore.ts";
 import { WorkspaceHasSessionsError, type WorkspaceManagedByConfigurationError, WorkspacePathError, type WorkspaceRecordNotFoundError, type WorkspaceStorageError } from "../workspaces/errors.ts";
 
 const execFileAsync = promisify(execFile);
@@ -113,6 +122,8 @@ export interface PiRuntimeSupervisorShape {
   readonly listSummaries: Effect.Effect<ReadonlyArray<OwnedSessionSummary>>;
   readonly workspaceCounts: Effect.Effect<ReadonlyMap<string, { readonly sessions: number; readonly active: number }>>;
   readonly get: (id: string) => Effect.Effect<OwnedSession, SessionNotFoundError>;
+  readonly timelinePage: (id: string, beforeSequence: number | undefined, limit: number) => Effect.Effect<OwnedSessionTimelinePageResponse, SessionNotFoundError | SessionStorageError>;
+  readonly toolOutput: (id: string, ref: string) => Effect.Effect<{ readonly byteCount: number; readonly value: unknown }, SessionNotFoundError | SessionStorageError>;
   readonly subscribe: (id: string, listener: (session: OwnedSession) => void) => Effect.Effect<() => void, SessionNotFoundError>;
   readonly rename: (target: RuntimeTarget, name: string) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly acknowledge: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
@@ -242,6 +253,57 @@ export function projectEventData(type: string, data: unknown): unknown {
     };
   }
   return base;
+}
+
+interface DetachedToolOutput {
+  readonly ref: string;
+  readonly byteCount: number;
+  readonly value: unknown;
+}
+
+function conciseOutputPreview(value: unknown): string {
+  let text = textFromContent(value);
+  if (!text) {
+    try { text = JSON.stringify(value, null, 2); }
+    catch { text = "Tool output is available on demand"; }
+  }
+  if (text.length <= 600) return text;
+  let preview = text.slice(0, 600);
+  const final = preview.charCodeAt(preview.length - 1);
+  if (final >= 0xD800 && final <= 0xDBFF) preview = preview.slice(0, -1);
+  return `${preview}\n[…expand to load full output]`;
+}
+
+export function projectEventWithDetachedOutput(
+  sessionId: string,
+  sequence: number,
+  type: string,
+  data: unknown,
+): { readonly data: unknown; readonly output?: DetachedToolOutput } {
+  if ((type !== "tool_execution_update" && type !== "tool_execution_end") || typeof data !== "object" || data === null || Array.isArray(data)) {
+    return { data: projectEventData(type, data) };
+  }
+  const source = data as Record<string, unknown>;
+  const field = type === "tool_execution_end" ? "result" : "partialResult";
+  if (!(field in source)) return { data: projectEventData(type, data) };
+  const value = redactImageData(source[field]);
+  let encoded: string;
+  try { encoded = JSON.stringify(value); }
+  catch { return { data: projectEventData(type, data) }; }
+  const byteCount = Buffer.byteLength(encoded);
+  if (byteCount <= 16 * 1024) return { data: projectEventData(type, data) };
+  const ref = `${sessionId}:${sequence}:tool-output`;
+  const preview = conciseOutputPreview(value);
+  return {
+    data: projectEventData(type, {
+      ...source,
+      [field]: { content: [{ type: "text", text: preview }] },
+      outputRef: ref,
+      outputBytes: byteCount,
+      outputTruncated: true,
+    }),
+    output: { ref, byteCount, value },
+  };
 }
 
 export function replayEventsFromTranscriptEntry(entry: unknown): ReadonlyArray<{ readonly type: string; readonly data: unknown }> {
@@ -645,13 +707,24 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       catch: (cause) => new SessionStorageError({ message: "Could not persist owned-session metadata", cause }),
     });
 
-    const persistTimeline = (session: MutableOwnedSession): void => {
+    const persistProjectionEvent = (
+      session: MutableOwnedSession,
+      event: OwnedSessionEvent,
+      output: DetachedToolOutput | undefined,
+      persistCompactTimeline: boolean,
+    ): void => {
       const sessionId = session.snapshot.id;
-      const timeline = { sequence: session.sequence, events: cloneSession(session.snapshot).events };
+      const timeline = persistCompactTimeline
+        ? { sequence: session.sequence, events: cloneSession(session.snapshot).events }
+        : undefined;
       const previous = timelinePersistenceTails.get(sessionId) ?? Promise.resolve();
-      const next = previous.then(() => persistOwnedSessionTimeline(timelineDirectory, sessionId, timeline));
+      const next = previous.then(async () => {
+        if (output) await persistOwnedSessionToolOutput(timelineDirectory, sessionId, output.ref, output.value);
+        await appendOwnedSessionTimelineEvent(timelineDirectory, sessionId, event);
+        if (timeline) await persistOwnedSessionTimeline(timelineDirectory, sessionId, timeline);
+      });
       timelinePersistenceTails.set(sessionId, next.catch(() => undefined));
-      void next.catch((cause) => console.error(`Could not persist timeline for session ${sessionId}`, cause));
+      void next.catch((cause) => console.error(`Could not persist timeline projection for session ${sessionId}`, cause));
     };
 
     const removeTimeline = (sessionId: string): Effect.Effect<void, SessionStorageError> => Effect.tryPromise({
@@ -756,11 +829,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (session.quarantined) return;
       if (type === "agent_settled") session.activeRunImageCharacters = 0;
       const timestamp = now();
+      const sequence = ++session.sequence;
+      const projected = projectEventWithDetachedOutput(session.snapshot.id, sequence, type, data);
       const event: OwnedSessionEvent = {
-        sequence: ++session.sequence,
+        id: `${session.snapshot.id}:${sequence}`,
+        sequence,
         type,
         timestamp,
-        data: projectEventData(type, data),
+        data: projected.data,
       };
       const retained = appendBoundedEvent(session.snapshot.events, session.eventBytes, event);
       session.eventBytes = retained.bytes;
@@ -786,9 +862,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           void Effect.runPromise(terminate(session));
         });
       }
-      if (type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end" || type === "auto_retry_start" || type === "auto_retry_end") {
-        persistTimeline(session);
-      }
+      const persistCompactTimeline = type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end" || type === "auto_retry_start" || type === "auto_retry_end";
+      persistProjectionEvent(session, event, projected.output, persistCompactTimeline);
       publishSession(session);
       if (session.snapshot.status !== previousStatus) {
         notifyAttention(session);
@@ -1449,6 +1524,28 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         : Effect.fail(new SessionNotFoundError({ sessionId: id }));
     };
 
+    const timelinePage: PiRuntimeSupervisorShape["timelinePage"] = (id, beforeSequence, limit) => {
+      if (!sessions.has(id)) return Effect.fail(new SessionNotFoundError({ sessionId: id }));
+      return Effect.tryPromise({
+        try: async () => {
+          await timelinePersistenceTails.get(id);
+          return loadOwnedSessionTimelinePage(timelineDirectory, id, beforeSequence, limit);
+        },
+        catch: (cause) => new SessionStorageError({ message: `Could not load timeline history for session ${id}`, cause }),
+      });
+    };
+
+    const toolOutput: PiRuntimeSupervisorShape["toolOutput"] = (id, ref) => {
+      if (!sessions.has(id)) return Effect.fail(new SessionNotFoundError({ sessionId: id }));
+      return Effect.tryPromise({
+        try: async () => {
+          await timelinePersistenceTails.get(id);
+          return loadOwnedSessionToolOutput(timelineDirectory, id, ref);
+        },
+        catch: (cause) => new SessionStorageError({ message: `Could not load tool output for session ${id}`, cause }),
+      });
+    };
+
     const subscribe: PiRuntimeSupervisorShape["subscribe"] = (id, listener) => {
       const session = sessions.get(id);
       if (!session) return Effect.fail(new SessionNotFoundError({ sessionId: id }));
@@ -1678,6 +1775,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return counts;
       }),
       get,
+      timelinePage,
+      toolOutput,
       subscribe,
       rename: (target, name) => resolveTarget(target).pipe(
         Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {

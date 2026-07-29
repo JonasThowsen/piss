@@ -101,6 +101,10 @@ process.stdin.on("data", (chunk) => {
       ] } }));
       console.log(JSON.stringify({ type: "agent_start" }));
       console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "HTTP tracer complete" } }));
+      if (command.message === "Huge tool output") {
+        console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "huge-call", toolName: "bash", args: { command: "generate" } }));
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "huge-call", toolName: "bash", result: { content: [{ type: "text", text: "UNICODE-OUTPUT-🧪".repeat(180000) + "END-OF-HUGE-OUTPUT" }] }, isError: false }));
+      }
       if (command.message === "Request interactive input") {
         console.log(JSON.stringify({ type: "extension_ui_request", id: "http-request-confirm", method: "confirm", title: "Continue?", message: "Confirm through HTTP" }));
       } else {
@@ -410,6 +414,34 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.ok((resetPayload.session?.events?.length ?? 0) > 0, "cursor mismatch falls back to a complete retained snapshot");
     await resetStream.return(undefined);
     resetAbort.abort();
+
+    const hugeCommand = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "prompt", text: "Huge tool output" }),
+    });
+    assert.equal(hugeCommand.status, 202, await hugeCommand.text());
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const compactSnapshotResponse = await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders });
+    const compactSnapshotText = await compactSnapshotResponse.text();
+    assert.ok(Buffer.byteLength(compactSnapshotText) < 512 * 1024, "normal snapshots exclude multi-megabyte tool output");
+    assert.doesNotMatch(compactSnapshotText, /END-OF-HUGE-OUTPUT/u);
+    const compactSnapshot = JSON.parse(compactSnapshotText) as { session: { events: Array<{ data?: { outputRef?: string; outputBytes?: number } }> } };
+    const detached = compactSnapshot.session.events.find((item) => item.data?.outputRef)?.data;
+    assert.ok(detached?.outputRef);
+    assert.ok((detached.outputBytes ?? 0) > 2 * 1024 * 1024);
+    const outputResponse = await fetch(`${base}/api/sessions/${created.session.id}/outputs/${encodeURIComponent(detached.outputRef)}`, { headers: identityHeaders });
+    const outputText = await outputResponse.text();
+    assert.equal(outputResponse.status, 200, outputText);
+    assert.match(outputText, /END-OF-HUGE-OUTPUT/u);
+
+    const timelineResponse = await fetch(`${base}/api/sessions/${created.session.id}/timeline?beforeSequence=999999&limit=5`, { headers: identityHeaders });
+    const timelineText = await timelineResponse.text();
+    assert.equal(timelineResponse.status, 200, timelineText);
+    const timelinePage = JSON.parse(timelineText) as { events: Array<{ sequence: number }>; nextBeforeSequence: number | null };
+    assert.ok(timelinePage.events.length > 0 && timelinePage.events.length <= 5);
+    assert.deepEqual(timelinePage.events.map((item) => item.sequence), [...timelinePage.events].map((item) => item.sequence).sort((a, b) => a - b));
+    assert.equal(timelinePage.nextBeforeSequence, timelinePage.events[0]?.sequence ?? null);
 
     const staleRename = await fetch(`${base}/api/sessions/${created.session.id}`, {
       method: "PATCH",

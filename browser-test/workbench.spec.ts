@@ -95,6 +95,8 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   let delayNextCommand = false;
   let delayNextMentionSearch = false;
   let delayedSessionLoadId: string | undefined;
+  let historicalEvents: Array<{ readonly sequence: number; readonly type: string; readonly timestamp: string; readonly data: unknown }> = [];
+  const detachedOutputs = new Map<string, unknown>();
   let reviewRequests = 0;
 
   await page.route("**/api/**", async (route: Route) => {
@@ -193,6 +195,21 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     const sessionId = path.split("/")[3];
     const sessionIndex = sessions.findIndex((session) => session.id === sessionId);
     const session = sessions[sessionIndex];
+    if (session && path === `/api/sessions/${session.id}/timeline` && method === "GET") {
+      const before = Number(url.searchParams.get("beforeSequence") ?? Number.MAX_SAFE_INTEGER);
+      const limit = Number(url.searchParams.get("limit") ?? 100);
+      const candidates = historicalEvents.filter((event) => event.sequence < before).sort((left, right) => left.sequence - right.sequence);
+      const page = candidates.slice(-limit);
+      await route.fulfill({ json: { events: page, hasMore: candidates.length > page.length, nextBeforeSequence: page[0]?.sequence ?? null } });
+      return;
+    }
+    if (session && path.startsWith(`/api/sessions/${session.id}/outputs/`) && method === "GET") {
+      const ref = decodeURIComponent(path.slice(`/api/sessions/${session.id}/outputs/`.length));
+      const value = detachedOutputs.get(ref);
+      if (value === undefined) await route.fulfill({ status: 404, json: { error: "output not found" } });
+      else await route.fulfill({ json: { ref, byteCount: Buffer.byteLength(JSON.stringify(value)), value } });
+      return;
+    }
     if (session && path === `/api/sessions/${session.id}` && method === "GET") {
       if (delayedSessionLoadId === session.id) {
         delayedSessionLoadId = undefined;
@@ -343,6 +360,12 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     },
     setEvents(events: unknown[]) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, events, lastActivityAt: new Date().toISOString() };
+    },
+    setHistoricalEvents(events: typeof historicalEvents) {
+      historicalEvents = events;
+    },
+    setDetachedOutput(ref: string, value: unknown) {
+      detachedOutputs.set(ref, value);
     },
     failNextCommand() {
       failNextCommand = true;
@@ -1206,6 +1229,52 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   }]);
   await expect(page.getByText("Do not pull the reader down", { exact: true })).toHaveCount(1);
   await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(manualScrollTop + 1);
+});
+
+test("older timeline pages preserve scroll position and detached tool output loads on expansion", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const timestamp = new Date().toISOString();
+  const historical = Array.from({ length: 30 }, (_, index) => ({
+    sequence: index + 1,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: `Historical ${index + 1} ${"detail ".repeat(12)}` }] } },
+  }));
+  api.setHistoricalEvents(historical);
+  api.setDetachedOutput("output-50", { content: [{ type: "text", text: `FULL OUTPUT\n${"large line\n".repeat(500)}END OF DETACHED OUTPUT` }] });
+  api.setEvents([
+    ...Array.from({ length: 19 }, (_, index) => ({
+      sequence: index + 31,
+      type: "message_end",
+      timestamp,
+      data: { message: { role: "assistant", content: [{ type: "text", text: `Current ${index + 31} ${"detail ".repeat(12)}` }] } },
+    })),
+    { sequence: 50, type: "tool_execution_end", timestamp, data: { toolCallId: "lazy-tool", toolName: "bash", result: { content: [{ type: "text", text: "short preview" }] }, isError: false, outputRef: "output-50", outputBytes: 5560, outputTruncated: true } },
+  ]);
+
+  await expect(page.getByText(/Current 49/)).toBeVisible({ timeout: 5_000 });
+  const loadOlder = page.getByRole("button", { name: "LOAD EARLIER ACTIVITY" });
+  await loadOlder.scrollIntoViewIfNeeded();
+  const current31 = page.getByText(/Current 31/);
+  const before = await current31.boundingBox();
+  await loadOlder.click();
+  await expect(page.getByText(/^Historical 1 detail/)).toBeAttached();
+  const after = await current31.boundingBox();
+  expect(before).not.toBeNull();
+  expect(after).not.toBeNull();
+  expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(8);
+
+  const tool = page.locator("details.tool-result", { hasText: "bash" });
+  await tool.scrollIntoViewIfNeeded();
+  await expect(page.getByText("END OF DETACHED OUTPUT", { exact: false })).toHaveCount(0);
+  await tool.locator("summary").click();
+  await expect(tool.getByText("Full output loaded")).toBeVisible();
+  await expect(tool.locator("pre")).toContainText("END OF DETACHED OUTPUT");
 });
 
 test("conversation renders coding content and remains usable at constrained heights", async ({ page }) => {
