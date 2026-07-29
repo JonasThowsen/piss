@@ -46,7 +46,7 @@ export function compact(value: unknown, maximum = 150): string {
   return text.length > maximum ? `${text.slice(0, maximum - 1)}…` : text;
 }
 
-const MAX_CLIENT_EVENTS = 750;
+const MAX_CLIENT_EVENTS = 20_000;
 
 function toolCallId(event: OwnedSessionEvent): string | undefined {
   const id = record(event.data)?.toolCallId;

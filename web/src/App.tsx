@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactElement, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactElement, type ReactNode, type RefObject } from "react";
 import * as Effect from "effect/Effect";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Collapsible } from "@base-ui/react/collapsible";
@@ -70,6 +70,8 @@ type SlashCommandMenuState = {
 };
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const TIMELINE_WINDOW_SIZE = 180;
+const TIMELINE_WINDOW_SHIFT = 120;
 const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 const emptySessionUiState = (): SessionUiState => ({ commandText: "", images: [], delivery: "steer", busy: false, outbox: [] });
@@ -191,6 +193,31 @@ function ReviewView({ state, onRefresh }: { readonly state?: ReviewState; readon
   </section>;
 }
 
+const LazyMarkdown = memo(function LazyMarkdown({ text }: { readonly text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || visible) return;
+    if (!("IntersectionObserver" in window)) {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { root: element.closest(".timeline"), rootMargin: "320px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [visible]);
+  return <div ref={ref} className={`message-content ${visible ? "" : "markdown-placeholder"}`}>
+    {visible
+      ? <Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>{text}</Markdown>
+      : <p>{compact(text, 280)}</p>}
+  </div>;
+});
+
 export function App() {
   const routedSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
   const [initialRequestedSessionId] = useState(() => routedSessionId ?? readLastOpenedSession());
@@ -231,6 +258,7 @@ export function App() {
   const [mentionPickerQuery, setMentionPickerQuery] = useState("");
   const [copyFeedback, setCopyFeedback] = useState<{ readonly key: string; readonly ok: boolean; readonly label: string }>();
   const [atBottom, setAtBottom] = useState(true);
+  const [timelineWindowEnd, setTimelineWindowEnd] = useState<number>();
   const [timelineHistory, setTimelineHistory] = useState<{ readonly loading: boolean; readonly hasMore?: boolean; readonly error?: string }>({ loading: false });
   const [toolOutputs, setToolOutputs] = useState<Readonly<Record<string, { readonly status: "loading" | "loaded" | "failed"; readonly text?: string; readonly error?: string }>>>({});
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
@@ -252,6 +280,8 @@ export function App() {
   const timelinePointerScrollingRef = useRef(false);
   const timelineTouchYRef = useRef<number | undefined>(undefined);
   const timelinePrependAnchorRef = useRef<{ readonly height: number; readonly top: number } | undefined>(undefined);
+  const timelineVirtualAnchorRef = useRef<{ readonly key: string; readonly top: number } | undefined>(undefined);
+  const timelineWindowShiftingRef = useRef(false);
   const composerRef = useRef<HTMLDivElement>(null);
   const mentionSearchInputRef = useRef<HTMLInputElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -352,6 +382,7 @@ export function App() {
     sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "select", sessionId });
     followingRef.current = true;
     timelineScrollTopRef.current = 0;
+    setTimelineWindowEnd(undefined);
     setAtBottom(true);
     setCommandText(nextUi.commandText);
     imagesRef.current = nextUi.images;
@@ -617,6 +648,12 @@ export function App() {
   }, [selectedSession?.id]);
 
   const timeline = useMemo(() => eventTimeline(selectedSession?.events ?? []), [selectedSession]);
+  const effectiveTimelineWindowEnd = timelineWindowEnd === undefined ? timeline.length : Math.min(timelineWindowEnd, timeline.length);
+  const timelineWindowStart = Math.max(0, effectiveTimelineWindowEnd - TIMELINE_WINDOW_SIZE);
+  const visibleTimeline = useMemo(
+    () => timeline.slice(timelineWindowStart, effectiveTimelineWindowEnd),
+    [effectiveTimelineWindowEnd, timeline, timelineWindowStart],
+  );
   const oldestSequence = selectedSession?.events.at(0)?.sequence;
   const hasOlderTimeline = timelineHistory.hasMore ?? (oldestSequence !== undefined && oldestSequence > 1);
 
@@ -631,6 +668,7 @@ export function App() {
     void Effect.runPromise(loadTimelinePage(sessionId, oldestSequence)).then(
       (page) => {
         if (selectedSessionIdRef.current !== sessionId) return;
+        setTimelineWindowEnd((current) => current === undefined ? undefined : current + page.events.length);
         dispatchSessionSync({ type: "historicalPage", events: page.events });
         setTimelineHistory({ loading: false, hasMore: page.hasMore });
       },
@@ -653,9 +691,33 @@ export function App() {
     );
   };
 
+  const shiftTimelineWindow = (direction: "earlier" | "later", element: HTMLElement) => {
+    if (timelineWindowShiftingRef.current) return;
+    const currentEnd = effectiveTimelineWindowEnd;
+    if (direction === "earlier" && timelineWindowStart === 0 || direction === "later" && currentEnd >= timeline.length) return;
+    const rows = element.querySelectorAll<HTMLElement>("[data-timeline-key]");
+    const anchor = direction === "earlier" ? rows[0] : rows[rows.length - 1];
+    if (!anchor?.dataset.timelineKey) return;
+    timelineVirtualAnchorRef.current = { key: anchor.dataset.timelineKey, top: anchor.getBoundingClientRect().top };
+    timelineWindowShiftingRef.current = true;
+    const nextEnd = direction === "earlier"
+      ? Math.max(TIMELINE_WINDOW_SIZE, currentEnd - TIMELINE_WINDOW_SHIFT)
+      : Math.min(timeline.length, currentEnd + TIMELINE_WINDOW_SHIFT);
+    setTimelineWindowEnd(nextEnd >= timeline.length ? undefined : nextEnd);
+  };
+
   useLayoutEffect(() => {
     const element = timelineRef.current;
     if (!element) return;
+    const virtualAnchor = timelineVirtualAnchorRef.current;
+    if (virtualAnchor) {
+      const escapedKey = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(virtualAnchor.key) : virtualAnchor.key.replace(/["\\]/gu, "\\$&");
+      const row = element.querySelector<HTMLElement>(`[data-timeline-key="${escapedKey}"]`);
+      if (row) element.scrollTop += row.getBoundingClientRect().top - virtualAnchor.top;
+      timelineVirtualAnchorRef.current = undefined;
+      timelineWindowShiftingRef.current = false;
+      timelineScrollTopRef.current = element.scrollTop;
+    }
     const anchor = timelinePrependAnchorRef.current;
     if (anchor) {
       element.scrollTop = anchor.top + element.scrollHeight - anchor.height;
@@ -681,7 +743,7 @@ export function App() {
       resizeObserver.disconnect();
       window.cancelAnimationFrame(timelineScrollFrameRef.current);
     };
-  }, [activeView, selectedSession?.runtimeId, timeline]);
+  }, [activeView, selectedSession?.runtimeId, timeline, timelineWindowEnd]);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -1528,7 +1590,10 @@ export function App() {
               onTouchEnd={() => { timelineTouchYRef.current = undefined; }}
               onScroll={(event) => {
                 const element = event.currentTarget;
-                const nextAtBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 4;
+                const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+                if (element.scrollTop < 24) shiftTimelineWindow("earlier", element);
+                else if (distanceFromBottom < 24 && effectiveTimelineWindowEnd < timeline.length) shiftTimelineWindow("later", element);
+                const nextAtBottom = effectiveTimelineWindowEnd >= timeline.length && distanceFromBottom < 4;
                 const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current - 1;
                 timelineScrollTopRef.current = element.scrollTop;
                 if (draggedUp) followingRef.current = false;
@@ -1548,25 +1613,25 @@ export function App() {
               </div>}
               {selectedSession.error && <div className="runtime-error"><b>RUNTIME ERROR</b>{selectedSession.error}</div>}
               {activeView === "agent" && timeline.length === 0 && selectedSession.status === "starting" && <div className="timeline-empty"><p>Starting…</p></div>}
-              {activeView === "agent" && timeline.map((item) => item._tag === "message"
-                ? <article className={`message ${item.role} ${item.live ? "live" : ""}`} key={item.key}>
+              {activeView === "agent" && visibleTimeline.map((item) => item._tag === "message"
+                ? <article className={`message ${item.role} ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key}>
                     <header><span>{item.role === "assistant" ? "PI" : "REMOTE"}</span>{item.live && <i>STREAMING</i>}<button className={`timeline-copy ${copyFeedback?.key === item.key ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(item.key, `${item.role === "assistant" ? "PI" : "REMOTE"} message`, item.text || `${item.imageCount} image${item.imageCount === 1 ? "" : "s"} attached`)} type="button" aria-label={`${copyFeedback?.key === item.key ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.role === "assistant" ? "PI" : "REMOTE"} message`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === item.key ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></header>
-                    {item.text && <div className="message-content"><Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>{item.text}</Markdown></div>}
+                    {item.text && <LazyMarkdown text={item.text} />}
                     {item.imageCount > 0 && <div className="message-images"><Image aria-hidden="true" /> {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
                   </article>
                 : item._tag === "status"
-                  ? <div className={`timeline-status ${item.tone}`} key={item.key} role="status">
+                  ? <div className={`timeline-status ${item.tone}`} key={item.key} data-timeline-key={item.key} role="status">
                       <span>{item.tone === "running" ? <RefreshCw aria-hidden="true" /> : item.tone === "success" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
                       <div><b>{item.label}</b><small>{item.detail}</small></div>
                     </div>
                 : item.state === "running"
-                  ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key}>
+                  ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
                     </div>
                   : (() => {
                       const output = item.outputRef ? toolOutputs[item.outputRef] : undefined;
                       const text = output?.status === "loaded" ? output.text ?? "" : item.detail;
-                      return <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key} onToggle={(event) => {
+                      return <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key} onToggle={(event) => {
                         if (event.currentTarget.open && item.outputRef) requestToolOutput(selectedSession.id, item.outputRef);
                       }}>
                         <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
@@ -1595,7 +1660,7 @@ export function App() {
                 </section>
               </div>}
             </section>
-            {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setAtBottom(true); if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
+            {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
           <section className="control-deck">

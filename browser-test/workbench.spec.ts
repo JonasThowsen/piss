@@ -1277,6 +1277,32 @@ test("older timeline pages preserve scroll position and detached tool output loa
   await expect(tool.locator("pre")).toContainText("END OF DETACHED OUTPUT");
 });
 
+test("10,000-event timeline benchmark stays bounded and interactive", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  const timestamp = new Date().toISOString();
+  const started = Date.now();
+  api.setEvents(Array.from({ length: 10_000 }, (_, index) => ({
+    sequence: index + 1,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: `Benchmark ${index + 1}\n\n**markdown** item` }] } },
+  })));
+  await expect(page.getByText("Benchmark 10000", { exact: false })).toBeVisible({ timeout: 20_000 });
+  const renderedMs = Date.now() - started;
+  const articleCount = await page.locator(".timeline article.message").count();
+  const interactionStarted = Date.now();
+  await page.getByLabel("Message Pi").fill("composer remains responsive");
+  const interactionMs = Date.now() - interactionStarted;
+  console.log(`timeline benchmark: rendered=${renderedMs}ms interaction=${interactionMs}ms articles=${articleCount}`);
+  expect(renderedMs).toBeLessThan(10_000);
+  expect(interactionMs).toBeLessThan(1_000);
+  expect(articleCount).toBeLessThan(400);
+});
+
 test("conversation renders coding content and remains usable at constrained heights", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.setViewportSize({ width: 800, height: 600 });

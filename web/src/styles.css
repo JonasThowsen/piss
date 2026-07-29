@@ -261,7 +261,7 @@ button { color: inherit; }
 .timeline-empty { width: min(100%, 900px); margin: 40px auto; color: var(--muted); text-align: center; }
 .timeline-empty span { font-size: 8px; font-weight: 700; letter-spacing: .1em; }
 .timeline-empty p { margin: 12px 0; color: var(--text); font-size: 18px; }
-.message { width: min(100%, 900px); margin: 0 auto 30px; animation: arrive .2s ease; content-visibility: auto; contain-intrinsic-size: auto 140px; }
+.message { width: min(100%, 900px); margin: 0 auto 30px; content-visibility: auto; contain-intrinsic-size: auto 140px; overflow-anchor: auto; }
 .message header { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .06em; }
 .message header i { color: #8d5b22; font-style: normal; }
 .timeline-copy { min-width: 64px; height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin-left: auto; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--muted); cursor: pointer; }
@@ -271,6 +271,8 @@ button { color: inherit; }
 .timeline-copy.copied { border-color: #b9d1c0; background: var(--accent-soft); color: var(--accent); }
 .timeline-copy.failed { border-color: #e7bbb6; background: var(--danger-soft); color: var(--danger); }
 .message > div { overflow-wrap: anywhere; font-size: 15px; line-height: 1.7; }
+.markdown-placeholder { min-height: 42px; color: var(--muted); contain: layout paint; }
+[data-timeline-key] { overflow-anchor: auto; }
 .message-images { width: max-content; display: flex; align-items: center; gap: 5px; margin-top: 9px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--soft-panel); color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .06em; }
 .message-images svg { width: 13px; height: 13px; }
 .message-content > :first-child { margin-top: 0; }
