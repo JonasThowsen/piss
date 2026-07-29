@@ -1264,8 +1264,9 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   await expect(createDialog).toBeHidden();
 
   const sessionTabs = page.locator(".capability-tabs").getByRole("tab");
-  await expect(sessionTabs).toHaveCount(2);
+  await expect(sessionTabs).toHaveCount(3);
   await expect(sessionTabs.filter({ hasText: "Agent" })).toBeVisible();
+  await expect(sessionTabs.filter({ hasText: "Details" })).toBeVisible();
   await expect(sessionTabs.filter({ hasText: "Events" })).toHaveCount(0);
   const changesTab = sessionTabs.filter({ hasText: "Changes" });
   await expect(changesTab).toBeVisible();
