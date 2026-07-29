@@ -46,6 +46,7 @@ import { JsonlFramer } from "./JsonlFramer.ts";
 import { WorkspaceDirectory } from "../workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../workspaces/WorkspaceRepository.ts";
 import { loadOwnedSessions, persistOwnedSessions, type PersistedOwnedSession } from "./OwnedSessionStore.ts";
+import { loadOwnedSessionTimeline, persistOwnedSessionTimeline, removeOwnedSessionTimeline } from "./OwnedSessionTimelineStore.ts";
 import { WorkspaceHasSessionsError, type WorkspaceManagedByConfigurationError, WorkspacePathError, type WorkspaceRecordNotFoundError, type WorkspaceStorageError } from "../workspaces/errors.ts";
 
 const execFileAsync = promisify(execFile);
@@ -543,6 +544,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const sessions = new Map<string, MutableOwnedSession>();
     const creationLock = yield* Semaphore.make(1);
     const storagePath = join(config.stateDir, "owned-sessions.json");
+    const timelineDirectory = join(config.stateDir, "timelines");
+    const timelinePersistenceTails = new Map<string, Promise<void>>();
     let persistenceTail = Promise.resolve();
 
     const persistedRecords = (): ReadonlyArray<PersistedOwnedSession> => [...sessions.values()].map((session) => ({
@@ -640,6 +643,24 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       catch: (cause) => new SessionStorageError({ message: "Could not persist owned-session metadata", cause }),
     });
 
+    const persistTimeline = (session: MutableOwnedSession): void => {
+      const sessionId = session.snapshot.id;
+      const timeline = { sequence: session.sequence, events: cloneSession(session.snapshot).events };
+      const previous = timelinePersistenceTails.get(sessionId) ?? Promise.resolve();
+      const next = previous.then(() => persistOwnedSessionTimeline(timelineDirectory, sessionId, timeline));
+      timelinePersistenceTails.set(sessionId, next.catch(() => undefined));
+      void next.catch((cause) => console.error(`Could not persist timeline for session ${sessionId}`, cause));
+    };
+
+    const removeTimeline = (sessionId: string): Effect.Effect<void, SessionStorageError> => Effect.tryPromise({
+      try: async () => {
+        await timelinePersistenceTails.get(sessionId);
+        timelinePersistenceTails.delete(sessionId);
+        await removeOwnedSessionTimeline(timelineDirectory, sessionId);
+      },
+      catch: (cause) => new SessionStorageError({ message: `Could not remove timeline for session ${sessionId}`, cause }),
+    });
+
     const loaded = yield* Effect.tryPromise({
       try: () => loadOwnedSessions(storagePath),
       catch: (cause) => new SessionStorageError({ message: "Could not load owned-session metadata", cause }),
@@ -658,14 +679,18 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }).pipe(Effect.ensuring(Effect.promise(() => rootHandle.close())));
       const expectedWorkspace = { device: BigInt(record.workspaceIdentity.device), inode: BigInt(record.workspaceIdentity.inode) };
       const workspaceChanged = rootStat.dev !== expectedWorkspace.device || rootStat.ino !== expectedWorkspace.inode;
+      const timeline = yield* Effect.tryPromise({
+        try: () => loadOwnedSessionTimeline(timelineDirectory, record.id),
+        catch: (cause) => new SessionStorageError({ message: `Could not load persisted timeline for session ${record.id}`, cause }),
+      });
       const mutationLock = yield* Semaphore.make(1);
       const interrupted = record.status !== "stopped" && record.status !== "crashed";
       const interruptedRequestCount = record.interactiveRequests?.length ?? 0;
       const status: OwnedSessionStatus = workspaceChanged || record.status === "crashed" ? "crashed" : "stopped";
       sessions.set(record.id, {
         child: null,
-        eventBytes: 0,
-        sequence: 0,
+        eventBytes: timeline.events.reduce((total, event) => total + eventBytes(event), 0),
+        sequence: timeline.sequence,
         stderr: "",
         activeRunImageCharacters: 0,
         resumeAfterRestart: record.resumeAfterRestart === true && status === "stopped",
@@ -696,7 +721,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           compaction: record.compaction ?? idleCompaction(),
           createdAt: record.createdAt,
           lastActivityAt: record.lastActivityAt,
-          events: [],
+          events: [...timeline.events],
           interactiveRequests: [],
           error: workspaceChanged
             ? "The authorized workspace checkout changed on disk; this session cannot be resumed safely"
@@ -709,6 +734,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       });
     }), { discard: true });
     if (loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
+    yield* Effect.addFinalizer(() => Effect.promise(() => Promise.all([...timelinePersistenceTails.values()])).pipe(Effect.asVoid));
 
     const notifyAttention = (session: MutableOwnedSession): void => {
       const status = session.snapshot.status;
@@ -749,6 +775,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           crash(session, "Pi completed a run without a safe durable transcript", cause);
           void Effect.runPromise(terminate(session));
         });
+      }
+      if (type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end") {
+        persistTimeline(session);
       }
       if (session.snapshot.status !== previousStatus) {
         notifyAttention(session);
@@ -1282,6 +1311,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       const sessionFile = session.snapshot.sessionFile;
       const piSessionId = session.snapshot.piSessionId;
       const durableTranscript = Boolean(sessionFile && piSessionId && session.sessionFileIdentity);
+      const shouldReplayTranscript = durableTranscript && session.snapshot.events.length === 0;
       if (session.sessionFileIdentity && (!sessionFile || !piSessionId)) {
         return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "This session has incomplete transcript metadata" }));
       }
@@ -1313,8 +1343,6 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       session.termination = undefined;
       session.quarantined = false;
       session.stderr = "";
-      session.sequence = 0;
-      session.eventBytes = 0;
       session.activeRunImageCharacters = 0;
       session.snapshot = {
         ...session.snapshot,
@@ -1323,7 +1351,6 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         status: "starting",
         pid: child.pid ?? null,
         lastActivityAt: now(),
-        events: [],
         error: null,
       };
       attach(session);
@@ -1338,13 +1365,15 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi resumed a different transcript than requested" }));
           }
           session.sessionFileIdentity = yield* inspectSessionFile(session.snapshot.id, sessionFile!, workspace.root, piSessionId!, session.sessionFileIdentity);
-          const entriesResponse = yield* request(session, { id: `${session.snapshot.id}:resume-entries`, type: "get_entries" });
-          const entries = stateData(entriesResponse)?.entries;
-          if (!Array.isArray(entries)) {
-            return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi did not return resumable transcript entries" }));
-          }
-          for (const entry of entries.slice(-250)) {
-            for (const replayed of replayEventsFromTranscriptEntry(entry)) appendEvent(session, replayed.type, replayed.data);
+          if (shouldReplayTranscript) {
+            const entriesResponse = yield* request(session, { id: `${session.snapshot.id}:resume-entries`, type: "get_entries" });
+            const entries = stateData(entriesResponse)?.entries;
+            if (!Array.isArray(entries)) {
+              return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi did not return resumable transcript entries" }));
+            }
+            for (const entry of entries.slice(-250)) {
+              for (const replayed of replayEventsFromTranscriptEntry(entry)) appendEvent(session, replayed.type, replayed.data);
+            }
           }
         } else {
           const freshSessionId = typeof data?.sessionId === "string" ? data.sessionId : null;
@@ -1744,6 +1773,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               }));
             }
             session.child = null;
+            yield* removeTimeline(session.snapshot.id);
             sessions.delete(session.snapshot.id);
             yield* persist();
             if (![...sessions.values()].some((candidate) => candidate.snapshot.workspaceId === session.snapshot.workspaceId)) {

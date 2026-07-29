@@ -87,6 +87,7 @@ process.stdin.on("data", (chunk) => {
         console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
         if (command.message === "Delay prompt acknowledgement") console.log(JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 190000, estimatedTokensAfter: 30000 }, aborted: false, willRetry: false }));
         console.log(JSON.stringify({ type: "agent_start" }));
+        console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
         if (command.message === "Recover context overflow") {
           console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Your input exceeds the context window of this model" } }));
           console.log(JSON.stringify({ type: "compaction_start", reason: "overflow" }));
@@ -914,6 +915,7 @@ test("automatically resumes an active runtime after supervisor restart without d
     assert.equal(result.renamed.name, "Renamed across restart");
     const commands = (await readFile(commandsFile, "utf8")).trim().split("\n");
     assert.equal(commands.filter((command) => command === "prompt").length, 3);
+    assert.equal(commands.filter((command) => command === "get_entries").length, 0, "durable timeline avoids transcript replay after restart");
     const argumentSets = (await readFile(argsFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
     assert.ok(argumentSets.at(-1)?.includes("--session"));
     assert.ok(argumentSets.at(-1)?.includes(join(directory, "pi-resume.jsonl")));
