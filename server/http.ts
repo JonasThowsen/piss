@@ -25,6 +25,7 @@ import {
   type FileMentionSearchResponse,
   type OwnedSessionDetailResponse,
   type OwnedSessionListResponse,
+  type OwnedSessionStreamResponse,
   type PiSlashCommandListResponse,
   type ReviewSnapshotResponse,
   type WorkspaceListResponse,
@@ -454,9 +455,12 @@ function makeRequestHandler() {
           });
           response.flushHeaders();
           const unsubscribe = yield* supervisor.subscribe(sessionId, (session) => {
-            const events = session.events.filter((event) => event.sequence > cursor);
-            cursor = Math.max(cursor, events.at(-1)?.sequence ?? cursor);
-            response.write(`id: ${cursor}\nevent: session\ndata: ${JSON.stringify({ session: { ...session, events } } satisfies OwnedSessionDetailResponse)}\n\n`);
+            const earliestSequence = session.events.at(0)?.sequence;
+            const latestSequence = session.events.at(-1)?.sequence ?? 0;
+            const reset = cursor > latestSequence || cursor > 0 && earliestSequence !== undefined && cursor < earliestSequence - 1;
+            const events = reset ? session.events : session.events.filter((event) => event.sequence > cursor);
+            cursor = latestSequence;
+            response.write(`id: ${cursor}\nevent: session\ndata: ${JSON.stringify({ session: { ...session, events }, reset } satisfies OwnedSessionStreamResponse)}\n\n`);
           });
           const heartbeat = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
           heartbeat.unref();

@@ -232,6 +232,12 @@ export const OwnedSessionDetailResponse = Schema.Struct({
 });
 export type OwnedSessionDetailResponse = typeof OwnedSessionDetailResponse.Type;
 
+export const OwnedSessionStreamResponse = Schema.Struct({
+  session: OwnedSession,
+  reset: Schema.Boolean,
+});
+export type OwnedSessionStreamResponse = typeof OwnedSessionStreamResponse.Type;
+
 export const CreateOwnedSessionInput = Schema.Struct({
   workspaceId: WorkspaceId,
   name: Schema.String.check(Schema.isMaxLength(120), Schema.isPattern(/^[^\0]*$/)),

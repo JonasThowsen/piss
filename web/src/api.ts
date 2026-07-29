@@ -10,6 +10,7 @@ import {
   NotificationCapabilityResponse,
   OwnedSessionDetailResponse,
   OwnedSessionListResponse,
+  OwnedSessionStreamResponse,
   PiSlashCommandListResponse,
   ReviewSnapshotResponse,
   WorkspaceListResponse,
@@ -133,7 +134,7 @@ export function loadSession(sessionId: string, afterSequence?: number) {
 export function subscribeSession(
   sessionId: string,
   afterSequence: number | undefined,
-  onSession: (response: OwnedSessionDetailResponse, sequence: number) => void,
+  onSession: (response: OwnedSessionStreamResponse, sequence: number) => void,
   onConnectionChange?: (connected: boolean) => void,
 ): () => void {
   const query = afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(afterSequence)}`;
@@ -141,7 +142,7 @@ export function subscribeSession(
   const onEvent = (event: Event) => {
     try {
       const message = event as MessageEvent<string>;
-      const response = Schema.decodeUnknownSync(OwnedSessionDetailResponse)(JSON.parse(message.data));
+      const response = Schema.decodeUnknownSync(OwnedSessionStreamResponse)(JSON.parse(message.data));
       const sequence = Number(message.lastEventId);
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("Session event cursor is invalid");
       onConnectionChange?.(true);

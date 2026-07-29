@@ -376,6 +376,7 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     const initialEvent = await eventStream.next();
     assert.equal(initialEvent.done, false);
     assert.equal(initialEvent.value?.id, latestSequence);
+    assert.equal((initialEvent.value?.data as { reset?: boolean }).reset, false);
     const liveCommand = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
@@ -396,6 +397,19 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.ok(liveEvent.id > latestSequence);
     await eventStream.return(undefined);
     eventAbort.abort();
+
+    const resetAbort = new AbortController();
+    const resetResponse = await fetch(`${base}/api/sessions/${created.session.id}/events?afterSequence=999999`, {
+      headers: identityHeaders,
+      signal: resetAbort.signal,
+    });
+    const resetStream = serverSentEvents(resetResponse);
+    const resetEvent = await resetStream.next();
+    const resetPayload = resetEvent.value?.data as { reset?: boolean; session?: { events?: unknown[] } };
+    assert.equal(resetPayload.reset, true);
+    assert.ok((resetPayload.session?.events?.length ?? 0) > 0, "cursor mismatch falls back to a complete retained snapshot");
+    await resetStream.return(undefined);
+    resetAbort.abort();
 
     const staleRename = await fetch(`${base}/api/sessions/${created.session.id}`, {
       method: "PATCH",

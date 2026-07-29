@@ -499,12 +499,12 @@ export function App() {
     return subscribeSession(
       selectedSessionId,
       current?.events.at(-1)?.sequence,
-      ({ session }, sequence) => {
+      ({ session, reset }, sequence) => {
         if (selectedSessionIdRef.current !== selectedSessionId) return;
         const previous = selectedSessionRef.current?.id === selectedSessionId ? selectedSessionRef.current : undefined;
         const previousSequence = previous?.events.at(-1)?.sequence ?? 0;
-        if (sequence < previousSequence) return;
-        const next = previous
+        if (!reset && sequence < previousSequence) return;
+        const next = previous && !reset
           ? { ...session, events: mergeSessionEvents(previous.events, session.events) }
           : session;
         selectedSessionRef.current = next;
