@@ -786,7 +786,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           void Effect.runPromise(terminate(session));
         });
       }
-      if (type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end") {
+      if (type === "message_end" || type === "tool_execution_end" || type === "agent_settled" || type === "compaction_start" || type === "compaction_end" || type === "auto_retry_start" || type === "auto_retry_end") {
         persistTimeline(session);
       }
       publishSession(session);

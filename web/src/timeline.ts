@@ -2,7 +2,8 @@ import type { OwnedSessionEvent } from "../../shared/domain.ts";
 
 export type TimelineItem =
   | { readonly _tag: "message"; readonly key: string; readonly sequence: number; readonly role: "user" | "assistant"; readonly text: string; readonly imageCount: number; readonly live?: boolean }
-  | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done" };
+  | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done" }
+  | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" };
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -100,11 +101,67 @@ export function mergeSessionEvents(
 export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): ReadonlyArray<TimelineItem> {
   const items: Array<TimelineItem> = [];
   const tools = new Map<string, number>();
+  let activeCompaction: number | undefined;
+  let activeRetry: number | undefined;
   let liveText = "";
   let liveKey = "";
 
   for (const event of events) {
     const data = record(event.data);
+    if (event.type === "compaction_start") {
+      const reason = data?.reason === "overflow" ? "Context limit reached" : data?.reason === "threshold" ? "Context threshold reached" : "Manual compaction";
+      activeCompaction = items.length;
+      items.push({
+        _tag: "status",
+        key: `compaction-${event.sequence}`,
+        label: "Compacting context",
+        detail: `${reason} · preserving recent work and summarizing history`,
+        tone: "running",
+      });
+    }
+    if (event.type === "compaction_end") {
+      const result = record(data?.result);
+      const failed = data?.aborted === true || !result;
+      const before = typeof result?.tokensBefore === "number" ? result.tokensBefore : undefined;
+      const after = typeof result?.estimatedTokensAfter === "number" ? result.estimatedTokensAfter : undefined;
+      const status: TimelineItem = {
+        _tag: "status",
+        key: activeCompaction === undefined ? `compaction-${event.sequence}` : items[activeCompaction]!._tag === "status" ? items[activeCompaction]!.key : `compaction-${event.sequence}`,
+        label: failed ? data?.aborted === true ? "Compaction cancelled" : "Compaction failed" : "Context compacted",
+        detail: failed
+          ? typeof data?.errorMessage === "string" ? data.errorMessage : "Pi could not reduce the active context"
+          : before !== undefined ? `${before.toLocaleString()} → ${after?.toLocaleString() ?? "?"} estimated tokens` : "History summarized · recent work retained",
+        tone: failed ? "error" : "success",
+      };
+      if (activeCompaction === undefined) items.push(status);
+      else items[activeCompaction] = status;
+      activeCompaction = undefined;
+    }
+    if (event.type === "auto_retry_start") {
+      const attempt = typeof data?.attempt === "number" ? data.attempt : 1;
+      const maximum = typeof data?.maxAttempts === "number" ? data.maxAttempts : undefined;
+      activeRetry = items.length;
+      items.push({
+        _tag: "status",
+        key: `retry-${event.sequence}`,
+        label: "Retrying provider",
+        detail: `Attempt ${attempt}${maximum ? ` of ${maximum}` : ""}${typeof data?.delayMs === "number" ? ` · waiting ${Math.ceil(data.delayMs / 1000)}s` : ""}`,
+        tone: "running",
+      });
+    }
+    if (event.type === "auto_retry_end") {
+      const succeeded = data?.success === true;
+      const status: TimelineItem = {
+        _tag: "status",
+        key: activeRetry === undefined ? `retry-${event.sequence}` : items[activeRetry]!._tag === "status" ? items[activeRetry]!.key : `retry-${event.sequence}`,
+        label: succeeded ? "Provider recovered" : "Provider retry failed",
+        detail: succeeded ? "The session continued automatically" : typeof data?.finalError === "string" ? data.finalError : "Retry attempts were exhausted",
+        tone: succeeded ? "success" : "error",
+      };
+      if (activeRetry === undefined) items.push(status);
+      else items[activeRetry] = status;
+      activeRetry = undefined;
+    }
     if (event.type === "message_start") {
       const message = record(data?.message);
       if (message?.role === "assistant") {

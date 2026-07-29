@@ -533,6 +533,24 @@ export function App() {
   }, [isMobile]);
 
   useEffect(() => {
+    if (!selectedSession || selectedSession.status !== "finished" && selectedSession.status !== "idle") return;
+    const sessionId = selectedSession.id;
+    const runtimeId = selectedSession.runtimeId;
+    let cancelled = false;
+    void Effect.runPromise(loadSessionUsage(sessionId, runtimeId)).then(
+      ({ session }) => {
+        if (cancelled || selectedSessionIdRef.current !== sessionId) return;
+        const current = selectedSessionRef.current?.id === sessionId ? selectedSessionRef.current : undefined;
+        const next = current ? { ...session, events: mergeSessionEvents(current.events, session.events) } : session;
+        selectedSessionRef.current = next;
+        setSelectedSession(next);
+      },
+      () => undefined,
+    );
+    return () => { cancelled = true; };
+  }, [selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
+
+  useEffect(() => {
     if (activeView !== "details" || !selectedSession || selectedSession.status === "stopped" || selectedSession.status === "crashed" || selectedSession.status === "stopping") return;
     const sessionId = selectedSession.id;
     const runtimeId = selectedSession.runtimeId;
@@ -1272,6 +1290,8 @@ export function App() {
       : networkState === "syncing"
         ? "SYNCING"
         : "LIVE";
+  const contextPercent = selectedSession?.usage?.contextUsage?.percent ?? null;
+  const contextTone = contextPercent === null ? "unknown" : contextPercent >= 85 ? "danger" : contextPercent >= 70 ? "warning" : "healthy";
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1432,6 +1452,11 @@ export function App() {
               }}
             >
               <span className="sr-only" aria-live="polite">{copyFeedback ? `${copyFeedback.ok ? "Copied" : "Could not copy"} ${copyFeedback.label}` : ""}</span>
+              {activeView === "agent" && selectedSession.compaction.status === "running" && <div className="active-operation compaction" role="status">
+                <span className="operation-glyph"><RefreshCw aria-hidden="true" /></span>
+                <div><b>{selectedSession.compaction.reason === "overflow" ? "RECOVERING CONTEXT" : "COMPACTING CONTEXT"}</b><span>{selectedSession.compaction.reason === "overflow" ? "Pi is compressing history, then it will retry automatically." : "Recent work stays verbatim while older history becomes a durable summary."}</span></div>
+                <small>IN PROGRESS</small>
+              </div>}
               {selectedSession.error && <div className="runtime-error"><b>RUNTIME ERROR</b>{selectedSession.error}</div>}
               {activeView === "agent" && timeline.length === 0 && selectedSession.status === "starting" && <div className="timeline-empty"><p>Starting…</p></div>}
               {activeView === "agent" && timeline.map((item) => item._tag === "message"
@@ -1440,6 +1465,11 @@ export function App() {
                     {item.text && <div className="message-content"><Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>{item.text}</Markdown></div>}
                     {item.imageCount > 0 && <div className="message-images"><Image aria-hidden="true" /> {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
                   </article>
+                : item._tag === "status"
+                  ? <div className={`timeline-status ${item.tone}`} key={item.key} role="status">
+                      <span>{item.tone === "running" ? <RefreshCw aria-hidden="true" /> : item.tone === "success" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
+                      <div><b>{item.label}</b><small>{item.detail}</small></div>
+                    </div>
                 : item.state === "running"
                   ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
@@ -1584,6 +1614,16 @@ export function App() {
                     ><img src={image.preview} alt="" /><span aria-hidden="true"><X /></span></button>)}
                   </div>}
                 </div>
+                <button
+                  className={`context-glance ${contextTone}`}
+                  onClick={() => setActiveView("details")}
+                  type="button"
+                  aria-label={contextPercent === null ? "Context usage unavailable; open session details" : `Context is ${contextPercent.toFixed(1)} percent used; open session details`}
+                  title="Open context and compaction details"
+                >
+                  <span><small>CONTEXT</small><b>{contextPercent === null ? "—" : `${Math.round(contextPercent)}%`}</b></span>
+                  <i aria-hidden="true"><em style={{ width: `${Math.min(100, Math.max(0, contextPercent ?? 0))}%` }} /></i>
+                </button>
                 <button className={`send-button ${slashCommandMode ? "command" : ""}`} disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={slashCommandMode ? "Run Pi command" : selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? <LoaderCircle aria-hidden="true" className="icon-spin" /> : slashCommandMode ? "/" : <ArrowUp aria-hidden="true" />}</span></button>
               </div>
             </div>

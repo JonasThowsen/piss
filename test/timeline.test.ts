@@ -68,6 +68,20 @@ test("merges incremental polling responses and coalesces completed activity", ()
   assert.deepEqual(mergeSessionEvents(merged, merged), merged, "duplicate full responses are harmless");
 });
 
+test("renders compaction and retry lifecycle as settled timeline states", () => {
+  const timeline = eventTimeline([
+    event(1, "compaction_start", { reason: "overflow" }),
+    event(2, "compaction_end", { reason: "overflow", result: { tokensBefore: 198000, estimatedTokensAfter: 24000 }, aborted: false, willRetry: true }),
+    event(3, "auto_retry_start", { attempt: 1, maxAttempts: 3, delayMs: 2000 }),
+    event(4, "auto_retry_end", { success: true, attempt: 1 }),
+  ]);
+
+  assert.deepEqual(timeline, [
+    { _tag: "status", key: "compaction-1", label: "Context compacted", detail: "198,000 → 24,000 estimated tokens", tone: "success" },
+    { _tag: "status", key: "retry-3", label: "Provider recovered", detail: "The session continued automatically", tone: "success" },
+  ]);
+});
+
 test("correlates native tool lifecycle and keeps readable accumulated output", () => {
   const running = eventTimeline([
     event(1, "tool_execution_start", { toolCallId: "call-1", toolName: "bash", args: { command: "npm test" } }),
