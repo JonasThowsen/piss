@@ -432,7 +432,7 @@ test("long workspace paths keep their final directories visible", async ({ page 
 
 test("returning to the app restores the last opened session", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
-  await installApi(page);
+  const api = await installApi(page);
   await page.goto("/");
 
   await page.evaluate(async () => {
@@ -449,9 +449,11 @@ test("returning to the app restores the last opened session", async ({ page }) =
 
   await page.getByRole("button", { name: /Last opened session.*finished/i }).click();
   await expect(page.locator(".brand b")).toHaveText("Last opened session");
+  await page.waitForTimeout(100);
 
+  api.delaySessionLoad("Last opened session");
   await page.goto("/");
-  await expect(page.locator(".brand b")).toHaveText("Last opened session");
+  await expect(page.locator(".brand b")).toHaveText("Last opened session", { timeout: 300 });
   await expect(page).toHaveURL(/session=session-2/);
 
   await page.goto("/?session=session-1");

@@ -23,6 +23,7 @@ import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
 import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
+import { readCachedSession, removeCachedSession, writeCachedSession } from "./sessionCache.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
@@ -347,6 +348,13 @@ export function App() {
     setSelectedSessionId(sessionId);
     selectedSessionRef.current = undefined;
     setSelectedSession(undefined);
+    if (sessionId) {
+      void readCachedSession(sessionId).then((cached) => {
+        if (!cached || selectedSessionIdRef.current !== sessionId || selectedSessionRef.current) return;
+        selectedSessionRef.current = cached;
+        setSelectedSession(cached);
+      });
+    }
     writeLastOpenedSession(sessionId);
     const url = new URL(window.location.href);
     if (sessionId) url.searchParams.set("session", sessionId);
@@ -475,6 +483,11 @@ export function App() {
       window.removeEventListener("pageshow", refreshWhenVisible);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedSession || selectedSession.status === "starting" || selectedSession.status === "working" || selectedSession.status === "stopping") return;
+    void writeCachedSession(selectedSession).catch(() => undefined);
+  }, [selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status, selectedSession?.lastActivityAt, selectedSession?.events.at(-1)?.sequence]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1247,6 +1260,7 @@ export function App() {
     setArchiveError(undefined);
     try {
       await Effect.runPromise(archiveOwnedSession(archiveTarget.id, archiveTarget.runtimeId));
+      await removeCachedSession(archiveTarget.id).catch(() => undefined);
       sessionUiStatesRef.current.delete(archiveTarget.id);
       removeDraft(archiveTarget.id);
       if (state._tag === "Ready") {
@@ -1274,8 +1288,9 @@ export function App() {
     ? state.workspaces.find((workspace) => workspace.id === selectedSession.workspaceId)
     : undefined;
   const interactiveRequest = selectedSession?.interactiveRequests[0];
-  const canWrite = selectedSession ? isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
-  const canConfigure = selectedSession ? canConfigureSession(selectedSession.status) : false;
+  const runtimeIsCurrent = Boolean(selectedSession && selectedSessionSummary?.runtimeId === selectedSession.runtimeId && sessionSyncState !== "connecting");
+  const canWrite = selectedSession ? runtimeIsCurrent && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
+  const canConfigure = selectedSession ? runtimeIsCurrent && canConfigureSession(selectedSession.status) : false;
   const slashCommandMode = isSlashCommandInput(commandText);
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem
