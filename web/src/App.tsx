@@ -22,6 +22,7 @@ import { compact, eventTimeline } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
+import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
@@ -190,6 +191,7 @@ function ReviewView({ state, onRefresh }: { readonly state?: ReviewState; readon
 
 export function App() {
   const routedSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
+  const [initialRequestedSessionId] = useState(() => routedSessionId ?? readLastOpenedSession());
   const [state, setState] = useState<LoadState>({ _tag: "Loading" });
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [selectedSession, setSelectedSession] = useState<OwnedSession>();
@@ -212,7 +214,7 @@ export function App() {
   const [activeView, setActiveView] = useState<"agent" | "changes" | "details">("agent");
   const [reviewState, setReviewState] = useState<ReviewState>();
   const [name, setName] = useState("");
-  const [commandText, setCommandText] = useState(() => routedSessionId ? readDraft(routedSessionId)?.text ?? "" : "");
+  const [commandText, setCommandText] = useState(() => initialRequestedSessionId ? readDraft(initialRequestedSessionId)?.text ?? "" : "");
   const [images, setImages] = useState<ReadonlyArray<ComposerImage>>([]);
   const [imageSelectionPending, setImageSelectionPending] = useState(false);
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
@@ -234,7 +236,7 @@ export function App() {
   const previousMobileLayoutRef = useRef(isMobile);
   const isMobileRef = useRef(isMobile);
   const selectedSessionIdRef = useRef<string | undefined>(undefined);
-  const requestedSessionIdRef = useRef(new URLSearchParams(window.location.search).get("session") ?? undefined);
+  const requestedSessionIdRef = useRef(initialRequestedSessionId);
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const refreshInFlight = useRef(false);
   const refreshQueued = useRef(false);
@@ -341,6 +343,7 @@ export function App() {
     setOutbox(nextUi.outbox);
     setSelectedSessionId(sessionId);
     setSelectedSession(undefined);
+    writeLastOpenedSession(sessionId);
     const url = new URL(window.location.href);
     if (sessionId) url.searchParams.set("session", sessionId);
     else url.searchParams.delete("session");

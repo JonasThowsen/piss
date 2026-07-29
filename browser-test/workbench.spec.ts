@@ -430,6 +430,36 @@ test("long workspace paths keep their final directories visible", async ({ page 
   await expect(page.getByRole("button", { name: "Open workspaces and sessions" })).toBeFocused();
 });
 
+test("returning to the app restores the last opened session", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    for (const name of ["First session", "Last opened session"]) {
+      await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: "erp-deadbeef", name }),
+      });
+    }
+  });
+  await page.reload();
+  await expect(page.locator(".brand b")).toHaveText("First session");
+
+  await page.getByRole("button", { name: /Last opened session.*finished/i }).click();
+  await expect(page.locator(".brand b")).toHaveText("Last opened session");
+
+  await page.goto("/");
+  await expect(page.locator(".brand b")).toHaveText("Last opened session");
+  await expect(page).toHaveURL(/session=session-2/);
+
+  await page.goto("/?session=session-1");
+  await expect(page.locator(".brand b")).toHaveText("First session");
+  await page.goto("/");
+  await expect(page.locator(".brand b")).toHaveText("First session");
+});
+
 test("global picker fuzzily finds and opens sessions across workspaces", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   await installApi(page);
