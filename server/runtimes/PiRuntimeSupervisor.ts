@@ -57,6 +57,7 @@ const MAX_RETAINED_SESSIONS = 100;
 const MAX_ACTIVE_RUNTIMES = 50;
 const MAX_STDERR_BYTES = 32 * 1024;
 const COMMAND_TIMEOUT_MS = 10_000;
+const LONG_RUNNING_COMMAND_TIMEOUT_MS = 5 * 60_000;
 const SESSION_REPLAY_TIMEOUT_MS = 2 * 60_000;
 const IMAGE_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_PENDING_COMMANDS = 16;
@@ -951,8 +952,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           resume(Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message: "Pi RPC command queue is full" })));
           return;
         }
-        const timeout = command.type === "compact"
-          ? 5 * 60_000
+        const timeout = command.type === "compact" || command.type === "prompt"
+          // Pi acknowledges prompts only after preflight, which may run automatic compaction.
+          ? LONG_RUNNING_COMMAND_TIMEOUT_MS
           : command.type === "get_entries"
             ? SESSION_REPLAY_TIMEOUT_MS
             : Array.isArray(command.images) && command.images.length > 0

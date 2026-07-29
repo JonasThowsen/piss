@@ -81,18 +81,27 @@ process.stdin.on("data", (chunk) => {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "set_thinking_level", success: true }));
     }
     if (command.type === "prompt") {
-      if (!existsSync(sessionFile)) writeHeader();
-      appendFileSync(sessionFile, JSON.stringify({ type: "message", id: command.id, parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: command.message }] } }) + "\\n");
-      console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
-      console.log(JSON.stringify({ type: "agent_start" }));
-      console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } }));
-      if (command.message === "Request interactive input") {
-        console.log(JSON.stringify({ type: "extension_ui_request", id: "request-select", method: "select", title: "Choose safely", options: ["Allow", "Block"] }));
-      } else if (command.message === "Request timed input") {
-        console.log(JSON.stringify({ type: "extension_ui_request", id: "request-timeout", method: "input", title: "Answer quickly", timeout: 20 }));
-        setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 150);
-      } else if (command.message !== "Hold run open") {
-        setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+      const acceptPrompt = () => {
+        if (!existsSync(sessionFile)) writeHeader();
+        appendFileSync(sessionFile, JSON.stringify({ type: "message", id: command.id, parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: command.message }] } }) + "\\n");
+        console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
+        if (command.message === "Delay prompt acknowledgement") console.log(JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 190000, estimatedTokensAfter: 30000 }, aborted: false, willRetry: false }));
+        console.log(JSON.stringify({ type: "agent_start" }));
+        console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } }));
+        if (command.message === "Request interactive input") {
+          console.log(JSON.stringify({ type: "extension_ui_request", id: "request-select", method: "select", title: "Choose safely", options: ["Allow", "Block"] }));
+        } else if (command.message === "Request timed input") {
+          console.log(JSON.stringify({ type: "extension_ui_request", id: "request-timeout", method: "input", title: "Answer quickly", timeout: 20 }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 150);
+        } else if (command.message !== "Hold run open") {
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+        }
+      };
+      if (command.message === "Delay prompt acknowledgement") {
+        console.log(JSON.stringify({ type: "compaction_start", reason: "threshold" }));
+        setTimeout(acceptPrompt, 10_100);
+      } else {
+        acceptPrompt();
       }
     }
     if (command.type === "extension_ui_response") {
@@ -289,6 +298,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           const supervisor = yield* PiRuntimeSupervisor;
           const created = yield* supervisor.create({ workspaceId, name: "First owned session", prompt: "Say done" });
           let current = created;
+          for (let attempt = 0; attempt < 100 && current.status !== "finished"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            current = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Delay prompt acknowledgement");
+          current = yield* supervisor.get(created.id);
           for (let attempt = 0; attempt < 100 && current.status !== "finished"; attempt += 1) {
             yield* Effect.sleep("10 millis");
             current = yield* supervisor.get(created.id);
