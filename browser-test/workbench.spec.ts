@@ -1473,15 +1473,16 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(manualScrollTop + 1);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await timeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await timeline.hover();
+  const mobileTimeline = page.locator(".timeline");
+  await mobileTimeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await mobileTimeline.hover();
   await page.mouse.wheel(0, -200);
   const jumpToLatest = page.getByRole("button", { name: "Jump to latest message" });
   await expect(jumpToLatest).not.toHaveClass(/at-bottom/);
-  const paddingBeforeReturning = await timeline.evaluate((element) => getComputedStyle(element).paddingBottom);
-  await timeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const paddingBeforeReturning = await mobileTimeline.evaluate((element) => getComputedStyle(element).paddingBottom);
+  await mobileTimeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(jumpToLatest).toHaveClass(/at-bottom/);
-  await expect.poll(() => timeline.evaluate((element) => getComputedStyle(element).paddingBottom)).toBe(paddingBeforeReturning);
+  await expect.poll(() => mobileTimeline.evaluate((element) => getComputedStyle(element).paddingBottom)).toBe(paddingBeforeReturning);
 });
 
 test("older timeline pages preserve scroll position and detached tool output loads on expansion", async ({ page }) => {
