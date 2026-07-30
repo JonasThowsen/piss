@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -81,6 +82,12 @@ process.stdin.on("data", (chunk) => {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "set_thinking_level", success: true }));
     }
     if (command.type === "prompt") {
+      if (command.message === "/extension-notify") {
+        console.log(JSON.stringify({ type: "extension_ui_request", id: "notify-1", method: "notify", message: "MCP Server Status:\\n\\n✓ test: connected", notifyType: "info" }));
+        console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
+        continue;
+      }
+      if (command.message === "/extension-hang") continue;
       const acceptPrompt = () => {
         if (!existsSync(sessionFile)) writeHeader();
         appendFileSync(sessionFile, JSON.stringify({ type: "message", id: command.id, parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: command.message }] } }) + "\\n");
@@ -415,6 +422,15 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             yield* Effect.sleep("10 millis");
             recoveredFinalResponse = yield* supervisor.get(created.id);
           }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "/extension-notify");
+          const notified = yield* supervisor.get(created.id);
+          const hangingCommand = yield* supervisor
+            .prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "/extension-hang")
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.sleep("100 millis");
+          yield* supervisor.abort({ sessionId: created.id, runtimeId: created.runtimeId });
+          const hangingResult = yield* Fiber.await(hangingCommand);
+          const afterHangingAbort = yield* supervisor.get(created.id);
           const models = yield* supervisor.listModels({ sessionId: created.id, runtimeId: created.runtimeId });
           const slashCommands = yield* supervisor.listCommands({ sessionId: created.id, runtimeId: created.runtimeId });
           const mentions = yield* supervisor.searchMentions({ sessionId: created.id, runtimeId: created.runtimeId }, "app");
@@ -521,7 +537,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -536,6 +552,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.recoveredOverflow.compaction.reason, "overflow");
     assert.equal(result.recoveredFinalResponse.status, "finished");
     assert.match(JSON.stringify(result.recoveredFinalResponse.events), /Recovered missing final response/);
+    assert.equal(result.notified.status, "finished", "handled extension commands do not strand the session as working");
+    assert.match(JSON.stringify(result.notified.events), /MCP Server Status/);
+    assert.equal(Exit.isFailure(result.hangingResult), true);
+    assert.equal(result.afterHangingAbort.status, "finished", "aborting an unacknowledged extension command keeps the session usable");
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
     assert.deepEqual(result.models[0]?.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
     assert.deepEqual(result.slashCommands, [

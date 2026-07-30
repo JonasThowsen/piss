@@ -68,6 +68,18 @@ test("merges incremental polling responses and coalesces completed activity", ()
   assert.deepEqual(mergeSessionEvents(merged, merged), merged, "duplicate full responses are harmless");
 });
 
+test("renders fire-and-forget extension notifications as durable output", () => {
+  const timeline = eventTimeline([
+    event(1, "extension_ui_request", { method: "notify", message: "MCP Server Status:\n\n✓ jomat: connected", notifyType: "info" }),
+    event(2, "extension_ui_request", { method: "notify", message: "Authentication required", notifyType: "warning" }),
+  ]);
+
+  assert.deepEqual(timeline, [
+    { _tag: "notice", key: "notice-1", text: "MCP Server Status:\n\n✓ jomat: connected", tone: "info" },
+    { _tag: "notice", key: "notice-2", text: "Authentication required", tone: "warning" },
+  ]);
+});
+
 test("renders compaction and retry lifecycle as settled timeline states", () => {
   const timeline = eventTimeline([
     event(1, "compaction_start", { reason: "overflow" }),

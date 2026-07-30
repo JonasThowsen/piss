@@ -331,6 +331,16 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     }
     if (session && path === `/api/sessions/${session.id}/commands` && method === "POST") {
       commands.push({ ...body, sessionId: session.id });
+      if (body?.text === "/review") {
+        const latest = session.events.at(-1) as { readonly sequence?: unknown } | undefined;
+        const sequence = (typeof latest?.sequence === "number" ? latest.sequence : 0) + 1;
+        sessions[sessionIndex] = { ...session, events: [...session.events, {
+          sequence,
+          type: "extension_ui_request",
+          timestamp: new Date().toISOString(),
+          data: { method: "notify", message: "Review extension output", notifyType: "info" },
+        }], lastActivityAt: new Date().toISOString() };
+      }
       if (body?.action === "stop") sessions[sessionIndex] = { ...session, status: "stopped", lastActivityAt: new Date().toISOString() };
       if (delayNextCommand) {
         delayNextCommand = false;
@@ -647,6 +657,7 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   await page.getByRole("button", { name: "Run Pi command" }).click();
   await expect.poll(() => api.commands.at(-1)?.text).toBe("/review");
   await expect.poll(() => api.commands.at(-1)?.action).toBe("prompt");
+  await expect(page.getByText("Review extension output")).toBeVisible();
 });
 
 test("workspace creation stays stable and defaults project trust on", async ({ page }) => {

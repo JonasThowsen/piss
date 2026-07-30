@@ -248,6 +248,7 @@ export function App() {
   const [imageSelectionPending, setImageSelectionPending] = useState(false);
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
   const [busy, setBusy] = useState(false);
+  const [abortBusy, setAbortBusy] = useState(false);
   const [operationError, setOperationError] = useState<string>();
   const [creatorError, setCreatorError] = useState<string>();
   const [refreshProblem, setRefreshProblem] = useState<string>();
@@ -1268,6 +1269,28 @@ export function App() {
     }
   };
 
+  const abortRun = async () => {
+    const session = selectedSessionRef.current;
+    if (!session || abortBusy) return;
+    const targetId = session.id;
+    setAbortBusy(true);
+    setOperationError(undefined);
+    try {
+      await Effect.runPromise(sendSessionCommand({
+        sessionId: session.id,
+        runtimeId: session.runtimeId,
+        commandId: crypto.randomUUID(),
+        action: "abort",
+      }));
+      await refresh(false);
+    } catch (cause) {
+      if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
+      await refresh(false);
+    } finally {
+      setAbortBusy(false);
+    }
+  };
+
   const changeAutoCompaction = async (enabled: boolean) => {
     if (!selectedSession || busy) return;
     const targetId = selectedSession.id;
@@ -1627,6 +1650,11 @@ export function App() {
                       <span>{item.tone === "running" ? <RefreshCw aria-hidden="true" /> : item.tone === "success" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
                       <div><b>{item.label}</b><small>{item.detail}</small></div>
                     </div>
+                : item._tag === "notice"
+                  ? <article className={`extension-notice ${item.tone}`} key={item.key} data-timeline-key={item.key} role={item.tone === "error" ? "alert" : "status"}>
+                      <header><Bell aria-hidden="true" /><b>{item.tone === "error" ? "EXTENSION ERROR" : item.tone === "warning" ? "EXTENSION WARNING" : "PI NOTICE"}</b></header>
+                      <pre>{item.text}</pre>
+                    </article>
                 : item.state === "running"
                   ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
@@ -1797,7 +1825,7 @@ export function App() {
                   <button className={delivery === "steer" ? "active" : ""} onClick={() => setDelivery("steer")} type="button" aria-pressed={delivery === "steer"} title="Deliver after the current tool call, before Pi continues">STEER NEXT</button>
                   <button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")} type="button" aria-pressed={delivery === "followUp"} title="Wait until the current agent run fully settles">FOLLOW-UP</button>
                 </div>}
-                {selectedSession.status === "working" && <button className="abort" disabled={busy} onClick={() => void command("abort")} type="button"><Square aria-hidden="true" /> ABORT RUN</button>}
+                {(selectedSession.status === "working" || busy) && <button className="abort" disabled={abortBusy} onClick={() => void abortRun()} type="button"><Square aria-hidden="true" /> {abortBusy ? "ABORTING…" : "ABORT RUN"}</button>}
                 <button className="model-trigger" disabled={busy || !canConfigure} onClick={(event) => { modelReturnFocusRef.current = event.currentTarget; setModelDialogOpen(true); }} title={canConfigure ? "Change model and thinking level" : "Model changes are available when Pi is idle"} type="button">MODEL</button>
                 {(selectedSession.status === "stopped" || selectedSession.status === "crashed") && selectedSession.sessionFile && <button className="end-runtime" disabled={busy} onClick={() => void resumeSession()} type="button">{busy ? "RESUMING…" : "RESUME SESSION"}</button>}
               </div>

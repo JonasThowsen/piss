@@ -3,7 +3,8 @@ import type { OwnedSessionEvent } from "../../shared/domain.ts";
 export type TimelineItem =
   | { readonly _tag: "message"; readonly key: string; readonly sequence: number; readonly role: "user" | "assistant"; readonly text: string; readonly imageCount: number; readonly live?: boolean }
   | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
-  | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" };
+  | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" }
+  | { readonly _tag: "notice"; readonly key: string; readonly text: string; readonly tone: "info" | "warning" | "error" };
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -116,6 +117,12 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
 
   for (const event of events) {
     const data = record(event.data);
+    // TODO(tracer): Project stateful setStatus/setWidget/set_editor_text RPC
+    // methods once the web shell has session-scoped extension UI state.
+    if (event.type === "extension_ui_request" && data?.method === "notify" && typeof data.message === "string") {
+      const tone = data.notifyType === "error" ? "error" : data.notifyType === "warning" ? "warning" : "info";
+      items.push({ _tag: "notice", key: `notice-${event.sequence}`, text: data.message, tone });
+    }
     if (event.type === "compaction_start") {
       const reason = data?.reason === "overflow" ? "Context limit reached" : data?.reason === "threshold" ? "Context threshold reached" : "Manual compaction";
       activeCompaction = items.length;

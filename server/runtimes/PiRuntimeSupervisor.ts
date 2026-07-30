@@ -901,8 +901,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
     };
 
-    const failPending = (session: MutableOwnedSession, message: string, cause?: unknown): void => {
+    const failPending = (session: MutableOwnedSession, message: string, cause?: unknown, command?: string): void => {
       for (const [id, pending] of session.pending) {
+        if (command && pending.command !== command) continue;
         clearTimeout(pending.timer);
         pending.resume(Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message, cause })));
         session.pending.delete(id);
@@ -1668,7 +1669,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           }
           if (type === "prompt") {
             session.finalResponseRecoveryAttempted = false;
-            session.snapshot = { ...session.snapshot, status: "working", error: null, lastActivityAt: now() };
+            // RPC extension commands may complete without an agent run. Let
+            // lifecycle events move slash submissions to working only when Pi
+            // actually starts the agent; ordinary prompts remain optimistic so
+            // no second mutation can slip in before agent_start is projected.
+            session.snapshot = { ...session.snapshot, status: slashCommandPrompt ? session.snapshot.status : "working", error: null, lastActivityAt: now() };
           }
           session.activeRunImageCharacters += imageCharacters;
           yield* persist();
@@ -1681,7 +1686,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             Effect.tapError(() => Effect.sync(() => {
               session.activeRunImageCharacters = Math.max(0, session.activeRunImageCharacters - imageCharacters);
               if (commandId) session.acceptedCommandIds.delete(commandId);
-              if (type === "prompt" && session.snapshot.status === "working") {
+              if (type === "prompt" && !slashCommandPrompt && session.snapshot.status === "working") {
                 session.snapshot = { ...session.snapshot, status: priorStatus, lastActivityAt: now() };
               }
             }).pipe(Effect.andThen(persist()))),
@@ -1916,7 +1921,15 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       prompt: (target, text, images, commandId) => sendText(target, "prompt", text, images, commandId),
       steer: (target, text, images, commandId) => sendText(target, "steer", text, images, commandId),
       followUp: (target, text, images, commandId) => sendText(target, "follow_up", text, images, commandId),
-      abort: (target) => resolveTarget(target).pipe(Effect.flatMap((session) => request(session, { type: "abort" })), Effect.asVoid),
+      abort: (target) => resolveTarget(target).pipe(
+        Effect.flatMap((session) => Effect.sync(() => {
+          // Release an HTTP submission waiting on an extension command before
+          // asking Pi to abort. RPC abort does not cancel command handlers that
+          // are blocked in unsupported terminal-only UI.
+          failPending(session, "Pi command was aborted before it acknowledged the request", undefined, "prompt");
+        }).pipe(Effect.andThen(request(session, { type: "abort" })))),
+        Effect.asVoid,
+      ),
       stop: (target) =>
         resolveTarget(target).pipe(
           Effect.flatMap((session) => {
