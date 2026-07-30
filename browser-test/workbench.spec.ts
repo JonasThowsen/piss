@@ -442,6 +442,40 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
   expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
 });
 
+test("desktop workspace navigation scrolls independently when its contents overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 620 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    for (let index = 1; index <= 18; index += 1) {
+      await fetch("/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: `workspace-${index}`, path: `/home/jonas/coding/workspace-${index}`, trustProjectResources: true }),
+      });
+    }
+  });
+  await page.reload();
+
+  const navigation = page.locator(".workspace-list");
+  const initial = await navigation.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    scrollTop: element.scrollTop,
+  }));
+  expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight);
+  expect(initial.scrollTop).toBe(0);
+
+  const workspaceTop = await page.locator(".workspace").evaluate((element) => element.getBoundingClientRect().top);
+  await navigation.hover();
+  await page.mouse.wheel(0, 480);
+
+  await expect.poll(() => navigation.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: /workspace-18.*home\/jonas\/coding\/workspace-18/i })).toBeVisible();
+  expect(await page.locator(".workspace").evaluate((element) => element.getBoundingClientRect().top)).toBe(workspaceTop);
+});
+
 test("long workspace paths keep their final directories visible", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installApi(page);
