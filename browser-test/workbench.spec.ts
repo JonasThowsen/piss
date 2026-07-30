@@ -602,6 +602,41 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(pickerTrigger).toBeFocused();
 });
 
+test("desktop composer inserts a newline with Shift+Enter and sends with Enter", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const composer = page.getByLabel("Message Pi");
+  await composer.fill("Review @App");
+  await expect(page.getByRole("listbox", { name: "Workspace files" })).toBeVisible();
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue("Review @App\n");
+  expect(api.commands).toHaveLength(0);
+
+  await composer.fill("/");
+  const commandDialog = page.getByRole("dialog", { name: "Pi commands" });
+  await expect(commandDialog).toBeVisible();
+  await page.keyboard.press("Shift+Enter");
+  await expect(commandDialog).toBeHidden();
+  await expect(composer).toBeFocused();
+  await expect(composer).toHaveValue("/\n");
+  expect(api.commands).toHaveLength(0);
+
+  await composer.fill("First line");
+  await composer.press("Shift+Enter");
+  await composer.pressSequentially("Second line");
+
+  await expect(composer).toHaveValue("First line\nSecond line");
+  expect(api.commands).toHaveLength(0);
+
+  await composer.press("Enter");
+  await expect.poll(() => api.commands.at(-1)?.text).toBe("First line\nSecond line");
+});
+
 test("slash picker discovers and runs commands through the owned Pi runtime", async ({ page }) => {
   await page.setViewportSize({ width: 980, height: 760 });
   const api = await installApi(page);

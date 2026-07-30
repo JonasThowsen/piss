@@ -20,6 +20,7 @@ export function SlashCommandMenu({
   onChoose,
   onDismiss,
   onRemoveTrigger,
+  onInsertNewline,
 }: {
   readonly commands: ReadonlyArray<SlashCommandItem>;
   readonly query: string;
@@ -29,6 +30,7 @@ export function SlashCommandMenu({
   readonly onChoose: (command: SlashCommandItem) => void;
   readonly onDismiss: () => void;
   readonly onRemoveTrigger: () => void;
+  readonly onInsertNewline: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const selectingRef = useRef(false);
@@ -74,7 +76,10 @@ export function SlashCommandMenu({
                 }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
-                  if (event.key === "Backspace" && query.length === 0) {
+                  if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
+                    onInsertNewline();
+                  } else if (event.key === "Backspace" && query.length === 0) {
                     event.preventDefault();
                     onRemoveTrigger();
                   } else if ((highlighted ?? commands[0]) && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey || event.key === " ")) {

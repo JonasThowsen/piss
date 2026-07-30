@@ -1051,6 +1051,22 @@ export function App() {
     });
   };
 
+  const insertComposerNewline = (selectionStart?: number, selectionEnd?: number) => {
+    const textarea = composerTextareaRef.current;
+    const start = Math.max(0, Math.min(commandText.length, selectionStart ?? textarea?.selectionStart ?? commandText.length));
+    const end = Math.max(start, Math.min(commandText.length, selectionEnd ?? textarea?.selectionEnd ?? start));
+    const next = `${commandText.slice(0, start)}\n${commandText.slice(end)}`;
+    const cursor = start + 1;
+    dismissedSlashCommandRef.current = { text: next, cursor };
+    setSlashCommandMenu(undefined);
+    dismissMentionMenu();
+    setCommandText(next);
+    window.requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const createSession = async (event: FormEvent) => {
     event.preventDefault();
     if (state._tag !== "Ready") return;
@@ -1725,6 +1741,7 @@ export function App() {
                 onChoose={chooseSlashCommand}
                 onDismiss={dismissSlashCommandMenu}
                 onRemoveTrigger={removeSlashCommandTrigger}
+                onInsertNewline={() => insertComposerNewline(slashCommandMenu.active.end)}
               />}
               {mentionMenu && !isMobile && <Popover.Root open modal={false} onOpenChange={(open) => { if (!open) dismissMentionMenu(); }}>
                 <Popover.Portal>
@@ -1769,6 +1786,11 @@ export function App() {
                 }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
+                    insertComposerNewline(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+                    return;
+                  }
                   const highlightedMention = mentionMenu?.mentions[mentionMenu.highlighted];
                   if (mentionMenu && mentionMenu.mentions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
                     event.preventDefault();
