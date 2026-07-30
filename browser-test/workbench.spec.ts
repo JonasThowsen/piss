@@ -805,6 +805,65 @@ test("selecting a session shows loading feedback while its details load", async 
   await expect(loading).toHaveCount(0);
 });
 
+test("returning to a visible page reconnects a suspended session stream", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await installApi(page);
+  await page.addInitScript(() => {
+    let connections = 0;
+    Object.defineProperty(window, "__pissTestStreamConnections", {
+      configurable: true,
+      get: () => connections,
+    });
+    Object.defineProperty(window, "EventSource", {
+      configurable: true,
+      value: class extends EventTarget {
+        readonly url: string;
+        readonly withCredentials = false;
+        readonly readyState = 1;
+        private closed = false;
+
+        constructor(url: string | URL) {
+          super();
+          this.url = String(url);
+          connections += 1;
+          window.setTimeout(() => void this.publishSnapshot(), 0);
+        }
+
+        close() {
+          this.closed = true;
+        }
+
+        private async publishSnapshot() {
+          const match = /\/api\/sessions\/([^/]+)\/events/.exec(new URL(this.url, window.location.href).pathname);
+          if (!match) return;
+          const response = await fetch(`/api/sessions/${match[1]}`);
+          const body = await response.json();
+          if (this.closed) return;
+          const sequence = body.session.events.at(-1)?.sequence ?? 0;
+          this.dispatchEvent(new MessageEvent("session", {
+            data: JSON.stringify({ session: body.session, reset: false }),
+            lastEventId: String(sequence),
+          }));
+        }
+      },
+    });
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  const composer = page.getByLabel("Message Pi");
+  await expect(composer).toBeEnabled();
+  const connectionsBeforeRestore = await page.evaluate(() => (window as unknown as { __pissTestStreamConnections: number }).__pissTestStreamConnections);
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __pissTestStreamConnections: number }).__pissTestStreamConnections)).toBeGreaterThan(connectionsBeforeRestore);
+  await expect(composer).toBeEnabled();
+  await expect(composer).toHaveAttribute("placeholder", /Message Pi/);
+});
+
 test("idle sessions can change their reasoning level", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);

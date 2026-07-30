@@ -252,6 +252,7 @@ export function App() {
   const [creatorError, setCreatorError] = useState<string>();
   const [refreshProblem, setRefreshProblem] = useState<string>();
   const [sessionSyncState, setSessionSyncState] = useState<"connecting" | "live" | "fallback">("connecting");
+  const [sessionStreamGeneration, setSessionStreamGeneration] = useState(0);
   const [outbox, setOutbox] = useState<ReadonlyArray<OutboxItem>>([]);
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState>();
   const [slashCommandMenu, setSlashCommandMenu] = useState<SlashCommandMenuState>();
@@ -513,12 +514,14 @@ export function App() {
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") {
         dispatchSessionSync({ type: "visibilityRestored" });
+        setSessionStreamGeneration((current) => current + 1);
         void refresh(false);
       } else dispatchSessionSync({ type: "visibilityHidden" });
     };
     const networkDisconnected = () => dispatchSessionSync({ type: "networkDisconnected" });
     const networkReconnected = () => {
       dispatchSessionSync({ type: "networkReconnected" });
+      setSessionStreamGeneration((current) => current + 1);
       void refresh(false);
     };
     const updateLayout = () => {
@@ -567,7 +570,7 @@ export function App() {
       },
       (connected) => dispatchSessionSync({ type: connected ? "streamValidated" : "streamFailed" }),
     );
-  }, [dispatchSessionSync, selectedSessionId]);
+  }, [dispatchSessionSync, selectedSessionId, sessionStreamGeneration]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -1751,7 +1754,7 @@ export function App() {
                     submitCommand();
                   }
                 }}
-                placeholder={canWrite ? "Message Pi · / for commands · @ for files" : "This runtime is no longer writable"}
+                placeholder={canWrite ? "Message Pi · / for commands · @ for files" : selectedSession && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" ? "Reconnecting to runtime…" : "This runtime is no longer writable"}
                 rows={2}
               />
               <div className="composer-footer">
