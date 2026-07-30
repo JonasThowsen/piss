@@ -16,6 +16,8 @@ function record(): PersistedOwnedSession {
     workspaceId,
     name: "Durable session",
     status: "stopped",
+    resumeAfterRestart: true,
+    resumeRunAfterRestart: true,
     piSessionId: "pi-session-1",
     sessionFile: "/tmp/session.jsonl",
     sessionFileIdentity: { device: "1", inode: "2" },

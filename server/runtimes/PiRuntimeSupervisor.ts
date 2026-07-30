@@ -73,6 +73,8 @@ const IMAGE_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_PENDING_COMMANDS = 16;
 const MAX_ACTIVE_RUN_IMAGE_CHARACTERS = 40 * 1024 * 1024;
 const TERMINATE_TIMEOUT_MS = 2_000;
+const INTERRUPTED_RUN_CONTINUATION = "Continue the task that was interrupted by the PISS control-plane restart. Inspect the existing work and recent tool results first; do not repeat completed destructive or deployment steps unnecessarily. Finish the remaining verification and provide the final response.";
+const MISSING_FINAL_RESPONSE_CONTINUATION = "The previous run ended after tool execution without a final response. Inspect the completed tool results, perform only checks that are still necessary, and provide the final response.";
 const TERMINAL_STATUSES: ReadonlySet<OwnedSessionStatus> = new Set(["stopped", "crashed"]);
 const MONOTONIC_STATUSES: ReadonlySet<OwnedSessionStatus> = new Set(["stopping", "stopped", "crashed"]);
 
@@ -93,6 +95,8 @@ interface MutableOwnedSession {
   stderr: string;
   activeRunImageCharacters: number;
   resumeAfterRestart: boolean;
+  resumeRunAfterRestart: boolean;
+  finalResponseRecoveryAttempted: boolean;
   quarantined: boolean;
   termination?: Promise<void>;
   readonly pending: Map<string, PendingCommand>;
@@ -379,6 +383,26 @@ export function appendBoundedEvent(
   return { events, bytes };
 }
 
+function runEndedAfterToolsWithoutFinalResponse(events: ReadonlyArray<OwnedSessionEvent>): boolean {
+  const runBoundary = Math.max(
+    events.findLast((event) => event.type === "agent_start")?.sequence ?? 0,
+    events.findLast((event) => {
+      if (event.type !== "message_end" || typeof event.data !== "object" || event.data === null) return false;
+      const message = (event.data as Record<string, unknown>).message;
+      return typeof message === "object" && message !== null && (message as Record<string, unknown>).role === "user";
+    })?.sequence ?? 0,
+  );
+  const latestTool = events.findLast((event) => event.sequence > runBoundary && event.type === "tool_execution_end");
+  if (!latestTool) return false;
+  return !events.some((event) => {
+    if (event.sequence <= latestTool.sequence || event.type !== "message_end" || typeof event.data !== "object" || event.data === null) return false;
+    const message = (event.data as Record<string, unknown>).message;
+    return typeof message === "object" && message !== null
+      && (message as Record<string, unknown>).role === "assistant"
+      && textFromContent(message).trim().length > 0;
+  });
+}
+
 function isRpcMessage(value: unknown): value is RpcMessage {
   return typeof value === "object" && value !== null && !Array.isArray(value) &&
     typeof (value as Record<string, unknown>).type === "string";
@@ -628,6 +652,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       branch: session.snapshot.branch,
       status: session.snapshot.status,
       resumeAfterRestart: session.resumeAfterRestart,
+      resumeRunAfterRestart: session.resumeRunAfterRestart,
       piSessionId: session.snapshot.piSessionId,
       sessionFile: session.snapshot.sessionFile,
       sessionFileIdentity: session.sessionFileIdentity && {
@@ -780,6 +805,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         stderr: "",
         activeRunImageCharacters: 0,
         resumeAfterRestart: record.resumeAfterRestart === true && status === "stopped",
+        resumeRunAfterRestart: record.resumeRunAfterRestart === true && record.resumeAfterRestart === true && status === "stopped",
+        finalResponseRecoveryAttempted: false,
         quarantined: status === "crashed",
         pending: new Map(),
         mutationLock,
@@ -885,6 +912,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const crash = (session: MutableOwnedSession, error: string, cause?: unknown): void => {
       if (MONOTONIC_STATUSES.has(session.snapshot.status)) return;
       session.resumeAfterRestart = false;
+      session.resumeRunAfterRestart = false;
       session.quarantined = true;
       for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
       session.interactiveTimers.clear();
@@ -1036,6 +1064,24 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           session.snapshot = { ...session.snapshot, error: null };
         }
       }
+      if (message.type === "agent_settled"
+        && session.snapshot.status === "working"
+        && session.snapshot.error === null
+        && !session.finalResponseRecoveryAttempted
+        && runEndedAfterToolsWithoutFinalResponse(session.snapshot.events)) {
+        session.finalResponseRecoveryAttempted = true;
+        // TODO(tracer): Reconcile by durable transcript entry ID once live RPC
+        // message events expose that cursor; the one-shot recovery avoids loops.
+        void Effect.runPromise(request(session, {
+          id: `${session.snapshot.id}:recover-final-response:${session.snapshot.runtimeId}`,
+          type: "prompt",
+          message: MISSING_FINAL_RESPONSE_CONTINUATION,
+        })).catch((cause) => {
+          crash(session, "Pi settled after tool execution without a final response", cause);
+          void beginTermination(session);
+        });
+        return true;
+      }
       appendEvent(session, message.type, message);
       return true;
     };
@@ -1160,9 +1206,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       Effect.forEach(
         sessions.values(),
         (session) => {
-          const wasActive = !TERMINAL_STATUSES.has(session.snapshot.status);
+          const statusBeforeShutdown = session.snapshot.status;
+          const wasActive = !TERMINAL_STATUSES.has(statusBeforeShutdown);
           if (wasActive) {
             session.resumeAfterRestart = true;
+            session.resumeRunAfterRestart = statusBeforeShutdown === "working";
             session.snapshot = { ...session.snapshot, status: "stopping", lastActivityAt: now() };
           }
           const interruptedRequests = session.snapshot.interactiveRequests.length;
@@ -1234,6 +1282,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           stderr: "",
           activeRunImageCharacters: 0,
           resumeAfterRestart: false,
+          resumeRunAfterRestart: false,
+          finalResponseRecoveryAttempted: false,
           quarantined: false,
           pending: new Map(),
           mutationLock,
@@ -1345,6 +1395,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         stderr: "",
         activeRunImageCharacters: 0,
         resumeAfterRestart: false,
+        resumeRunAfterRestart: false,
+        finalResponseRecoveryAttempted: false,
         quarantined: false,
         pending: new Map(),
         mutationLock,
@@ -1382,7 +1434,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
 
     const resume: PiRuntimeSupervisorShape["resume"] = (target) => creationLock.withPermit(Effect.gen(function* () {
       const session = yield* resolveTarget(target);
+      const resumeInterruptedRun = session.resumeRunAfterRestart;
       session.resumeAfterRestart = false;
+      session.resumeRunAfterRestart = false;
       if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
         return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "This session already has an active runtime" }));
       }
@@ -1399,11 +1453,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (!workspace) return yield* Effect.fail(new WorkspaceNotFoundError({ workspaceId: session.snapshot.workspaceId }));
       const sessionFile = session.snapshot.sessionFile;
       const piSessionId = session.snapshot.piSessionId;
-      const durableTranscript = Boolean(sessionFile && piSessionId && session.sessionFileIdentity);
-      const shouldReplayTranscript = durableTranscript && session.snapshot.events.length === 0;
       if (session.sessionFileIdentity && (!sessionFile || !piSessionId)) {
         return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "This session has incomplete transcript metadata" }));
       }
+      if (resumeInterruptedRun && !session.sessionFileIdentity && sessionFile && piSessionId) {
+        session.sessionFileIdentity = yield* inspectSessionFile(session.snapshot.id, sessionFile, workspace.root, piSessionId);
+      }
+      const durableTranscript = Boolean(sessionFile && piSessionId && session.sessionFileIdentity);
+      const shouldReplayTranscript = durableTranscript && session.snapshot.events.length === 0;
       const rootHandle = yield* directories.openAuthorized(workspace.root);
       const rootStat = yield* Effect.tryPromise({
         try: () => rootHandle.stat({ bigint: true }),
@@ -1477,7 +1534,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         }
         session.snapshot = {
           ...session.snapshot,
-          status: data?.isStreaming === true ? "working" : durableTranscript ? "finished" : "idle",
+          status: data?.isStreaming === true ? "working" : resumeInterruptedRun ? "idle" : durableTranscript ? "finished" : "idle",
           pid: child.pid ?? null,
           model: availableModel(data?.model) ?? session.snapshot.model,
           thinkingLevel: thinkingLevel(data?.thinkingLevel) ?? session.snapshot.thinkingLevel,
@@ -1487,6 +1544,15 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           error: null,
         };
         yield* persist();
+        if (resumeInterruptedRun && data?.isStreaming !== true) {
+          // TODO(tracer): Replace transcript-aware continuation with detached
+          // per-session workers when exact in-flight tool survival is required.
+          yield* request(session, {
+            id: `${session.snapshot.id}:continue-after-restart:${session.snapshot.runtimeId}`,
+            type: "prompt",
+            message: INTERRUPTED_RUN_CONTINUATION,
+          });
+        }
         return cloneSession(session.snapshot);
       }).pipe(
         Effect.tapError((error) => Effect.sync(() => crash(session, error.message, error)).pipe(Effect.andThen(persist()))),
@@ -1601,6 +1667,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             }
           }
           if (type === "prompt") {
+            session.finalResponseRecoveryAttempted = false;
             session.snapshot = { ...session.snapshot, status: "working", error: null, lastActivityAt: now() };
           }
           session.activeRunImageCharacters += imageCharacters;
@@ -1855,6 +1922,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           Effect.flatMap((session) => {
             if (TERMINAL_STATUSES.has(session.snapshot.status)) return Effect.void;
             session.resumeAfterRestart = false;
+            session.resumeRunAfterRestart = false;
             const interruptedRequests = session.snapshot.interactiveRequests.length;
             for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
             session.interactiveTimers.clear();
@@ -1883,6 +1951,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             }
             if (!TERMINAL_STATUSES.has(session.snapshot.status)) {
               session.resumeAfterRestart = false;
+              session.resumeRunAfterRestart = false;
               for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
               session.interactiveTimers.clear();
               session.snapshot = {

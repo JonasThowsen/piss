@@ -88,6 +88,14 @@ process.stdin.on("data", (chunk) => {
         if (command.message === "Delay prompt acknowledgement") console.log(JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 190000, estimatedTokensAfter: 30000 }, aborted: false, willRetry: false }));
         console.log(JSON.stringify({ type: "agent_start" }));
         console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+        if (command.message.startsWith("Continue the task that was interrupted by the PISS control-plane restart.") || command.message.startsWith("The previous run ended after tool execution without a final response.")) {
+          const recoveredText = command.message.startsWith("Continue the task") ? "Recovered final response after restart" : "Recovered missing final response";
+          const message = { role: "assistant", content: [{ type: "text", text: recoveredText }], stopReason: "stop" };
+          appendFileSync(sessionFile, JSON.stringify({ type: "message", id: command.id + "-assistant", parentId: command.id, timestamp: new Date().toISOString(), message }) + "\\n");
+          console.log(JSON.stringify({ type: "message_end", message }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
         if (command.message === "Recover context overflow") {
           console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Your input exceeds the context window of this model" } }));
           console.log(JSON.stringify({ type: "compaction_start", reason: "overflow" }));
@@ -97,6 +105,17 @@ process.stdin.on("data", (chunk) => {
           return;
         }
         console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } }));
+        if (command.message === "Settle after tools without final response") {
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "missing-final-tool", toolName: "bash", result: { content: [{ type: "text", text: "tool completed" }] }, isError: false }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
+        if (command.message === "Hold long run open") {
+          for (let index = 0; index < 800; index += 1) {
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "long-tool-" + index, toolName: "bash", result: { content: [{ type: "text", text: "completed " + index }] }, isError: false }));
+          }
+          return;
+        }
         if (command.message === "Request interactive input") {
           console.log(JSON.stringify({ type: "extension_ui_request", id: "request-select", method: "select", title: "Choose safely", options: ["Allow", "Block"] }));
         } else if (command.message === "Request timed input") {
@@ -390,6 +409,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             yield* Effect.sleep("10 millis");
             recoveredOverflow = yield* supervisor.get(created.id);
           }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Settle after tools without final response");
+          let recoveredFinalResponse = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 200 && (recoveredFinalResponse.status !== "finished" || !JSON.stringify(recoveredFinalResponse.events).includes("Recovered missing final response")); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            recoveredFinalResponse = yield* supervisor.get(created.id);
+          }
           const models = yield* supervisor.listModels({ sessionId: created.id, runtimeId: created.runtimeId });
           const slashCommands = yield* supervisor.listCommands({ sessionId: created.id, runtimeId: created.runtimeId });
           const mentions = yield* supervisor.searchMentions({ sessionId: created.id, runtimeId: created.runtimeId }, "app");
@@ -496,7 +521,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -509,6 +534,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.recoveredOverflow.error, null, "successful overflow recovery clears the transient provider error");
     assert.equal(result.recoveredOverflow.compaction.status, "succeeded");
     assert.equal(result.recoveredOverflow.compaction.reason, "overflow");
+    assert.equal(result.recoveredFinalResponse.status, "finished");
+    assert.match(JSON.stringify(result.recoveredFinalResponse.events), /Recovered missing final response/);
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
     assert.deepEqual(result.models[0]?.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
     assert.deepEqual(result.slashCommands, [
@@ -767,6 +794,92 @@ test("recreates an unmaterialized idle runtime under the same session after rest
   } finally {
     if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
     else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
+    else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("continues an interrupted run after a control-plane restart and produces its final assistant response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piss-continue-run-"));
+  const argsFile = join(directory, "args.jsonl");
+  const commandsFile = join(directory, "commands.txt");
+  const previousArgsFile = process.env.FAKE_PI_ARGS;
+  const previousCommandsFile = process.env.FAKE_PI_COMMANDS;
+  const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
+  process.env.FAKE_PI_ARGS = argsFile;
+  process.env.FAKE_PI_COMMANDS = commandsFile;
+  process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-continue-run.jsonl");
+
+  try {
+    const piCommand = await fakePi(directory);
+    const workspaceRoot = join(directory, "workspace");
+    await mkdir(workspaceRoot);
+    const workspaceId = decodeWorkspaceId("piss-continue-run-deadbeef");
+    const workspace: Workspace = {
+      id: workspaceId,
+      name: "Interrupted run test",
+      root: workspaceRoot,
+      trustProjectResources: false,
+      createdAt: new Date().toISOString(),
+      sessionCount: 0,
+      activeSessionCount: 0,
+    };
+    const config: AppConfigShape = {
+      host: "127.0.0.1",
+      port: 4318,
+      stateDir: join(directory, "state"),
+      publicDir: directory,
+      piCommand,
+      piSessionRoots: [directory],
+      browserAuth: { devBypass: true, allowedUsers: new Set(), devAllowedOrigins: new Set() },
+      workspaceSeeds: [],
+      workspaceDiscoveryRoots: [],
+    };
+
+    const created = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      const session = yield* supervisor.create({ workspaceId, name: "Continue interrupted work" });
+      yield* supervisor.prompt({ sessionId: session.id, runtimeId: session.runtimeId }, "Hold long run open");
+      let working = yield* supervisor.get(session.id);
+      for (let attempt = 0; attempt < 300 && (working.status !== "working" || !(JSON.stringify(working.events.at(-1)?.data) ?? "").includes("completed 799")); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        working = yield* supervisor.get(session.id);
+      }
+      assert.equal(working.status, "working");
+      assert.equal(working.events.length, 750);
+      assert.match(JSON.stringify(working.events.at(-1)?.data), /completed 799/);
+      return session;
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    const shutdownState = JSON.parse(await readFile(join(config.stateDir, "owned-sessions.json"), "utf8")) as {
+      sessions: Array<{ resumeAfterRestart?: boolean; resumeRunAfterRestart?: boolean }>;
+    };
+    assert.equal(shutdownState.sessions[0]?.resumeAfterRestart, true);
+    assert.equal(shutdownState.sessions[0]?.resumeRunAfterRestart, true);
+
+    const resumed = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      let session = (yield* supervisor.list)[0]!;
+      for (let attempt = 0; attempt < 200 && session.status !== "finished"; attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        session = yield* supervisor.get(session.id);
+      }
+      yield* supervisor.stop({ sessionId: session.id, runtimeId: session.runtimeId });
+      return session;
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    assert.equal(resumed.id, created.id);
+    assert.notEqual(resumed.runtimeId, created.runtimeId);
+    assert.equal(resumed.status, "finished");
+    assert.ok(resumed.events.some((event) => event.type === "message_end" && JSON.stringify(event.data).includes("Recovered final response after restart")));
+    const commands = (await readFile(commandsFile, "utf8")).trim().split("\n");
+    assert.equal(commands.filter((command) => command === "prompt").length, 2);
+  } finally {
+    if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
+    else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousCommandsFile === undefined) delete process.env.FAKE_PI_COMMANDS;
+    else process.env.FAKE_PI_COMMANDS = previousCommandsFile;
     if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
     await rm(directory, { recursive: true, force: true });

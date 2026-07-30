@@ -22,7 +22,7 @@ These paths are covered by focused Node tests, an HTTP integration test with moc
 
 ## Current limitations
 
-- Pi is still a direct child of the control plane. A server-binary update resumes a durable transcript in a new process, but an in-flight tool or interactive request cannot remain live across replacement.
+- Pi is still a direct child of the control plane. A server-binary update resumes a durable transcript and continues an interrupted working run in a new process, but the exact in-flight tool process or interactive request cannot remain live across replacement.
 - Transcript reconstruction restores recent conversation messages after resume, not every historical non-message event.
 - The outgoing tray is device-local. Pi's native `queue_update` and JSONL transcript remain authoritative rather than duplicating queued prompt text in PISS storage.
 - Existing registered Git worktrees are supported, but browser-managed worktree creation is not.

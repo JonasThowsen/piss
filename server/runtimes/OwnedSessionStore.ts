@@ -22,6 +22,7 @@ export const PersistedOwnedSession = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)))),
   status: OwnedSessionStatus,
   resumeAfterRestart: Schema.optional(Schema.Boolean),
+  resumeRunAfterRestart: Schema.optional(Schema.Boolean),
   piSessionId: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
   sessionFile: Schema.NullOr(Schema.String.check(Schema.isMaxLength(16 * 1024))),
   sessionFileIdentity: Schema.NullOr(Identity),

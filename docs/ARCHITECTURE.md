@@ -39,7 +39,7 @@ Browser ── HTTPS ── PISS server ── JSONL stdin/stdout ── pi --mo
 
 The server owns multiple Pi RPC child processes. RPC exposes prompts, queues, models, compaction, statistics, extension commands, and interactive extension requests while retaining process isolation per active session.
 
-Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. A server restart stops direct children and can resume durable sessions in a new runtime generation. Transparent survival of an in-flight tool across server-binary replacement is intentionally deferred.
+Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. If Pi settles after tool execution without a displayable assistant response, PISS requests the missing final response once. A server restart stops direct children and resumes durable sessions in a new runtime generation; runs interrupted while working receive a transcript-aware continuation prompt. Transparent survival of the exact in-flight tool process across server-binary replacement remains deferred.
 
 ## Effect architecture
 
