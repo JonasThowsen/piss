@@ -817,7 +817,6 @@ button { color: inherit; }
   .capability-tabs button { height: 38px; padding: 0 11px; font-size: 11px; }
   .capability-tabs button em { min-width: 17px; height: 17px; padding: 0 4px; }
   .timeline { padding: 14px 11px 64px; }
-  .timeline-wrap:has(.jump-bottom.at-bottom) .timeline { padding-bottom: 24px; }
   .message { margin-bottom: 18px; }
   .message > div { font-size: 15px; line-height: 1.58; }
   .message.user { width: 100%; padding: 11px 12px; }
