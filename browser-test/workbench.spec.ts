@@ -371,6 +371,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     setEvents(events: unknown[]) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, events, lastActivityAt: new Date().toISOString() };
     },
+    setEventsFor(name: string, events: unknown[]) {
+      const index = sessions.findIndex((session) => session.name === name);
+      if (index >= 0) sessions[index] = { ...sessions[index]!, events, lastActivityAt: new Date().toISOString() };
+    },
     setHistoricalEvents(events: typeof historicalEvents) {
       historicalEvents = events;
     },
@@ -932,13 +936,39 @@ test("selecting a session shows loading feedback while its details load", async 
   await createSession("First session");
   await createSession("Second session");
 
+  const event = (text: string) => ({
+    sequence: 1,
+    type: "message_end",
+    timestamp: new Date().toISOString(),
+    data: { message: { role: "assistant", content: [{ type: "text", text }] } },
+  });
+  api.setEventsFor("First session", [event("Stale cached chat")]);
+  await page.evaluate(async () => {
+    const { session } = await fetch("/api/sessions/session-1").then((response) => response.json());
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("piss-session-cache", 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction("sessions", "readwrite");
+      transaction.objectStore("sessions").put({ id: session.id, cachedAt: Date.now(), session });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+  });
+  api.setEventsFor("First session", [event("Fresh authoritative chat")]);
   api.delaySessionLoad("First session");
+
   await page.getByRole("button", { name: /First session.*finished/i }).click();
   const loading = page.locator(".session-loading");
-  await expect(loading.getByRole("heading", { name: "Loading session" })).toBeVisible();
   await expect(loading).toContainText("Opening First session");
+  await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No session selected" })).toHaveCount(0);
   await expect(page.locator(".brand b")).toHaveText("First session");
+  await expect(page.getByText("Fresh authoritative chat", { exact: true })).toBeVisible();
+  await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
   await expect(loading).toHaveCount(0);
 });
 

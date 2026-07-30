@@ -225,6 +225,7 @@ export function App() {
   const [state, setState] = useState<LoadState>({ _tag: "Loading" });
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [selectedSession, setSelectedSession] = useState<OwnedSession>();
+  const [loadingSessionId, setLoadingSessionId] = useState<string>();
   const [workspaceId, setWorkspaceId] = useState("");
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
@@ -1149,6 +1150,7 @@ export function App() {
   };
 
   const openSession = async (sessionId: string) => {
+    setLoadingSessionId(sessionId);
     selectSession(sessionId);
     const generation = detailGeneration.current;
     setSidebarOpen(false);
@@ -1157,9 +1159,20 @@ export function App() {
       const session = loaded.status === "finished"
         ? (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session
         : loaded;
-      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) acceptAuthoritativeSession(session);
+      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) {
+        dispatchSessionSync({
+          type: "snapshotReset",
+          session,
+          cursor: session.events.at(-1)?.sequence ?? 0,
+          receivedAt: Date.now(),
+        });
+        setLoadingSessionId(undefined);
+      }
     } catch (error) {
-      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) setOperationError(errorMessage(error));
+      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) {
+        setLoadingSessionId(undefined);
+        setOperationError(errorMessage(error));
+      }
     }
   };
 
@@ -1493,6 +1506,7 @@ export function App() {
       : networkState === "syncing"
         ? "SYNCING"
         : "LIVE";
+  const sessionIsLoading = Boolean(selectedSessionId && (loadingSessionId === selectedSessionId || !sessionSyncRef.current.serverConfirmed));
   const contextPercent = selectedSession?.usage?.contextUsage?.percent ?? null;
   const contextTone = contextPercent === null ? "unknown" : contextPercent >= 85 ? "danger" : contextPercent >= 70 ? "warning" : "healthy";
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
@@ -1505,8 +1519,8 @@ export function App() {
     <div className={`shell ${mobileKeyboardOpen ? "mobile-keyboard-open" : ""}`} ref={shellRef}>
       <header className="masthead">
         <Drawer.Trigger className="mobile-menu" ref={mobileMenuRef} aria-label="Open workspaces and sessions"><Menu aria-hidden="true" /></Drawer.Trigger>
-        <div className={`brand ${selectedSession ? "session-brand" : ""}`} title={selectedWorkspace?.root} ref={sessionHeadingRef} tabIndex={-1}>
-          {selectedSession && <>
+        <div className={`brand ${selectedSession && !sessionIsLoading ? "session-brand" : ""}`} title={selectedWorkspace?.root} ref={sessionHeadingRef} tabIndex={-1}>
+          {selectedSession && !sessionIsLoading && <>
             <span className="brand-mark">π</span>
             <div>
               <b>{selectedSession.name}</b>
@@ -1608,7 +1622,7 @@ export function App() {
 
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
-        {selectedSession ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
+        {selectedSession && !sessionIsLoading ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
           const next = value as "agent" | "changes" | "details";
           setActiveView(next);
           if (next === "changes") void requestReview(selectedSession);
