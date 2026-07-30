@@ -325,6 +325,7 @@ function makeRequestHandler() {
             ok: true,
             apiVersion: 1,
             architecture: "effect-v4",
+            deploymentProtocolVersion: 1,
             updateActivation: "quiescent-sigusr2",
           });
           return;

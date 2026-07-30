@@ -176,7 +176,9 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
 
     const health = await fetch(`${base}/api/health`);
     assert.equal(health.status, 200);
-    assert.equal((await health.json() as { updateActivation?: string }).updateActivation, "quiescent-sigusr2");
+    const healthBody = await health.json() as { deploymentProtocolVersion?: number; updateActivation?: string };
+    assert.equal(healthBody.deploymentProtocolVersion, 1);
+    assert.equal(healthBody.updateActivation, "quiescent-sigusr2");
 
     const unauthenticatedNotifications = await fetch(`${base}/api/notifications`);
     assert.equal(unauthenticatedNotifications.status, 401);
