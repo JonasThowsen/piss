@@ -36,6 +36,11 @@ export function SlashCommandMenu({
   const searchRef = useRef<HTMLInputElement>(null);
   const selectingRef = useRef(false);
   const [highlighted, setHighlighted] = useState<SlashCommandItem>();
+  const choose = (command: SlashCommandItem) => {
+    if (selectingRef.current) return;
+    selectingRef.current = true;
+    onChoose(command);
+  };
 
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onDismiss(); }}>
     <Dialog.Portal>
@@ -51,12 +56,7 @@ export function SlashCommandMenu({
             filteredItems={commands}
             inputValue={query}
             onItemHighlighted={setHighlighted}
-            onValueChange={(command) => {
-              if (command) {
-                selectingRef.current = true;
-                onChoose(command);
-              }
-            }}
+            onValueChange={(command) => { if (command) choose(command); }}
             itemToStringLabel={(command: SlashCommandItem) => command.name}
             inline
             open
@@ -85,8 +85,7 @@ export function SlashCommandMenu({
                     onRemoveTrigger();
                   } else if ((highlighted ?? commands[0]) && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey || event.key === " ")) {
                     event.preventDefault();
-                    selectingRef.current = true;
-                    onChoose(highlighted ?? commands[0]!);
+                    choose(highlighted ?? commands[0]!);
                   }
                 }}
               />

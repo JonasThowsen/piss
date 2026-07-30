@@ -95,6 +95,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   let delayNextCommand = false;
   let delayNextMentionSearch = false;
   let delayedSessionLoadId: string | undefined;
+  let delayedSessionLoadMs = 500;
   let historicalEvents: Array<{ readonly sequence: number; readonly type: string; readonly timestamp: string; readonly data: unknown }> = [];
   const detachedOutputs = new Map<string, unknown>();
   let reviewRequests = 0;
@@ -213,7 +214,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     if (session && path === `/api/sessions/${session.id}` && method === "GET") {
       if (delayedSessionLoadId === session.id) {
         delayedSessionLoadId = undefined;
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, delayedSessionLoadMs));
       }
       await route.fulfill({ json: { session } });
       return;
@@ -391,8 +392,9 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     delayNextMentionSearch() {
       delayNextMentionSearch = true;
     },
-    delaySessionLoad(name: string) {
+    delaySessionLoad(name: string, delayMs = 500) {
       delayedSessionLoadId = sessions.find((session) => session.name === name)?.id;
+      delayedSessionLoadMs = delayMs;
     },
     reviewRequestCount() {
       return reviewRequests;
@@ -967,7 +969,9 @@ test("selecting a session shows loading feedback while its details load", async 
     database.close();
   });
   api.setEventsFor("First session", [event("Fresh authoritative chat")]);
-  api.delaySessionLoad("First session");
+  // Cross the periodic refresh boundary: refresh used to invalidate the detail
+  // generation and leave this explicit loading indicator stuck forever.
+  api.delaySessionLoad("First session", 2_000);
 
   await page.getByRole("button", { name: /First session.*finished/i }).click();
   const loading = page.locator(".session-loading");

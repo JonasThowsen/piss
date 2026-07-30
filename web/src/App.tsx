@@ -322,6 +322,7 @@ export function App() {
   const followingRef = useRef(true);
   const sessionSyncRef = useRef(initialSessionSyncState());
   const detailGeneration = useRef(0);
+  const sessionOpenRequest = useRef(0);
   const reviewGeneration = useRef(0);
   const sessionUiStatesRef = useRef(new Map<string, SessionUiState>());
   const currentSessionUiRef = useRef<SessionUiState>(emptySessionUiState());
@@ -393,6 +394,8 @@ export function App() {
       ? sessionUiStatesRef.current.get(sessionId) ?? { ...emptySessionUiState(), commandText: persisted?.text ?? "", delivery: persisted?.delivery ?? "steer" }
       : emptySessionUiState();
     detailGeneration.current += 1;
+    sessionOpenRequest.current += 1;
+    setLoadingSessionId(undefined);
     dismissMentionMenu();
     setSlashCommandMenu(undefined);
     selectedSessionIdRef.current = sessionId;
@@ -1172,28 +1175,30 @@ export function App() {
   };
 
   const openSession = async (sessionId: string) => {
-    setLoadingSessionId(sessionId);
     selectSession(sessionId);
-    const generation = detailGeneration.current;
+    const requestId = ++sessionOpenRequest.current;
+    setLoadingSessionId(sessionId);
     setSidebarOpen(false);
     try {
       const loaded = (await Effect.runPromise(loadSession(sessionId))).session;
       const session = loaded.status === "finished"
         ? (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session
         : loaded;
-      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) {
+      if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
         dispatchSessionSync({
           type: "snapshotReset",
           session,
           cursor: session.events.at(-1)?.sequence ?? 0,
           receivedAt: Date.now(),
         });
-        setLoadingSessionId(undefined);
       }
     } catch (error) {
-      if (selectedSessionIdRef.current === sessionId && detailGeneration.current === generation) {
-        setLoadingSessionId(undefined);
+      if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
         setOperationError(errorMessage(error));
+      }
+    } finally {
+      if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
+        setLoadingSessionId(undefined);
       }
     }
   };
