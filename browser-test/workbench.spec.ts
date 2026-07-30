@@ -646,7 +646,13 @@ test("desktop composer inserts a newline with Shift+Enter and sends with Enter",
 
   const composer = page.getByLabel("Message Pi");
   await composer.fill("Review @App");
-  await expect(page.getByRole("listbox", { name: "Workspace files" })).toBeVisible();
+  const mentionOptions = page.getByRole("listbox", { name: "Workspace files" }).getByRole("option");
+  await expect(mentionOptions).toHaveCount(2);
+  await expect(composer).toBeFocused();
+  await composer.press("Control+n");
+  await expect(mentionOptions.nth(1)).toHaveAttribute("aria-selected", "true");
+  await composer.press("Control+p");
+  await expect(mentionOptions.first()).toHaveAttribute("aria-selected", "true");
   await composer.press("Shift+Enter");
   await expect(composer).toHaveValue("Review @App\n");
   expect(api.commands).toHaveLength(0);
@@ -662,7 +668,8 @@ test("desktop composer inserts a newline with Shift+Enter and sends with Enter",
 
   await composer.fill("First line");
   await composer.press("Shift+Enter");
-  await composer.pressSequentially("Second line");
+  await expect(composer).toHaveValue("First line\n");
+  await composer.pressSequentially("Second line", { delay: 10 });
 
   await expect(composer).toHaveValue("First line\nSecond line");
   expect(api.commands).toHaveLength(0);
@@ -689,9 +696,21 @@ test("slash picker discovers and runs commands through the owned Pi runtime", as
   const commandList = commandDialog.getByRole("listbox", { name: "Pi commands" });
   await expect(commandDialog).toBeVisible();
   await expect(commandSearch).toBeFocused();
-  await expect(commandList.getByRole("option")).toHaveCount(9);
+  const commandOptions = commandList.getByRole("option");
+  await expect(commandOptions).toHaveCount(9);
   await expect(commandList.getByRole("option", { name: /resume.*built-in/i })).toBeVisible();
   await expect(commandList.getByRole("option", { name: /review.*extension/i })).toBeVisible();
+  await commandSearch.press("Control+n");
+  await expect(commandOptions.first()).toHaveAttribute("data-highlighted");
+  await commandSearch.press("Control+n");
+  await expect(commandOptions.nth(1)).toHaveAttribute("data-highlighted");
+  await commandSearch.press("Control+p");
+  await expect(commandOptions.first()).toHaveAttribute("data-highlighted");
+  await commandSearch.press("Control+p");
+  await expect(commandOptions.last()).toHaveAttribute("data-highlighted");
+  await expect(commandOptions.last()).toBeVisible();
+  await commandSearch.press("Control+n");
+  await expect(commandOptions.first()).toHaveAttribute("data-highlighted");
 
   await commandSearch.press("Backspace");
   await expect(commandDialog).toHaveCount(0);
@@ -1187,8 +1206,16 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.getByLabel("Message Pi").fill("Review @app");
   const mentionPicker = page.getByRole("dialog", { name: "Mention a file" });
   await expect(mentionPicker).toBeVisible();
-  await expect(mentionPicker.getByLabel("Search workspace files")).toHaveValue("app");
+  const mentionSearch = mentionPicker.getByLabel("Search workspace files");
+  const mobileMentionOptions = mentionPicker.getByRole("option");
+  await expect(mentionSearch).toHaveValue("app");
   await expect(mentionPicker.getByRole("option", { name: /App\.tsx/ })).toBeVisible();
+  await mentionSearch.press("Control+n");
+  await expect(mobileMentionOptions.first()).toHaveAttribute("data-highlighted");
+  await mentionSearch.press("Control+n");
+  await expect(mobileMentionOptions.nth(1)).toHaveAttribute("data-highlighted");
+  await mentionSearch.press("Control+p");
+  await expect(mobileMentionOptions.first()).toHaveAttribute("data-highlighted");
   await expect.poll(() => api.mentionSearches.at(-1)).toEqual({ query: "app", runtimeId: "runtime-1" });
   await mentionPicker.getByLabel("Search workspace files").fill("chat components");
   await expect(page.getByLabel("Message Pi")).toHaveValue("Review @app");
@@ -1233,7 +1260,15 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.getByRole("button", { name: "MODEL" }).click();
   const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
   await expect(modelDialog).toBeVisible();
+  const modelSearch = modelDialog.getByPlaceholder("Filter models…");
+  const modelOptions = modelDialog.getByRole("option");
   await expect(modelDialog.locator(".model-option b")).toHaveText(["GPT-5.10", "GPT-5.9", "GPT-5.6", "GPT-5.4"]);
+  await modelSearch.press("Control+n");
+  await expect(modelOptions.first()).toHaveAttribute("data-highlighted");
+  await modelSearch.press("Control+n");
+  await expect(modelOptions.nth(1)).toHaveAttribute("data-highlighted");
+  await modelSearch.press("Control+p");
+  await expect(modelOptions.first()).toHaveAttribute("data-highlighted");
   const modelSections = await modelDialog.evaluate((element) => {
     const current = element.querySelector(".model-current")!.getBoundingClientRect();
     const catalog = element.querySelector(".model-catalog")!.getBoundingClientRect();

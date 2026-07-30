@@ -17,6 +17,7 @@ import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritabl
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
+import { nextOptionIndex, optionNavigationDirection, remapOptionNavigationKey, scrollOptionIntoView } from "./optionNavigation.ts";
 import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
 import { compact, eventTimeline, valueText } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
@@ -291,13 +292,16 @@ export function App() {
   const mentionSearchTimerRef = useRef(0);
   const copyFeedbackTimerRef = useRef(0);
   const mentionSearchGenerationRef = useRef(0);
+  const mentionMenuRef = useRef<MentionMenuState | undefined>(undefined);
   const lastMentionMenuRef = useRef<MentionMenuState | undefined>(undefined);
+  const mentionOptionsRef = useRef<MentionMenuState | undefined>(undefined);
   const requestMentionSearchRef = useRef<(active: ActiveFileMention, query: string) => void>(() => undefined);
   const slashCommandCatalogRef = useRef(new Map<string, ReadonlyArray<PiSlashCommand>>());
   const slashCommandRequestsRef = useRef(new Map<string, Promise<ReadonlyArray<PiSlashCommand>>>());
   const dismissedSlashCommandRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
   const completedMentionRef = useRef<{ readonly text: string; readonly cursor: number } | undefined>(undefined);
   const suppressMentionSelectionRef = useRef(false);
+  const optionNavigationModifierRef = useRef(false);
   const imagesRef = useRef<ReadonlyArray<ComposerImage>>([]);
   const imageSelectionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const shellRef = useRef<HTMLDivElement>(null);
@@ -322,7 +326,9 @@ export function App() {
   currentSessionUiRef.current = { commandText, images, delivery, busy, operationError, outbox };
   isMobileRef.current = isMobile;
   selectedSessionRef.current = selectedSession;
+  mentionMenuRef.current = mentionMenu;
   if (mentionMenu) lastMentionMenuRef.current = mentionMenu;
+  if (mentionMenu?.mentions.length) mentionOptionsRef.current = mentionMenu;
   imagesRef.current = images;
 
   const dispatchSessionSync = useCallback((input: SessionSyncInput) => {
@@ -848,12 +854,19 @@ export function App() {
       return;
     }
 
-    setMentionMenu({ active, mentions: [], loading: true, highlighted: 0 });
+    const isSameSearch = (current: MentionMenuState | undefined): current is MentionMenuState => current?.active.start === active.start
+      && current.active.end === active.end
+      && current.active.query === query;
+    setMentionMenu((current) => isSameSearch(current)
+      ? { ...current, loading: true, error: undefined }
+      : { active, mentions: [], loading: true, highlighted: 0 });
     mentionSearchTimerRef.current = window.setTimeout(() => {
       void Effect.runPromise(searchFileMentions(session.id, session.runtimeId, query)).then(
         ({ mentions }) => {
           if (mentionSearchGenerationRef.current !== generation || selectedSessionIdRef.current !== session.id) return;
-          setMentionMenu({ active, mentions, loading: false, highlighted: 0 });
+          setMentionMenu((current) => isSameSearch(current)
+            ? { ...current, mentions, loading: false, error: undefined, highlighted: Math.min(current.highlighted, Math.max(0, mentions.length - 1)) }
+            : { active, mentions, loading: false, highlighted: 0 });
         },
         (cause) => {
           if (mentionSearchGenerationRef.current !== generation || selectedSessionIdRef.current !== session.id) return;
@@ -1023,8 +1036,9 @@ export function App() {
   };
 
   const chooseMention = (item: FileMention) => {
-    if (!mentionMenu) return;
-    const applied = applyFileMention(commandText, mentionMenu.active, item.path);
+    const currentMentionMenu = mentionMenuRef.current?.mentions.length ? mentionMenuRef.current : mentionOptionsRef.current ?? lastMentionMenuRef.current;
+    if (!currentMentionMenu) return;
+    const applied = applyFileMention(commandText, currentMentionMenu.active, item.path);
     setCommandText(applied.text);
     setMentionMenu(undefined);
     completedMentionRef.current = applied;
@@ -1777,6 +1791,7 @@ export function App() {
                   if (pastedImages.length > 0) void selectImages(pastedImages);
                 }}
                 onSelect={(event) => {
+                  if (optionNavigationModifierRef.current) return;
                   if (suppressMentionSelectionRef.current) {
                     suppressMentionSelectionRef.current = false;
                     return;
@@ -1785,25 +1800,38 @@ export function App() {
                   scheduleMentionSearch(event.currentTarget.value, event.currentTarget.selectionStart);
                 }}
                 onKeyDown={(event) => {
+                  if (event.key === "Control") {
+                    optionNavigationModifierRef.current = true;
+                    return;
+                  }
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === "Enter" && event.shiftKey) {
                     event.preventDefault();
                     insertComposerNewline(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
                     return;
                   }
-                  const highlightedMention = mentionMenu?.mentions[mentionMenu.highlighted];
-                  if (mentionMenu && mentionMenu.mentions.length > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                  const currentMentionMenu = mentionMenuRef.current?.mentions.length
+                    ? mentionMenuRef.current
+                    : document.getElementById("file-mention-options") ? mentionOptionsRef.current : undefined;
+                  const highlightedMention = currentMentionMenu?.mentions[currentMentionMenu.highlighted];
+                  const navigationDirection = optionNavigationDirection(event);
+                  if (currentMentionMenu && currentMentionMenu.mentions.length > 0 && navigationDirection !== undefined) {
                     event.preventDefault();
-                    const direction = event.key === "ArrowDown" ? 1 : -1;
-                    setMentionMenu((current) => current ? { ...current, highlighted: (current.highlighted + direction + current.mentions.length) % current.mentions.length } : current);
+                    const highlighted = nextOptionIndex(currentMentionMenu.highlighted, currentMentionMenu.mentions.length, navigationDirection);
+                    const nextMentionMenu = { ...currentMentionMenu, highlighted };
+                    mentionMenuRef.current = nextMentionMenu;
+                    setMentionMenu(nextMentionMenu);
+                    scrollOptionIntoView(`file-mention-${highlighted}`);
                     return;
                   }
-                  if (mentionMenu && highlightedMention && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); chooseMention(highlightedMention); return; }
+                  if (currentMentionMenu && highlightedMention && (event.key === "Enter" || event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); chooseMention(highlightedMention); return; }
                   if (!window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     submitCommand();
                   }
                 }}
+                onKeyUp={(event) => { if (event.key === "Control") optionNavigationModifierRef.current = false; }}
+                onBlur={() => { optionNavigationModifierRef.current = false; }}
                 placeholder={canWrite ? "Message Pi · / for commands · @ for files" : selectedSession && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" ? "Reconnecting to runtime…" : "This runtime is no longer writable"}
                 rows={2}
               />
@@ -1945,7 +1973,7 @@ export function App() {
                   aria-label="Search workspace files"
                   placeholder="Search files"
                   onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing) return;
+                    if (event.nativeEvent.isComposing || remapOptionNavigationKey(event)) return;
                     if (event.key === "Backspace" && mentionPickerQuery.length === 0) {
                       event.preventDefault();
                       removeActiveMention();
@@ -2452,7 +2480,7 @@ function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }
           disabled={pending}
         >
           <section className="model-catalog">
-            <label className="model-search"><span>AVAILABLE MODELS</span><Combobox.Input ref={searchRef} placeholder="Filter models…" autoComplete="off" /></label>
+            <label className="model-search"><span>AVAILABLE MODELS</span><Combobox.Input ref={searchRef} placeholder="Filter models…" autoComplete="off" onKeyDown={remapOptionNavigationKey} /></label>
             <Combobox.List className="model-options" aria-label="Available models">
               <Combobox.Status className="model-status">
                 {loading && <div className="model-state">Loading models…</div>}

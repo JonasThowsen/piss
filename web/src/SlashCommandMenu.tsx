@@ -2,6 +2,7 @@ import { Combobox } from "@base-ui/react/combobox";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, Search, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { remapOptionNavigationKey } from "./optionNavigation.ts";
 import type { SlashCommandItem } from "./slashCommands.ts";
 
 const SOURCE_LABELS: Readonly<Record<SlashCommandItem["source"], string>> = {
@@ -75,7 +76,7 @@ export function SlashCommandMenu({
                   if (!selectingRef.current && event.nativeEvent.isTrusted) onQueryChange(event.currentTarget.value);
                 }}
                 onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing) return;
+                  if (event.nativeEvent.isComposing || remapOptionNavigationKey(event)) return;
                   if (event.key === "Enter" && event.shiftKey) {
                     event.preventDefault();
                     onInsertNewline();
@@ -111,7 +112,7 @@ export function SlashCommandMenu({
               </Combobox.Item>)}
             </Combobox.List>
           </Combobox.Root>
-          <footer className="slash-command-footer"><span><kbd><ArrowUp aria-hidden="true" /><ArrowDown aria-hidden="true" /></kbd> move</span><span><kbd><CornerDownLeft aria-hidden="true" /></kbd> insert command</span><span><kbd>esc</kbd> close</span></footer>
+          <footer className="slash-command-footer"><span><kbd><ArrowUp aria-hidden="true" /><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> move</span><span><kbd><CornerDownLeft aria-hidden="true" /></kbd> insert command</span><span><kbd>esc</kbd> close</span></footer>
         </Dialog.Popup>
       </Dialog.Viewport>
     </Dialog.Portal>

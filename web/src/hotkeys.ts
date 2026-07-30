@@ -6,6 +6,4 @@ import type { Hotkey } from "@tanstack/react-hotkeys";
  */
 export const HOTKEYS = {
   openGlobalPicker: "Mod+K" as Hotkey,
-  pickerNext: ["ArrowDown", "Control+N"] as const satisfies ReadonlyArray<Hotkey>,
-  pickerPrevious: ["ArrowUp", "Control+P"] as const satisfies ReadonlyArray<Hotkey>,
 };

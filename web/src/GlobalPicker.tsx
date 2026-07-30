@@ -1,7 +1,8 @@
 import { Combobox } from "@base-ui/react/combobox";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, ExternalLink, Search, X } from "lucide-react";
-import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useMemo, useRef, useState } from "react";
+import { remapOptionNavigationKey } from "./optionNavigation.ts";
 import { searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
 export function GlobalPicker<Action>({
@@ -35,16 +36,6 @@ export function GlobalPicker<Action>({
   const [highlighted, setHighlighted] = useState<PickerItem<Action>>();
   const inputRef = useRef<HTMLInputElement>(null);
   const matches = useMemo(() => searchPickerItems(items, query, matcher).slice(0, 50).map(({ item }) => item), [items, matcher, query]);
-
-  const moveWithEmacsKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.nativeEvent.isComposing) return;
-    if (!event.ctrlKey || (event.key !== "n" && event.key !== "p")) return;
-    event.preventDefault();
-    event.currentTarget.dispatchEvent(new KeyboardEvent("keydown", {
-      key: event.key === "n" ? "ArrowDown" : "ArrowUp",
-      bubbles: true,
-    }));
-  };
 
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Portal>
@@ -94,7 +85,7 @@ export function GlobalPicker<Action>({
                     onChoose((highlighted && matches.includes(highlighted) ? highlighted : matches[0]!).action);
                   }
                 }}
-                onKeyDown={moveWithEmacsKey}
+                onKeyDown={remapOptionNavigationKey}
               />
               <kbd>ESC</kbd>
             </label>
