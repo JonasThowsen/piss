@@ -44,6 +44,7 @@ button { color: inherit; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 0 22px;
   border-bottom: 1px solid var(--line);
   background: rgba(251, 252, 248, .94);

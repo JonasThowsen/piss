@@ -551,8 +551,17 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await page.reload();
   await expect(page.getByLabel("Message Pi")).toBeVisible();
 
+  const pickerTrigger = page.getByRole("button", { name: "Search sessions" });
+  await expect(pickerTrigger.locator("kbd")).toHaveText("Ctrl+K");
+  const headerGap = await pickerTrigger.evaluate((trigger) => {
+    const triggerBounds = trigger.getBoundingClientRect();
+    const networkBounds = document.querySelector<HTMLElement>(".network")!.getBoundingClientRect();
+    return networkBounds.left - triggerBounds.right;
+  });
+  expect(headerGap).toBeGreaterThanOrEqual(16);
+
   await page.getByLabel("Message Pi").focus();
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("Control+k");
   const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
   const search = picker.getByLabel("Search sessions");
   const options = picker.getByRole("option");
@@ -578,7 +587,7 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(picker).toBeHidden();
 
   await page.getByLabel("Message Pi").focus();
-  await page.keyboard.press("Meta+k");
+  await page.keyboard.press("Control+k");
   await expect(search).toBeFocused();
   await search.fill("auth feat");
   await expect(picker.getByRole("option", { name: /Authentication refactor.*feat\/browser-test/i })).toBeVisible();
@@ -586,7 +595,6 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(picker).toBeHidden();
   await expect(page.getByLabel("Message Pi")).toBeFocused();
 
-  const pickerTrigger = page.getByRole("button", { name: "Search sessions" });
   await pickerTrigger.click();
   await expect(picker.getByRole("option")).toHaveCount(2);
   await page.mouse.click(2, 2);
