@@ -412,6 +412,36 @@ test("empty first-run mobile state exposes workspace creation directly", async (
   await expect(createWorkspace).toBeFocused();
 });
 
+test("desktop keeps session navigation left of the active chat", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  await expect(page.getByLabel("Message Pi")).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const rail = document.querySelector<HTMLElement>(".rail")!.getBoundingClientRect();
+    const workspace = document.querySelector<HTMLElement>(".workspace")!.getBoundingClientRect();
+    const composer = document.querySelector<HTMLElement>(".composer")!.getBoundingClientRect();
+    return {
+      railLeft: rail.left,
+      railRight: rail.right,
+      railWidth: rail.width,
+      workspaceLeft: workspace.left,
+      workspaceRight: workspace.right,
+      composerLeft: composer.left,
+    };
+  });
+
+  expect(layout.railLeft).toBe(0);
+  expect(layout.railWidth).toBe(320);
+  expect(layout.workspaceLeft).toBe(layout.railRight);
+  expect(layout.workspaceRight).toBe(1180);
+  expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
+});
+
 test("long workspace paths keep their final directories visible", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installApi(page);
