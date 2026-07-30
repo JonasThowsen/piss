@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Circle, CircleCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -18,15 +18,17 @@ import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwn
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
 import { nextOptionIndex, optionNavigationDirection, remapOptionNavigationKey, scrollOptionIntoView } from "./optionNavigation.ts";
-import { reconcileOutbox, type OutboxItem } from "./outbox.ts";
+import { markOutboxQueued, nextDeliveredOutboxExpiration, pruneDeliveredOutbox, reconcileOutbox, type OutboxItem } from "./outbox.ts";
 import { compact, eventTimeline, valueText } from "./timeline.ts";
 import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
+import { keyboardScrollDirection, useSharedKeyboardScrolling } from "./keyboardScroll.ts";
 import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
 import { readCachedSession, removeCachedSession, writeCachedSession } from "./sessionCache.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { initialSessionSyncState, reduceSessionSync, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
+import { requestUpdateActivation } from "./updateActivation.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
 import "./styles.css";
@@ -156,7 +158,7 @@ function patchCounts(patch: string): { readonly additions: number; readonly dele
 }
 
 function DiffPatch({ patch }: { readonly patch: string }) {
-  return <pre className="diff-patch">{patch.split("\n").map((line, index) => {
+  return <pre className="diff-patch" data-keyboard-scroll tabIndex={0}>{patch.split("\n").map((line, index) => {
     const className = line.startsWith("@@") ? "hunk"
       : line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("# ") ? "meta"
         : line.startsWith("+") ? "added"
@@ -230,7 +232,6 @@ export function App() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
 
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
@@ -283,7 +284,8 @@ export function App() {
   const timelineScrollTopRef = useRef(0);
   const timelinePointerScrollingRef = useRef(false);
   const timelineTouchYRef = useRef<number | undefined>(undefined);
-  const timelinePrependAnchorRef = useRef<{ readonly height: number; readonly top: number } | undefined>(undefined);
+  const timelinePrependAnchorRef = useRef<{ readonly key: string; readonly top: number } | undefined>(undefined);
+  const timelinePrependFrameRef = useRef(0);
   const timelineVirtualAnchorRef = useRef<{ readonly key: string; readonly top: number } | undefined>(undefined);
   const timelineWindowShiftingRef = useRef(false);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -313,7 +315,6 @@ export function App() {
   const creatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceCreatorReturnFocusRef = useRef<HTMLElement | null>(null);
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null);
-  const modelReturnFocusRef = useRef<HTMLElement | null>(null);
   const compactionReturnFocusRef = useRef<HTMLElement | null>(null);
   const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -331,6 +332,13 @@ export function App() {
   if (mentionMenu) lastMentionMenuRef.current = mentionMenu;
   if (mentionMenu?.mentions.length) mentionOptionsRef.current = mentionMenu;
   imagesRef.current = images;
+
+  useSharedKeyboardScrolling(timelineRef, (element, direction) => {
+    if (element === timelineRef.current && direction < 0) {
+      followingRef.current = false;
+      setAtBottom(false);
+    }
+  });
 
   const dispatchSessionSync = useCallback((input: SessionSyncInput) => {
     const next = reduceSessionSync(sessionSyncRef.current, input);
@@ -390,6 +398,8 @@ export function App() {
     selectedSessionIdRef.current = sessionId;
     sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "select", sessionId });
     followingRef.current = true;
+    timelinePrependAnchorRef.current = undefined;
+    window.cancelAnimationFrame(timelinePrependFrameRef.current);
     timelineScrollTopRef.current = 0;
     setTimelineWindowEnd(undefined);
     setAtBottom(true);
@@ -403,7 +413,6 @@ export function App() {
     reviewGeneration.current += 1;
     setReviewState(undefined);
     setActiveView("agent");
-    setModelDialogOpen(false);
     setCompactionDialogOpen(false);
     setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
@@ -480,7 +489,7 @@ export function App() {
   }, []);
 
   const globalPickerHotkeyEnabled = !globalPickerOpen
-    && !creatorOpen && !workspaceCreatorOpen && !settingsOpen && !modelDialogOpen && !compactionDialogOpen
+    && !creatorOpen && !workspaceCreatorOpen && !settingsOpen && !compactionDialogOpen
     && !selectedSession?.interactiveRequests[0] && !(isMobile && mentionMenu)
     && !archiveTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
 
@@ -649,9 +658,8 @@ export function App() {
   }, [activeView, selectedSession?.id, selectedSession?.runtimeId, selectedSession?.status]);
 
   useEffect(() => {
-    if (modelDialogOpen && selectedSession && !canConfigureSession(selectedSession.status)) setModelDialogOpen(false);
     if (selectedSession && !isWritableRuntime(selectedSession.status)) dismissMentionMenu();
-  }, [dismissMentionMenu, modelDialogOpen, selectedSession?.status]);
+  }, [dismissMentionMenu, selectedSession?.status]);
 
   useEffect(() => {
     setTimelineHistory({ loading: false });
@@ -671,7 +679,10 @@ export function App() {
   const loadOlderTimeline = () => {
     if (!selectedSession || oldestSequence === undefined || timelineHistory.loading || !hasOlderTimeline) return;
     const element = timelineRef.current;
-    if (element) timelinePrependAnchorRef.current = { height: element.scrollHeight, top: element.scrollTop };
+    const anchor = element?.querySelector<HTMLElement>("[data-timeline-key]");
+    timelinePrependAnchorRef.current = anchor?.dataset.timelineKey
+      ? { key: anchor.dataset.timelineKey, top: anchor.getBoundingClientRect().top }
+      : undefined;
     followingRef.current = false;
     setAtBottom(false);
     setTimelineHistory((current) => ({ ...current, loading: true, error: undefined }));
@@ -685,6 +696,7 @@ export function App() {
       },
       (cause) => {
         timelinePrependAnchorRef.current = undefined;
+        window.cancelAnimationFrame(timelinePrependFrameRef.current);
         setTimelineHistory({ loading: false, hasMore: true, error: errorMessage(cause) });
       },
     );
@@ -729,11 +741,24 @@ export function App() {
       timelineWindowShiftingRef.current = false;
       timelineScrollTopRef.current = element.scrollTop;
     }
-    const anchor = timelinePrependAnchorRef.current;
-    if (anchor) {
-      element.scrollTop = anchor.top + element.scrollHeight - anchor.height;
+    const stabilizePrependAnchor = () => {
+      const anchor = timelinePrependAnchorRef.current;
+      if (!anchor) return;
+      const escapedKey = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(anchor.key) : anchor.key.replace(/["\\]/gu, "\\$&");
+      const row = element.querySelector<HTMLElement>(`[data-timeline-key="${escapedKey}"]`);
+      if (row) element.scrollTop += row.getBoundingClientRect().top - anchor.top;
       timelineScrollTopRef.current = element.scrollTop;
-      timelinePrependAnchorRef.current = undefined;
+    };
+    if (timelinePrependAnchorRef.current) {
+      stabilizePrependAnchor();
+      window.cancelAnimationFrame(timelinePrependFrameRef.current);
+      timelinePrependFrameRef.current = window.requestAnimationFrame(() => {
+        stabilizePrependAnchor();
+        timelinePrependFrameRef.current = window.requestAnimationFrame(() => {
+          stabilizePrependAnchor();
+          timelinePrependAnchorRef.current = undefined;
+        });
+      });
     }
     const pinToBottom = () => {
       if (!followingRef.current) return;
@@ -748,9 +773,13 @@ export function App() {
       });
     };
     pinToBottom();
+    // Browsers may restore a nested scroller after the first layout frames on
+    // reload. Reassert the app-owned follow state after native restoration.
+    const restorationTimer = window.setTimeout(pinToBottom, 150);
     const resizeObserver = new ResizeObserver(pinToBottom);
     for (const child of element.children) resizeObserver.observe(child);
     return () => {
+      window.clearTimeout(restorationTimer);
       resizeObserver.disconnect();
       window.cancelAnimationFrame(timelineScrollFrameRef.current);
     };
@@ -776,18 +805,11 @@ export function App() {
   }, [selectedSession?.id, selectedSession?.events, timeline]);
 
   useEffect(() => {
-    const expirations = outbox.flatMap((item) => item.settledAt === undefined
-      ? []
-      : item.status === "delivered" ? [item.settledAt + 2_500]
-      : item.status === "accepted" ? [item.settledAt + 5_000]
-      : []);
-    if (expirations.length === 0) return;
+    const expiration = nextDeliveredOutboxExpiration(outbox);
+    if (expiration === undefined) return;
     const timer = window.setTimeout(() => {
-      const now = Date.now();
-      setOutbox((items) => items.filter((item) => item.settledAt === undefined
-        || (item.status !== "accepted" && item.status !== "delivered")
-        || item.settledAt + (item.status === "accepted" ? 5_000 : 2_500) > now));
-    }, Math.max(0, Math.min(...expirations) - Date.now()));
+      setOutbox((items) => pruneDeliveredOutbox(items, Date.now()));
+    }, Math.max(0, expiration - Date.now()));
     return () => window.clearTimeout(timer);
   }, [outbox]);
 
@@ -1277,14 +1299,14 @@ export function App() {
           imagesRef.current = [];
           setImages([]);
           setMentionMenu(undefined);
-          setOutbox((items) => items.map((item) => item.id === outgoing.id ? { ...item, status: "accepted", settledAt: Date.now() } : item));
+          setOutbox((items) => markOutboxQueued(items, outgoing.id));
         } else {
           const stored = sessionUiStatesRef.current.get(targetSessionId) ?? emptySessionUiState();
           sessionUiStatesRef.current.set(targetSessionId, {
             ...stored,
             commandText: "",
             images: [],
-            outbox: stored.outbox.map((item) => item.id === outgoing.id ? { ...item, status: "accepted", settledAt: Date.now() } : item),
+            outbox: markOutboxQueued(stored.outbox, outgoing.id),
           });
         }
       }
@@ -1420,8 +1442,7 @@ export function App() {
         openCreator(selectedSession.workspaceId);
         return;
       case "model":
-        modelReturnFocusRef.current = composerTextareaRef.current;
-        setModelDialogOpen(true);
+        window.requestAnimationFrame(() => composerRef.current?.querySelector<HTMLButtonElement>(".composer-config-trigger.model")?.click());
         return;
       case "compact":
         compactionReturnFocusRef.current = composerTextareaRef.current;
@@ -1529,7 +1550,10 @@ export function App() {
           </>}
         </div>
         <button className="global-picker-trigger" type="button" onClick={(event) => openGlobalPicker(event.currentTarget)} aria-label="Search sessions" title={`Search sessions (${pickerShortcutLabel})`}><Search aria-hidden="true" /><span>SEARCH SESSIONS</span><kbd>{pickerShortcutLabel}</kbd></button>
-        {updateRegistration?.waiting && <button className="update-ready" type="button" disabled={busy} onClick={() => updateRegistration.waiting?.postMessage({ type: "SKIP_WAITING" })}>{busy ? "UPDATE WAITING" : "APPLY UPDATE"}</button>}
+        {updateRegistration?.waiting && <button className="update-ready" type="button" disabled={busy} onClick={() => {
+          requestUpdateActivation();
+          updateRegistration.waiting?.postMessage({ type: "SKIP_WAITING" });
+        }}>{busy ? "UPDATE WAITING" : "APPLY UPDATE"}</button>}
         <div className={`network ${networkState}`} role="status"><i />{networkLabel}</div>
       </header>
 
@@ -1638,6 +1662,7 @@ export function App() {
               id="session-view-panel"
               role="tabpanel"
               ref={timelineRef}
+              data-keyboard-scroll
               aria-live={activeView === "agent" ? "polite" : "off"}
               onWheel={(event) => {
                 if (event.deltaY < 0) {
@@ -1712,7 +1737,7 @@ export function App() {
                         <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
                         {item.outputRef && <div className={`tool-output-state ${output?.status ?? "preview"}`}><span>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? "Full output unavailable" : output?.status === "loaded" ? "Full output loaded" : "Preview · full output loads when expanded"}</span><small>{item.outputBytes?.toLocaleString() ?? "?"} bytes</small>{output?.status === "failed" && <button type="button" onClick={() => requestToolOutput(selectedSession.id, item.outputRef!, true)}>RETRY</button>}</div>}
                         <div className="tool-result-actions"><button className={`timeline-copy ${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(`tool:${item.key}`, `${item.name} tool output`, text)} type="button" aria-label={`${copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.name} tool output`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === `tool:${item.key}` ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></div>
-                        <pre>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? `${item.detail}\n\n[${output.error ?? "Full output could not be loaded"}]` : text}</pre>
+                        <pre data-keyboard-scroll tabIndex={0}>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? `${item.detail}\n\n[${output.error ?? "Full output could not be loaded"}]` : text}</pre>
                       </details>;
                     })())}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
@@ -1739,10 +1764,10 @@ export function App() {
           </Tabs.Panel>
 
           <section className="control-deck">
-            {outbox.length > 0 && <section className="outbox-tray" aria-label="Outgoing messages" aria-live="polite">
-              <header><span>OUTGOING</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
+            {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
+              <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
-                <i /><div><header><b>{item.action === "followUp" ? "FOLLOW-UP" : item.action.toUpperCase()}</b><small>{item.status === "sending" ? "SENDING TO PI" : item.status === "accepted" ? "ACCEPTED BY PI" : item.status === "delivered" ? "SENT TO PI" : item.error ?? "REJECTED"}</small></header><p>{item.text || `${item.imageCount ?? 0} attached image${item.imageCount === 1 ? "" : "s"}`}</p></div>
+                <i /><div><header><b>{item.action === "followUp" ? "FOLLOW-UP" : item.action.toUpperCase()}</b><small>{item.status === "sending" ? "SENDING TO PI" : item.status === "queued" ? "QUEUED IN PI" : item.status === "delivered" ? "SENT TO PI" : item.error ?? "REJECTED"}</small></header><p>{item.text || `${item.imageCount ?? 0} attached image${item.imageCount === 1 ? "" : "s"}`}</p></div>
                 {item.status === "rejected" && <button onClick={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} type="button" aria-label="Dismiss rejected message"><X aria-hidden="true" /></button>}
               </article>)}
             </section>}
@@ -1880,6 +1905,16 @@ export function App() {
                   <span><small>CONTEXT</small><b>{contextPercent === null ? "—" : `${Math.round(contextPercent)}%`}</b></span>
                   <i aria-hidden="true"><em style={{ width: `${Math.min(100, Math.max(0, contextPercent ?? 0))}%` }} /></i>
                 </button>
+                <ComposerModelControls
+                  key={selectedSession.id}
+                  session={selectedSession}
+                  disabled={busy || !canConfigure}
+                  onApplied={(session) => {
+                    acceptAuthoritativeSession(session);
+                    void refresh(false);
+                  }}
+                  onError={setOperationError}
+                />
                 <button className={`send-button ${slashCommandMode ? "command" : ""}`} disabled={busy || imageSelectionPending || !canWrite || (!commandText.trim() && images.length === 0)} onClick={submitCommand} type="button" aria-label={slashCommandMode ? "Run Pi command" : selectedSession.status === "working" ? delivery === "steer" ? "Steer Pi" : "Queue follow-up" : "Send message"}><span>{busy ? <LoaderCircle aria-hidden="true" className="icon-spin" /> : slashCommandMode ? "/" : <ArrowUp aria-hidden="true" />}</span></button>
               </div>
             </div>
@@ -1890,7 +1925,6 @@ export function App() {
                   <button className={delivery === "followUp" ? "active" : ""} onClick={() => setDelivery("followUp")} type="button" aria-pressed={delivery === "followUp"} title="Wait until the current agent run fully settles">FOLLOW-UP</button>
                 </div>}
                 {(selectedSession.status === "working" || busy) && <button className="abort" disabled={abortBusy} onClick={() => void abortRun()} type="button"><Square aria-hidden="true" /> {abortBusy ? "ABORTING…" : "ABORT RUN"}</button>}
-                <button className="model-trigger" disabled={busy || !canConfigure} onClick={(event) => { modelReturnFocusRef.current = event.currentTarget; setModelDialogOpen(true); }} title={canConfigure ? "Change model and thinking level" : "Model changes are available when Pi is idle"} type="button">MODEL</button>
                 {(selectedSession.status === "stopped" || selectedSession.status === "crashed") && selectedSession.sessionFile && <button className="end-runtime" disabled={busy} onClick={() => void resumeSession()} type="button">{busy ? "RESUMING…" : "RESUME SESSION"}</button>}
               </div>
               <span className={`runtime-state ${displayStatus(selectedSession.status)}`}><i />{ATTENTION_STATE_LABELS[selectedSession.status]}</span>
@@ -2093,17 +2127,6 @@ export function App() {
         onConfirm={() => void compactNow()}
       />}
 
-      {modelDialogOpen && selectedSession && <ModelDialog
-        session={selectedSession}
-        returnFocus={modelReturnFocusRef.current}
-        fallbackFocus={sessionHeadingRef.current}
-        onClose={() => setModelDialogOpen(false)}
-        onApplied={(session) => {
-          acceptAuthoritativeSession(session);
-          void refresh(false);
-        }}
-      />}
-
       {creatorOpen && state._tag === "Ready" && <DialogSurface className="session-dialog" pending={busy} returnFocus={creatorReturnFocusRef.current} fallbackFocus={sessionHeadingRef.current} initialFocus={newSessionInputRef} onClose={closeCreator} render={<form onSubmit={createSession} />}>
         <header><div><Dialog.Title render={<b />}>New session</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
         <div className="dialog-body">
@@ -2151,7 +2174,7 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
         collisionPadding={4}
         positionMethod="fixed"
       >
-        <BaseMenu.Popup className="workspace-menu" aria-label={menuLabel} aria-labelledby="">
+        <BaseMenu.Popup className="workspace-menu" aria-label={menuLabel} aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
           {actions.map((action) => <BaseMenu.Item
             className={action.danger ? "danger" : undefined}
             key={action.label}
@@ -2395,10 +2418,17 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
   return <DialogSurface className="session-dialog interactive-request-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} onClose={cancel}>
     <header><div><span>PI REQUEST · {request.method.toUpperCase()}</span><Dialog.Title render={<b />}>{request.title || "Pi needs input"}</Dialog.Title></div></header>
     <div className="dialog-body">
-      {request.message && <Dialog.Description className="interactive-message">{request.message}</Dialog.Description>}
+      {request.message && <Dialog.Description className="interactive-message" data-keyboard-scroll>{request.message}</Dialog.Description>}
       {queuedCount > 0 && <p className="interactive-queue">{queuedCount} more request{queuedCount === 1 ? " is" : "s are"} queued</p>}
       {request.timeout && <p className="interactive-timeout">This request expires automatically after {Math.ceil(request.timeout / 1000)} seconds.</p>}
-      {request.method === "select" && <label>Choose one<select value={value} disabled={pending} onChange={(event) => setValue(event.target.value)}>{request.options?.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>}
+      {request.method === "select" && <label>Choose one<select value={value} disabled={pending} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
+          const direction = keyboardScrollDirection(event);
+          const options = request.options ?? [];
+          if (direction === undefined || options.length === 0) return;
+          event.preventDefault();
+          const current = Math.max(0, options.indexOf(value));
+          setValue(options[nextOptionIndex(current, options.length, direction)] ?? options[0]!);
+        }}>{request.options?.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>}
       {request.method === "input" && <label>Response<input value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submitValue(); } }} /></label>}
       {request.method === "editor" && <label>Response<textarea value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} rows={9} onChange={(event) => setValue(event.target.value)} /></label>}
       {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>NO</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>YES</button></div>}
@@ -2407,113 +2437,138 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
   </DialogSurface>;
 }
 
-function ModelDialog({ session, returnFocus, fallbackFocus, onClose, onApplied }: {
+function ComposerModelControls({ session, disabled, onApplied, onError }: {
   readonly session: OwnedSession;
-  readonly returnFocus: HTMLElement | null;
-  readonly fallbackFocus: HTMLElement | null;
-  readonly onClose: () => void;
+  readonly disabled: boolean;
   readonly onApplied: (session: OwnedSession) => void;
+  readonly onError: (message: string) => void;
 }) {
   const [models, setModels] = useState<ReadonlyArray<AvailableModel>>([]);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string>();
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string>();
-  const searchRef = useRef<HTMLInputElement>(null);
 
   const loadModels = useCallback(async () => {
     setLoading(true);
-    setError(undefined);
+    setModels([]);
+    setLoadError(undefined);
     try {
       const result = await Effect.runPromise(loadAvailableModels(session.id, session.runtimeId));
-      setModels(result.models);
+      setModels(result.models.toSorted(newestModelsFirst));
     } catch (cause) {
-      setError(errorMessage(cause));
+      setLoadError(errorMessage(cause));
     } finally {
       setLoading(false);
     }
   }, [session.id, session.runtimeId]);
 
-  useEffect(() => { void loadModels(); }, [loadModels]);
-
   const applyModel = async (model: AvailableModel) => {
-    if (pending || !canConfigureSession(session.status) || session.model?.provider === model.provider && session.model.id === model.id) return;
+    if (pending || disabled || session.model?.provider === model.provider && session.model.id === model.id) return;
     setPending(true);
-    setError(undefined);
     try {
       const result = await Effect.runPromise(setSessionModel({ sessionId: session.id, runtimeId: session.runtimeId, provider: model.provider, modelId: model.id }));
       onApplied(result.session);
     } catch (cause) {
-      setError(errorMessage(cause));
+      onError(errorMessage(cause));
     } finally {
       setPending(false);
     }
   };
 
   const applyThinkingLevel = async (level: ThinkingLevel) => {
-    if (pending || !canConfigureSession(session.status) || session.thinkingLevel === level) return;
+    if (pending || disabled || session.thinkingLevel === level) return;
     setPending(true);
-    setError(undefined);
     try {
       const result = await Effect.runPromise(setSessionThinkingLevel({ sessionId: session.id, runtimeId: session.runtimeId, level }));
       onApplied(result.session);
     } catch (cause) {
-      setError(errorMessage(cause));
+      onError(errorMessage(cause));
     } finally {
       setPending(false);
     }
   };
 
-  const currentModel = session.model;
-  const filtered = models
-    .filter((model) => `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()))
-    .toSorted(newestModelsFirst);
+  const currentModelKey = session.model ? `${session.model.provider}\0${session.model.id}` : "";
+  const thinkingLevels = session.model?.thinkingLevels ?? [];
+  const controlsDisabled = disabled || pending;
+  const unavailableTitle = "Model changes are available when Pi is idle";
 
-  return <DialogSurface className="model-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={searchRef} onClose={onClose}>
-    <header><div><Dialog.Title render={<b />}>Model &amp; thinking</Dialog.Title></div><Dialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
-      <div className="model-dialog-body">
-        <section className="model-current">
-          <span>CURRENT MODEL</span><b>{currentModel?.name ?? "No model selected"}</b><small>{currentModel ? `${currentModel.provider} / ${currentModel.id}` : "Pi did not report a model"}</small>
-          <div className="thinking-levels" aria-label="Thinking level">
-            <label>THINKING</label>
-            <div>{(currentModel?.thinkingLevels ?? []).map((level) => <button key={level} className={session.thinkingLevel === level ? "active" : ""} disabled={pending} onClick={() => void applyThinkingLevel(level)} type="button" aria-pressed={session.thinkingLevel === level}>{level}</button>)}</div>
-          </div>
-        </section>
-        <Combobox.Root
-          items={filtered}
-          filteredItems={filtered}
-          inputValue={query}
-          value={filtered.find((model) => currentModel?.provider === model.provider && currentModel.id === model.id) ?? null}
-          onInputValueChange={(value, details) => { if (details.event instanceof InputEvent && details.event.inputType) setQuery(value); }}
-          onValueChange={(model) => { if (model) void applyModel(model); }}
-          itemToStringLabel={(model: AvailableModel) => model.name}
-          isItemEqualToValue={(model, value) => model.provider === value.provider && model.id === value.id}
-          inline
-          open
-          autoHighlight
-          disabled={pending}
-        >
-          <section className="model-catalog">
-            <label className="model-search"><span>AVAILABLE MODELS</span><Combobox.Input ref={searchRef} placeholder="Filter models…" autoComplete="off" onKeyDown={remapOptionNavigationKey} /></label>
-            <Combobox.List className="model-options" aria-label="Available models">
-              <Combobox.Status className="model-status">
-                {loading && <div className="model-state">Loading models…</div>}
-                {!loading && error && models.length === 0 && <div className="model-state error" role="alert">{error}</div>}
-                {!loading && !error && filtered.length === 0 && <div className="model-state">No matching models.</div>}
-              </Combobox.Status>
-              {!loading && filtered.map((model, index) => {
-                const active = currentModel?.provider === model.provider && currentModel.id === model.id;
-                return <Combobox.Item className={`model-option ${active ? "active" : ""}`} disabled={pending} index={index} value={model} key={`${model.provider}/${model.id}`}>
-                  <i aria-hidden="true">{active ? <CircleCheck /> : <Circle />}</i><span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span><em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
-                </Combobox.Item>;
-              })}
-            </Combobox.List>
-          </section>
-        </Combobox.Root>
-        {error && models.length > 0 && <div className="dialog-error" role="alert">{error}</div>}
-      </div>
-    <footer><button onClick={() => void loadModels()} disabled={loading || pending} type="button">REFRESH</button><Dialog.Close className="launch" disabled={pending}>DONE</Dialog.Close></footer>
-  </DialogSurface>;
+  return <div className="composer-config" role="group" aria-label="Model configuration">
+    <BaseMenu.Root disabled={controlsDisabled} onOpenChange={(open) => {
+      if (open && models.length === 0 && !loading && !loadError) void loadModels();
+    }}>
+      <BaseMenu.Trigger
+        className="composer-config-trigger model"
+        type="button"
+        disabled={controlsDisabled}
+        aria-label={`Model: ${session.model?.name ?? "not selected"}`}
+        title={disabled ? unavailableTitle : session.model ? `${session.model.provider} / ${session.model.id}` : "Choose a model"}
+      >
+        <span><small>MODEL</small><b>{session.model?.name ?? "Choose"}</b></span><ChevronDown aria-hidden="true" />
+      </BaseMenu.Trigger>
+      <BaseMenu.Portal>
+        <BaseMenu.Positioner className="composer-model-positioner" side="top" align="end" sideOffset={6} collisionPadding={8} positionMethod="fixed">
+          <BaseMenu.Popup className="composer-config-menu model-menu" aria-label="Model options" aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
+            <header><span>AVAILABLE MODELS</span><small>{models.length || "—"}</small></header>
+            {loading && <div className="composer-config-state" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" /> Loading models…</div>}
+            {!loading && loadError && <button className="composer-config-state error" type="button" onClick={() => void loadModels()}>Could not load models · Retry</button>}
+            {!loading && !loadError && models.length === 0 && <div className="composer-config-state">No models available.</div>}
+            {!loading && models.length > 0 && <BaseMenu.RadioGroup value={currentModelKey} onValueChange={(key) => {
+              const model = models.find((candidate) => `${candidate.provider}\0${candidate.id}` === key);
+              if (model) void applyModel(model);
+            }}>
+              {models.map((model) => <BaseMenu.RadioItem
+                className="composer-model-option"
+                key={`${model.provider}/${model.id}`}
+                value={`${model.provider}\0${model.id}`}
+                disabled={pending}
+                closeOnClick
+                nativeButton
+                render={<button type="button" />}
+              >
+                <BaseMenu.RadioItemIndicator className="composer-option-check" keepMounted><Check aria-hidden="true" /></BaseMenu.RadioItemIndicator>
+                <span><b>{model.name}</b><small>{model.provider} / {model.id}</small></span>
+                <em>{model.reasoning ? "THINKING" : "DIRECT"}</em>
+              </BaseMenu.RadioItem>)}
+            </BaseMenu.RadioGroup>}
+          </BaseMenu.Popup>
+        </BaseMenu.Positioner>
+      </BaseMenu.Portal>
+    </BaseMenu.Root>
+
+    <BaseMenu.Root disabled={controlsDisabled || thinkingLevels.length === 0}>
+      <BaseMenu.Trigger
+        className="composer-config-trigger thinking"
+        type="button"
+        disabled={controlsDisabled || thinkingLevels.length === 0}
+        aria-label={`Thinking: ${session.thinkingLevel ?? "off"}`}
+        title={disabled ? unavailableTitle : "Choose a thinking level"}
+      >
+        <span><small>THINKING</small><b>{session.thinkingLevel ?? "off"}</b></span><ChevronDown aria-hidden="true" />
+      </BaseMenu.Trigger>
+      <BaseMenu.Portal>
+        <BaseMenu.Positioner className="composer-thinking-positioner" side="top" align="end" sideOffset={6} collisionPadding={8} positionMethod="fixed">
+          <BaseMenu.Popup className="composer-config-menu thinking-menu" aria-label="Thinking options" aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
+            <header><span>THINKING LEVEL</span><small>{session.model?.reasoning ? "REASONING" : "DIRECT"}</small></header>
+            <BaseMenu.RadioGroup value={session.thinkingLevel ?? "off"} onValueChange={(level) => void applyThinkingLevel(level as ThinkingLevel)}>
+              {thinkingLevels.map((level) => <BaseMenu.RadioItem
+                className="composer-thinking-option"
+                key={level}
+                value={level}
+                disabled={pending}
+                closeOnClick
+                nativeButton
+                render={<button type="button" />}
+              >
+                <BaseMenu.RadioItemIndicator className="composer-option-check" keepMounted><Check aria-hidden="true" /></BaseMenu.RadioItemIndicator>
+                <span>{level}</span>
+              </BaseMenu.RadioItem>)}
+            </BaseMenu.RadioGroup>
+          </BaseMenu.Popup>
+        </BaseMenu.Positioner>
+      </BaseMenu.Portal>
+    </BaseMenu.Root>
+  </div>;
 }
 
 function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
@@ -2525,6 +2580,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState<ReadonlyArray<DirectoryCandidate>>([]);
   const [selected, setSelected] = useState<DirectoryCandidate>();
+  const [highlighted, setHighlighted] = useState(0);
   const [folderName, setFolderName] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -2539,8 +2595,8 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
     setSearching(true);
     const timer = window.setTimeout(() => {
       void Effect.runPromise(searchDirectories(query)).then(
-        ({ candidates: next }) => { if (!cancelled) { setCandidates(next); setSearching(false); setError(undefined); } },
-        (cause) => { if (!cancelled) { setCandidates([]); setSearching(false); setError(errorMessage(cause)); } },
+        ({ candidates: next }) => { if (!cancelled) { setCandidates(next); setHighlighted(0); setSearching(false); setError(undefined); } },
+        (cause) => { if (!cancelled) { setCandidates([]); setHighlighted(0); setSearching(false); setError(errorMessage(cause)); } },
       );
     }, 180);
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -2548,6 +2604,7 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
 
   const choose = (candidate: DirectoryCandidate) => {
     setSelected(candidate);
+    setHighlighted(Math.max(0, candidates.indexOf(candidate)));
     setQuery(candidate.path);
     if (!nameTouched && mode === "existing") setName(candidate.name);
   };
@@ -2582,16 +2639,46 @@ function WorkspaceDialog({ returnFocus, onClose, onCreated }: {
     <header><div><Dialog.Title render={<b />}>New workspace</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
       <div className="dialog-body workspace-dialog-body">
         <div className="workspace-mode" aria-label="Workspace directory mode">
-          <button className={mode === "existing" ? "active" : ""} onClick={() => { setMode("existing"); setSelected(undefined); setQuery(""); }} type="button" aria-pressed={mode === "existing"}>EXISTING DIRECTORY</button>
-          <button className={mode === "create" ? "active" : ""} onClick={() => { setMode("create"); setSelected(undefined); setQuery(""); }} type="button" aria-pressed={mode === "create"}>CREATE FOLDER</button>
+          <button className={mode === "existing" ? "active" : ""} onClick={() => { setMode("existing"); setSelected(undefined); setHighlighted(0); setQuery(""); }} type="button" aria-pressed={mode === "existing"}>EXISTING DIRECTORY</button>
+          <button className={mode === "create" ? "active" : ""} onClick={() => { setMode("create"); setSelected(undefined); setHighlighted(0); setQuery(""); }} type="button" aria-pressed={mode === "create"}>CREATE FOLDER</button>
         </div>
         <label>{mode === "create" ? "Parent directory" : "Directory"}
-          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setSelected(undefined); }} placeholder="Fuzzy search approved directories…" autoComplete="off" />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); setSelected(undefined); setHighlighted(0); }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || candidates.length === 0) return;
+              const direction = optionNavigationDirection(event);
+              if (direction !== undefined) {
+                event.preventDefault();
+                const next = nextOptionIndex(highlighted, candidates.length, direction);
+                setHighlighted(next);
+                scrollOptionIntoView(`directory-option-${next}`);
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                choose(candidates[highlighted] ?? candidates[0]!);
+              }
+            }}
+            aria-activedescendant={candidates.length > 0 ? `directory-option-${highlighted}` : undefined}
+            placeholder="Fuzzy search approved directories…"
+            autoComplete="off"
+          />
         </label>
-        <div className="directory-results" aria-label="Matching directories" aria-busy={searching}>
+        <div className="directory-results" data-keyboard-scroll role="listbox" aria-label="Matching directories" aria-busy={searching}>
           {searching && <div className="directory-state" role="status">Searching directories…</div>}
           {!searching && candidates.length === 0 && <div className="directory-state" role="status">No matching directories inside the approved roots.</div>}
-          {!searching && candidates.map((candidate) => <button className={selected?.path === candidate.path ? "selected" : ""} onClick={() => choose(candidate)} type="button" aria-pressed={selected?.path === candidate.path} key={candidate.path}>
+          {!searching && candidates.map((candidate, index) => <button
+            className={`${selected?.path === candidate.path ? "selected" : ""} ${highlighted === index ? "highlighted" : ""}`}
+            id={`directory-option-${index}`}
+            key={candidate.path}
+            onClick={() => choose(candidate)}
+            onFocus={() => setHighlighted(index)}
+            onPointerMove={() => setHighlighted(index)}
+            role="option"
+            aria-selected={selected?.path === candidate.path}
+            type="button"
+          >
             <i aria-hidden="true"><Folder /></i><span><b>{candidate.name}</b><small>{candidate.relativePath === "." ? candidate.path : candidate.relativePath}</small></span>
           </button>)}
         </div>

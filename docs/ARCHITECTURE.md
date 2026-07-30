@@ -39,7 +39,7 @@ Browser ── HTTPS ── PISS server ── JSONL stdin/stdout ── pi --mo
 
 The server owns multiple Pi RPC child processes. RPC exposes prompts, queues, models, compaction, statistics, extension commands, and interactive extension requests while retaining process isolation per active session.
 
-Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. If Pi settles after tool execution without a displayable assistant response, PISS requests the missing final response once. A server restart stops direct children and resumes durable sessions in a new runtime generation; runs interrupted while working receive a transcript-aware continuation prompt. Transparent survival of the exact in-flight tool process across server-binary replacement remains deferred.
+Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. If Pi settles after tool execution without a displayable assistant response, PISS requests the missing final response once. An unexpected or forced server restart stops direct children and resumes durable sessions in a new runtime generation; runs interrupted while working receive a transcript-aware continuation prompt. Declarative server updates avoid that recovery path by remaining staged until every runtime is quiescent. Transparent survival of the exact in-flight tool process across arbitrary control-plane replacement remains deferred.
 
 ## Effect architecture
 
@@ -71,6 +71,8 @@ The flake exposes:
 - `nixosModules.default`, the sole NixOS module.
 
 The module exposes one canonical `services.piss` service on loopback. An independent userspace Tailscale node supplies HTTPS and authenticated identity headers. The web package is linked through a stable `/etc/piss/public` path so browser-only releases do not restart active Pi runtimes.
+
+Server units use a two-phase update handoff. A NixOS switch reloads the new unit definition but leaves the running control plane in place. A generation-specific activation unit sends `SIGUSR2`; the old control plane keeps serving and supervising until no session is starting, working, blocked on extension UI, compacting, or carrying queued/pending commands. It then exits cleanly, and systemd starts the staged generation. This trades immediate server activation for preservation of active work and keeps deployment itself non-blocking.
 
 ## Data ownership
 

@@ -174,10 +174,26 @@ export async function loadOwnedSessionTimeline(directory: string, sessionId: str
   } catch (cause) {
     if (!(typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT")) throw cause;
   }
-  const latestHistory = await loadOwnedSessionTimelinePage(directory, sessionId, undefined, 1);
+  // Each event is durably appended before the compact projection is replaced.
+  // If the process stops between those writes, recover the compact tail from
+  // history instead of advancing the sequence while silently dropping events.
+  let recovered: Array<OwnedSessionEvent> = [];
+  let beforeSequence: number | undefined;
+  while (recovered.length < MAX_TIMELINE_EVENTS) {
+    const page = await loadOwnedSessionTimelinePage(directory, sessionId, beforeSequence, MAX_PAGE_SIZE);
+    const newer = page.events.filter((event) => event.sequence > compact.sequence);
+    recovered = [...newer, ...recovered];
+    if (!page.hasMore || page.events[0] === undefined || page.events[0].sequence <= compact.sequence || page.nextBeforeSequence === null) break;
+    beforeSequence = page.nextBeforeSequence;
+  }
+  const eventsBySequence = new Map(compact.events.map((event) => [event.sequence, event]));
+  for (const event of recovered) eventsBySequence.set(event.sequence, event);
+  const events = [...eventsBySequence.values()]
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-MAX_TIMELINE_EVENTS);
   return {
-    sequence: Math.max(compact.sequence, latestHistory.events.at(-1)?.sequence ?? 0),
-    events: compact.events,
+    sequence: Math.max(compact.sequence, events.at(-1)?.sequence ?? 0),
+    events,
   };
 }
 

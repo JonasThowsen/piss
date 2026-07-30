@@ -803,8 +803,12 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
 
   const results = dialog.locator(".directory-results");
   const initialHeight = await results.evaluate((element) => element.getBoundingClientRect().height);
-  await dialog.getByRole("textbox", { name: "Directory", exact: true }).fill("new-project");
-  await dialog.getByRole("button", { name: /new-project/ }).click();
+  const directoryInput = dialog.getByRole("textbox", { name: "Directory", exact: true });
+  await directoryInput.press("Control+n");
+  await expect(results.getByRole("option", { name: /new-project/ })).toHaveClass(/highlighted/);
+  await directoryInput.press("Control+p");
+  await directoryInput.press("Enter");
+  await expect(dialog.getByLabel("Workspace name")).toHaveValue("new-project");
   const selectedHeight = await results.evaluate((element) => element.getBoundingClientRect().height);
   expect(selectedHeight).toBe(initialHeight);
   await expect(dialog.getByLabel("Workspace name")).toHaveValue("new-project");
@@ -829,9 +833,13 @@ test("workspace creation stays stable and defaults project trust on", async ({ p
   });
   expect(menuBounds.menuTop).toBeGreaterThanOrEqual(menuBounds.viewportTop - 1);
   expect(menuBounds.menuBottom).toBeLessThanOrEqual(menuBounds.viewportBottom + 1);
-  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Control+n");
   await expect(renameItem).toBeFocused();
-  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Control+n");
+  await expect(removeItem).toBeFocused();
+  await page.keyboard.press("Control+p");
+  await expect(renameItem).toBeFocused();
+  await page.keyboard.press("Control+n");
   await expect(removeItem).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(settingsMenu).toBeHidden();
@@ -1043,11 +1051,13 @@ test("idle sessions can change their reasoning level", async ({ page }) => {
   api.setStatus("idle");
   await expect(page.locator(".runtime-state")).toContainText(/idle/i, { timeout: 5_000 });
 
-  await page.getByRole("button", { name: "MODEL" }).click();
-  const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
-  const high = modelDialog.getByRole("button", { name: "high" });
-  await high.click();
-  await expect(high).toHaveAttribute("aria-pressed", "true");
+  const thinkingButton = page.getByRole("button", { name: /^Thinking:/ });
+  await expect(thinkingButton).toHaveAccessibleName("Thinking: medium");
+  await thinkingButton.click();
+  const thinkingMenu = page.getByRole("menu", { name: "Thinking options" });
+  await expect(thinkingMenu.getByRole("menuitemradio")).toHaveCount(4);
+  await thinkingMenu.getByRole("menuitemradio", { name: "high" }).click();
+  await expect(thinkingButton).toHaveAccessibleName("Thinking: high");
 });
 
 test("mobile shell keeps bottom controls inside the visible viewport", async ({ page }) => {
@@ -1177,7 +1187,16 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   const settingsBackdrop = page.locator(".dialog-layer");
   await expect(settingsBackdrop).toHaveCSS("background-color", "rgba(28, 31, 28, 0.5)");
   await expect(settingsBackdrop).toHaveCSS("backdrop-filter", "blur(10px) saturate(0.7)");
+  await page.setViewportSize({ width: 390, height: 360 });
+  const settingsBody = settingsDialog.locator(".settings-dialog-body");
+  await settingsBody.evaluate((element) => { element.style.height = "100px"; });
+  await expect.poll(() => settingsBody.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await page.keyboard.press("Control+n");
+  await expect.poll(() => settingsBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press("Control+p");
+  await expect.poll(() => settingsBody.evaluate((element) => element.scrollTop)).toBe(0);
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
   const mobileMenu = page.getByRole("button", { name: "Open workspaces and sessions" });
   await expect(mobileMenu).toBeFocused();
   await mobileMenu.click();
@@ -1287,30 +1306,31 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await page.getByLabel("Message Pi").fill("");
 
   await page.setViewportSize({ width: 360, height: 658 });
-  await page.getByRole("button", { name: "MODEL" }).click();
-  const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
-  await expect(modelDialog).toBeVisible();
-  const modelSearch = modelDialog.getByPlaceholder("Filter models…");
-  const modelOptions = modelDialog.getByRole("option");
-  await expect(modelDialog.locator(".model-option b")).toHaveText(["GPT-5.10", "GPT-5.9", "GPT-5.6", "GPT-5.4"]);
-  await modelSearch.press("Control+n");
-  await expect(modelOptions.first()).toHaveAttribute("data-highlighted");
-  await modelSearch.press("Control+n");
-  await expect(modelOptions.nth(1)).toHaveAttribute("data-highlighted");
-  await modelSearch.press("Control+p");
-  await expect(modelOptions.first()).toHaveAttribute("data-highlighted");
-  const modelSections = await modelDialog.evaluate((element) => {
-    const current = element.querySelector(".model-current")!.getBoundingClientRect();
-    const catalog = element.querySelector(".model-catalog")!.getBoundingClientRect();
-    return { currentBottom: current.bottom, catalogTop: catalog.top };
-  });
-  expect(modelSections.currentBottom).toBeLessThanOrEqual(modelSections.catalogTop + 1);
-  await modelDialog.getByRole("button", { name: "high" }).click();
-  await expect(modelDialog.getByRole("button", { name: "high" })).toHaveAttribute("aria-pressed", "true");
-  await modelDialog.getByRole("option", { name: /GPT-5.6/ }).click();
-  await expect(modelDialog.locator(".model-current > b")).toHaveText("GPT-5.6");
-  await expect(modelDialog.getByRole("button", { name: "off" })).toHaveAttribute("aria-pressed", "true");
-  await modelDialog.getByRole("button", { name: "DONE" }).click();
+  const modelButton = page.getByRole("button", { name: /^Model:/ });
+  const thinkingButton = page.getByRole("button", { name: /^Thinking:/ });
+  await expect(modelButton).toBeVisible();
+  await expect(thinkingButton).toBeVisible();
+
+  await modelButton.click();
+  const modelMenu = page.getByRole("menu", { name: "Model options" });
+  await expect(modelMenu).toBeVisible();
+  await expect(modelMenu.locator(".composer-model-option b")).toHaveText(["GPT-5.10", "GPT-5.9", "GPT-5.6", "GPT-5.4"]);
+  await expect(modelMenu.getByRole("menuitemradio")).toHaveCount(4);
+  const modelBounds = await modelMenu.boundingBox();
+  expect(modelBounds).not.toBeNull();
+  expect(modelBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(modelBounds!.x + modelBounds!.width).toBeLessThanOrEqual(360);
+  await page.keyboard.press("Escape");
+
+  await thinkingButton.click();
+  const thinkingMenu = page.getByRole("menu", { name: "Thinking options" });
+  await thinkingMenu.getByRole("menuitemradio", { name: "high" }).click();
+  await expect(thinkingButton).toHaveAccessibleName("Thinking: high");
+
+  await modelButton.click();
+  await modelMenu.getByRole("menuitemradio", { name: /GPT-5.6/ }).click();
+  await expect(modelButton).toHaveAccessibleName("Model: GPT-5.6");
+  await expect(thinkingButton).toHaveAccessibleName("Thinking: off");
 
   api.setStatus("working");
   await expect(page.getByRole("button", { name: "FOLLOW-UP" })).toBeVisible({ timeout: 5_000 });
@@ -1454,7 +1474,16 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   await expect(delayedImage).toHaveJSProperty("complete", true);
   await expect.poll(distanceFromBottom).toBeLessThan(4);
 
-  await page.locator(".timeline").hover();
+  const timeline = page.locator(".timeline");
+  const bottomScrollTop = await timeline.evaluate((element) => element.scrollTop);
+  await page.getByLabel("Message Pi").focus();
+  await page.keyboard.press("Control+p");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollTop)).toBeLessThan(bottomScrollTop);
+  const keyboardScrollTop = await timeline.evaluate((element) => element.scrollTop);
+  await page.keyboard.press("Control+n");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(keyboardScrollTop);
+
+  await timeline.hover();
   await page.mouse.wheel(0, -24);
   await expect(page.getByRole("button", { name: "Jump to latest message" })).not.toHaveClass(/at-bottom/);
   const manualScrollTop = await page.locator(".timeline").evaluate((element) => element.scrollTop);
@@ -1483,6 +1512,36 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   await mobileTimeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(jumpToLatest).toHaveClass(/at-bottom/);
   await expect.poll(() => mobileTimeline.evaluate((element) => getComputedStyle(element).paddingBottom)).toBe(paddingBeforeReturning);
+});
+
+test("a completed final response remains latest across page reload", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 620 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const timestamp = new Date().toISOString();
+  const tools = Array.from({ length: 220 }, (_, index) => ({
+    sequence: index + 1,
+    type: "tool_execution_end",
+    timestamp,
+    data: { toolCallId: `reload-tool-${index}`, toolName: "read", result: { content: [{ type: "text", text: `Tool result ${index}` }] }, isError: false },
+  }));
+  api.setEvents([...tools, {
+    sequence: 221,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: "## Durable final response\n\nThis must remain visible after reload." }] } },
+  }]);
+  api.setStatus("idle");
+
+  const finalResponse = page.getByText("Durable final response", { exact: true });
+  await expect(finalResponse).toBeVisible({ timeout: 5_000 });
+  await page.reload();
+  await expect(finalResponse).toBeVisible({ timeout: 5_000 });
+  await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(4);
+  await expect(page.getByRole("button", { name: "Jump to latest message" })).toHaveClass(/at-bottom/);
 });
 
 test("older timeline pages preserve scroll position and detached tool output loads on expansion", async ({ page }) => {
@@ -1518,17 +1577,24 @@ test("older timeline pages preserve scroll position and detached tool output loa
   const before = await current31.boundingBox();
   await loadOlder.click();
   await expect(page.getByText(/^Historical 1 detail/)).toBeAttached();
-  const after = await current31.boundingBox();
   expect(before).not.toBeNull();
-  expect(after).not.toBeNull();
-  expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeLessThan(8);
+  await expect.poll(async () => {
+    const after = await current31.boundingBox();
+    return Math.abs((after?.y ?? 0) - (before?.y ?? 0));
+  }).toBeLessThan(8);
 
   const tool = page.locator("details.tool-result", { hasText: "bash" });
   await tool.scrollIntoViewIfNeeded();
   await expect(page.getByText("END OF DETACHED OUTPUT", { exact: false })).toHaveCount(0);
   await tool.locator("summary").click();
   await expect(tool.getByText("Full output loaded")).toBeVisible();
-  await expect(tool.locator("pre")).toContainText("END OF DETACHED OUTPUT");
+  const toolOutput = tool.locator("pre");
+  await expect(toolOutput).toContainText("END OF DETACHED OUTPUT");
+  await toolOutput.focus();
+  await page.keyboard.press("Control+n");
+  await expect.poll(() => toolOutput.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press("Control+p");
+  await expect.poll(() => toolOutput.evaluate((element) => element.scrollTop)).toBe(0);
 });
 
 test("10,000-event timeline benchmark stays bounded and interactive", async ({ page }) => {
@@ -1642,10 +1708,15 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   await page.keyboard.press("Escape");
   await page.getByLabel("Message Pi").fill("");
 
-  await page.getByRole("button", { name: "MODEL" }).click();
-  const modelDialog = page.getByRole("dialog", { name: "Model & thinking" });
-  await expect(modelDialog).toBeVisible();
-  const box = await modelDialog.boundingBox();
+  const composer = page.locator(".composer");
+  const modelButton = composer.getByRole("button", { name: /^Model:/ });
+  const thinkingButton = composer.getByRole("button", { name: /^Thinking:/ });
+  await expect(modelButton).toBeVisible();
+  await expect(thinkingButton).toBeVisible();
+  await modelButton.click();
+  const modelMenu = page.getByRole("menu", { name: "Model options" });
+  await expect(modelMenu).toBeVisible();
+  const box = await modelMenu.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.y).toBeGreaterThanOrEqual(0);
@@ -1654,7 +1725,7 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
 
   const dimensions = await page.locator(".shell").evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
   expect(dimensions.scroll).toBe(dimensions.client);
-  await modelDialog.getByRole("button", { name: "DONE" }).click();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "STOP SESSION" })).toHaveCount(0);
   const sessionSettings = page.getByRole("button", { name: "Session settings for Desktop utility" });
   await sessionSettings.click();
@@ -1753,7 +1824,12 @@ test("interactive Pi requests restore on refresh and support select, confirm, in
   await expect(select).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
-  await select.selectOption("Production");
+  await select.focus();
+  await page.keyboard.press("Control+n");
+  await expect(select).toHaveValue("Production");
+  await page.keyboard.press("Control+p");
+  await expect(select).toHaveValue("Preview");
+  await page.keyboard.press("Control+n");
   await dialog.getByRole("button", { name: "SUBMIT" }).click();
   await expect.poll(() => api.interactiveResponses.at(-1)?.value).toBe("Production");
 

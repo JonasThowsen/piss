@@ -121,13 +121,17 @@ nix flake update piss
 sudo nixos-rebuild switch --flake .#your-host
 ```
 
-Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update gracefully stops direct child processes and resumes durable sessions from their Pi transcripts; an in-flight tool cannot currently survive that process replacement.
+Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update is staged without restarting PISS. The update activator asks the running generation to wait until working, queued, compacting, and interactive sessions have settled; it then performs a short restart and automatically resumes the idle runtimes from their Pi transcripts on the new generation. You can deploy while other sessions are working—the old generation keeps serving them until activation is safe.
+
+The first upgrade from a release without this handoff is staged but not activated automatically, because the old process cannot understand the safe-activation signal. Wait until its sessions are idle and restart `piss.service` once; subsequent updates use the quiescent handoff automatically.
+
+A forced `systemctl --user restart piss` still interrupts active work and should otherwise be reserved for emergencies. Exact process continuity across a server update remains future work, but normal declarative deployments no longer replace an in-flight Pi process.
 
 ## Operations
 
 ```bash
-systemctl --user status piss piss-tailscaled piss-tailscale-serve
-journalctl --user -u piss -f
+systemctl --user status piss piss-update-activation piss-tailscaled piss-tailscale-serve
+journalctl --user -u piss -u piss-update-activation -f
 journalctl --user -u piss-tailscale-serve -f
 ```
 

@@ -49,6 +49,7 @@ test("pages complete projection history without gaps across store reloads", asyn
     }
     const restored = await loadOwnedSessionTimeline(directory, "session-pages");
     assert.equal(restored.sequence, 45, "durable history prevents sequence reuse when the compact snapshot lags");
+    assert.deepEqual(restored.events.map((item) => item.sequence), Array.from({ length: 45 }, (_, index) => index + 1), "durable history also restores events missing from the compact projection");
 
     const latest = await loadOwnedSessionTimelinePage(directory, "session-pages", undefined, 10);
     assert.deepEqual(latest.events.map((item) => item.sequence), [36, 37, 38, 39, 40, 41, 42, 43, 44, 45]);
@@ -58,6 +59,37 @@ test("pages complete projection history without gaps across store reloads", asyn
     const earlier = await loadOwnedSessionTimelinePage(directory, "session-pages", latest.nextBeforeSequence ?? undefined, 10);
     assert.deepEqual(earlier.events.map((item) => item.sequence), [26, 27, 28, 29, 30, 31, 32, 33, 34, 35]);
     assert.equal(new Set([...earlier.events, ...latest.events].map((item) => item.id)).size, 20);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recovers events appended after the latest compact timeline write", async () => {
+  const root = await mkdtemp(join(tmpdir(), "piss-timeline-recovery-"));
+  const directory = join(root, "timelines");
+  try {
+    await persistOwnedSessionTimeline(directory, "session-recovery", {
+      sequence: 7,
+      events: [{ ...event, id: "session-recovery:7" }],
+    });
+    await appendOwnedSessionTimelineEvent(directory, "session-recovery", {
+      id: "session-recovery:8",
+      sequence: 8,
+      type: "message_update",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      data: { assistantMessageEvent: { type: "text_delta", delta: "Recovered" } },
+    });
+    await appendOwnedSessionTimelineEvent(directory, "session-recovery", {
+      id: "session-recovery:9",
+      sequence: 9,
+      type: "message_end",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      data: { message: { role: "assistant", content: [{ type: "text", text: "Recovered final response" }] } },
+    });
+
+    const restored = await loadOwnedSessionTimeline(directory, "session-recovery");
+    assert.equal(restored.sequence, 9);
+    assert.deepEqual(restored.events.map((item) => item.sequence), [7, 8, 9]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

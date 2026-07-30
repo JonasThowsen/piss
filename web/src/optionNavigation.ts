@@ -4,15 +4,19 @@ export type OptionNavigationDirection = -1 | 1;
 
 type NavigationKeyEvent = Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">;
 
-export function optionNavigationDirection(event: NavigationKeyEvent): OptionNavigationDirection | undefined {
-  if (event.key === "ArrowDown") return 1;
-  if (event.key === "ArrowUp") return -1;
+export function controlNavigationDirection(event: NavigationKeyEvent): OptionNavigationDirection | undefined {
   if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return undefined;
   const key = event.key.toLocaleLowerCase();
   return key === "n" ? 1 : key === "p" ? -1 : undefined;
 }
 
-export function remapOptionNavigationKey(event: ReactKeyboardEvent<HTMLInputElement>): boolean {
+export function optionNavigationDirection(event: NavigationKeyEvent): OptionNavigationDirection | undefined {
+  if (event.key === "ArrowDown") return 1;
+  if (event.key === "ArrowUp") return -1;
+  return controlNavigationDirection(event);
+}
+
+export function remapOptionNavigationKey(event: ReactKeyboardEvent<HTMLElement>): boolean {
   const direction = optionNavigationDirection(event);
   if (direction === undefined || event.key === "ArrowDown" || event.key === "ArrowUp") return false;
   event.preventDefault();

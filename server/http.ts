@@ -321,7 +321,12 @@ function makeRequestHandler() {
         const pathname = requestUrl.pathname;
 
         if (pathname === "/api/health" && (request.method === "GET" || request.method === "HEAD")) {
-          json(response, 200, { ok: true, apiVersion: 1, architecture: "effect-v4" });
+          json(response, 200, {
+            ok: true,
+            apiVersion: 1,
+            architecture: "effect-v4",
+            updateActivation: "quiescent-sigusr2",
+          });
           return;
         }
 

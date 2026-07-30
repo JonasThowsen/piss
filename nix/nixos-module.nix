@@ -12,6 +12,55 @@ let
   serviceStateName = "piss";
   tailscaleStateName = cfg.tailscale.stateName;
   socket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
+  deploymentGeneration = builtins.hashString "sha256" (
+    builtins.toJSON {
+      package = toString cfg.package;
+      module = builtins.hashFile "sha256" ./nixos-module.nix;
+      inherit (cfg)
+        port
+        piCommand
+        allowedUsers
+        workspaceDiscoveryRoots
+        workspaces
+        ;
+      runtimePackages = map toString [
+        pkgs.nodejs_24
+        pkgs.bashInteractive
+        pkgs.nix
+      ];
+    }
+  );
+
+  activateUpdate = pkgs.writeShellScript "piss-activate-update" ''
+    set -euo pipefail
+    systemctl=${lib.getExe' pkgs.systemd "systemctl"}
+    pid="$($systemctl --user show --property=MainPID --value piss.service)"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || exit 0
+
+    current=""
+    current_port=""
+    while IFS= read -r entry; do
+      if [[ "$entry" == PISS_DEPLOYMENT_GENERATION=* ]]; then
+        current="''${entry#PISS_DEPLOYMENT_GENERATION=}"
+      elif [[ "$entry" == PISS_PORT=* ]]; then
+        current_port="''${entry#PISS_PORT=}"
+      fi
+    done < <(${lib.getExe' pkgs.coreutils "tr"} '\0' '\n' < "/proc/$pid/environ")
+
+    [[ "$current" == ${lib.escapeShellArg deploymentGeneration} ]] && exit 0
+    [[ "$current_port" =~ ^[1-9][0-9]*$ ]] || current_port=${toString cfg.port}
+
+    health="$(${lib.getExe pkgs.curl} --silent --fail --max-time 2 \
+      "http://127.0.0.1:$current_port/api/health" || true)"
+    if [[ "$health" != *'"updateActivation":"quiescent-sigusr2"'* ]]; then
+      echo "PISS update staged, but the running generation predates safe activation." >&2
+      echo "Restart piss.service once when its sessions are idle; later updates will activate automatically." >&2
+      exit 0
+    fi
+
+    echo "Staged PISS update differs from running generation; activation will wait for active work to settle"
+    $systemctl --user kill --kill-whom=main --signal=SIGUSR2 piss.service
+  '';
 
   tailscaledRunner = pkgs.writeShellScript "piss-tailscaled" ''
     set -euo pipefail
@@ -198,10 +247,10 @@ in
 
     systemd.user.services.piss = {
       description = "PISS — Effect control plane";
-      # NixOS switches run against a persistent user manager. Restarting in one
-      # transaction prevents deploy-rs from disconnecting after the stop phase
-      # and leaving the changed service inactive.
-      stopIfChanged = false;
+      # A switch stages the new unit without replacing the process that owns Pi
+      # runtimes. piss-update-activation asks that process to exit only after
+      # working, compacting, queued, and interactive sessions have settled.
+      restartIfChanged = false;
       notSocketActivated = true;
       path = [
         pkgs.nodejs_24
@@ -213,6 +262,7 @@ in
       wants = [ "network-online.target" ];
       environment = {
         NODE_ENV = "production";
+        PISS_DEPLOYMENT_GENERATION = deploymentGeneration;
         PISS_HOST = "127.0.0.1";
         PISS_PORT = toString cfg.port;
         PISS_PI_COMMAND = cfg.piCommand;
@@ -231,7 +281,9 @@ in
       };
       serviceConfig = {
         ExecStart = lib.getExe cfg.package;
-        Restart = "on-failure";
+        # A quiescent update exits cleanly after SIGUSR2; always restart so the
+        # user manager launches the newly staged ExecStart generation.
+        Restart = "always";
         RestartSec = 2;
         StateDirectory = serviceStateName;
         StateDirectoryMode = "0700";
@@ -265,6 +317,19 @@ in
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
         LockPersonality = true;
+      };
+    };
+
+    systemd.user.services.piss-update-activation = {
+      description = "Activate staged PISS update after sessions settle";
+      wantedBy = [ "default.target" ];
+      after = [ "piss.service" ];
+      requires = [ "piss.service" ];
+      stopIfChanged = false;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = activateUpdate;
+        RemainAfterExit = true;
       };
     };
 

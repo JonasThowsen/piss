@@ -1,9 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
+import { consumeUpdateActivation } from "./updateActivation.ts";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing application root");
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 
 const syncVisibleViewport = () => {
   const height = window.visualViewport?.height ?? window.innerHeight;
@@ -20,10 +22,10 @@ document.addEventListener("visibilitychange", () => {
 });
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  let reloadOnControllerChange = navigator.serviceWorker.controller !== null;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (reloadOnControllerChange) window.location.reload();
-    reloadOnControllerChange = true;
+    // A worker activated from another tab must not interrupt a session being
+    // read here. Only the tab whose user chose Apply update reloads itself.
+    if (consumeUpdateActivation()) window.location.reload();
   });
   window.addEventListener("load", () => {
     void navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" }).then((registration) => {

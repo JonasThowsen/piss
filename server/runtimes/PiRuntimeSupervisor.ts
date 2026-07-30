@@ -124,6 +124,7 @@ export interface PiRuntimeSupervisorShape {
   readonly resume: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | WorkspaceNotFoundError | ActiveRuntimeLimitError | WorkspacePathError | PiSpawnError | SessionResumeError | SessionStorageError>;
   readonly list: Effect.Effect<ReadonlyArray<OwnedSession>>;
   readonly listSummaries: Effect.Effect<ReadonlyArray<OwnedSessionSummary>>;
+  readonly awaitUpdateSafe: Effect.Effect<void>;
   readonly workspaceCounts: Effect.Effect<ReadonlyMap<string, { readonly sessions: number; readonly active: number }>>;
   readonly get: (id: string) => Effect.Effect<OwnedSession, SessionNotFoundError>;
   readonly timelinePage: (id: string, beforeSequence: number | undefined, limit: number) => Effect.Effect<OwnedSessionTimelinePageResponse, SessionNotFoundError | SessionStorageError>;
@@ -160,6 +161,17 @@ function now(): string {
 
 function cloneSession(session: OwnedSession): OwnedSession {
   return structuredClone(session);
+}
+
+export function isSessionUpdateSafe(
+  session: Pick<OwnedSession, "status" | "pendingMessageCount" | "compaction" | "interactiveRequests">,
+  pendingCommandCount = 0,
+): boolean {
+  return (session.status === "idle" || session.status === "finished" || session.status === "stopped" || session.status === "crashed")
+    && session.pendingMessageCount === 0
+    && session.compaction.status !== "running"
+    && session.interactiveRequests.length === 0
+    && pendingCommandCount === 0;
 }
 
 function summarizeSession(session: OwnedSession): OwnedSessionSummary {
@@ -1839,6 +1851,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       import: importSession,
       list: Effect.sync(() => [...sessions.values()].map((session) => cloneSession(session.snapshot))),
       listSummaries: Effect.sync(() => [...sessions.values()].map((session) => summarizeSession(session.snapshot))),
+      awaitUpdateSafe: Effect.gen(function* () {
+        while ([...sessions.values()].some((session) => !isSessionUpdateSafe(session.snapshot, session.pending.size))) {
+          yield* Effect.sleep("250 millis");
+        }
+      }),
       workspaceCounts: Effect.sync(() => {
         const counts = new Map<string, { sessions: number; active: number }>();
         for (const session of sessions.values()) {

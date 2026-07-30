@@ -174,6 +174,10 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
+    const health = await fetch(`${base}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json() as { updateActivation?: string }).updateActivation, "quiescent-sigusr2");
+
     const unauthenticatedNotifications = await fetch(`${base}/api/notifications`);
     assert.equal(unauthenticatedNotifications.status, 401);
     const notificationCapability = await fetch(`${base}/api/notifications`, { headers: identityHeaders });

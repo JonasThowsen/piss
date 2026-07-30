@@ -93,6 +93,25 @@ test("cached and stale HTTP responses cannot overwrite newer server state", () =
   assert.deepEqual(projection(lateCache), projection(live));
 });
 
+test("same-cursor hydration cannot discard a cached final response", () => {
+  let state = reduceSessionSync(initialSessionSyncState("session-1"), {
+    type: "cachedSnapshot",
+    session: session([event(1), event(2)], { status: "finished" }),
+  });
+  const authoritativeEvent = { ...event(1), timestamp: "2026-01-01T00:00:09.000Z", data: { message: { role: "assistant", content: "authoritative event 1" } } };
+  state = reduceSessionSync(state, {
+    type: "snapshotReset",
+    session: session([authoritativeEvent], { status: "idle", lastActivityAt: "2026-01-01T00:00:09.000Z" }),
+    cursor: 2,
+    receivedAt: 2,
+  });
+
+  assert.deepEqual(state.session?.events.map((item) => item.sequence), [1, 2]);
+  assert.equal(state.session?.events[0]?.timestamp, authoritativeEvent.timestamp, "server events replace cached events at the same sequence");
+  assert.equal(state.session?.status, "idle", "newer server metadata still wins");
+  assert.equal(state.serverConfirmed, true);
+});
+
 test("snapshot reset replaces at its authoritative cursor and duplicates are harmless", () => {
   let state = apply([{ type: "serverSnapshot", session: session([event(1), event(2)]), cursor: 2, receivedAt: 1 }]);
   state = reduceSessionSync(state, { type: "snapshotReset", session: session([event(7)], { lastActivityAt: "2026-01-01T00:00:07.000Z" }), cursor: 7, receivedAt: 2 });

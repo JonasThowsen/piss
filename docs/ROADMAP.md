@@ -16,13 +16,14 @@ The current implementation proves these end-to-end paths:
 - model, thinking, usage, queue, compaction, and interactive extension controls use Pi's real RPC methods;
 - file mention search and Bubblewrap Git review remain scoped to the authorized workspace;
 - Web Push and the offline shell avoid caching or transmitting private session content;
-- browser-only Nix package updates do not restart runtime-owning server processes.
+- browser-only Nix package updates do not restart runtime-owning server processes;
+- server updates stage immediately but activate only after working, queued, compacting, and interactive sessions settle.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
 
 ## Current limitations
 
-- Pi is still a direct child of the control plane. A server-binary update resumes a durable transcript and continues an interrupted working run in a new process, but the exact in-flight tool process or interactive request cannot remain live across replacement.
+- Pi is still a direct child of the control plane. Normal server deployments now wait for quiescence, but an unexpected crash or forced restart must resume a durable transcript and cannot preserve the exact in-flight tool process or interactive request.
 - Transcript reconstruction restores recent conversation messages after resume, not every historical non-message event.
 - The outgoing tray is device-local. Pi's native `queue_update` and JSONL transcript remain authoritative rather than duplicating queued prompt text in PISS storage.
 - Existing registered Git worktrees are supported, but browser-managed worktree creation is not.
@@ -51,7 +52,7 @@ The existing authenticated review path is read-only. Commit and push must remain
 
 These require usage evidence before architecture work:
 
-- detached per-session workers that preserve in-flight tools across server-binary restarts;
+- detached per-session workers that preserve in-flight tools across unexpected or forced control-plane restarts and eliminate even the short quiescent deployment handoff;
 - multiple remote hosts in one dashboard;
 - a PISS capability through which one Pi can inspect or launch sibling sessions;
 - shared tasks or scratchpads;

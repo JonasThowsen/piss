@@ -72,6 +72,15 @@ function mergeSession(current: OwnedSession | undefined, incoming: OwnedSession,
   return { ...incoming, events: mergeSessionEvents(current.events, incoming.events) };
 }
 
+function mergeAuthoritativeSnapshotPreservingMissingEvents(current: OwnedSession, incoming: OwnedSession): OwnedSession {
+  const authoritativeSequences = new Set(incoming.events.map((event) => event.sequence));
+  const candidates = [
+    ...current.events.filter((event) => !authoritativeSequences.has(event.sequence)),
+    ...incoming.events,
+  ].toSorted((left, right) => left.sequence - right.sequence);
+  return { ...incoming, events: mergeSessionEvents([], candidates) };
+}
+
 function acceptServerState(
   state: SessionSyncState,
   session: OwnedSession,
@@ -89,7 +98,14 @@ function acceptServerState(
     if (events.length === state.session.events.length) return state;
     return { ...state, session: { ...state.session, events }, revision: state.revision + 1 };
   }
-  const next = mergeSession(state.session, session, replace);
+  // A same-generation reset at the cursor we already rendered may refresh
+  // metadata, but it cannot prove that locally cached events at that cursor no
+  // longer exist. Keep those immutable events to avoid a completed response
+  // flickering away during cache-to-server hydration.
+  const preserveEvents = replace && cursor === state.cursor && state.session !== undefined && !runtimeChanged;
+  const next = preserveEvents
+    ? mergeAuthoritativeSnapshotPreservingMissingEvents(state.session!, session)
+    : mergeSession(state.session, session, replace);
   return {
     ...state,
     sessionId: session.id,
