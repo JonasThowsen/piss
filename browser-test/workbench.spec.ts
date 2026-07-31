@@ -646,7 +646,7 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(pickerTrigger).toBeFocused();
 });
 
-test("mobile session picker keeps its top anchor when the visible area expands", async ({ page }) => {
+test("mobile session picker fills the visible page without shifting when its height changes", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await installApi(page);
   await page.goto("/");
@@ -660,11 +660,12 @@ test("mobile session picker keeps its top anchor when the visible area expands",
     element.style.bottom = "auto";
     element.style.height = "420px";
   });
-  const keyboardOpenTop = (await picker.boundingBox())!.y;
+  const keyboardOpenBounds = (await picker.boundingBox())!;
   await layer.evaluate((element) => { element.style.height = "700px"; });
-  const keyboardClosedTop = (await picker.boundingBox())!.y;
+  const keyboardClosedBounds = (await picker.boundingBox())!;
 
-  expect(Math.abs(keyboardClosedTop - keyboardOpenTop)).toBeLessThan(1);
+  expect(keyboardOpenBounds).toMatchObject({ x: 6, y: 6, width: 378, height: 408 });
+  expect(keyboardClosedBounds).toMatchObject({ x: 6, y: 6, width: 378, height: 688 });
 });
 
 test("desktop composer inserts a newline with Shift+Enter and sends with Enter", async ({ page }) => {
