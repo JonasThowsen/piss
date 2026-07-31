@@ -1230,16 +1230,27 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await expect(createDialog.getByText("SHARED CHECKOUT")).toHaveCount(0);
   await createDialog.getByRole("button", { name: "Close" }).click();
 
-  await page.getByLabel("Attach images").setInputFiles({
-    name: "screen.png",
+  await page.setViewportSize({ width: 360, height: 844 });
+  await page.getByLabel("Attach images").setInputFiles(["screen-a.png", "screen-b.png", "screen-c.png"].map((name) => ({
+    name,
     mimeType: "image/png",
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  })));
+  await expect(page.locator(".composer-images img")).toHaveCount(3);
+  const attachmentLayout = await page.locator(".composer").evaluate((composer) => {
+    const send = composer.querySelector<HTMLElement>(".send-button")!.getBoundingClientRect();
+    const images = composer.querySelector<HTMLElement>(".composer-images")!.getBoundingClientRect();
+    const footer = composer.querySelector<HTMLElement>(".composer-footer")!.getBoundingClientRect();
+    return { send: { width: send.width, height: send.height }, imagesBottom: images.bottom, footerTop: footer.top };
   });
-  await expect(page.locator(".composer-images img")).toHaveCount(1);
-  await page.getByLabel("Message Pi").fill("Inspect this screen");
+  expect(attachmentLayout.send).toEqual({ width: 42, height: 42 });
+  expect(attachmentLayout.imagesBottom).toBeLessThanOrEqual(attachmentLayout.footerTop);
+  await page.getByLabel("Message Pi").fill("Inspect these screens");
   await page.locator(".send-button").click();
+  await expect.poll(() => (api.commands.at(-1)?.images as Array<Record<string, unknown>> | undefined)?.length).toBe(3);
   await expect.poll(() => (api.commands.at(-1)?.images as Array<Record<string, unknown>> | undefined)?.[0]?.mediaType).toBe("image/png");
   await expect(page.locator(".composer-images")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
 
   await page.getByLabel("Message Pi").fill("Undo @");
   const emptyMentionPicker = page.getByRole("dialog", { name: "Mention a file" });
@@ -1362,7 +1373,7 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await expect(blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" })).toBeDisabled();
   await blockedRemoval.getByRole("button", { name: "CANCEL" }).click();
 
-  expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("8px");
+  expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("22px");
   await expect(page.locator(".composer-insertions svg")).toHaveCount(2);
   expect(await page.locator(".attachment-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
   expect(await page.locator(".mention-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");

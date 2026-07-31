@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, ImagePlus, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -1533,8 +1533,6 @@ export function App() {
         ? "SYNCING"
         : "LIVE";
   const sessionIsLoading = Boolean(selectedSessionId && (loadingSessionId === selectedSessionId || !sessionSyncRef.current.serverConfirmed));
-  const contextPercent = selectedSession?.usage?.contextUsage?.percent ?? null;
-  const contextTone = contextPercent === null ? "unknown" : contextPercent >= 85 ? "danger" : contextPercent >= 70 ? "warning" : "healthy";
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1879,37 +1877,27 @@ export function App() {
                 placeholder={canWrite ? "Message Pi · / for commands · @ for files" : selectedSession && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" ? "Reconnecting to runtime…" : "This runtime is no longer writable"}
                 rows={2}
               />
+              {images.length > 0 && <div className="composer-images" aria-label="Attached images">
+                {images.map((image, index) => <button
+                  key={`${image.name ?? image.mediaType}:${index}`}
+                  onClick={() => setImages((current) => {
+                    const next = current.filter((_, candidate) => candidate !== index);
+                    imagesRef.current = next;
+                    return next;
+                  })}
+                  type="button"
+                  aria-label={`Remove ${image.name || `image ${index + 1}`}`}
+                ><img src={image.preview} alt="" /><span aria-hidden="true"><X /></span></button>)}
+              </div>}
               <div className="composer-footer">
                 <div className="composer-insertions">
                   <label className={`attachment-trigger ${busy || !canWrite ? "disabled" : ""}`} title="Attach images">
                     <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={busy || !canWrite} onChange={(event) => { void selectImages(event.target.files ?? []); event.target.value = ""; }} aria-label="Attach images" />
-                    <span aria-hidden="true">{imageSelectionPending ? <LoaderCircle className="icon-spin" /> : <ImagePlus />}</span>
+                    <span aria-hidden="true">{imageSelectionPending ? <LoaderCircle className="icon-spin" /> : <Plus />}</span>
                   </label>
                   <button className="mention-trigger" disabled={busy || !canWrite} onClick={insertMentionTrigger} type="button" aria-label="Mention a file" title="Mention a file"><AtSign aria-hidden="true" /></button>
                   {slashCommandMode && <span className="command-mode"><i aria-hidden="true">/</i> COMMAND · IMMEDIATE</span>}
-                  {images.length > 0 && <div className="composer-images" aria-label="Attached images">
-                    {images.map((image, index) => <button
-                      key={`${image.name ?? image.mediaType}:${index}`}
-                      onClick={() => setImages((current) => {
-                        const next = current.filter((_, candidate) => candidate !== index);
-                        imagesRef.current = next;
-                        return next;
-                      })}
-                      type="button"
-                      aria-label={`Remove ${image.name || `image ${index + 1}`}`}
-                    ><img src={image.preview} alt="" /><span aria-hidden="true"><X /></span></button>)}
-                  </div>}
                 </div>
-                <button
-                  className={`context-glance ${contextTone}`}
-                  onClick={() => setActiveView("details")}
-                  type="button"
-                  aria-label={contextPercent === null ? "Context usage unavailable; open session details" : `Context is ${contextPercent.toFixed(1)} percent used; open session details`}
-                  title="Open context and compaction details"
-                >
-                  <span><small>CONTEXT</small><b>{contextPercent === null ? "—" : `${Math.round(contextPercent)}%`}</b></span>
-                  <i aria-hidden="true"><em style={{ width: `${Math.min(100, Math.max(0, contextPercent ?? 0))}%` }} /></i>
-                </button>
                 <ComposerModelControls
                   key={selectedSession.id}
                   session={selectedSession}
