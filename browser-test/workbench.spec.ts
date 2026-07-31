@@ -1187,6 +1187,11 @@ test("mobile review supports touch-sized line comments and reviewed progress", a
   await added.click();
   const lineBox = await added.boundingBox();
   expect(lineBox?.height).toBeGreaterThanOrEqual(30);
+  await added.click();
+  await expect(added).toHaveAttribute("aria-pressed", "false");
+  await expect(removed).toHaveAttribute("aria-pressed", "true");
+  await added.click();
+  await expect(added).toHaveAttribute("aria-pressed", "true");
   const openComment = appReviewFile.getByRole("button", { name: "Comment on web/src/App.tsx:1" });
   await openComment.click();
   const comment = appReviewFile.getByLabel("Comment editor for web/src/App.tsx:1");

@@ -95,8 +95,17 @@ export function parseUnifiedDiff(patch: string): ReadonlyArray<DiffLine> {
 }
 
 export function nextDiffSelection(current: DiffSelection | undefined, lineIndex: number): DiffSelection | undefined {
-  if (current?.anchor === lineIndex && current.end === lineIndex) return;
-  return current ? { anchor: current.anchor, end: lineIndex } : { anchor: lineIndex, end: lineIndex };
+  if (!current) return { anchor: lineIndex, end: lineIndex };
+  if (lineIndex === current.anchor) return;
+
+  const direction = current.end >= current.anchor ? 1 : -1;
+  const selectedStart = Math.min(current.anchor, current.end);
+  const selectedEnd = Math.max(current.anchor, current.end);
+  if (lineIndex >= selectedStart && lineIndex <= selectedEnd) {
+    return { anchor: current.anchor, end: lineIndex - direction };
+  }
+
+  return { anchor: current.anchor, end: lineIndex };
 }
 
 export function selectedDiffLines(lines: ReadonlyArray<DiffLine>, selection: DiffSelection): ReadonlyArray<DiffLine> {

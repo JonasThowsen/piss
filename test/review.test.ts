@@ -28,11 +28,19 @@ test("unified diff lines retain old and new locations", () => {
   assert.match(formatReviewComment("src/example.ts", selection, "Please keep the old behavior."), /-old value\n\+new value\n\+another value/);
 });
 
-test("tapping one line twice deselects it while a different line extends the range", () => {
+test("tapping selected lines contracts the range back toward its anchor", () => {
   const first = nextDiffSelection(undefined, 4);
   assert.deepEqual(first, { anchor: 4, end: 4 });
   assert.equal(nextDiffSelection(first, 4), undefined);
-  assert.deepEqual(nextDiffSelection(first, 7), { anchor: 4, end: 7 });
+
+  const extended = nextDiffSelection(first, 7);
+  assert.deepEqual(extended, { anchor: 4, end: 7 });
+  assert.deepEqual(nextDiffSelection(extended, 7), { anchor: 4, end: 6 });
+  assert.deepEqual(nextDiffSelection(extended, 6), { anchor: 4, end: 5 });
+  assert.equal(nextDiffSelection(extended, 4), undefined);
+
+  const reversed = nextDiffSelection({ anchor: 7, end: 4 }, 4);
+  assert.deepEqual(reversed, { anchor: 7, end: 5 });
 });
 
 test("reviewed file state is scoped to the exact file change", () => {
