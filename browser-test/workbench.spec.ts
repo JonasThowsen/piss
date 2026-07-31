@@ -646,6 +646,27 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(pickerTrigger).toBeFocused();
 });
 
+test("mobile session picker keeps its top anchor when the visible area expands", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Search sessions" }).click();
+  const layer = page.locator(".global-picker-layer");
+  const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
+  await expect(picker).toBeVisible();
+
+  await layer.evaluate((element) => {
+    element.style.bottom = "auto";
+    element.style.height = "420px";
+  });
+  const keyboardOpenTop = (await picker.boundingBox())!.y;
+  await layer.evaluate((element) => { element.style.height = "700px"; });
+  const keyboardClosedTop = (await picker.boundingBox())!.y;
+
+  expect(Math.abs(keyboardClosedTop - keyboardOpenTop)).toBeLessThan(1);
+});
+
 test("desktop composer inserts a newline with Shift+Enter and sends with Enter", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);

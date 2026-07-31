@@ -969,8 +969,8 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .shell.mobile-keyboard-open .capability-tabs { display: none; }
   .shell.mobile-keyboard-open .session-view { grid-template-rows: minmax(0, 1fr) auto; }
   .shell.mobile-keyboard-open .timeline { padding-top: 10px; }
-  .global-picker-layer { align-items: end; padding: 6px; }
-  .global-picker { position: relative; max-height: calc(100dvh - 12px); grid-template-rows: auto minmax(0, 1fr); border-radius: 12px 12px 7px 7px; }
+  .global-picker-layer { --mobile-picker-top: min(12vh, 110px); align-items: start; padding: var(--mobile-picker-top) 6px 6px; }
+  .global-picker { position: relative; max-height: calc(100dvh - var(--mobile-picker-top) - 6px); grid-template-rows: auto minmax(0, 1fr); border-radius: 12px 12px 7px 7px; }
   .global-picker > header { position: absolute; top: 6px; right: 6px; z-index: 1; min-height: 0; padding: 0; border: 0; background: transparent; }
   .global-picker > header div { display: none; }
   .global-picker > header button { width: 44px; height: 44px; background: var(--surface); }

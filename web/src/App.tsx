@@ -24,7 +24,7 @@ import { useNotifications } from "./notifications.ts";
 import { GlobalPicker } from "./GlobalPicker.tsx";
 import { HOTKEYS } from "./hotkeys.ts";
 import { keyboardScrollDirection, useSharedKeyboardScrolling } from "./keyboardScroll.ts";
-import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
+import { readLastOpenedSession, readSessionOpenHistory, writeLastOpenedSession } from "./lastOpenedSession.ts";
 import { readCachedSession, removeCachedSession, writeCachedSession } from "./sessionCache.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { initialSessionSyncState, reduceSessionSync, sessionForFastSwitchCache, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
@@ -347,6 +347,7 @@ export function App() {
   const routedSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
   const [initialRequestedSessionId] = useState(() => routedSessionId ?? readLastOpenedSession());
   const [state, setState] = useState<LoadState>({ _tag: "Loading" });
+  const [sessionOpenHistory, setSessionOpenHistory] = useState(readSessionOpenHistory);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [selectedSession, setSelectedSession] = useState<OwnedSession>();
   const [workspaceId, setWorkspaceId] = useState("");
@@ -490,7 +491,10 @@ export function App() {
 
   // TODO(tracer): Compose workspace and command sources here once their first
   // picker actions have an end-to-end behavior worth exposing.
-  const globalPickerItems = useMemo(() => state._tag === "Ready" ? sessionPickerItems(state.sessions, state.workspaces) : [], [state]);
+  const globalPickerItems = useMemo(
+    () => state._tag === "Ready" ? sessionPickerItems(state.sessions, state.workspaces, sessionOpenHistory) : [],
+    [sessionOpenHistory, state],
+  );
   const matchingSlashCommands = useMemo(
     () => slashCommandMenu ? filterSlashCommands(slashCommandMenu.commands, slashCommandMenu.active.query).slice(0, 50) : [],
     [slashCommandMenu],
@@ -564,7 +568,7 @@ export function App() {
         dispatchSessionSync({ type: "cachedSnapshot", session: cached });
       });
     }
-    writeLastOpenedSession(sessionId);
+    setSessionOpenHistory(writeLastOpenedSession(sessionId));
     const url = new URL(window.location.href);
     if (sessionId) url.searchParams.set("session", sessionId);
     else url.searchParams.delete("session");
