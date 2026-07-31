@@ -1157,6 +1157,40 @@ test("mobile session tabs expose agent, changes, and details without an empty re
   await expect(changes.locator("em")).toHaveCount(0);
 });
 
+test("mobile review supports touch-sized line comments and reviewed progress", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  await page.locator(".capability-tabs").getByRole("tab", { name: /Changes/ }).click();
+
+  const appReviewFile = page.locator(".review-file").filter({ hasText: "App.tsx" });
+  const reviewedToggle = appReviewFile.getByRole("button", { name: "Mark web/src/App.tsx reviewed" });
+  const toggleBox = await reviewedToggle.boundingBox();
+  expect(toggleBox?.width).toBeGreaterThanOrEqual(44);
+  expect(toggleBox?.height).toBeGreaterThanOrEqual(44);
+  await reviewedToggle.click();
+  await expect(page.locator(".review-overview")).toContainText("1 of 2 files reviewed");
+
+  const removed = appReviewFile.getByRole("button", { name: /old line 1: -old line/ });
+  const added = appReviewFile.getByRole("button", { name: /new line 1: \+new line/ });
+  await removed.click();
+  await added.click();
+  const lineBox = await added.boundingBox();
+  expect(lineBox?.height).toBeGreaterThanOrEqual(30);
+  const comment = appReviewFile.getByLabel("Comment on web/src/App.tsx:1");
+  await comment.fill("Please preserve this behavior on mobile.");
+  await appReviewFile.getByRole("button", { name: "SEND TO AGENT" }).click();
+  await expect.poll(() => api.commands.at(-1)?.text).toContain("Please preserve this behavior on mobile.");
+  await expect(appReviewFile).toContainText("Comment sent to the agent");
+  await expect(page.getByLabel("Message Pi")).toBeHidden();
+  const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
+  const shellWidth = await page.locator(".shell").evaluate((element) => element.scrollWidth);
+  expect(shellWidth).toBe(viewportWidth);
+});
+
 test("mobile workbench keeps creation, models, queues, and navigation functional", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const api = await installApi(page);
@@ -1712,8 +1746,21 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   await expect(page.getByText("App.tsx", { exact: true })).toBeVisible();
   await expect(page.locator(".diff-patch .removed")).toContainText("old line");
   await expect(page.locator(".diff-patch .added").first()).toContainText("new line");
+  const appReviewFile = page.locator(".review-file").filter({ hasText: "App.tsx" });
+  const reviewedToggle = appReviewFile.getByRole("button", { name: "Mark web/src/App.tsx reviewed" });
+  await reviewedToggle.click();
+  await expect(appReviewFile.getByRole("button", { name: "Mark web/src/App.tsx unreviewed" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".review-overview")).toContainText("1 of 2 files reviewed");
+  await appReviewFile.getByRole("button", { name: /old line 1: -old line/ }).click();
+  await appReviewFile.getByRole("button", { name: /new line 1: \+new line/ }).click();
+  await appReviewFile.getByLabel("Comment on web/src/App.tsx:1").fill("Keep the fallback for older clients.");
+  await appReviewFile.getByRole("button", { name: "SEND TO AGENT" }).click();
+  await expect.poll(() => api.commands.at(-1)?.text).toContain("Review comment at web/src/App.tsx:1:");
+  await expect.poll(() => api.commands.at(-1)?.text).toContain("-old line\n+new line");
+  await expect(appReviewFile).toContainText("Comment sent to the agent");
   await page.getByRole("button", { name: "Refresh changes" }).click();
   await expect.poll(() => api.reviewRequestCount()).toBe(2);
+  await expect(appReviewFile.getByRole("button", { name: "Mark web/src/App.tsx unreviewed" })).toHaveAttribute("aria-pressed", "true");
   await page.locator(".capability-tabs").getByRole("tab", { name: /Agent/ }).click();
   await expect(page.getByText("Files", { exact: true })).toHaveCount(0);
   await expect(page.getByText("EFFECT 4", { exact: true })).toHaveCount(0);

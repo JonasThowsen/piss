@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MoreHorizontal, Plus, RefreshCw, Search, Settings, Square, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Square, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -29,6 +29,7 @@ import { readCachedSession, removeCachedSession, writeCachedSession } from "./se
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { initialSessionSyncState, reduceSessionSync, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
 import { requestUpdateActivation } from "./updateActivation.ts";
+import { fileReviewKey, formatReviewComment, parseUnifiedDiff, readReviewedFiles, selectedDiffLines, selectionLocation, writeReviewedFiles, type DiffLine, type DiffSelection } from "./review.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
 import "./styles.css";
@@ -157,42 +158,137 @@ function patchCounts(patch: string): { readonly additions: number; readonly dele
   return { additions, deletions };
 }
 
-function DiffPatch({ patch }: { readonly patch: string }) {
-  return <pre className="diff-patch" data-keyboard-scroll tabIndex={0}>{patch.split("\n").map((line, index) => {
-    const className = line.startsWith("@@") ? "hunk"
-      : line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("# ") ? "meta"
-        : line.startsWith("+") ? "added"
-          : line.startsWith("-") ? "removed"
-            : "context";
-    return <span className={className} key={index}>{line || " "}{"\n"}</span>;
-  })}</pre>;
+function lineAccessibleLocation(line: DiffLine): string {
+  if (line.oldLine !== undefined && line.newLine !== undefined) return `old and new line ${line.newLine}`;
+  if (line.newLine !== undefined) return `new line ${line.newLine}`;
+  if (line.oldLine !== undefined) return `old line ${line.oldLine}`;
+  return "diff metadata";
 }
 
-function ReviewFileView({ file, initiallyOpen }: { readonly file: ReviewFile; readonly initiallyOpen: boolean }) {
+function DiffPatch({ lines, selection, onSelect }: { readonly lines: ReadonlyArray<DiffLine>; readonly selection?: DiffSelection; readonly onSelect: (line: DiffLine) => void }) {
+  const selected = selection ? new Set(selectedDiffLines(lines, selection).map((line) => line.index)) : new Set<number>();
+  return <pre className="diff-patch" data-keyboard-scroll tabIndex={0}>{lines.map((line) => <button
+    aria-label={`${lineAccessibleLocation(line)}: ${line.text || "blank line"}`}
+    aria-pressed={line.selectable ? selected.has(line.index) : undefined}
+    className={`diff-line ${line.kind} ${selected.has(line.index) ? "selected" : ""}`}
+    disabled={!line.selectable}
+    key={line.index}
+    onClick={() => onSelect(line)}
+    title={line.selectable ? "Select this line; tap another line to select a range" : undefined}
+    type="button"
+  ><span className="diff-old" aria-hidden="true">{line.oldLine ?? ""}</span><span className="diff-new" aria-hidden="true">{line.newLine ?? ""}</span><span className="diff-code" aria-hidden="true">{line.text || " "}</span></button>)}</pre>;
+}
+
+type ReviewFileViewProps = {
+  readonly file: ReviewFile;
+  readonly initiallyOpen: boolean;
+  readonly reviewed: boolean;
+  readonly canComment: boolean;
+  readonly onReviewedChange: (reviewed: boolean) => void;
+  readonly onSendComment: (message: string) => Promise<boolean>;
+};
+
+function ReviewFileView({ file, initiallyOpen, reviewed, canComment, onReviewedChange, onSendComment }: ReviewFileViewProps) {
   const [open, setOpen] = useState(initiallyOpen);
+  const [selection, setSelection] = useState<DiffSelection>();
+  const [comment, setComment] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const lines = useMemo(() => parseUnifiedDiff(file.patch), [file.patch]);
+  const selectedLines = selection ? selectedDiffLines(lines, selection) : [];
   const counts = patchCounts(file.patch);
   const slash = file.path.lastIndexOf("/");
   const status = file.indexStatus === "?" ? { mark: "U", label: "Untracked file" } : file.worktreeStatus === "D" || file.indexStatus === "D" ? { mark: "D", label: "Deleted file" } : { mark: "M", label: "Modified file" };
-  return <details className="review-file" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary><span className="review-file-status"><span aria-hidden="true">{status.mark}</span><span className="sr-only">{status.label}</span></span><span className="review-file-path">{slash >= 0 && <small>{file.path.slice(0, slash + 1)}</small>}<b>{file.path.slice(slash + 1)}</b></span><span className="review-counts"><em>+{counts.additions}</em><em>−{counts.deletions}</em></span><strong aria-hidden="true"><ChevronDown /></strong></summary>
-    <div className="review-file-meta"><span>{reviewLabels(file).map((label) => <i key={label}>{label}</i>)}{file.binary && <i>BINARY</i>}{file.truncated && <i>BOUNDED</i>}</span></div>
-    {file.patch ? <DiffPatch patch={file.patch} /> : <div className="review-empty-patch">No textual patch is available for this change.</div>}
-  </details>;
+  const panelId = `review-file-${fileReviewKey(file).replace(/[^a-z0-9-]/gi, "-")}`;
+
+  const selectLine = (line: DiffLine) => {
+    if (!line.selectable) return;
+    setSent(false);
+    setSelection((current) => current ? { anchor: current.anchor, end: line.index } : { anchor: line.index, end: line.index });
+  };
+  const submitComment = async () => {
+    if (selectedLines.length === 0 || !comment.trim() || sending || !canComment) return;
+    setSending(true);
+    const accepted = await onSendComment(formatReviewComment(file.path, selectedLines, comment));
+    setSending(false);
+    if (!accepted) return;
+    setComment("");
+    setSelection(undefined);
+    setSent(true);
+  };
+
+  return <article className={`review-file ${open ? "open" : ""} ${reviewed ? "reviewed" : ""}`}>
+    <header className="review-file-heading">
+      <button className="review-file-toggle" type="button" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((current) => !current)}>
+        <span className="review-file-status"><span aria-hidden="true">{status.mark}</span><span className="sr-only">{status.label}</span></span>
+        <span className="review-file-path">{slash >= 0 && <small>{file.path.slice(0, slash + 1)}</small>}<b>{file.path.slice(slash + 1)}</b></span>
+        <span className="review-counts"><em>+{counts.additions}</em><em>−{counts.deletions}</em></span>
+        <strong aria-hidden="true"><ChevronDown /></strong>
+      </button>
+      <button className="review-mark" type="button" aria-label={reviewed ? `Mark ${file.path} unreviewed` : `Mark ${file.path} reviewed`} aria-pressed={reviewed} onClick={() => onReviewedChange(!reviewed)}><Check aria-hidden="true" /><span>{reviewed ? "REVIEWED" : "MARK REVIEWED"}</span></button>
+    </header>
+    {open && <div className="review-file-panel" id={panelId}>
+      <div className="review-file-meta"><p><MessageSquare aria-hidden="true" /> Tap a line, then another to select a range</p><span>{reviewLabels(file).map((label) => <i key={label}>{label}</i>)}{file.binary && <i>BINARY</i>}{file.truncated && <i>BOUNDED</i>}</span></div>
+      {file.patch ? <DiffPatch lines={lines} selection={selection} onSelect={selectLine} /> : <div className="review-empty-patch">No textual patch is available for this change.</div>}
+      {selectedLines.length > 0 && <form className="review-comment" onSubmit={(event) => { event.preventDefault(); void submitComment(); }}>
+        <header><div><MessageSquare aria-hidden="true" /><span>COMMENT ON</span><b>{selectionLocation(file.path, selectedLines)}</b></div><button type="button" onClick={() => { setSelection(undefined); setComment(""); }}>CLEAR</button></header>
+        <textarea aria-label={`Comment on ${selectionLocation(file.path, selectedLines)}`} autoFocus value={comment} disabled={sending || !canComment} onChange={(event) => setComment(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submitComment(); } }} placeholder={canComment ? "Describe what should change…" : "Reconnect to the agent to comment"} rows={3} />
+        <footer><span>{selectedLines.length} LINE{selectedLines.length === 1 ? "" : "S"} SELECTED · CTRL/⌘ + ENTER</span><button type="submit" disabled={sending || !canComment || !comment.trim()}>{sending ? <LoaderCircle className="icon-spin" aria-hidden="true" /> : <Send aria-hidden="true" />}{sending ? "SENDING…" : "SEND TO AGENT"}</button></footer>
+      </form>}
+      {sent && <div className="review-comment-sent" role="status"><Check aria-hidden="true" /> Comment sent to the agent</div>}
+    </div>}
+  </article>;
 }
 
-function ReviewView({ state, onRefresh }: { readonly state?: ReviewState; readonly onRefresh: () => void }) {
+function ReviewView({ state, canComment, onRefresh, onSendComment }: { readonly state?: ReviewState; readonly canComment: boolean; readonly onRefresh: () => void; readonly onSendComment: (message: string) => Promise<boolean> }) {
   const review = state?.snapshot;
+  const [reviewed, setReviewed] = useState<ReadonlySet<string>>(new Set());
+  const currentKeys = useMemo(() => review?.files.map(fileReviewKey) ?? [], [review]);
+  const reviewedCount = currentKeys.filter((key) => reviewed.has(key)).length;
+  const allReviewed = currentKeys.length > 0 && reviewedCount === currentKeys.length;
+
+  useEffect(() => {
+    if (!state?.sessionId || !review) return;
+    setReviewed(readReviewedFiles(state.sessionId));
+  }, [state?.sessionId, review?.generatedAt]);
+
+  const updateReviewed = (key: string, value: boolean) => {
+    if (!state?.sessionId) return;
+    setReviewed((current) => {
+      const next = new Set(current);
+      if (value) next.add(key);
+      else next.delete(key);
+      writeReviewedFiles(state.sessionId, next);
+      return next;
+    });
+  };
+  const toggleAllReviewed = () => {
+    if (!state?.sessionId) return;
+    setReviewed((current) => {
+      const next = new Set(current);
+      for (const key of currentKeys) {
+        if (allReviewed) next.delete(key);
+        else next.add(key);
+      }
+      writeReviewedFiles(state.sessionId, next);
+      return next;
+    });
+  };
+
   return <section className="review-view" aria-label="Uncommitted changes" aria-busy={state?.loading ?? false}>
-    <span className="sr-only" aria-live="polite">{state?.loading ? "Reading repository changes" : state?.error ? `Review unavailable: ${state.error}` : review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"} loaded` : ""}</span>
+    <span className="sr-only" aria-live="polite">{state?.loading ? "Reading repository changes" : state?.error ? `Review unavailable: ${state.error}` : review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"} loaded; ${reviewedCount} reviewed` : ""}</span>
     <header className="review-overview">
-      <div><span>WORKTREE REVIEW</span><h2>Changes</h2><p>{review ? `${review.totalFiles} changed file${review.totalFiles === 1 ? "" : "s"}` : "Staged, unstaged, and untracked work"}</p></div>
-      <button onClick={onRefresh} disabled={state?.loading} type="button" aria-label="Refresh changes"><RefreshCw aria-hidden="true" className={state?.loading ? "icon-spin" : undefined} /><span>{state?.loading ? "READING" : "REFRESH"}</span></button>
+      <div className="review-title"><span>CODE REVIEW</span><h2>Review changes</h2><p>{review ? `${reviewedCount} of ${review.files.length} file${review.files.length === 1 ? "" : "s"} reviewed` : "Select diff lines and send precise feedback"}</p>{review && review.files.length > 0 && <div className="review-progress" aria-label={`${reviewedCount} of ${review.files.length} files reviewed`}><i style={{ width: `${review.files.length === 0 ? 0 : reviewedCount / review.files.length * 100}%` }} /></div>}</div>
+      <div className="review-overview-actions">{review && review.files.length > 0 && <button className={`review-all ${allReviewed ? "complete" : ""}`} aria-label={allReviewed ? "Reset reviewed files" : "Mark all files reviewed"} onClick={toggleAllReviewed} type="button"><CheckCheck aria-hidden="true" /><span>{allReviewed ? "RESET REVIEW" : "MARK ALL"}</span></button>}<button onClick={onRefresh} disabled={state?.loading} type="button" aria-label="Refresh changes"><RefreshCw aria-hidden="true" className={state?.loading ? "icon-spin" : undefined} /><span>{state?.loading ? "READING" : "REFRESH"}</span></button></div>
     </header>
     {state?.loading && <div className="review-loading"><i /><div><b>Reading repository</b><span>Collecting staged, unstaged, and untracked patches…</span></div></div>}
     {!state?.loading && state?.error && <div className="review-state error"><b>Review unavailable</b><span>{state.error}</span><button type="button" onClick={onRefresh}>TRY AGAIN</button></div>}
     {!state?.loading && review?.files.length === 0 && <div className="review-state clean"><i aria-hidden="true"><Check /></i><b>Working tree is clean</b><span>There are no staged, unstaged, or untracked files.</span></div>}
     {!state?.loading && review?.truncated && <div className="review-warning">Review limits were reached. Some files or patch content are omitted.</div>}
-    {!state?.loading && review && review.files.length > 0 && <div className="review-files">{review.files.map((file, index) => <ReviewFileView file={file} initiallyOpen={review.files.length === 1 || index === 0} key={file.path} />)}</div>}
+    {!state?.loading && review && review.files.length > 0 && <div className="review-files">{review.files.map((file, index) => {
+      const key = fileReviewKey(file);
+      return <ReviewFileView file={file} initiallyOpen={review.files.length === 1 || index === 0} reviewed={reviewed.has(key)} canComment={canComment} onReviewedChange={(value) => updateReviewed(key, value)} onSendComment={onSendComment} key={file.path} />;
+    })}</div>}
   </section>;
 }
 
@@ -1264,12 +1360,12 @@ export function App() {
     return currentQueue;
   };
 
-  const command = async (action: OwnedSessionCommandAction) => {
-    if (!selectedSession) return;
+  const command = async (action: OwnedSessionCommandAction, reviewText?: string): Promise<boolean> => {
+    if (!selectedSession) return false;
     const needsContent = action === "prompt" || action === "steer" || action === "followUp";
-    if (needsContent && (imageSelectionPending || !commandText.trim() && images.length === 0)) return;
-    const text = commandText.trim();
-    const targetImages = needsContent ? images : [];
+    const text = (reviewText ?? commandText).trim();
+    const targetImages = needsContent && reviewText === undefined ? images : [];
+    if (needsContent && (imageSelectionPending || !text && targetImages.length === 0)) return false;
     const targetSessionId = selectedSession.id;
     const targetRuntimeId = selectedSession.runtimeId;
     const outgoing: OutboxItem | undefined = needsContent ? {
@@ -1298,24 +1394,27 @@ export function App() {
         images: needsContent ? targetImages.map(({ preview: _preview, size: _size, ...image }) => image) : undefined,
       }));
       if (outgoing) {
-        removeDraft(targetSessionId);
+        if (reviewText === undefined) removeDraft(targetSessionId);
         if (selectedSessionIdRef.current === targetSessionId) {
-          setCommandText("");
-          imagesRef.current = [];
-          setImages([]);
-          setMentionMenu(undefined);
+          if (reviewText === undefined) {
+            setCommandText("");
+            imagesRef.current = [];
+            setImages([]);
+            setMentionMenu(undefined);
+          }
           setOutbox((items) => markOutboxQueued(items, outgoing.id));
         } else {
           const stored = sessionUiStatesRef.current.get(targetSessionId) ?? emptySessionUiState();
           sessionUiStatesRef.current.set(targetSessionId, {
             ...stored,
-            commandText: "",
-            images: [],
+            commandText: reviewText === undefined ? "" : stored.commandText,
+            images: reviewText === undefined ? [] : stored.images,
             outbox: markOutboxQueued(stored.outbox, outgoing.id),
           });
         }
       }
       await refresh(false);
+      return true;
     } catch (error) {
       const message = errorMessage(error);
       if (selectedSessionIdRef.current === targetSessionId) {
@@ -1330,6 +1429,7 @@ export function App() {
         });
       }
       await refresh(false);
+      return false;
     } finally {
       if (selectedSessionIdRef.current === targetSessionId) setBusy(false);
       else {
@@ -1518,6 +1618,15 @@ export function App() {
   const runtimeIsCurrent = Boolean(selectedSession && sessionSyncRef.current.runtimeGenerationConfirmed && selectedSessionSummary?.runtimeId === selectedSession.runtimeId && sessionSyncState !== "connecting");
   const canWrite = selectedSession ? runtimeIsCurrent && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
   const canConfigure = selectedSession ? runtimeIsCurrent && canConfigureSession(selectedSession.status) : false;
+  const sendReviewComment = (message: string): Promise<boolean> => {
+    if (!selectedSession || !canWrite || busy) return Promise.resolve(false);
+    const action: OwnedSessionCommandAction = selectedSession.status === "working"
+      ? delivery
+      : canAcceptPrompt(selectedSession.status)
+        ? "prompt"
+        : "followUp";
+    return command(action, message);
+  };
   const slashCommandMode = isSlashCommandInput(commandText);
   const chosenWorkspace = state._tag === "Ready" ? state.workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
   const networkState = state._tag === "Failed" || refreshProblem
@@ -1743,7 +1852,7 @@ export function App() {
                         <pre data-keyboard-scroll tabIndex={0}>{output?.status === "loading" ? "Loading full output…" : output?.status === "failed" ? `${item.detail}\n\n[${output.error ?? "Full output could not be loaded"}]` : text}</pre>
                       </details>;
                     })())}
-              {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} onRefresh={() => void requestReview(selectedSession)} />}
+              {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} canComment={canWrite && !busy} onRefresh={() => void requestReview(selectedSession)} onSendComment={sendReviewComment} />}
               {activeView === "details" && <div className="details-view">
                 <header className="details-heading"><div><span>SESSION</span><h2>Details</h2></div><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b></header>
                 <section className="session-details" role="region" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
@@ -1766,7 +1875,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          <section className="control-deck">
+          {activeView !== "changes" && <section className="control-deck">
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -1923,7 +2032,7 @@ export function App() {
               <span className={`runtime-state ${displayStatus(selectedSession.status)}`}><i />{ATTENTION_STATE_LABELS[selectedSession.status]}</span>
               <span className="sr-only" aria-live="polite">{selectedSession.name} is {ATTENTION_STATE_LABELS[selectedSession.status]}</span>
             </div>
-          </section>
+          </section>}
         </Tabs.Root> : selectedSessionId ? <div className="blank-state session-loading" role="status" aria-live="polite">
           <span aria-hidden="true"><i /></span>
           <h1>Loading session</h1>
