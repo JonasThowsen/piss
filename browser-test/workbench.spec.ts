@@ -1177,10 +1177,24 @@ test("mobile review supports touch-sized line comments and reviewed progress", a
   const removed = appReviewFile.getByRole("button", { name: /old line 1: -old line/ });
   const added = appReviewFile.getByRole("button", { name: /new line 1: \+new line/ });
   await removed.click();
+  await expect(appReviewFile.locator(".review-comment")).toHaveCount(0);
+  await expect(appReviewFile.getByRole("button", { name: "Comment on web/src/App.tsx:old:1" })).toBeVisible();
+  await removed.click();
+  await expect(removed).toHaveAttribute("aria-pressed", "false");
+  await expect(appReviewFile.locator(".review-comment-prompt")).toHaveCount(0);
+
+  await removed.click();
   await added.click();
   const lineBox = await added.boundingBox();
   expect(lineBox?.height).toBeGreaterThanOrEqual(30);
-  const comment = appReviewFile.getByLabel("Comment on web/src/App.tsx:1");
+  const openComment = appReviewFile.getByRole("button", { name: "Comment on web/src/App.tsx:1" });
+  await openComment.click();
+  const comment = appReviewFile.getByLabel("Comment editor for web/src/App.tsx:1");
+  await expect(comment).toBeFocused();
+  await appReviewFile.getByRole("button", { name: "Close comment editor" }).click();
+  await expect(comment).toBeHidden();
+  await expect(openComment).toBeVisible();
+  await openComment.click();
   await comment.fill("Please preserve this behavior on mobile.");
   await appReviewFile.getByRole("button", { name: "SEND TO AGENT" }).click();
   await expect.poll(() => api.commands.at(-1)?.text).toContain("Please preserve this behavior on mobile.");
@@ -1753,7 +1767,8 @@ test("desktop workbench contains only operational controls", async ({ page }) =>
   await expect(page.locator(".review-overview")).toContainText("1 of 2 files reviewed");
   await appReviewFile.getByRole("button", { name: /old line 1: -old line/ }).click();
   await appReviewFile.getByRole("button", { name: /new line 1: \+new line/ }).click();
-  await appReviewFile.getByLabel("Comment on web/src/App.tsx:1").fill("Keep the fallback for older clients.");
+  await appReviewFile.getByRole("button", { name: "Comment on web/src/App.tsx:1" }).click();
+  await appReviewFile.getByLabel("Comment editor for web/src/App.tsx:1").fill("Keep the fallback for older clients.");
   await appReviewFile.getByRole("button", { name: "SEND TO AGENT" }).click();
   await expect.poll(() => api.commands.at(-1)?.text).toContain("Review comment at web/src/App.tsx:1:");
   await expect.poll(() => api.commands.at(-1)?.text).toContain("-old line\n+new line");

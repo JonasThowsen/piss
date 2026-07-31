@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fileReviewKey, formatReviewComment, parseUnifiedDiff, readReviewedFiles, reviewedStorageKey, selectedDiffLines, selectionLocation, writeReviewedFiles } from "../web/src/review.ts";
+import { fileReviewKey, formatReviewComment, nextDiffSelection, parseUnifiedDiff, readReviewedFiles, reviewedStorageKey, selectedDiffLines, selectionLocation, writeReviewedFiles } from "../web/src/review.ts";
 
 const patch = `diff --git a/src/example.ts b/src/example.ts
 --- a/src/example.ts
@@ -26,6 +26,13 @@ test("unified diff lines retain old and new locations", () => {
   assert.equal(selectionLocation("src/example.ts", selection), "src/example.ts (new lines 11-12; old lines 11)");
   assert.match(formatReviewComment("src/example.ts", selection, "Please keep the old behavior."), /^Review comment at src\/example\.ts \(new lines 11-12; old lines 11\):/);
   assert.match(formatReviewComment("src/example.ts", selection, "Please keep the old behavior."), /-old value\n\+new value\n\+another value/);
+});
+
+test("tapping one line twice deselects it while a different line extends the range", () => {
+  const first = nextDiffSelection(undefined, 4);
+  assert.deepEqual(first, { anchor: 4, end: 4 });
+  assert.equal(nextDiffSelection(first, 4), undefined);
+  assert.deepEqual(nextDiffSelection(first, 7), { anchor: 4, end: 7 });
 });
 
 test("reviewed file state is scoped to the exact file change", () => {

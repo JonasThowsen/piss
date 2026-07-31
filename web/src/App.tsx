@@ -29,7 +29,7 @@ import { readCachedSession, removeCachedSession, writeCachedSession } from "./se
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
 import { initialSessionSyncState, reduceSessionSync, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
 import { requestUpdateActivation } from "./updateActivation.ts";
-import { fileReviewKey, formatReviewComment, parseUnifiedDiff, readReviewedFiles, selectedDiffLines, selectionLocation, writeReviewedFiles, type DiffLine, type DiffSelection } from "./review.ts";
+import { fileReviewKey, formatReviewComment, nextDiffSelection, parseUnifiedDiff, readReviewedFiles, selectedDiffLines, selectionLocation, writeReviewedFiles, type DiffLine, type DiffSelection } from "./review.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
 import "./styles.css";
@@ -191,9 +191,11 @@ type ReviewFileViewProps = {
 function ReviewFileView({ file, initiallyOpen, reviewed, canComment, onReviewedChange, onSendComment }: ReviewFileViewProps) {
   const [open, setOpen] = useState(initiallyOpen);
   const [selection, setSelection] = useState<DiffSelection>();
+  const [commentEditorOpen, setCommentEditorOpen] = useState(false);
   const [comment, setComment] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
   const lines = useMemo(() => parseUnifiedDiff(file.patch), [file.patch]);
   const selectedLines = selection ? selectedDiffLines(lines, selection) : [];
   const counts = patchCounts(file.patch);
@@ -201,10 +203,29 @@ function ReviewFileView({ file, initiallyOpen, reviewed, canComment, onReviewedC
   const status = file.indexStatus === "?" ? { mark: "U", label: "Untracked file" } : file.worktreeStatus === "D" || file.indexStatus === "D" ? { mark: "D", label: "Deleted file" } : { mark: "M", label: "Modified file" };
   const panelId = `review-file-${fileReviewKey(file).replace(/[^a-z0-9-]/gi, "-")}`;
 
+  const clearSelection = () => {
+    setSelection(undefined);
+    setCommentEditorOpen(false);
+    setComment("");
+    commentTextareaRef.current?.blur();
+  };
   const selectLine = (line: DiffLine) => {
     if (!line.selectable) return;
     setSent(false);
-    setSelection((current) => current ? { anchor: current.anchor, end: line.index } : { anchor: line.index, end: line.index });
+    const next = nextDiffSelection(selection, line.index);
+    if (!next) {
+      clearSelection();
+      return;
+    }
+    setSelection(next);
+  };
+  const openCommentEditor = () => {
+    setCommentEditorOpen(true);
+    window.requestAnimationFrame(() => commentTextareaRef.current?.focus());
+  };
+  const closeCommentEditor = () => {
+    setCommentEditorOpen(false);
+    commentTextareaRef.current?.blur();
   };
   const submitComment = async () => {
     if (selectedLines.length === 0 || !comment.trim() || sending || !canComment) return;
@@ -214,6 +235,7 @@ function ReviewFileView({ file, initiallyOpen, reviewed, canComment, onReviewedC
     if (!accepted) return;
     setComment("");
     setSelection(undefined);
+    setCommentEditorOpen(false);
     setSent(true);
   };
 
@@ -230,9 +252,13 @@ function ReviewFileView({ file, initiallyOpen, reviewed, canComment, onReviewedC
     {open && <div className="review-file-panel" id={panelId}>
       <div className="review-file-meta"><p><MessageSquare aria-hidden="true" /> Tap a line, then another to select a range</p><span>{reviewLabels(file).map((label) => <i key={label}>{label}</i>)}{file.binary && <i>BINARY</i>}{file.truncated && <i>BOUNDED</i>}</span></div>
       {file.patch ? <DiffPatch lines={lines} selection={selection} onSelect={selectLine} /> : <div className="review-empty-patch">No textual patch is available for this change.</div>}
-      {selectedLines.length > 0 && <form className="review-comment" onSubmit={(event) => { event.preventDefault(); void submitComment(); }}>
-        <header><div><MessageSquare aria-hidden="true" /><span>COMMENT ON</span><b>{selectionLocation(file.path, selectedLines)}</b></div><button type="button" onClick={() => { setSelection(undefined); setComment(""); }}>CLEAR</button></header>
-        <textarea aria-label={`Comment on ${selectionLocation(file.path, selectedLines)}`} autoFocus value={comment} disabled={sending || !canComment} onChange={(event) => setComment(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submitComment(); } }} placeholder={canComment ? "Describe what should change…" : "Reconnect to the agent to comment"} rows={3} />
+      {selectedLines.length > 0 && !commentEditorOpen && <div className="review-comment-prompt">
+        <button className="review-comment-open" type="button" onClick={openCommentEditor} aria-label={`Comment on ${selectionLocation(file.path, selectedLines)}`}><MessageSquare aria-hidden="true" /><span><b>{selectionLocation(file.path, selectedLines)}</b><small>{selectedLines.length} LINE{selectedLines.length === 1 ? "" : "S"} SELECTED · TAP TO COMMENT</small></span><ChevronRight aria-hidden="true" /></button>
+        <button className="review-selection-clear" type="button" onClick={clearSelection} aria-label="Deselect selected lines"><X aria-hidden="true" /></button>
+      </div>}
+      {selectedLines.length > 0 && commentEditorOpen && <form className="review-comment" onSubmit={(event) => { event.preventDefault(); void submitComment(); }}>
+        <header><div><MessageSquare aria-hidden="true" /><span>COMMENT ON</span><b>{selectionLocation(file.path, selectedLines)}</b></div><div className="review-comment-actions"><button type="button" onClick={clearSelection}>DESELECT</button><button type="button" onClick={closeCommentEditor} aria-label="Close comment editor"><X aria-hidden="true" /></button></div></header>
+        <textarea ref={commentTextareaRef} aria-label={`Comment editor for ${selectionLocation(file.path, selectedLines)}`} value={comment} disabled={sending || !canComment} onChange={(event) => setComment(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeCommentEditor(); } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submitComment(); } }} placeholder={canComment ? "Describe what should change…" : "Reconnect to the agent to comment"} rows={3} />
         <footer><span>{selectedLines.length} LINE{selectedLines.length === 1 ? "" : "S"} SELECTED · CTRL/⌘ + ENTER</span><button type="submit" disabled={sending || !canComment || !comment.trim()}>{sending ? <LoaderCircle className="icon-spin" aria-hidden="true" /> : <Send aria-hidden="true" />}{sending ? "SENDING…" : "SEND TO AGENT"}</button></footer>
       </form>}
       {sent && <div className="review-comment-sent" role="status"><Check aria-hidden="true" /> Comment sent to the agent</div>}

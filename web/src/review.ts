@@ -94,6 +94,11 @@ export function parseUnifiedDiff(patch: string): ReadonlyArray<DiffLine> {
   });
 }
 
+export function nextDiffSelection(current: DiffSelection | undefined, lineIndex: number): DiffSelection | undefined {
+  if (current?.anchor === lineIndex && current.end === lineIndex) return;
+  return current ? { anchor: current.anchor, end: lineIndex } : { anchor: lineIndex, end: lineIndex };
+}
+
 export function selectedDiffLines(lines: ReadonlyArray<DiffLine>, selection: DiffSelection): ReadonlyArray<DiffLine> {
   const start = Math.min(selection.anchor, selection.end);
   const end = Math.max(selection.anchor, selection.end);
