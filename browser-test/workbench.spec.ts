@@ -91,6 +91,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   const mentionSearches: Array<{ readonly query: string; readonly runtimeId: string | null }> = [];
   const interactiveResponses: Array<Record<string, unknown>> = [];
   const notificationMutations: Array<Record<string, unknown>> = [];
+  const sessionLoads: Array<{ readonly sessionId: string; readonly afterSequence?: number }> = [];
   let failNextCommand = false;
   let delayNextCommand = false;
   let delayNextMentionSearch = false;
@@ -212,11 +213,17 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       return;
     }
     if (session && path === `/api/sessions/${session.id}` && method === "GET") {
+      const afterSequenceParameter = url.searchParams.get("afterSequence");
+      const afterSequence = afterSequenceParameter === null ? undefined : Number(afterSequenceParameter);
+      sessionLoads.push({ sessionId: session.id, ...(afterSequence === undefined ? {} : { afterSequence }) });
       if (delayedSessionLoadId === session.id) {
         delayedSessionLoadId = undefined;
         await new Promise((resolve) => setTimeout(resolve, delayedSessionLoadMs));
       }
-      await route.fulfill({ json: { session } });
+      const events = afterSequence === undefined
+        ? session.events
+        : session.events.filter((event) => typeof event === "object" && event !== null && "sequence" in event && typeof event.sequence === "number" && event.sequence > afterSequence);
+      await route.fulfill({ json: { session: { ...session, events } } });
       return;
     }
     if (session && path === `/api/sessions/${session.id}` && method === "PATCH") {
@@ -363,6 +370,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     mentionSearches,
     interactiveResponses,
     notificationMutations,
+    sessionLoads,
     setStatus(status: SessionStatus) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status, lastActivityAt: new Date().toISOString() };
     },
@@ -968,7 +976,7 @@ test("session menus stay above neighboring controls and flip away from the sideb
   await expect(sessionSettings).toBeFocused();
 });
 
-test("selecting a session waits for authoritative details before rendering cached chat", async ({ page }) => {
+test("selecting a cached session transfers only newer authoritative events before rendering", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);
   await page.goto("/");
@@ -979,8 +987,8 @@ test("selecting a session waits for authoritative details before rendering cache
     await dialog.getByLabel("Session name").fill(name);
     await dialog.getByRole("button", { name: /start session/i }).click();
   };
-  const event = (text: string) => ({
-    sequence: 1,
+  const event = (text: string, sequence = 1) => ({
+    sequence,
     type: "message_end",
     timestamp: new Date().toISOString(),
     data: { message: { role: "assistant", content: [{ type: "text", text }] } },
@@ -993,7 +1001,7 @@ test("selecting a session waits for authoritative details before rendering cache
   // Switching away retains this authoritative snapshot for incremental sync,
   // but it must not become visible before the server confirms the latest state.
   await createSession("Second session");
-  api.setEventsFor("First session", [event("Fresh authoritative chat")]);
+  api.setEventsFor("First session", [event("Stale cached chat"), event("Fresh authoritative chat", 2)]);
   api.delaySessionLoad("First session", 2_000);
 
   await page.getByRole("button", { name: /^First session / }).click();
@@ -1001,9 +1009,9 @@ test("selecting a session waits for authoritative details before rendering cache
   await expect(loading).toContainText("Opening First session");
   await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No session selected" })).toHaveCount(0);
+  await expect.poll(() => api.sessionLoads.filter((load) => load.sessionId === "session-1").at(-1)?.afterSequence).toBe(1);
 
   await expect(page.getByText("Fresh authoritative chat", { exact: true })).toBeVisible();
-  await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
   await expect(loading).toHaveCount(0);
   await expect(page.locator(".brand b")).toHaveText("First session");
 });

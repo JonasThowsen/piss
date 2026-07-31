@@ -1330,9 +1330,21 @@ export function App() {
       return true;
     };
     try {
-      const loaded = (await Effect.runPromise(loadSession(sessionId))).session;
-      if (!applySnapshot(loaded)) return;
-      // Acknowledgement updates attention state, but the authoritative timeline
+      const request = sessionSyncRequest(sessionSyncRef.current);
+      let loaded = (await Effect.runPromise(loadSession(sessionId, request.cursor || undefined))).session;
+      if (selectedSessionIdRef.current !== sessionId || sessionOpenRequest.current !== requestId) return;
+
+      // Reuse a same-generation cached tail and transfer only newer events.
+      // A runtime replacement invalidates that cursor and requires a complete
+      // snapshot before anything from the new generation can be shown.
+      if (request.runtimeId && loaded.runtimeId !== request.runtimeId) {
+        loaded = (await Effect.runPromise(loadSession(sessionId))).session;
+        if (!applySnapshot(loaded)) return;
+      } else {
+        dispatchSessionSync({ type: "httpIncremental", session: loaded, request });
+      }
+
+      // Acknowledgement updates attention state, but the current timeline
       // should not wait for this second round trip before becoming visible.
       if (loaded.status === "finished") {
         const acknowledged = (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session;
