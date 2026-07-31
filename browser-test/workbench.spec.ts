@@ -957,7 +957,7 @@ test("session menus stay above neighboring controls and flip away from the sideb
   await expect(sessionSettings).toBeFocused();
 });
 
-test("selecting a session renders its cache while authoritative details load", async ({ page }) => {
+test("selecting a session waits for authoritative details before rendering cached chat", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);
   await page.goto("/");
@@ -979,22 +979,22 @@ test("selecting a session renders its cache while authoritative details load", a
   api.setEventsFor("First session", [event("Stale cached chat")]);
   await expect(page.getByText("Stale cached chat", { exact: true })).toBeVisible();
 
-  // Switching away retains this authoritative display snapshot once, including
-  // for a working session, without granting it runtime mutation authority.
+  // Switching away retains this authoritative snapshot for incremental sync,
+  // but it must not become visible before the server confirms the latest state.
   await createSession("Second session");
   api.setEventsFor("First session", [event("Fresh authoritative chat")]);
   api.delaySessionLoad("First session", 2_000);
 
   await page.getByRole("button", { name: /^First session / }).click();
   const loading = page.locator(".session-loading");
-  await expect(page.getByText("Stale cached chat", { exact: true })).toBeVisible({ timeout: 1_000 });
-  await expect(loading).toHaveCount(0);
+  await expect(loading).toContainText("Opening First session");
+  await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No session selected" })).toHaveCount(0);
-  await expect(page.locator(".brand b")).toHaveText("First session");
 
   await expect(page.getByText("Fresh authoritative chat", { exact: true })).toBeVisible();
   await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
-  await expect(page.locator(".session-hydrating")).toHaveCount(0);
+  await expect(loading).toHaveCount(0);
+  await expect(page.locator(".brand b")).toHaveText("First session");
 });
 
 test("returning to a visible page reconnects a suspended session stream", async ({ page }) => {

@@ -1689,8 +1689,9 @@ export function App() {
       : networkState === "syncing"
         ? "SYNCING"
         : "LIVE";
-  const sessionIsLoading = Boolean(selectedSessionId && !selectedSession);
-  const sessionIsHydrating = Boolean(selectedSessionId && selectedSession && !sessionSyncRef.current.serverConfirmed);
+  // Cached snapshots seed incremental synchronization, but stay hidden until
+  // the server has confirmed them so stale chat never becomes a visible frame.
+  const sessionIsLoading = Boolean(selectedSessionId && !sessionSyncRef.current.serverConfirmed);
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1858,7 +1859,6 @@ export function App() {
               }}
             >
               <span className="sr-only" aria-live="polite">{copyFeedback ? `${copyFeedback.ok ? "Copied" : "Could not copy"} ${copyFeedback.label}` : ""}</span>
-              {sessionIsHydrating && <div className="session-hydrating" role="status"><RefreshCw className="icon-spin" aria-hidden="true" /><div><b>REFRESHING SESSION</b><span>Showing saved activity while the latest state loads…</span></div></div>}
               {activeView === "agent" && (hasOlderTimeline || timelineHistory.error) && <div className="timeline-history-control">
                 <button type="button" disabled={timelineHistory.loading} onClick={loadOlderTimeline}><ArrowUp aria-hidden="true" />{timelineHistory.loading ? "LOADING EARLIER ACTIVITY…" : timelineHistory.error ? "RETRY EARLIER ACTIVITY" : "LOAD EARLIER ACTIVITY"}</button>
                 {timelineHistory.error && <small role="alert">{timelineHistory.error}</small>}

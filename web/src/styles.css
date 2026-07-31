@@ -329,11 +329,6 @@ button { color: inherit; }
 .timeline-history-control button:disabled { opacity: .55; }
 .timeline-history-control svg { width: 12px; height: 12px; }
 .timeline-history-control small { color: var(--danger); font-size: 8px; }
-.session-hydrating { width: min(100%, 900px); min-height: 42px; display: flex; align-items: center; gap: 10px; margin: 0 auto 14px; padding: 8px 11px; border: 1px solid #c8d4cc; border-radius: 5px; background: rgba(237, 244, 239, .9); color: var(--accent); }
-.session-hydrating > svg { width: 15px; height: 15px; flex: none; }
-.session-hydrating > div { display: flex; align-items: baseline; gap: 8px; }
-.session-hydrating b { font-size: 8px; letter-spacing: .08em; }
-.session-hydrating span { color: var(--muted); font-size: 8px; }
 .active-operation { position: relative; width: min(100%, 900px); min-height: 64px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; overflow: hidden; margin: 0 auto 18px; padding: 11px 14px; border: 1px solid #cba96b; border-radius: 6px; background: linear-gradient(110deg, #fff9e9, #f7f1df); color: #70511f; box-shadow: 0 5px 18px rgba(94, 70, 29, .08); }
 .active-operation::after { content: ""; position: absolute; inset: auto 0 0; height: 2px; background: linear-gradient(90deg, transparent, #b7812f, transparent); animation: operation-scan 1.8s linear infinite; }
 .operation-glyph { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #d7ba83; border-radius: 50%; background: rgba(255, 255, 255, .7); }
@@ -929,9 +924,6 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .active-operation { grid-template-columns: 34px minmax(0, 1fr); min-height: 58px; padding: 9px 10px; }
   .active-operation > small { display: none; }
   .active-operation span { line-height: 1.35; }
-  .session-hydrating { min-height: 38px; margin-bottom: 10px; padding: 7px 9px; }
-  .session-hydrating > div { display: grid; gap: 2px; }
-  .session-hydrating span { font-size: 7px; }
   .timeline-status { grid-template-columns: 23px minmax(0, 1fr); gap: 7px; }
   .timeline-status > span { width: 22px; height: 22px; }
   .timeline-status > div { display: grid; gap: 2px; padding: 5px 8px; }
