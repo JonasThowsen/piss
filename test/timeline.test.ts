@@ -66,6 +66,11 @@ test("merges incremental polling responses and coalesces completed activity", ()
     [6, "message_end"],
   ]);
   assert.deepEqual(mergeSessionEvents(merged, merged), merged, "duplicate full responses are harmless");
+  assert.deepEqual(
+    mergeSessionEvents(merged, [...current, ...merged]),
+    merged,
+    "an overlapping response cannot resurrect superseded tool activity",
+  );
 });
 
 test("renders fire-and-forget extension notifications as durable output", () => {

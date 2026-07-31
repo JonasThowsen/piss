@@ -1848,13 +1848,30 @@ export function App() {
               onScroll={(event) => {
                 const element = event.currentTarget;
                 const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-                if (element.scrollTop < 24) shiftTimelineWindow("earlier", element);
-                else if (distanceFromBottom < 24 && effectiveTimelineWindowEnd < timeline.length) shiftTimelineWindow("later", element);
                 const nextAtBottom = effectiveTimelineWindowEnd >= timeline.length && distanceFromBottom < 4;
                 const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current - 1;
                 timelineScrollTopRef.current = element.scrollTop;
                 if (draggedUp) followingRef.current = false;
                 else if (nextAtBottom) followingRef.current = true;
+
+                // Mobile browsers can restore a nested scroller well after the
+                // chat has rendered. That scroll has no user gesture, so keep
+                // following the latest item instead of revealing an arbitrary
+                // older window. Wheel, touch, pointer, and keyboard handlers
+                // disable following before intentional upward scrolling lands.
+                if (followingRef.current && !nextAtBottom) {
+                  window.cancelAnimationFrame(timelineScrollFrameRef.current);
+                  timelineScrollFrameRef.current = window.requestAnimationFrame(() => {
+                    if (!followingRef.current) return;
+                    element.scrollTop = element.scrollHeight;
+                    timelineScrollTopRef.current = element.scrollTop;
+                    setAtBottom(true);
+                  });
+                  return;
+                }
+
+                if (element.scrollTop < 24) shiftTimelineWindow("earlier", element);
+                else if (distanceFromBottom < 24 && effectiveTimelineWindowEnd < timeline.length) shiftTimelineWindow("later", element);
                 setAtBottom(nextAtBottom);
               }}
             >

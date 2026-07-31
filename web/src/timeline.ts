@@ -69,18 +69,24 @@ export function mergeSessionEvents(
   current: ReadonlyArray<OwnedSessionEvent>,
   incoming: ReadonlyArray<OwnedSessionEvent>,
 ): ReadonlyArray<OwnedSessionEvent> {
-  const events = [...current];
-  const knownSequences = new Set(events.map((event) => event.sequence));
-
+  // Re-coalesce the complete union instead of only processing novel sequence
+  // numbers. An overlapping response may contain a tool start that was already
+  // removed locally plus its known completion; skipping the known completion
+  // would otherwise resurrect a duplicate running tool row.
+  const bySequence = new Map<number, OwnedSessionEvent>();
+  for (const event of current) bySequence.set(event.sequence, event);
   for (const event of incoming) {
-    if (knownSequences.has(event.sequence)) continue;
+    if (!bySequence.has(event.sequence)) bySequence.set(event.sequence, event);
+  }
+
+  const events: OwnedSessionEvent[] = [];
+  for (const event of [...bySequence.values()].sort((left, right) => left.sequence - right.sequence)) {
     const id = toolCallId(event);
     if (id && (event.type === "tool_execution_update" || event.type === "tool_execution_end")) {
       for (let index = events.length - 1; index >= 0; index -= 1) {
         const candidate = events[index]!;
         if (toolCallId(candidate) !== id) continue;
         if (candidate.type === "tool_execution_update" || event.type === "tool_execution_end" && candidate.type === "tool_execution_start") {
-          knownSequences.delete(candidate.sequence);
           events.splice(index, 1);
         }
       }
@@ -88,20 +94,15 @@ export function mergeSessionEvents(
     if (event.type === "message_end") {
       const previousMessage = events.findLastIndex((candidate) => candidate.type === "message_end");
       for (let index = events.length - 1; index > previousMessage; index -= 1) {
-        if (events[index]?.type === "message_start" || events[index]?.type === "message_update") {
-          knownSequences.delete(events[index]!.sequence);
-          events.splice(index, 1);
-        }
+        if (events[index]?.type === "message_start" || events[index]?.type === "message_update") events.splice(index, 1);
       }
     }
     events.push(event);
-    knownSequences.add(event.sequence);
     while (events.length > MAX_CLIENT_EVENTS) {
       const disposable = events.findIndex((candidate, index) =>
         index < events.length - 1 && candidate.type !== "message_end" && candidate.type !== "tool_execution_end"
       );
-      const [removed] = events.splice(disposable >= 0 ? disposable : 0, 1);
-      if (removed) knownSequences.delete(removed.sequence);
+      events.splice(disposable >= 0 ? disposable : 0, 1);
     }
   }
   return events;

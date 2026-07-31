@@ -1610,9 +1610,10 @@ test("timeline follows growing content until the user scrolls up", async ({ page
 });
 
 test("a completed final response remains latest across page reload", async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 620 });
+  await page.setViewportSize({ width: 390, height: 844 });
   const api = await installApi(page);
   await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
   await page.getByRole("button", { name: "New session in erp" }).click();
   await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
 
@@ -1635,7 +1636,17 @@ test("a completed final response remains latest across page reload", async ({ pa
   await expect(finalResponse).toBeVisible({ timeout: 5_000 });
   await page.reload();
   await expect(finalResponse).toBeVisible({ timeout: 5_000 });
-  await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(4);
+  const timeline = page.locator(".timeline");
+  const distanceFromBottom = () => timeline.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+  await expect.poll(distanceFromBottom).toBeLessThan(4);
+
+  // Android Chromium may apply nested-scroll restoration after the app's
+  // initial layout. A restoration without user input must not strand the chat
+  // among old tool calls instead of its final response.
+  await page.waitForTimeout(250);
+  await timeline.evaluate((element) => { element.scrollTop = element.scrollHeight * 0.35; });
+  await expect.poll(distanceFromBottom).toBeLessThan(4);
+  await expect(finalResponse).toBeVisible();
   await expect(page.getByRole("button", { name: "Jump to latest message" })).toHaveClass(/at-bottom/);
 });
 
