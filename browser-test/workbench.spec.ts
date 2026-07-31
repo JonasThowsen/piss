@@ -1329,6 +1329,9 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await modelButton.click();
   const modelMenu = page.getByRole("menu", { name: "Model options" });
   await expect(modelMenu).toBeVisible();
+  await expect(modelButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(modelButton).toHaveCSS("border-color", "rgba(0, 0, 0, 0)");
+  await expect(modelButton).toHaveCSS("box-shadow", "none");
   await expect(modelMenu.locator(".composer-model-option b")).toHaveText(["GPT-5.10", "GPT-5.9", "GPT-5.6", "GPT-5.4"]);
   await expect(modelMenu.getByRole("menuitemradio")).toHaveCount(4);
   const modelBounds = await modelMenu.boundingBox();
