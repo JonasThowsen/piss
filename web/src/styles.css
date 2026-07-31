@@ -963,12 +963,13 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .shell.mobile-keyboard-open .timeline { padding-top: 10px; }
   .global-picker-layer { align-items: stretch; padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); }
   .global-picker { position: relative; width: 100%; height: 100%; max-height: none; grid-template-rows: auto minmax(0, 1fr); border-radius: 10px; animation: none; }
-  .global-picker > header { position: absolute; top: 6px; right: 6px; z-index: 1; min-height: 0; padding: 0; border: 0; background: transparent; }
+  .global-picker > header { position: absolute; top: 12px; right: 12px; z-index: 1; min-height: 0; padding: 0; border: 0; background: transparent; }
   .global-picker > header div { display: none; }
-  .global-picker > header button { width: 44px; height: 44px; background: var(--surface); }
-  .global-picker-search { margin: 6px 56px 6px 8px; }
-  .global-picker-search > svg { left: 12px; width: 18px; height: 18px; }
-  .global-picker-search input { height: 44px; padding-right: 12px; padding-left: 38px; font-size: 16px; }
+  .global-picker > header button { width: 44px; height: 48px; border: 0; border-radius: 9px; background: var(--soft-panel); }
+  .global-picker-search { margin: 12px 68px 18px 12px; }
+  .global-picker-search > svg { left: 14px; width: 19px; height: 19px; }
+  .global-picker-search input { height: 48px; padding-right: 14px; padding-left: 44px; border: 0; border-radius: 9px; background: #f2f5ef; font-size: 16px; box-shadow: inset 0 0 0 1px rgba(49, 92, 70, .08); }
+  .global-picker-search input:focus { border-color: transparent; box-shadow: inset 0 0 0 1px rgba(49, 92, 70, .2), 0 0 0 4px rgba(231, 240, 234, .8); }
   .global-picker-search > kbd { display: none; }
   .global-picker-option { min-height: 58px; padding-inline: 9px; }
   .global-picker-option em { max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

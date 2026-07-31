@@ -654,13 +654,23 @@ test("mobile session picker fills the visible page without shifting when its hei
   await page.getByRole("button", { name: "Search sessions" }).click();
   const layer = page.locator(".global-picker-layer");
   const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
+  const search = picker.getByLabel("Search sessions");
   await expect(picker).toBeVisible();
+  await expect(search).toHaveCSS("border-top-width", "0px");
+  await expect(search).toHaveCSS("background-color", "rgb(242, 245, 239)");
 
   await layer.evaluate((element) => {
     element.style.bottom = "auto";
     element.style.height = "420px";
   });
   const keyboardOpenBounds = (await picker.boundingBox())!;
+  const searchBounds = (await search.boundingBox())!;
+  const closeBounds = (await picker.getByRole("button", { name: "Close sessions picker" }).boundingBox())!;
+  expect(searchBounds.x - keyboardOpenBounds.x).toBeGreaterThanOrEqual(11);
+  expect(searchBounds.y - keyboardOpenBounds.y).toBeGreaterThanOrEqual(11);
+  expect(closeBounds.x - searchBounds.x - searchBounds.width).toBeGreaterThanOrEqual(11);
+  expect(keyboardOpenBounds.x + keyboardOpenBounds.width - closeBounds.x - closeBounds.width).toBeGreaterThanOrEqual(11);
+
   await layer.evaluate((element) => { element.style.height = "700px"; });
   const keyboardClosedBounds = (await picker.boundingBox())!;
 
