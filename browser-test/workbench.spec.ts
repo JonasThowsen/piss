@@ -366,6 +366,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     setStatus(status: SessionStatus) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status, lastActivityAt: new Date().toISOString() };
     },
+    setStatusFor(name: string, status: SessionStatus) {
+      const index = sessions.findIndex((session) => session.name === name);
+      if (index >= 0) sessions[index] = { ...sessions[index]!, status, lastActivityAt: new Date().toISOString() };
+    },
     setInteractiveRequests(requests: TestSession["interactiveRequests"]) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status: requests.length > 0 ? "blocked" : "working", interactiveRequests: requests, lastActivityAt: new Date().toISOString() };
     },
@@ -932,7 +936,7 @@ test("session menus stay above neighboring controls and flip away from the sideb
   await expect(sessionSettings).toBeFocused();
 });
 
-test("selecting a session shows loading feedback while its details load", async ({ page }) => {
+test("selecting a session renders its cache while authoritative details load", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);
   await page.goto("/");
@@ -943,45 +947,33 @@ test("selecting a session shows loading feedback while its details load", async 
     await dialog.getByLabel("Session name").fill(name);
     await dialog.getByRole("button", { name: /start session/i }).click();
   };
-  await createSession("First session");
-  await createSession("Second session");
-
   const event = (text: string) => ({
     sequence: 1,
     type: "message_end",
     timestamp: new Date().toISOString(),
     data: { message: { role: "assistant", content: [{ type: "text", text }] } },
   });
+  await createSession("First session");
+  api.setStatusFor("First session", "working");
   api.setEventsFor("First session", [event("Stale cached chat")]);
-  await page.evaluate(async () => {
-    const { session } = await fetch("/api/sessions/session-1").then((response) => response.json());
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("piss-session-cache", 1);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-    });
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction("sessions", "readwrite");
-      transaction.objectStore("sessions").put({ id: session.id, cachedAt: Date.now(), session });
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
-    database.close();
-  });
+  await expect(page.getByText("Stale cached chat", { exact: true })).toBeVisible();
+
+  // Switching away retains this authoritative display snapshot once, including
+  // for a working session, without granting it runtime mutation authority.
+  await createSession("Second session");
   api.setEventsFor("First session", [event("Fresh authoritative chat")]);
-  // Cross the periodic refresh boundary: refresh used to invalidate the detail
-  // generation and leave this explicit loading indicator stuck forever.
   api.delaySessionLoad("First session", 2_000);
 
-  await page.getByRole("button", { name: /First session.*finished/i }).click();
+  await page.getByRole("button", { name: /^First session / }).click();
   const loading = page.locator(".session-loading");
-  await expect(loading).toContainText("Opening First session");
-  await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Stale cached chat", { exact: true })).toBeVisible({ timeout: 1_000 });
+  await expect(loading).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No session selected" })).toHaveCount(0);
   await expect(page.locator(".brand b")).toHaveText("First session");
+
   await expect(page.getByText("Fresh authoritative chat", { exact: true })).toBeVisible();
   await expect(page.getByText("Stale cached chat", { exact: true })).toHaveCount(0);
-  await expect(loading).toHaveCount(0);
+  await expect(page.locator(".session-hydrating")).toHaveCount(0);
 });
 
 test("returning to a visible page reconnects a suspended session stream", async ({ page }) => {

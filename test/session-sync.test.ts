@@ -4,6 +4,7 @@ import type { OwnedSession, OwnedSessionEvent } from "../shared/domain.ts";
 import {
   initialSessionSyncState,
   reduceSessionSync,
+  sessionForFastSwitchCache,
   sessionForSettledCache,
   sessionSyncRequest,
   shouldPollSession,
@@ -130,6 +131,20 @@ test("runtime generation replacement invalidates unsafe mutations", () => {
   assert.equal(changed.runtimeGenerationConfirmed, true);
   assert.equal(changed.mutationEpoch, current.mutationEpoch + 1);
   assert.equal(changed.session?.runtimeId, "runtime-2");
+});
+
+test("fast switch caching includes working sessions without treating cache as runtime authority", () => {
+  const authoritative = apply([{ type: "serverSnapshot", session: session([event(1)], { status: "working" }), cursor: 1, receivedAt: 1 }]);
+  const cached = sessionForFastSwitchCache(authoritative);
+  assert.equal(cached?.status, "working");
+  assert.equal(sessionForSettledCache(authoritative), undefined);
+
+  const restored = reduceSessionSync(initialSessionSyncState("session-1"), { type: "cachedSnapshot", session: cached! });
+  assert.equal(restored.session?.events.length, 1);
+  assert.equal(restored.serverConfirmed, false);
+  assert.equal(restored.runtimeGenerationConfirmed, false);
+  assert.equal(sessionForFastSwitchCache(reduceSessionSync(authoritative, { type: "networkDisconnected" }))?.status, "working");
+  assert.equal(sessionForFastSwitchCache({ ...authoritative, session: session([], { status: "starting" }) }), undefined);
 });
 
 test("transport becomes live only after authoritative data and controls polling", () => {

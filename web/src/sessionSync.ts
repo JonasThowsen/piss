@@ -195,11 +195,16 @@ export function reduceSessionSync(state: SessionSyncState, input: SessionSyncInp
   }
 }
 
-export function sessionForSettledCache(state: SessionSyncState): OwnedSession | undefined {
+export function sessionForFastSwitchCache(state: SessionSyncState): OwnedSession | undefined {
   const status = state.session?.status;
-  return state.serverConfirmed && state.runtimeGenerationConfirmed && status !== "starting" && status !== "working" && status !== "stopping"
+  return state.serverConfirmed && state.runtimeGenerationConfirmed && status !== "starting" && status !== "stopping"
     ? state.session
     : undefined;
+}
+
+export function sessionForSettledCache(state: SessionSyncState): OwnedSession | undefined {
+  const session = sessionForFastSwitchCache(state);
+  return session?.status === "working" ? undefined : session;
 }
 
 export function shouldPollSession(state: SessionSyncState): boolean {

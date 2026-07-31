@@ -27,7 +27,7 @@ import { keyboardScrollDirection, useSharedKeyboardScrolling } from "./keyboardS
 import { readLastOpenedSession, writeLastOpenedSession } from "./lastOpenedSession.ts";
 import { readCachedSession, removeCachedSession, writeCachedSession } from "./sessionCache.ts";
 import { sessionPickerItems, type SelectSessionAction } from "./sessionPicker.ts";
-import { initialSessionSyncState, reduceSessionSync, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
+import { initialSessionSyncState, reduceSessionSync, sessionForFastSwitchCache, sessionForSettledCache, sessionSyncRequest, shouldPollSession, type SessionSyncInput } from "./sessionSync.ts";
 import { requestUpdateActivation } from "./updateActivation.ts";
 import { fileReviewKey, formatReviewComment, nextDiffSelection, parseUnifiedDiff, readReviewedFiles, selectedDiffLines, selectionLocation, writeReviewedFiles, type DiffLine, type DiffSelection } from "./review.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
@@ -349,7 +349,6 @@ export function App() {
   const [state, setState] = useState<LoadState>({ _tag: "Loading" });
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [selectedSession, setSelectedSession] = useState<OwnedSession>();
-  const [loadingSessionId, setLoadingSessionId] = useState<string>();
   const [workspaceId, setWorkspaceId] = useState("");
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
@@ -445,7 +444,9 @@ export function App() {
   const sessionSyncRef = useRef(initialSessionSyncState());
   const detailGeneration = useRef(0);
   const sessionOpenRequest = useRef(0);
+  const sessionOpenInFlightRef = useRef<string | undefined>(undefined);
   const reviewGeneration = useRef(0);
+  const fastSessionCacheRef = useRef(new Map<string, OwnedSession>());
   const sessionUiStatesRef = useRef(new Map<string, SessionUiState>());
   const currentSessionUiRef = useRef<SessionUiState>(emptySessionUiState());
   currentSessionUiRef.current = { commandText, images, delivery, busy, operationError, outbox };
@@ -507,6 +508,17 @@ export function App() {
 
   const selectSession = useCallback((sessionId: string | undefined, persistCurrent = true) => {
     const currentId = selectedSessionIdRef.current;
+    const currentSnapshot = sessionForFastSwitchCache(sessionSyncRef.current);
+    if (currentId && currentSnapshot?.id === currentId) {
+      fastSessionCacheRef.current.delete(currentId);
+      fastSessionCacheRef.current.set(currentId, currentSnapshot);
+      while (fastSessionCacheRef.current.size > 20) {
+        const oldestId = fastSessionCacheRef.current.keys().next().value as string | undefined;
+        if (!oldestId) break;
+        fastSessionCacheRef.current.delete(oldestId);
+      }
+      void writeCachedSession(currentSnapshot).catch(() => undefined);
+    }
     if (currentId && persistCurrent) {
       sessionUiStatesRef.current.set(currentId, currentSessionUiRef.current);
       writeDraft(currentId, currentSessionUiRef.current.commandText, currentSessionUiRef.current.delivery);
@@ -517,11 +529,13 @@ export function App() {
       : emptySessionUiState();
     detailGeneration.current += 1;
     sessionOpenRequest.current += 1;
-    setLoadingSessionId(undefined);
+    sessionOpenInFlightRef.current = undefined;
     dismissMentionMenu();
     setSlashCommandMenu(undefined);
     selectedSessionIdRef.current = sessionId;
     sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "select", sessionId });
+    const fastSnapshot = sessionId ? fastSessionCacheRef.current.get(sessionId) : undefined;
+    if (fastSnapshot) sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "cachedSnapshot", session: fastSnapshot });
     followingRef.current = true;
     timelinePrependAnchorRef.current = undefined;
     window.cancelAnimationFrame(timelinePrependFrameRef.current);
@@ -544,7 +558,7 @@ export function App() {
     setSelectedSessionId(sessionId);
     selectedSessionRef.current = sessionSyncRef.current.session;
     setSelectedSession(sessionSyncRef.current.session);
-    if (sessionId) {
+    if (sessionId && !fastSnapshot) {
       void readCachedSession(sessionId).then((cached) => {
         if (!cached || selectedSessionIdRef.current !== sessionId) return;
         dispatchSessionSync({ type: "cachedSnapshot", session: cached });
@@ -583,7 +597,7 @@ export function App() {
       setState({ _tag: "Ready", workspaces, sessions });
       setRefreshProblem(undefined);
       if (nextId !== currentId) selectSession(nextId);
-      if (nextId && sessions.some((session) => session.id === nextId) && shouldPollSession(sessionSyncRef.current)) {
+      if (nextId && sessions.some((session) => session.id === nextId) && sessionOpenInFlightRef.current !== nextId && shouldPollSession(sessionSyncRef.current)) {
         const generation = ++detailGeneration.current;
         const request = sessionSyncRequest(sessionSyncRef.current);
         try {
@@ -615,7 +629,7 @@ export function App() {
 
   const globalPickerHotkeyEnabled = !globalPickerOpen
     && !creatorOpen && !workspaceCreatorOpen && !settingsOpen && !compactionDialogOpen
-    && !selectedSession?.interactiveRequests[0] && !(isMobile && mentionMenu)
+    && !(sessionSyncRef.current.runtimeGenerationConfirmed && selectedSession?.interactiveRequests[0]) && !(isMobile && mentionMenu)
     && !archiveTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
 
   useHotkey(HOTKEYS.openGlobalPicker, () => openGlobalPicker(), {
@@ -1299,29 +1313,33 @@ export function App() {
   const openSession = async (sessionId: string) => {
     selectSession(sessionId);
     const requestId = ++sessionOpenRequest.current;
-    setLoadingSessionId(sessionId);
+    sessionOpenInFlightRef.current = sessionId;
     setSidebarOpen(false);
+    const applySnapshot = (session: OwnedSession) => {
+      if (selectedSessionIdRef.current !== sessionId || sessionOpenRequest.current !== requestId) return false;
+      dispatchSessionSync({
+        type: "snapshotReset",
+        session,
+        cursor: session.events.at(-1)?.sequence ?? 0,
+        receivedAt: Date.now(),
+      });
+      return true;
+    };
     try {
       const loaded = (await Effect.runPromise(loadSession(sessionId))).session;
-      const session = loaded.status === "finished"
-        ? (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session
-        : loaded;
-      if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
-        dispatchSessionSync({
-          type: "snapshotReset",
-          session,
-          cursor: session.events.at(-1)?.sequence ?? 0,
-          receivedAt: Date.now(),
-        });
+      if (!applySnapshot(loaded)) return;
+      // Acknowledgement updates attention state, but the authoritative timeline
+      // should not wait for this second round trip before becoming visible.
+      if (loaded.status === "finished") {
+        const acknowledged = (await Effect.runPromise(acknowledgeOwnedSession(loaded.id, loaded.runtimeId))).session;
+        applySnapshot(acknowledged);
       }
     } catch (error) {
       if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
         setOperationError(errorMessage(error));
       }
     } finally {
-      if (selectedSessionIdRef.current === sessionId && sessionOpenRequest.current === requestId) {
-        setLoadingSessionId(undefined);
-      }
+      if (sessionOpenRequest.current === requestId) sessionOpenInFlightRef.current = undefined;
     }
   };
 
@@ -1667,7 +1685,8 @@ export function App() {
       : networkState === "syncing"
         ? "SYNCING"
         : "LIVE";
-  const sessionIsLoading = Boolean(selectedSessionId && (loadingSessionId === selectedSessionId || !sessionSyncRef.current.serverConfirmed));
+  const sessionIsLoading = Boolean(selectedSessionId && !selectedSession);
+  const sessionIsHydrating = Boolean(selectedSessionId && selectedSession && !sessionSyncRef.current.serverConfirmed);
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
@@ -1835,6 +1854,7 @@ export function App() {
               }}
             >
               <span className="sr-only" aria-live="polite">{copyFeedback ? `${copyFeedback.ok ? "Copied" : "Could not copy"} ${copyFeedback.label}` : ""}</span>
+              {sessionIsHydrating && <div className="session-hydrating" role="status"><RefreshCw className="icon-spin" aria-hidden="true" /><div><b>REFRESHING SESSION</b><span>Showing saved activity while the latest state loads…</span></div></div>}
               {activeView === "agent" && (hasOlderTimeline || timelineHistory.error) && <div className="timeline-history-control">
                 <button type="button" disabled={timelineHistory.loading} onClick={loadOlderTimeline}><ArrowUp aria-hidden="true" />{timelineHistory.loading ? "LOADING EARLIER ACTIVITY…" : timelineHistory.error ? "RETRY EARLIER ACTIVITY" : "LOAD EARLIER ACTIVITY"}</button>
                 {timelineHistory.error && <small role="alert">{timelineHistory.error}</small>}
@@ -2116,7 +2136,7 @@ export function App() {
         </div>
       </DialogSurface>}
 
-      {interactiveRequest && selectedSession && <InteractiveRequestDialog
+      {interactiveRequest && selectedSession && runtimeIsCurrent && <InteractiveRequestDialog
         key={interactiveRequest.id}
         request={interactiveRequest}
         queuedCount={selectedSession.interactiveRequests.length - 1}
