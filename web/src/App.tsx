@@ -2052,7 +2052,7 @@ export function App() {
                 {item.status === "rejected" && <button onClick={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} type="button" aria-label="Dismiss rejected message"><X aria-hidden="true" /></button>}
               </article>)}
             </section>}
-            {selectedSession.workflow && <EngineeringWorkflowPanel
+            {selectedSession.workflow && selectedSession.workflow.phase !== "accepted" && <EngineeringWorkflowPanel
               workflow={selectedSession.workflow}
               pending={busy}
               onApprove={() => mutateCurrentWorkflow("approve")}

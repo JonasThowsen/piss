@@ -582,9 +582,10 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(page.getByLabel("Message Pi")).toBeVisible();
   await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
   await workflow.getByRole("button", { name: "ACCEPT RESULT" }).click();
-  await expect(workflow).toContainText("Accepted");
-  await expect(workflow).toContainText("Result accepted · changes remain uncommitted");
-  await expect(workflow.getByRole("button", { name: "ACCEPT RESULT" })).toHaveCount(0);
+  await expect(workflow).toHaveCount(0);
+  await expect(page.getByLabel("Message Pi")).toBeVisible();
+  await page.reload();
+  await expect(workflow).toHaveCount(0);
 });
 
 test("desktop workspace navigation scrolls independently when its contents overflow", async ({ page }) => {
