@@ -105,7 +105,7 @@ process.stdin.on("data", (chunk) => {
           if (stage === "define" && command.message.includes("Exercise workflow user interventions")) workflowInterventionMode = true;
           if (stage === "define" && command.message.includes("Exercise failed workflow continuation")) workflowFailureMode = true;
           const outcome = stage === "define" || stage === "plan" ? "ready" : workflowFailureMode && stage === "review" ? "failed" : "passed";
-          const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# One-task plan" } : {}) };
+          const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan" } : {}) };
           const emitCheckpoint = () => {
             console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
             setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
@@ -818,7 +818,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(result.compactionFailed.compaction.error ?? "", /simulated compaction failure/);
     assert.equal(result.autoCompaction.autoCompactionEnabled, false);
     assert.equal(result.workflowSpec.workflow?.specification, "# Approved specification");
-    assert.equal(result.workflowPlan.workflow?.plan, "# One-task plan");
+    assert.equal(result.workflowPlan.workflow?.plan, "# Complete delivery plan");
+    assert.match(JSON.stringify(result.workflowReady.events), /Approved complete delivery plan/);
+    assert.doesNotMatch(JSON.stringify(result.workflowReady.events), /Approved one-task plan/);
     assert.equal(result.workflowReady.workflow?.phase, "readyToShip");
     assert.equal(result.workflowReady.status, "finished");
     assert.equal(result.workflowAccepted.workflow?.phase, "accepted");

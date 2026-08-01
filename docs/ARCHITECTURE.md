@@ -61,7 +61,7 @@ web/                       React client and PWA worker
 
 Node HTTP, filesystem, process, and sandbox APIs remain in infrastructure services. React components render state and initiate use cases; Effect Schema decodes server responses at the browser boundary.
 
-The first guided workflow is a one-task engineering tracer. PISS owns its durable Define → Plan → Build → Verify → Review state machine and explicit approval gates. A bundled, fixed-path Pi extension exposes a structured checkpoint tool, while curated bundled skills define phase behavior. Checkpoints are validated against the current workflow ID, runtime generation, expected phase, bounded repair budget, and persisted approved artifacts. Skills never own durable orchestration, and the browser never drives continuation timers.
+The guided engineering workflow treats the approved specification as its completion boundary. Its approved delivery plan partitions that complete scope into ordered vertical slices: an initial tracer proves the riskiest path, then Build broadens through every remaining slice before Verify and Review assess the whole specification. PISS owns the durable Define → Plan → Build → Verify → Review state machine and explicit approval gates. A bundled, fixed-path Pi extension exposes a structured checkpoint tool, while curated bundled skills define phase behavior. Checkpoints are validated against the current workflow ID, runtime generation, expected phase, bounded repair budget, and persisted approved artifacts. Skills never own durable orchestration, and the browser never drives continuation timers.
 
 ## Deployment architecture
 

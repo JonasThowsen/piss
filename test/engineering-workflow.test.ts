@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint, EngineeringWorkflowPhase } from "../shared/domain.ts";
 import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, workflowBadgePhaseLabel, workflowNeedsApproval } from "../shared/engineeringWorkflow.ts";
@@ -57,9 +58,9 @@ test("engineering workflow gates specification and plan before autonomous execut
   assert.equal(spec.specification, "# Specification");
   assert.equal(workflowNeedsApproval(spec.phase), true);
 
-  const plan = applyWorkflowCheckpoint({ ...spec, phase: "planning" }, checkpoint("plan", "ready", "# One-task plan"));
+  const plan = applyWorkflowCheckpoint({ ...spec, phase: "planning" }, checkpoint("plan", "ready", "# Complete delivery plan"));
   assert.equal(plan.phase, "awaitingPlanApproval");
-  assert.equal(plan.plan, "# One-task plan");
+  assert.equal(plan.plan, "# Complete delivery plan");
   assert.equal(workflowNeedsApproval(plan.phase), true);
 });
 
@@ -90,4 +91,16 @@ test("out-of-order workflow checkpoints block instead of skipping gates", () => 
   assert.equal(result.phase, "blocked");
   assert.equal(result.blockedFromPhase, "defining");
   assert.match(result.error ?? "", /invalid/i);
+});
+
+test("workflow skills treat the specification as the completion boundary rather than the first tracer", async () => {
+  const resource = (name: string) => readFile(new URL(`../workflow-resources/skills/piss-engineering-${name}/SKILL.md`, import.meta.url), "utf8");
+  const [plan, build, verify, review] = await Promise.all([resource("plan"), resource("build"), resource("verify"), resource("review")]);
+
+  assert.match(plan, /specification—not the first tracer—as the workflow's completion boundary/i);
+  assert.match(plan, /coverage map/i);
+  assert.match(build, /do not call the build checkpoint after only the first tracer/i);
+  assert.match(verify, /all approved scope has passing evidence/i);
+  assert.match(review, /entire approved specification is covered/i);
+  assert.doesNotMatch([plan, build, verify, review].join("\n"), /one-task plan/i);
 });

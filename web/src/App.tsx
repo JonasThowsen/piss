@@ -373,6 +373,7 @@ export function App() {
   const [workflowFeedback, setWorkflowFeedback] = useState("");
   const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
   const [workflowAdditionalRepairs, setWorkflowAdditionalRepairs] = useState("2");
+  const [workflowMutationPending, setWorkflowMutationPending] = useState<{ readonly token: number; readonly sessionId: string; readonly phase: EngineeringWorkflow["phase"] | null }>();
 
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
   const [archivePending, setArchivePending] = useState(false);
@@ -419,6 +420,8 @@ export function App() {
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const refreshInFlight = useRef(false);
   const refreshQueued = useRef(false);
+  const workflowMutationSequenceRef = useRef(0);
+  const workflowMutationTokensRef = useRef(new Map<string, number>());
   const timelineRef = useRef<HTMLElement>(null);
   const timelineScrollFrameRef = useRef(0);
   const timelineScrollTopRef = useRef(0);
@@ -1620,8 +1623,13 @@ export function App() {
 
   const runWorkflowMutation = async (input: EngineeringWorkflowMutationInput) => {
     const session = selectedSessionRef.current;
-    if (!session || busy) return;
+    if (!session) return;
+    const phase = session.workflow?.phase ?? null;
+    if (workflowMutationPending?.sessionId === session.id && workflowMutationPending.phase === phase) return;
     const targetId = session.id;
+    const token = ++workflowMutationSequenceRef.current;
+    workflowMutationTokensRef.current.set(targetId, token);
+    setWorkflowMutationPending({ token, sessionId: targetId, phase });
     setBusy(true);
     setOperationError(undefined);
     try {
@@ -1634,7 +1642,15 @@ export function App() {
       if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
       await refresh(false);
     } finally {
-      if (selectedSessionIdRef.current === targetId) setBusy(false);
+      setWorkflowMutationPending((current) => current?.token === token ? undefined : current);
+      if (workflowMutationTokensRef.current.get(targetId) === token) {
+        workflowMutationTokensRef.current.delete(targetId);
+        if (selectedSessionIdRef.current === targetId) setBusy(false);
+        else {
+          const stored = sessionUiStatesRef.current.get(targetId) ?? emptySessionUiState();
+          sessionUiStatesRef.current.set(targetId, { ...stored, busy: false });
+        }
+      }
     }
   };
 
@@ -1713,7 +1729,7 @@ export function App() {
 
   const mutateCurrentWorkflow = (action: "approve" | "accept" | "cancel" | "resume") => {
     const session = selectedSessionRef.current;
-    if (!session || busy) return;
+    if (!session) return;
     void runWorkflowMutation({ runtimeId: session.runtimeId, action });
   };
 
@@ -2132,7 +2148,7 @@ export function App() {
             </section>}
             {selectedSession.workflow && selectedSession.workflow.phase !== "accepted" && <EngineeringWorkflowPanel
               workflow={selectedSession.workflow}
-              pending={busy}
+              pending={workflowMutationPending?.sessionId === selectedSession.id && workflowMutationPending.phase === selectedSession.workflow.phase}
               onApprove={() => mutateCurrentWorkflow("approve")}
               onAccept={() => mutateCurrentWorkflow("accept")}
               onCancel={() => mutateCurrentWorkflow("cancel")}
@@ -2499,7 +2515,7 @@ export function App() {
       >
         <header><div><span>ENGINEERING WORKFLOW</span><Dialog.Title render={<b />}>Define, build, prove</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close workflow"><X aria-hidden="true" /></Dialog.Close></header>
         <div className="dialog-body workflow-dialog-body">
-          <div className="workflow-intro"><i aria-hidden="true"><Workflow /></i><div><b>One approved tracer, end to end</b><p>PISS guides Pi through Define and Plan approvals, then runs a bounded Build → Verify → Review loop. It stops before commit, push, or deployment.</p></div></div>
+          <div className="workflow-intro"><i aria-hidden="true"><Workflow /></i><div><b>Complete approved scope, delivered in vertical slices</b><p>PISS uses an initial tracer to prove the path, then continues through the full delivery plan before whole-specification Verify and Review. It stops before commit, push, or deployment.</p></div></div>
           <label>Objective<textarea ref={workflowObjectiveRef} value={workflowObjective} onChange={(event) => setWorkflowObjective(event.target.value)} maxLength={64 * 1024} rows={6} placeholder="Describe the outcome, user, constraints, and what success looks like…" /></label>
           <label className="workflow-repair-limit">Repair budget<input type="number" inputMode="numeric" min={1} max={10} value={workflowRepairLimit} onChange={(event) => setWorkflowRepairLimit(event.target.value)} onBlur={() => setWorkflowRepairLimit(String(Math.max(1, Math.min(10, Number.parseInt(workflowRepairLimit, 10) || 1))))} /><small>Maximum autonomous repair cycles before PISS blocks for you.</small></label>
           {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
@@ -2607,8 +2623,8 @@ function workflowOwnsComposer(phase: EngineeringWorkflow["phase"]): boolean {
 
 function workflowActivityLabel(phase: EngineeringWorkflow["phase"]): string {
   switch (phase) {
-    case "planning": return "Pi is preparing the one-task plan";
-    case "building": return "Pi is implementing the approved tracer";
+    case "planning": return "Pi is preparing the complete delivery plan";
+    case "building": return "Pi is implementing the approved delivery plan";
     case "verifying": return "Pi is verifying the implementation";
     case "reviewing": return "Pi is reviewing the verified changes";
     case "repairing": return "Pi is repairing the blocking findings";
@@ -2652,11 +2668,11 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   const artifactLabel = workflow.phase === "awaitingSpecApproval"
     ? "SPECIFICATION"
     : workflow.phase === "awaitingPlanApproval"
-      ? "ONE-TASK PLAN"
+      ? "DELIVERY PLAN"
       : workflow.checkpoint?.stage === "define"
         ? "APPROVED SPECIFICATION"
         : workflow.checkpoint?.stage === "plan"
-          ? "APPROVED ONE-TASK PLAN"
+          ? "APPROVED DELIVERY PLAN"
           : "LATEST CHECKPOINT";
 
   return <section className={`engineering-workflow ${workflow.phase}`} aria-label="Engineering workflow" aria-live="polite">

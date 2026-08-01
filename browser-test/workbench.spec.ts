@@ -110,6 +110,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   const sessionLoads: Array<{ readonly sessionId: string; readonly afterSequence?: number }> = [];
   let failNextCommand = false;
   let delayNextCommand = false;
+  let delayNextWorkflowMutationMs = 0;
   let delayNextMentionSearch = false;
   let delayedSessionLoadId: string | undefined;
   let delayedSessionLoadMs = 500;
@@ -324,6 +325,8 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     }
     if (session && path === `/api/sessions/${session.id}/workflow` && method === "POST") {
       const timestamp = new Date().toISOString();
+      const workflowMutationDelay = delayNextWorkflowMutationMs;
+      delayNextWorkflowMutationMs = 0;
       workflowMutations.push(body ?? {});
       let workflow = session.workflow;
       if (body?.action === "start") {
@@ -367,6 +370,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       }
       const updated = { ...session, status: body?.action === "continueRepairs" ? "working" as const : "finished" as const, workflow, lastActivityAt: timestamp };
       sessions[sessionIndex] = updated;
+      if (workflowMutationDelay > 0) await new Promise((resolve) => setTimeout(resolve, workflowMutationDelay));
       await route.fulfill({ json: { session: updated } });
       return;
     }
@@ -457,7 +461,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         ...sessions.at(-1)!,
         status: "finished",
         workflow: phase === "awaitingPlanApproval"
-          ? { ...workflow, phase, plan: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", checkpoint: { stage: "plan", outcome: "ready", summary: "One-task plan is ready for approval", artifact: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp }
+          ? { ...workflow, phase, plan: "# Complete delivery plan\n\nImplement every approved criterion through ordered vertical slices.", checkpoint: { stage: "plan", outcome: "ready", summary: "Complete delivery plan is ready for approval", artifact: "# Complete delivery plan\n\nImplement every approved criterion through ordered vertical slices.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp }
           : { ...workflow, phase, updatedAt: timestamp },
         lastActivityAt: timestamp,
       };
@@ -526,6 +530,9 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     delayAndFailNextCommand() {
       delayNextCommand = true;
       failNextCommand = true;
+    },
+    delayNextWorkflowMutation(milliseconds: number) {
+      delayNextWorkflowMutationMs = milliseconds;
     },
     delayNextMentionSearch() {
       delayNextMentionSearch = true;
@@ -772,7 +779,7 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
   await expect(workflow).toContainText("Planning");
-  await expect(workflow).toContainText("Pi is preparing the one-task plan");
+  await expect(workflow).toContainText("Pi is preparing the complete delivery plan");
   await expect(workflow.locator("details")).not.toHaveAttribute("open");
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   const planningLayout = await workflow.evaluate((element) => ({ footerBottom: element.querySelector<HTMLElement>(":scope > footer")!.getBoundingClientRect().bottom, viewportHeight: window.innerHeight }));
@@ -792,6 +799,37 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(page.getByLabel("Message Pi")).toBeVisible();
   await page.reload();
   await expect(workflow).toHaveCount(0);
+});
+
+test("a new approval gate unlocks while the preceding mutation response is still settling", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Lagging workflow mutation" }),
+    });
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Open workflow actions" }).click();
+  await page.getByRole("menuitem", { name: /engineering loop/i }).click();
+  const starter = page.getByRole("dialog", { name: "Define, build, prove" });
+  await starter.getByLabel("Objective").fill("Keep authoritative approval gates actionable");
+  await starter.getByRole("button", { name: /start define/i }).click();
+
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("Spec approval");
+  api.delayNextWorkflowMutation(10_000);
+  await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "approve" });
+  api.setWorkflowPhase("awaitingPlanApproval");
+
+  await expect(workflow).toContainText("Plan approval", { timeout: 5_000 });
+  await expect(workflow.getByRole("button", { name: "APPROVE PLAN" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "REQUEST CHANGES" })).toBeEnabled();
 });
 
 test("autonomous workflow phases expose Pi thinking and tool activity", async ({ page }) => {

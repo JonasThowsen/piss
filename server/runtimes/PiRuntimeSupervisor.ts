@@ -685,13 +685,13 @@ function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): 
     case "planning":
       return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}${feedback ? `\n\nUser-requested revision:\n${feedback}` : ""}`;
     case "building":
-      return `/skill:piss-engineering-build\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}`;
+      return `/skill:piss-engineering-build\n${contract}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}`;
     case "repairing":
-      return `/skill:piss-engineering-build\n${contract}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}`;
+      return `/skill:piss-engineering-build\n${contract}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}`;
     case "verifying":
-      return `/skill:piss-engineering-verify\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}`;
+      return `/skill:piss-engineering-verify\n${contract}\n\nApproved specification (verify every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}`;
     case "reviewing":
-      return `/skill:piss-engineering-review\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}`;
+      return `/skill:piss-engineering-review\n${contract}\n\nApproved specification (review every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}`;
     default:
       throw new Error(`Workflow phase ${workflow.phase} cannot start an agent run`);
   }

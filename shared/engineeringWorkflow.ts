@@ -4,7 +4,7 @@ import type {
   EngineeringWorkflowPhase,
 } from "./domain.ts";
 
-export const ENGINEERING_WORKFLOW_PACK_VERSION = "engineering-v1";
+export const ENGINEERING_WORKFLOW_PACK_VERSION = "engineering-v2";
 
 const AUTONOMOUS_PHASES: ReadonlySet<EngineeringWorkflowPhase> = new Set([
   "building",
