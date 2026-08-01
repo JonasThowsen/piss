@@ -1691,6 +1691,21 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   await mobileTimeline.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(jumpToLatest).toHaveClass(/at-bottom/);
   await expect.poll(() => mobileTimeline.evaluate((element) => getComputedStyle(element).paddingBottom)).toBe(paddingBeforeReturning);
+
+  // A slow touch drag can move by only one pixel per scroll event. Holding
+  // there must detach following instead of fighting the gesture back to the bottom.
+  await mobileTimeline.evaluate(async (element) => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, pointerType: "touch" }));
+    for (let step = 0; step < 6; step += 1) {
+      const scrolled = new Promise<void>((resolve) => element.addEventListener("scroll", () => resolve(), { once: true }));
+      element.scrollTop -= 1;
+      await scrolled;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, pointerType: "touch" }));
+  });
+  await expect.poll(distanceFromBottom).toBeGreaterThanOrEqual(5);
+  await expect(jumpToLatest).not.toHaveClass(/at-bottom/);
 });
 
 test("a completed final response remains latest across page reload", async ({ page }) => {
