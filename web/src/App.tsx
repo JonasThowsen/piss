@@ -1936,18 +1936,21 @@ export function App() {
               onTouchStart={(event) => { timelineTouchYRef.current = event.touches[0]?.clientY; }}
               onTouchMove={(event) => {
                 const nextY = event.touches[0]?.clientY;
+                // Keep the gesture's starting point: sub-pixel moves must add up
+                // after native panning cancels pointer tracking.
                 if (nextY !== undefined && timelineTouchYRef.current !== undefined && nextY > timelineTouchYRef.current + 1) {
                   followingRef.current = false;
                   setAtBottom(false);
                 }
-                timelineTouchYRef.current = nextY;
               }}
               onTouchEnd={() => { timelineTouchYRef.current = undefined; }}
+              onTouchCancel={() => { timelineTouchYRef.current = undefined; }}
               onScroll={(event) => {
                 const element = event.currentTarget;
                 const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
                 const nextAtBottom = effectiveTimelineWindowEnd >= timeline.length && distanceFromBottom < 4;
-                const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current;
+                const userDragging = timelinePointerScrollingRef.current || timelineTouchYRef.current !== undefined;
+                const draggedUp = userDragging && element.scrollTop < timelineScrollTopRef.current;
                 timelineScrollTopRef.current = element.scrollTop;
                 if (draggedUp) followingRef.current = false;
                 else if (nextAtBottom) followingRef.current = true;

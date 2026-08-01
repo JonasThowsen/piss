@@ -1692,17 +1692,28 @@ test("timeline follows growing content until the user scrolls up", async ({ page
   await expect(jumpToLatest).toHaveClass(/at-bottom/);
   await expect.poll(() => mobileTimeline.evaluate((element) => getComputedStyle(element).paddingBottom)).toBe(paddingBeforeReturning);
 
-  // A slow touch drag can move by only one pixel per scroll event. Holding
-  // there must detach following instead of fighting the gesture back to the bottom.
+  // Native touch panning cancels pointer tracking. A slow drag can then move
+  // by only one pixel per scroll event; holding there must detach following
+  // instead of fighting the gesture back to the bottom.
   await mobileTimeline.evaluate(async (element) => {
+    const dispatchTouch = (type: "touchstart" | "touchmove" | "touchend", clientY?: number) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", { value: clientY === undefined ? [] : [{ clientY }] });
+      element.dispatchEvent(event);
+    };
+    let touchY = 100;
+    dispatchTouch("touchstart", touchY);
     element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, pointerType: "touch" }));
+    element.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true, pointerId: 1, pointerType: "touch" }));
     for (let step = 0; step < 6; step += 1) {
+      touchY += 0.5;
+      dispatchTouch("touchmove", touchY);
       const scrolled = new Promise<void>((resolve) => element.addEventListener("scroll", () => resolve(), { once: true }));
       element.scrollTop -= 1;
       await scrolled;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
-    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, pointerType: "touch" }));
+    dispatchTouch("touchend");
   });
   await expect.poll(distanceFromBottom).toBeGreaterThanOrEqual(5);
   await expect(jumpToLatest).not.toHaveClass(/at-bottom/);
