@@ -14,7 +14,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { isTerminalWorkflowPhase, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
+import { isTerminalWorkflowPhase, workflowBadgePhaseLabel, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, mutateEngineeringWorkflow, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
@@ -1873,10 +1873,14 @@ export function App() {
                 {sessions.length === 0 && <div className="empty-workspace">No sessions</div>}
                 {sessions.map((session) => {
                   const status = displayStatus(session.status);
+                  const workflowBadge = session.workflow ? workflowBadgePhaseLabel(session.workflow.phase) : undefined;
                   return <div className="session-row" key={session.id}>
                     <button className={`session-card ${session.id === selectedSessionId ? "selected" : ""}`} onClick={() => void openSession(session.id)} type="button" aria-current={session.id === selectedSessionId ? "page" : undefined}>
                       <i className={`state-dot ${status}`} />
-                      <span className="session-copy"><strong>{session.name}</strong><small>{ATTENTION_STATE_LABELS[session.status]} · {session.eventCount} events · {relativeTime(session.lastActivityAt, now)}</small></span>
+                      <span className="session-copy">
+                        <span className="session-title"><strong>{session.name}</strong>{workflowBadge && <span className="workflow-phase-badge">LOOP · {workflowBadge}</span>}</span>
+                        <small>{ATTENTION_STATE_LABELS[session.status]} · {session.eventCount} events · {relativeTime(session.lastActivityAt, now)}</small>
+                      </span>
                     </button>
                     <ActionMenu
                       className="session-actions"

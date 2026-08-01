@@ -221,8 +221,10 @@ button { color: inherit; }
 .state-dot.blocked { border-radius: 1px; background: #b3483e; }
 .state-dot.stopped { background: #a7aba4; }
 .state-dot.crashed { background: var(--danger); }
-.session-copy { display: grid; gap: 4px; overflow: hidden; }
-.session-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+.session-copy { min-width: 0; display: grid; gap: 4px; overflow: hidden; }
+.session-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.session-copy strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+.workflow-phase-badge { max-width: 52%; min-height: 17px; display: inline-flex; flex: none; align-items: center; overflow: hidden; padding: 0 5px; border: 1px solid rgba(49, 92, 70, .28); border-radius: 3px; background: var(--accent-soft); color: var(--accent); font-size: 7px; font-weight: 800; letter-spacing: .04em; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .session-copy small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .empty-workspace { width: 100%; padding: 7px 10px 10px; color: var(--faint); font-size: 8px; text-align: left; }
 .rail-state { padding: 25px 18px; color: var(--muted); font-size: 10px; line-height: 1.6; }

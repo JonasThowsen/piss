@@ -104,6 +104,25 @@ export function applyWorkflowCheckpoint(
   return { ...workflow, phase, checkpoint, blockedFromPhase: null, updatedAt, error: null };
 }
 
+export function workflowBadgePhaseLabel(phase: EngineeringWorkflowPhase): string | undefined {
+  if (isTerminalWorkflowPhase(phase)) return undefined;
+  switch (phase) {
+    case "defining": return "DEFINE";
+    case "awaitingSpecApproval": return "SPEC APPROVAL";
+    case "planning": return "PLAN";
+    case "awaitingPlanApproval": return "PLAN APPROVAL";
+    case "building": return "BUILD";
+    case "verifying": return "VERIFY";
+    case "reviewing": return "REVIEW";
+    case "repairing": return "REPAIR";
+    case "blocked": return "BLOCKED";
+    case "readyToShip":
+    case "cancelled":
+    case "failed":
+      return undefined;
+  }
+}
+
 export function workflowPhaseLabel(phase: EngineeringWorkflowPhase): string {
   switch (phase) {
     case "defining": return "Defining";

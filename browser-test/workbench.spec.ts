@@ -439,6 +439,29 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         lastActivityAt: timestamp,
       };
     },
+    setWorkflowPhaseFor(name: string, phase: NonNullable<TestSession["workflow"]>["phase"]) {
+      const index = sessions.findIndex((session) => session.name === name);
+      if (index < 0) return;
+      const timestamp = new Date().toISOString();
+      sessions[index] = {
+        ...sessions[index]!,
+        workflow: {
+          id: `workflow-${sessions[index]!.id}`,
+          phase,
+          objective: "Exercise the session workflow badge",
+          repairAttempts: 0,
+          maxRepairAttempts: 2,
+          specification: null,
+          plan: null,
+          checkpoint: null,
+          blockedFromPhase: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          error: null,
+        },
+        lastActivityAt: timestamp,
+      };
+    },
     setInteractiveRequests(requests: TestSession["interactiveRequests"]) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status: requests.length > 0 ? "blocked" : "working", interactiveRequests: requests, lastActivityAt: new Date().toISOString() };
     },
@@ -519,6 +542,77 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
   expect(layout.workspaceLeft).toBe(layout.railRight);
   expect(layout.workspaceRight).toBe(1180);
   expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
+});
+
+test("workflow-phase badge stays accessible and contained in desktop and mobile session navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 780 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  const verifyingName = "Verification session with a deliberately long descriptive title";
+  const approvalName = "Specification approval session with another deliberately long title";
+  await page.evaluate(async ({ names }) => {
+    for (const name of names) {
+      await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: "erp-deadbeef", name }),
+      });
+    }
+  }, { names: [verifyingName, approvalName, "Plain session", "Terminal session"] });
+  api.setWorkflowPhaseFor(verifyingName, "verifying");
+  api.setWorkflowPhaseFor(approvalName, "awaitingSpecApproval");
+  api.setWorkflowPhaseFor("Terminal session", "readyToShip");
+  await page.reload();
+
+  const sessionCard = (name: string) => page.locator(".session-card").filter({ hasText: name });
+  const verifyingCard = sessionCard(verifyingName);
+  const approvalCard = sessionCard(approvalName);
+  await expect(verifyingCard.locator(".workflow-phase-badge")).toHaveText("LOOP · VERIFY");
+  await expect(verifyingCard).toHaveAccessibleName(/LOOP · VERIFY/);
+  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC APPROVAL");
+  await expect(sessionCard("Plain session").locator(".workflow-phase-badge")).toHaveCount(0);
+  await expect(sessionCard("Terminal session").locator(".workflow-phase-badge")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await expect(verifyingCard.locator(".workflow-phase-badge")).toBeVisible();
+  await expect(verifyingCard).toHaveAccessibleName(/LOOP · VERIFY/);
+  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC APPROVAL");
+
+  const layout = await approvalCard.evaluate((card) => {
+    const rail = card.closest<HTMLElement>(".rail")!;
+    const row = card.closest<HTMLElement>(".session-row")!;
+    const badge = card.querySelector<HTMLElement>(".workflow-phase-badge")!;
+    const name = card.querySelector<HTMLElement>("strong")!;
+    const action = row.querySelector<HTMLElement>(".session-menu-trigger")!;
+    const bounds = (element: Element) => element.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      railClientWidth: rail.clientWidth,
+      railScrollWidth: rail.scrollWidth,
+      rail: bounds(rail),
+      row: bounds(row),
+      card: bounds(card),
+      badge: bounds(badge),
+      badgeClientWidth: badge.clientWidth,
+      badgeScrollWidth: badge.scrollWidth,
+      action: bounds(action),
+      nameClientWidth: name.clientWidth,
+      nameScrollWidth: name.scrollWidth,
+    };
+  });
+  expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.railScrollWidth).toBeLessThanOrEqual(layout.railClientWidth);
+  expect(layout.row.left).toBeGreaterThanOrEqual(layout.rail.left);
+  expect(layout.row.right).toBeLessThanOrEqual(layout.rail.right + 1);
+  expect(layout.card.right).toBeLessThanOrEqual(layout.row.right + 1);
+  expect(layout.badge.left).toBeGreaterThanOrEqual(layout.card.left);
+  expect(layout.badge.right).toBeLessThanOrEqual(layout.card.right + 1);
+  expect(layout.badgeScrollWidth).toBeLessThanOrEqual(layout.badgeClientWidth);
+  expect(layout.action.right).toBeLessThanOrEqual(layout.row.right + 1);
+  expect(layout.nameScrollWidth).toBeGreaterThan(layout.nameClientWidth);
 });
 
 test("mobile composer starts and approves a guided engineering workflow", async ({ page }) => {

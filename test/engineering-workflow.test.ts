@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint } from "../shared/domain.ts";
-import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, isTerminalWorkflowPhase, workflowNeedsApproval } from "../shared/engineeringWorkflow.ts";
+import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint, EngineeringWorkflowPhase } from "../shared/domain.ts";
+import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, workflowBadgePhaseLabel, workflowNeedsApproval } from "../shared/engineeringWorkflow.ts";
 
 const startedAt = "2026-04-15T10:00:00.000Z";
 
@@ -34,6 +34,23 @@ function checkpoint(stage: EngineeringWorkflowCheckpoint["stage"], outcome: Engi
   };
 }
 
+test("workflow badge labels cover active phases and exclude terminal phases", () => {
+  const expected = new Map<EngineeringWorkflowPhase, string>([
+    ["defining", "DEFINE"],
+    ["awaitingSpecApproval", "SPEC APPROVAL"],
+    ["planning", "PLAN"],
+    ["awaitingPlanApproval", "PLAN APPROVAL"],
+    ["building", "BUILD"],
+    ["verifying", "VERIFY"],
+    ["reviewing", "REVIEW"],
+    ["repairing", "REPAIR"],
+    ["blocked", "BLOCKED"],
+  ]);
+
+  for (const [phase, label] of expected) assert.equal(workflowBadgePhaseLabel(phase), label);
+  for (const phase of ["readyToShip", "accepted", "cancelled", "failed"] as const) assert.equal(workflowBadgePhaseLabel(phase), undefined);
+});
+
 test("engineering workflow gates specification and plan before autonomous execution", () => {
   const spec = applyWorkflowCheckpoint(workflow(), checkpoint("define", "ready", "# Specification"));
   assert.equal(spec.phase, "awaitingSpecApproval");
@@ -59,7 +76,6 @@ test("engineering workflow loops build, verify, review, and bounded repair", () 
   const verified = applyWorkflowCheckpoint(repaired, checkpoint("verify", "passed"));
   const reviewed = applyWorkflowCheckpoint(verified, checkpoint("review", "passed"));
   assert.equal(reviewed.phase, "readyToShip");
-  assert.equal(isTerminalWorkflowPhase("accepted"), true);
 
   const exhausted = applyWorkflowCheckpoint(
     { ...workflow("reviewing"), repairAttempts: 2 },
