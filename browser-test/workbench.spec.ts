@@ -948,6 +948,13 @@ test("desktop composer inserts a newline with Shift+Enter and sends with Enter",
 
   await composer.press("Enter");
   await expect.poll(() => api.commands.at(-1)?.text).toBe("First line\nSecond line");
+
+  const longDraft = Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join("\n");
+  await composer.fill(longDraft);
+  await composer.evaluate((element) => { element.scrollTop = 0; });
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue(`${longDraft}\n`);
+  await expect.poll(() => composer.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
 });
 
 test("slash picker discovers and runs commands through the owned Pi runtime", async ({ page }) => {

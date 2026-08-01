@@ -1261,8 +1261,10 @@ export function App() {
     dismissMentionMenu();
     setCommandText(next);
     window.requestAnimationFrame(() => {
-      textarea?.focus();
-      textarea?.setSelectionRange(cursor, cursor);
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+      if (cursor === next.length) textarea.scrollTop = textarea.scrollHeight;
     });
   };
 
