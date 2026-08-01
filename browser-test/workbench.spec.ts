@@ -34,7 +34,7 @@ type TestSession = {
   compaction: { status: "idle" | "running" | "succeeded" | "failed"; reason: string | null; tokensBefore: number | null; estimatedTokensAfter: number | null; error: string | null; updatedAt: string | null };
   workflow: null | {
     id: string;
-    phase: "defining" | "awaitingSpecApproval" | "planning" | "awaitingPlanApproval" | "building" | "verifying" | "reviewing" | "repairing" | "readyToShip" | "blocked" | "cancelled" | "failed";
+    phase: "defining" | "awaitingSpecApproval" | "planning" | "awaitingPlanApproval" | "building" | "verifying" | "reviewing" | "repairing" | "readyToShip" | "accepted" | "blocked" | "cancelled" | "failed";
     objective: string;
     repairAttempts: number;
     maxRepairAttempts: number;
@@ -338,6 +338,8 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         workflow = { ...workflow, phase: "planning", updatedAt: timestamp };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingPlanApproval") {
         workflow = { ...workflow, phase: "readyToShip", checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
+      } else if (workflow && body?.action === "accept" && workflow.phase === "readyToShip") {
+        workflow = { ...workflow, phase: "accepted", updatedAt: timestamp };
       } else if (workflow && body?.action === "cancel") {
         workflow = { ...workflow, phase: "cancelled", updatedAt: timestamp };
       }
@@ -579,6 +581,10 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(workflow).toContainText("Ready to ship");
   await expect(page.getByLabel("Message Pi")).toBeVisible();
   await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
+  await workflow.getByRole("button", { name: "ACCEPT RESULT" }).click();
+  await expect(workflow).toContainText("Accepted");
+  await expect(workflow).toContainText("Result accepted · changes remain uncommitted");
+  await expect(workflow.getByRole("button", { name: "ACCEPT RESULT" })).toHaveCount(0);
 });
 
 test("desktop workspace navigation scrolls independently when its contents overflow", async ({ page }) => {

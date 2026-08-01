@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint } from "../shared/domain.ts";
-import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, workflowNeedsApproval } from "../shared/engineeringWorkflow.ts";
+import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, isTerminalWorkflowPhase, workflowNeedsApproval } from "../shared/engineeringWorkflow.ts";
 
 const startedAt = "2026-04-15T10:00:00.000Z";
 
@@ -59,6 +59,7 @@ test("engineering workflow loops build, verify, review, and bounded repair", () 
   const verified = applyWorkflowCheckpoint(repaired, checkpoint("verify", "passed"));
   const reviewed = applyWorkflowCheckpoint(verified, checkpoint("review", "passed"));
   assert.equal(reviewed.phase, "readyToShip");
+  assert.equal(isTerminalWorkflowPhase("accepted"), true);
 
   const exhausted = applyWorkflowCheckpoint(
     { ...workflow("reviewing"), repairAttempts: 2 },

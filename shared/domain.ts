@@ -191,6 +191,7 @@ export const EngineeringWorkflowPhase = Schema.Literals([
   "reviewing",
   "repairing",
   "readyToShip",
+  "accepted",
   "blocked",
   "cancelled",
   "failed",
@@ -459,7 +460,7 @@ export const EngineeringWorkflowMutationInput = Schema.Union([
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    action: Schema.Literals(["approve", "cancel", "resume"]),
+    action: Schema.Literals(["approve", "accept", "cancel", "resume"]),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),

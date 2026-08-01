@@ -15,6 +15,7 @@ const AUTONOMOUS_PHASES: ReadonlySet<EngineeringWorkflowPhase> = new Set([
 
 const TERMINAL_PHASES: ReadonlySet<EngineeringWorkflowPhase> = new Set([
   "readyToShip",
+  "accepted",
   "cancelled",
   "failed",
 ]);
@@ -114,6 +115,7 @@ export function workflowPhaseLabel(phase: EngineeringWorkflowPhase): string {
     case "reviewing": return "Reviewing";
     case "repairing": return "Repairing";
     case "readyToShip": return "Ready to ship";
+    case "accepted": return "Accepted";
     case "blocked": return "Blocked";
     case "cancelled": return "Cancelled";
     case "failed": return "Failed";

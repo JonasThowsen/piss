@@ -548,7 +548,8 @@ button { color: inherit; }
 .workflow-artifact > :last-child { margin-bottom: 0; }
 .engineering-workflow > footer { min-height: 39px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 5px 8px; border-top: 1px solid rgba(49, 92, 70, .12); background: rgba(255, 255, 255, .56); }
 .engineering-workflow > footer > span { display: flex; align-items: center; gap: 7px; margin-right: auto; color: var(--muted); font-size: 7px; font-weight: 700; letter-spacing: .04em; }
-.workflow-activity svg { width: 12px; height: 12px; color: var(--accent); }
+.workflow-activity svg, .workflow-accepted svg { width: 12px; height: 12px; color: var(--accent); }
+.workflow-accepted { color: var(--accent) !important; }
 .engineering-workflow footer button { min-height: 29px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: white; color: var(--muted); font-size: 7px; font-weight: 800; letter-spacing: .05em; cursor: pointer; }
 .engineering-workflow footer button svg { width: 12px; height: 12px; }
 .engineering-workflow footer button:disabled { cursor: wait; opacity: .45; }

@@ -1883,6 +1883,17 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {
         const current = session.snapshot.workflow;
         const unavailable = (message: string) => Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message }));
+        if (input.action === "accept") {
+          if (!current || current.phase !== "readyToShip") return yield* unavailable("Only a workflow ready to ship can be accepted");
+          const updatedAt = now();
+          session.snapshot = {
+            ...session.snapshot,
+            workflow: { ...current, phase: "accepted", blockedFromPhase: null, updatedAt, error: null },
+            lastActivityAt: updatedAt,
+          };
+          yield* persist();
+          return cloneSession(session.snapshot);
+        }
         if (input.action === "cancel") {
           if (!current || isTerminalWorkflowPhase(current.phase)) return cloneSession(session.snapshot);
           session.workflowDispatchPending = false;

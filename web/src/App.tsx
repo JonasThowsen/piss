@@ -1666,7 +1666,7 @@ export function App() {
     void runWorkflowMutation({ runtimeId: session.runtimeId, action: "revise", feedback });
   };
 
-  const mutateCurrentWorkflow = (action: "approve" | "cancel" | "resume") => {
+  const mutateCurrentWorkflow = (action: "approve" | "accept" | "cancel" | "resume") => {
     const session = selectedSessionRef.current;
     if (!session || busy) return;
     void runWorkflowMutation({ runtimeId: session.runtimeId, action });
@@ -2056,6 +2056,7 @@ export function App() {
               workflow={selectedSession.workflow}
               pending={busy}
               onApprove={() => mutateCurrentWorkflow("approve")}
+              onAccept={() => mutateCurrentWorkflow("accept")}
               onCancel={() => mutateCurrentWorkflow("cancel")}
               onResume={() => mutateCurrentWorkflow("resume")}
               onRevise={openWorkflowRevision}
@@ -2492,14 +2493,15 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
   if (phase === "building" || phase === "repairing") return 2;
   if (phase === "verifying") return 3;
   if (phase === "reviewing") return 4;
-  if (phase === "readyToShip") return 5;
+  if (phase === "readyToShip" || phase === "accepted") return 5;
   return -1;
 }
 
-function EngineeringWorkflowPanel({ workflow, pending, onApprove, onCancel, onResume, onRevise, onReviewChanges }: {
+function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCancel, onResume, onRevise, onReviewChanges }: {
   readonly workflow: EngineeringWorkflow;
   readonly pending: boolean;
   readonly onApprove: () => void;
+  readonly onAccept: () => void;
   readonly onCancel: () => void;
   readonly onResume: () => void;
   readonly onRevise: (returnFocus: HTMLElement) => void;
@@ -2537,7 +2539,11 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onCancel, onRe
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
       </>}
       {workflow.phase === "blocked" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onResume}><ArrowRight aria-hidden="true" />RESUME PHASE</button>}
-      {workflow.phase === "readyToShip" && <button className="workflow-approve" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>}
+      {workflow.phase === "readyToShip" && <>
+        <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
+        <button className="workflow-approve" disabled={pending} type="button" onClick={onAccept}><Check aria-hidden="true" />{pending ? "ACCEPTING…" : "ACCEPT RESULT"}</button>
+      </>}
+      {workflow.phase === "accepted" && <span className="workflow-accepted"><CheckCheck aria-hidden="true" />Result accepted · changes remain uncommitted</span>}
       {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
