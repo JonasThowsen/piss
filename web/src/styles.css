@@ -230,6 +230,12 @@ button { color: inherit; }
 
 .workspace { position: relative; grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 .session-view { width: 100%; height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; overflow: hidden; }
+.session-view.workflow-approval-view { grid-template-rows: 54px 0 minmax(0, 1fr); }
+.workflow-approval-view .control-deck { min-height: 0; height: 100%; overflow: hidden; }
+.workflow-approval-view .engineering-workflow:has(details[open]) { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.workflow-approval-view .workflow-copy:has(details[open]) { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-approval-view .workflow-copy details[open] { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-approval-view .workflow-artifact { min-height: 0; height: 100%; max-height: none; }
 .capability-tabs {
   display: flex;
   align-items: center;
@@ -931,6 +937,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .rail-label { height: 56px; padding-top: 10px; }
   .workspace { height: 100%; }
   .session-view { grid-template-rows: 44px minmax(0, 1fr) auto; }
+  .session-view.workflow-approval-view { grid-template-rows: 44px 0 minmax(0, 1fr); }
   .capability-tabs { padding: 3px 8px; }
   .capability-tabs button { height: 38px; padding: 0 11px; font-size: 11px; }
   .capability-tabs button em { min-width: 17px; height: 17px; padding: 0 4px; }
@@ -979,6 +986,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .review-comment footer button { min-height: 42px; padding-inline: 11px; }
   .jump-bottom { right: 10px; bottom: 10px; width: 42px; height: 42px; }
   .control-deck { padding: 6px 7px max(7px, env(safe-area-inset-bottom)); }
+  .control-deck.workflow-approval-mode { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .engineering-workflow { margin-bottom: 6px; border-radius: 8px; }
   .engineering-workflow > header { min-height: 40px; padding: 5px 8px; }
   .workflow-identity > i { width: 27px; height: 27px; }
@@ -988,6 +996,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .workflow-copy > p { max-height: 40px; overflow: hidden; font-size: 8px; }
   .workflow-artifact { max-height: min(380px, 42dvh); font-size: 11px; }
   .workflow-approval-mode .workflow-artifact { max-height: min(540px, 58dvh); }
+  .workflow-approval-view .workflow-artifact { max-height: none; }
   .engineering-workflow > footer { min-height: 42px; padding: 5px 6px; }
   .engineering-workflow footer button { min-height: 34px; padding-inline: 8px; }
   .engineering-workflow > footer > span { font-size: 6px; }

@@ -1907,7 +1907,7 @@ export function App() {
 
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
-        {selectedSession && !sessionIsLoading ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
+        {selectedSession && !sessionIsLoading ? <Tabs.Root className={`session-view${activeView === "agent" && selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase) ? " workflow-approval-view" : ""}`} value={activeView} onValueChange={(value) => {
           const next = value as "agent" | "changes" | "details";
           setActiveView(next);
           if (next === "changes") void requestReview(selectedSession);

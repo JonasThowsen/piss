@@ -319,15 +319,16 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       const timestamp = new Date().toISOString();
       let workflow = session.workflow;
       if (body?.action === "start") {
+        const specification = `# Specification\n\n${Array.from({ length: 40 }, (_, index) => `${index + 1}. Verify a durable, accessible workflow acceptance criterion.`).join("\n")}`;
         workflow = {
           id: "browser-workflow-1",
           phase: "awaitingSpecApproval",
           objective: typeof body.objective === "string" ? body.objective : "Build the workflow",
           repairAttempts: 0,
           maxRepairAttempts: typeof body.maxRepairAttempts === "number" ? body.maxRepairAttempts : 3,
-          specification: "# Specification\n\nDeliver one durable workflow tracer with explicit approval gates.",
+          specification,
           plan: null,
-          checkpoint: { stage: "define", outcome: "ready", summary: "Specification is ready for approval", artifact: "# Specification\n\nDeliver one durable workflow tracer with explicit approval gates.", toolCallId: "define-checkpoint", sequence: 1, receivedAt: timestamp },
+          checkpoint: { stage: "define", outcome: "ready", summary: "Specification is ready for approval", artifact: specification, toolCallId: "define-checkpoint", sequence: 1, receivedAt: timestamp },
           blockedFromPhase: null,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -540,8 +541,14 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(workflow).toContainText("Specification is ready for approval");
   await workflow.locator("summary").click();
   await expect(workflow.locator(".workflow-artifact")).toBeVisible();
-  const artifactMaxHeight = await workflow.locator(".workflow-artifact").evaluate((element) => Number.parseFloat(getComputedStyle(element).maxHeight));
-  expect(artifactMaxHeight).toBeGreaterThanOrEqual(485);
+  const approvalLayout = await workflow.evaluate((element) => {
+    const artifact = element.querySelector<HTMLElement>(".workflow-artifact")!;
+    const footer = element.querySelector<HTMLElement>(":scope > footer")!;
+    return { artifactHeight: artifact.clientHeight, artifactScrollHeight: artifact.scrollHeight, footerBottom: footer.getBoundingClientRect().bottom, viewportHeight: window.innerHeight };
+  });
+  expect(approvalLayout.artifactHeight).toBeGreaterThanOrEqual(350);
+  expect(approvalLayout.artifactScrollHeight).toBeGreaterThan(approvalLayout.artifactHeight);
+  expect(approvalLayout.viewportHeight - approvalLayout.footerBottom).toBeGreaterThanOrEqual(16);
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
   await expect(workflow).toContainText("Plan approval");
