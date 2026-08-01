@@ -14,7 +14,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { isTerminalWorkflowPhase, workflowNeedsApproval, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
+import { isTerminalWorkflowPhase, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, mutateEngineeringWorkflow, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
@@ -1907,7 +1907,7 @@ export function App() {
 
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
-        {selectedSession && !sessionIsLoading ? <Tabs.Root className={`session-view${activeView === "agent" && selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase) ? " workflow-approval-view" : ""}`} value={activeView} onValueChange={(value) => {
+        {selectedSession && !sessionIsLoading ? <Tabs.Root className={`session-view${activeView === "agent" && selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-view" : ""}`} value={activeView} onValueChange={(value) => {
           const next = value as "agent" | "changes" | "details";
           setActiveView(next);
           if (next === "changes") void requestReview(selectedSession);
@@ -2044,7 +2044,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase) ? " workflow-approval-mode" : ""}`}>
+          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : ""}`}>
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -2061,7 +2061,7 @@ export function App() {
               onRevise={openWorkflowRevision}
               onReviewChanges={() => setActiveView("changes")}
             />}
-            {!(selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase)) && <>
+            {!(selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase)) && <>
             <div className="composer" ref={composerRef}>
               <span className="sr-only" id="composer-picker-status" aria-live="polite">
                 {slashCommandMenu?.loading
@@ -2470,6 +2470,21 @@ export function App() {
 
 const WORKFLOW_STAGES = ["DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
+function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
+  return phase !== "defining" && !isTerminalWorkflowPhase(phase);
+}
+
+function workflowActivityLabel(phase: EngineeringWorkflow["phase"]): string {
+  switch (phase) {
+    case "planning": return "Pi is preparing the one-task plan";
+    case "building": return "Pi is implementing the approved tracer";
+    case "verifying": return "Pi is verifying the implementation";
+    case "reviewing": return "Pi is reviewing the verified changes";
+    case "repairing": return "Pi is repairing the blocking findings";
+    default: return "Pi owns the current phase";
+  }
+}
+
 function workflowStageIndex(workflow: EngineeringWorkflow): number {
   const phase = workflow.phase === "blocked" && workflow.blockedFromPhase ? workflow.blockedFromPhase : workflow.phase;
   if (phase === "defining" || phase === "awaitingSpecApproval") return 0;
@@ -2493,7 +2508,15 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onCancel, onRe
   const activeStage = workflowStageIndex(workflow);
   const approval = workflow.phase === "awaitingSpecApproval" || workflow.phase === "awaitingPlanApproval";
   const terminal = isTerminalWorkflowPhase(workflow.phase);
-  const artifactLabel = workflow.phase === "awaitingSpecApproval" ? "SPECIFICATION" : workflow.phase === "awaitingPlanApproval" ? "ONE-TASK PLAN" : "LATEST CHECKPOINT";
+  const artifactLabel = workflow.phase === "awaitingSpecApproval"
+    ? "SPECIFICATION"
+    : workflow.phase === "awaitingPlanApproval"
+      ? "ONE-TASK PLAN"
+      : workflow.checkpoint?.stage === "define"
+        ? "APPROVED SPECIFICATION"
+        : workflow.checkpoint?.stage === "plan"
+          ? "APPROVED ONE-TASK PLAN"
+          : "LATEST CHECKPOINT";
 
   return <section className={`engineering-workflow ${workflow.phase}`} aria-label="Engineering workflow" aria-live="polite">
     <header>
@@ -2506,7 +2529,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onCancel, onRe
     <div className="workflow-copy">
       <p>{workflow.checkpoint?.summary ?? workflow.objective}</p>
       {workflow.error && <strong role="alert">{workflow.error}</strong>}
-      {workflow.checkpoint?.artifact && <details><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+      {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
     </div>
     <footer>
       {approval && <>
@@ -2515,7 +2538,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onCancel, onRe
       </>}
       {workflow.phase === "blocked" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onResume}><ArrowRight aria-hidden="true" />RESUME PHASE</button>}
       {workflow.phase === "readyToShip" && <button className="workflow-approve" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>}
-      {!terminal && !approval && workflow.phase !== "blocked" && <span><i className="workflow-pulse" />Pi owns the current phase</span>}
+      {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
   </section>;

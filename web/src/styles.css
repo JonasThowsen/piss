@@ -230,12 +230,12 @@ button { color: inherit; }
 
 .workspace { position: relative; grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 .session-view { width: 100%; height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; overflow: hidden; }
-.session-view.workflow-approval-view { grid-template-rows: 54px 0 minmax(0, 1fr); }
-.workflow-approval-view .control-deck { min-height: 0; height: 100%; overflow: hidden; }
-.workflow-approval-view .engineering-workflow:has(details[open]) { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.workflow-approval-view .workflow-copy:has(details[open]) { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.workflow-approval-view .workflow-copy details[open] { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.workflow-approval-view .workflow-artifact { min-height: 0; height: 100%; max-height: none; }
+.session-view.workflow-focus-view { grid-template-rows: 54px 0 minmax(0, 1fr); }
+.workflow-focus-view .control-deck { min-height: 0; height: 100%; overflow: hidden; }
+.workflow-focus-view .engineering-workflow:has(details[open]) { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.workflow-focus-view .workflow-copy:has(details[open]) { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-focus-view .workflow-copy details[open] { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-focus-view .workflow-artifact { min-height: 0; height: 100%; max-height: none; }
 .capability-tabs {
   display: flex;
   align-items: center;
@@ -543,12 +543,12 @@ button { color: inherit; }
 .workflow-copy summary svg:last-child { margin-left: auto; transition: transform .15s ease; }
 .workflow-copy details[open] summary svg:last-child { transform: rotate(90deg); }
 .workflow-artifact { max-height: min(420px, 45vh); overflow: auto; padding: 8px 10px; border-top: 1px solid rgba(49, 92, 70, .12); color: var(--text); font-size: 10px; line-height: 1.5; }
-.workflow-approval-mode .workflow-artifact { max-height: min(620px, 60vh); }
+.workflow-focus-mode .workflow-artifact { max-height: min(620px, 60vh); }
 .workflow-artifact > :first-child { margin-top: 0; }
 .workflow-artifact > :last-child { margin-bottom: 0; }
 .engineering-workflow > footer { min-height: 39px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 5px 8px; border-top: 1px solid rgba(49, 92, 70, .12); background: rgba(255, 255, 255, .56); }
 .engineering-workflow > footer > span { display: flex; align-items: center; gap: 7px; margin-right: auto; color: var(--muted); font-size: 7px; font-weight: 700; letter-spacing: .04em; }
-.workflow-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; }
+.workflow-activity svg { width: 12px; height: 12px; color: var(--accent); }
 .engineering-workflow footer button { min-height: 29px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: white; color: var(--muted); font-size: 7px; font-weight: 800; letter-spacing: .05em; cursor: pointer; }
 .engineering-workflow footer button svg { width: 12px; height: 12px; }
 .engineering-workflow footer button:disabled { cursor: wait; opacity: .45; }
@@ -937,7 +937,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .rail-label { height: 56px; padding-top: 10px; }
   .workspace { height: 100%; }
   .session-view { grid-template-rows: 44px minmax(0, 1fr) auto; }
-  .session-view.workflow-approval-view { grid-template-rows: 44px 0 minmax(0, 1fr); }
+  .session-view.workflow-focus-view { grid-template-rows: 44px 0 minmax(0, 1fr); }
   .capability-tabs { padding: 3px 8px; }
   .capability-tabs button { height: 38px; padding: 0 11px; font-size: 11px; }
   .capability-tabs button em { min-width: 17px; height: 17px; padding: 0 4px; }
@@ -986,7 +986,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .review-comment footer button { min-height: 42px; padding-inline: 11px; }
   .jump-bottom { right: 10px; bottom: 10px; width: 42px; height: 42px; }
   .control-deck { padding: 6px 7px max(7px, env(safe-area-inset-bottom)); }
-  .control-deck.workflow-approval-mode { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+  .control-deck.workflow-focus-mode { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .engineering-workflow { margin-bottom: 6px; border-radius: 8px; }
   .engineering-workflow > header { min-height: 40px; padding: 5px 8px; }
   .workflow-identity > i { width: 27px; height: 27px; }
@@ -995,8 +995,8 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .workflow-copy { padding: 6px 9px 7px; }
   .workflow-copy > p { max-height: 40px; overflow: hidden; font-size: 8px; }
   .workflow-artifact { max-height: min(380px, 42dvh); font-size: 11px; }
-  .workflow-approval-mode .workflow-artifact { max-height: min(540px, 58dvh); }
-  .workflow-approval-view .workflow-artifact { max-height: none; }
+  .workflow-focus-mode .workflow-artifact { max-height: min(540px, 58dvh); }
+  .workflow-focus-view .workflow-artifact { max-height: none; }
   .engineering-workflow > footer { min-height: 42px; padding: 5px 6px; }
   .engineering-workflow footer button { min-height: 34px; padding-inline: 8px; }
   .engineering-workflow > footer > span { font-size: 6px; }

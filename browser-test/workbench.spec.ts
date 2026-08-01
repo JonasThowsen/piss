@@ -335,7 +335,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           error: null,
         };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingSpecApproval") {
-        workflow = { ...workflow, phase: "awaitingPlanApproval", plan: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", checkpoint: { stage: "plan", outcome: "ready", summary: "One-task plan is ready for approval", artifact: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp };
+        workflow = { ...workflow, phase: "planning", updatedAt: timestamp };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingPlanApproval") {
         workflow = { ...workflow, phase: "readyToShip", checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
       } else if (workflow && body?.action === "cancel") {
@@ -424,6 +424,19 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       const index = sessions.findIndex((session) => session.name === name);
       if (index >= 0) sessions[index] = { ...sessions[index]!, status, lastActivityAt: new Date().toISOString() };
     },
+    setWorkflowPhase(phase: NonNullable<TestSession["workflow"]>["phase"]) {
+      if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
+      const timestamp = new Date().toISOString();
+      const workflow = sessions.at(-1)!.workflow!;
+      sessions[sessions.length - 1] = {
+        ...sessions.at(-1)!,
+        status: "finished",
+        workflow: phase === "awaitingPlanApproval"
+          ? { ...workflow, phase, plan: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", checkpoint: { stage: "plan", outcome: "ready", summary: "One-task plan is ready for approval", artifact: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp }
+          : { ...workflow, phase, updatedAt: timestamp },
+        lastActivityAt: timestamp,
+      };
+    },
     setInteractiveRequests(requests: TestSession["interactiveRequests"]) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status: requests.length > 0 ? "blocked" : "working", interactiveRequests: requests, lastActivityAt: new Date().toISOString() };
     },
@@ -508,7 +521,7 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
 
 test("mobile composer starts and approves a guided engineering workflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await installApi(page);
+  const api = await installApi(page);
   await page.goto("/");
   await page.evaluate(async () => {
     await fetch("/api/sessions", {
@@ -551,6 +564,15 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   expect(approvalLayout.viewportHeight - approvalLayout.footerBottom).toBeGreaterThanOrEqual(16);
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
+  await expect(workflow).toContainText("Planning");
+  await expect(workflow).toContainText("Pi is preparing the one-task plan");
+  await expect(workflow.locator("details")).not.toHaveAttribute("open");
+  await expect(page.getByLabel("Message Pi")).toHaveCount(0);
+  const planningLayout = await workflow.evaluate((element) => ({ footerBottom: element.querySelector<HTMLElement>(":scope > footer")!.getBoundingClientRect().bottom, viewportHeight: window.innerHeight }));
+  expect(planningLayout.viewportHeight - planningLayout.footerBottom).toBeGreaterThanOrEqual(16);
+
+  api.setWorkflowPhase("awaitingPlanApproval");
+  await page.reload();
   await expect(workflow).toContainText("Plan approval");
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE PLAN" }).click();
