@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, readdir, rm, type FileHandle } from "node:fs/promises";
+import { link, mkdir, open, readdir, rm, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionArtifact } from "../../shared/domain.ts";
 
@@ -11,6 +11,7 @@ export const MAX_SESSION_ARTIFACT_BYTES = 250 * 1024 * 1024;
 export const MAX_SESSION_ARTIFACTS = 100;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const ARTIFACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TEMP_ARTIFACT = /^\.piss-artifact-[0-9a-f-]{36}-[0-9a-f-]{36}\.tmp$/;
 const sessionOperationTails = new Map<string, Promise<void>>();
 
 export interface BrowserScreenshotCandidate {
@@ -59,6 +60,12 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { await handle.chmod(0o700); }
+  finally { await handle.close(); }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { await handle.sync(); }
   finally { await handle.close(); }
 }
 
@@ -117,6 +124,10 @@ async function sessionUsage(directory: string): Promise<{ count: number; bytes: 
   let count = 0;
   let bytes = 0;
   for (const entry of entries) {
+    if (TEMP_ARTIFACT.test(entry)) {
+      await rm(join(directory, entry), { force: true });
+      continue;
+    }
     if (!ARTIFACT_ID.test(entry.replace(/\.png$/, "")) || !entry.endsWith(".png")) continue;
     const handle = await open(join(directory, entry), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
@@ -150,17 +161,35 @@ async function adoptBrowserScreenshotUnlocked(
   }
 
   const destination = artifactPath(stateDir, sessionId, candidate.artifact.id);
-  const output = await open(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  const temporary = join(destinationDirectory, `.piss-artifact-${candidate.artifact.id}-${randomUUID()}.tmp`);
+  const output = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
-    await output.writeFile(bytes);
-    await output.sync();
+    try {
+      await output.writeFile(bytes);
+      await output.sync();
+    } finally { await output.close(); }
   } catch (cause) {
-    await output.close().catch(() => undefined);
-    await rm(destination, { force: true }).catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
     throw cause;
   }
-  await output.close();
-  await rm(join(stagingDirectory, candidate.stagingName), { force: true });
+
+  let published = false;
+  try {
+    // Linking a complete inode publishes without replacing an existing opaque ID.
+    await link(temporary, destination);
+    published = true;
+    await syncDirectory(destinationDirectory);
+    await rm(temporary);
+    await syncDirectory(destinationDirectory);
+  } catch (cause) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    if (published) {
+      await rm(destination, { force: true }).catch(() => undefined);
+      await syncDirectory(destinationDirectory).catch(() => undefined);
+    }
+    throw cause;
+  }
+  await rm(join(stagingDirectory, candidate.stagingName), { force: true }).catch(() => undefined);
   return candidate.artifact;
 }
 

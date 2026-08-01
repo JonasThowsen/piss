@@ -37,6 +37,25 @@ test("accepts exact loopback URLs and rejects navigation escapes", () => {
   }
 });
 
+test("shutdown closes a browser assigned by an already queued launch", async () => {
+  const manager = new PissBrowserManager("", "");
+  let release!: () => void;
+  let closed = false;
+  const queuedLaunch = manager.run(async () => {
+    await new Promise<void>((resolve) => { release = resolve; });
+    (manager as unknown as { browser: { close: () => Promise<void> } }).browser = {
+      close: async () => { closed = true; },
+    };
+  });
+  const shutdown = manager.shutdown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed, false);
+  release();
+  await Promise.all([queuedLaunch, shutdown]);
+  assert.equal(closed, true);
+  assert.equal((manager as unknown as { browser?: unknown }).browser, undefined);
+});
+
 const networkTest = process.env.PISS_SKIP_NETWORK_TESTS === "1" ? test.skip : test;
 
 networkTest("drives a real local UI and creates model-visible PNG evidence", async () => {

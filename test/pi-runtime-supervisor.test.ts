@@ -138,6 +138,18 @@ process.stdin.on("data", (chunk) => {
           setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
           return;
         }
+        if (command.message === "Crash after browser artifacts") {
+          const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+          for (let index = 0; index < 24; index += 1) {
+            const suffix = index.toString(16).padStart(12, "0");
+            const artifactId = "2c240f9a-6091-49a9-8cfa-" + suffix;
+            writeFileSync(process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + artifactId + ".png", png);
+            const artifact = { id: artifactId, kind: "browser-screenshot", mediaType: "image/png", byteCount: png.length, width: 1, height: 1, pageUrl: "http://127.0.0.1:4000/", pageTitle: "Crash fixture", createdAt: new Date().toISOString() };
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "crash-browser-" + index, toolName: "piss_browser_screenshot", result: { content: [{ type: "text", text: "captured" }], details: { pissBrowserArtifact: { version: 1, stagingName: artifactId + ".png", artifact } } }, isError: false }));
+          }
+          setTimeout(() => process.exit(17), 5);
+          return;
+        }
         if (command.message === "Malformed browser artifact") {
           console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "malformed-browser", toolName: "piss_browser_screenshot", result: { content: [{ type: "text", text: "captured" }], details: { pissBrowserArtifact: { version: 99, stagingName: "not-an-artifact.png", artifact: {} } } }, isError: false }));
           console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Malformed capture handled" }], stopReason: "stop" } }));
@@ -1001,6 +1013,63 @@ test("interrupting creation terminates the child and preserves a visible failure
     else process.env.FAKE_PI_ARGS = previousArgsFile;
     if (previousHang === undefined) delete process.env.FAKE_PI_HANG;
     else process.env.FAKE_PI_HANG = previousHang;
+    if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
+    else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime resume waits for screenshot handoffs from the crashed runtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piss-artifact-resume-"));
+  const argsFile = join(directory, "args.jsonl");
+  const previousArgsFile = process.env.FAKE_PI_ARGS;
+  const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
+  process.env.FAKE_PI_ARGS = argsFile;
+  process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-artifact-resume.jsonl");
+
+  try {
+    const piCommand = await fakePi(directory);
+    const workspaceId = decodeWorkspaceId("piss-artifact-deadbeef");
+    const workspace: Workspace = {
+      id: workspaceId,
+      name: "Artifact resume test",
+      root: directory,
+      trustProjectResources: false,
+      createdAt: new Date().toISOString(),
+      sessionCount: 0,
+      activeSessionCount: 0,
+    };
+    const config: AppConfigShape = {
+      host: "127.0.0.1",
+      port: 4318,
+      stateDir: directory,
+      publicDir: directory,
+      piCommand,
+      piSessionRoots: [directory],
+      browserAuth: { devBypass: true, allowedUsers: new Set(), devAllowedOrigins: new Set() },
+      workspaceSeeds: [],
+      workspaceDiscoveryRoots: [],
+    };
+
+    const result = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      const created = yield* supervisor.create({ workspaceId, name: "Crash capture" });
+      yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Crash after browser artifacts");
+      let crashed = yield* supervisor.get(created.id);
+      for (let attempt = 0; attempt < 200 && crashed.status !== "crashed"; attempt += 1) {
+        yield* Effect.sleep("5 millis");
+        crashed = yield* supervisor.get(created.id);
+      }
+      assert.equal(crashed.status, "crashed");
+      const resumed = yield* supervisor.resume({ sessionId: crashed.id, runtimeId: crashed.runtimeId });
+      return yield* supervisor.get(resumed.id);
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    assert.equal(result.events.filter((event) => event.type === "browser_artifact_created").length, 24);
+    assert.equal(result.events.some((event) => event.type === "browser_artifact_failed"), false);
+  } finally {
+    if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
+    else process.env.FAKE_PI_ARGS = previousArgsFile;
     if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
     await rm(directory, { recursive: true, force: true });

@@ -171,4 +171,8 @@ export class PissBrowserManager {
     this.browser = undefined;
     if (browser) await browser.close().catch(() => undefined);
   }
+
+  shutdown(): Promise<void> {
+    return this.run(() => this.close());
+  }
 }

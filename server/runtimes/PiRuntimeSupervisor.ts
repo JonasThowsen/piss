@@ -1031,8 +1031,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       void Effect.runPromise(notifications.notify(cloneSession(session.snapshot), status)).catch(() => undefined);
     };
 
-    const appendEvent = (session: MutableOwnedSession, type: string, data: unknown): void => {
-      if (session.quarantined) return;
+    const appendEvent = (session: MutableOwnedSession, type: string, data: unknown, trustedInternal = false): void => {
+      if (session.quarantined && !trustedInternal) return;
       if (type === "agent_settled") session.activeRunImageCharacters = 0;
       const timestamp = now();
       const sequence = ++session.sequence;
@@ -1087,18 +1087,18 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       const next = previous.then(async () => {
         if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
         if (handoff._tag === "invalid") {
-          appendEvent(session, "browser_artifact_failed", { message: "Browser screenshot could not be published: artifact descriptor is invalid" });
+          appendEvent(session, "browser_artifact_failed", { message: "Browser screenshot could not be published: artifact descriptor is invalid" }, true);
           return;
         }
         try {
           const artifact: SessionArtifact = await adoptBrowserScreenshot(config.stateDir, sessionId, runtimeId, handoff.candidate);
           if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
-          appendEvent(session, "browser_artifact_created", { artifact });
+          appendEvent(session, "browser_artifact_created", { artifact }, true);
         } catch (cause) {
           if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
           const raw = cause instanceof Error ? cause.message : "artifact validation failed";
           const message = raw.includes("/") ? "Browser screenshot artifact validation failed" : `Browser screenshot could not be published: ${raw}`;
-          appendEvent(session, "browser_artifact_failed", { message });
+          appendEvent(session, "browser_artifact_failed", { message }, true);
         }
       });
       const settled = next.catch((cause) => console.error(`Browser screenshot handoff failed for session ${sessionId}`, cause));
@@ -1795,6 +1795,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
       const branch = yield* Effect.promise(() => detectBranch(rootHandle.fd));
       const runtimeId = randomUUID();
+      yield* Effect.promise(() => artifactAdoptionTails.get(session.snapshot.id) ?? Promise.resolve());
       const artifactStagingDirectory = yield* Effect.tryPromise({
         try: () => prepareRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId),
         catch: (cause) => new SessionStorageError({ message: "Could not prepare browser artifact staging", cause }),

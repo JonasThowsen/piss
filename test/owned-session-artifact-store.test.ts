@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { statSync, watch } from "node:fs";
+import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -70,6 +71,42 @@ test("serializes concurrent adoption at the bounded per-session screenshot quota
     const rejected = results.filter((result) => result.status === "rejected");
     assert.equal(rejected.length, 1);
     assert.match(String(rejected[0]?.reason), /quota/);
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test("publishes only a complete final artifact and leaves no temporary files", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "piss-artifact-atomic-"));
+  const sessionId = "session-a";
+  const id = randomUUID();
+  try {
+    const staging = await prepareRuntimeArtifactStaging(stateDir, sessionId, "runtime-a");
+    const bytes = Buffer.alloc(10 * 1024 * 1024);
+    png().copy(bytes);
+    await writeFile(join(staging, `${id}.png`), bytes);
+    const directory = join(stateDir, "browser-artifacts", createHash("sha256").update(sessionId).digest("hex"));
+    await mkdir(directory, { recursive: true });
+    const destinationName = `${id}.png`;
+    const observedSize = new Promise<number>((resolve, reject) => {
+      const watcher = watch(directory, (event, filename) => {
+        if (event !== "rename" || filename !== destinationName) return;
+        try {
+          const size = statSync(join(directory, destinationName)).size;
+          watcher.close();
+          resolve(size);
+        } catch (cause) {
+          watcher.close();
+          reject(cause);
+        }
+      });
+    });
+    await adoptBrowserScreenshot(stateDir, sessionId, "runtime-a", candidate(id, bytes.length));
+    assert.equal(await observedSize, bytes.length);
+    assert.deepEqual(await readdir(directory), [destinationName]);
+
+    await writeFile(join(staging, destinationName), bytes);
+    await assert.rejects(adoptBrowserScreenshot(stateDir, sessionId, "runtime-a", candidate(id, bytes.length)), /exist/i);
+    assert.deepEqual(await readdir(directory), [destinationName]);
+    assert.deepEqual(await loadOwnedSessionArtifact(stateDir, sessionId, id), bytes);
   } finally { await rm(stateDir, { recursive: true, force: true }); }
 });
 

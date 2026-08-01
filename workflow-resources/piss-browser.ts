@@ -80,5 +80,5 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_shutdown", async () => { await manager.close(); });
+  pi.on("session_shutdown", async () => { await manager.shutdown(); });
 }
