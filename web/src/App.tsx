@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ClipboardCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, ListChecks, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ClipboardCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Workflow, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -1947,7 +1947,7 @@ export function App() {
                 const element = event.currentTarget;
                 const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
                 const nextAtBottom = effectiveTimelineWindowEnd >= timeline.length && distanceFromBottom < 4;
-                const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current - 1;
+                const draggedUp = timelinePointerScrollingRef.current && element.scrollTop < timelineScrollTopRef.current;
                 timelineScrollTopRef.current = element.scrollTop;
                 if (draggedUp) followingRef.current = false;
                 else if (nextAtBottom) followingRef.current = true;
@@ -2523,12 +2523,11 @@ function ComposerActionMenu({ disabled, onStartWorkflow }: {
     <BaseMenu.Trigger className="composer-action-trigger" ref={trigger} disabled={disabled} aria-label="Open workflow actions" title="Workflow actions"><Workflow aria-hidden="true" /></BaseMenu.Trigger>
     <BaseMenu.Portal>
       <BaseMenu.Positioner className="composer-action-positioner" side="top" align="start" sideOffset={8} collisionPadding={8} positionMethod="fixed">
-        <BaseMenu.Popup className="composer-action-menu" aria-label="Workflow actions" aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
-          <header><span>ACTIONS</span><b>Start guided work</b></header>
+        <BaseMenu.Popup className="composer-action-menu" aria-label="PISS workflows" aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
+          <header><b>PISS workflows</b></header>
           <BaseMenu.Item nativeButton render={<button type="button" />} onClick={() => { if (trigger.current) onStartWorkflow(trigger.current); }}>
-            <i aria-hidden="true"><Workflow /></i><span><b>ENGINEERING WORKFLOW</b><small>Define → Plan → Build → Verify → Review</small></span><ArrowRight aria-hidden="true" />
+            <i aria-hidden="true"><Workflow /></i><span><b>ENGINEERING LOOP</b><small>Define together · build, verify, repair</small></span><ArrowRight aria-hidden="true" />
           </BaseMenu.Item>
-          <div className="composer-action-foot"><ListChecks aria-hidden="true" /> One approved vertical tracer · bounded repair loop</div>
         </BaseMenu.Popup>
       </BaseMenu.Positioner>
     </BaseMenu.Portal>

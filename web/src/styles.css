@@ -608,22 +608,19 @@ button.composer-config-state { width: 100%; cursor: pointer; }
 .composer-action-trigger svg { width: 18px; height: 18px; stroke-width: 1.7; }
 .composer-action-trigger:hover:not(:disabled), .composer-action-trigger:focus-visible, .composer-action-trigger[data-popup-open] { border-color: #9eb6a8; outline: 0; background: var(--accent-soft); color: var(--accent); }
 .composer-action-trigger:disabled { opacity: .42; cursor: not-allowed; }
-.composer-action-positioner { z-index: 95; width: min(330px, calc(100vw - 16px)); outline: 0; }
-.composer-action-menu { overflow: hidden; border: 1px solid #aebdb2; border-radius: 9px; outline: 0; background: var(--panel); box-shadow: 0 18px 48px rgba(32, 35, 31, .22); transform-origin: var(--transform-origin); transition: opacity .12s ease, transform .12s ease; }
+.composer-action-positioner { z-index: 95; width: min(300px, calc(100vw - 16px)); outline: 0; }
+.composer-action-menu { overflow: hidden; border: 1px solid #aebdb2; border-radius: 11px; outline: 0; background: var(--panel); box-shadow: 0 18px 48px rgba(32, 35, 31, .22); transform-origin: var(--transform-origin); transition: opacity .12s ease, transform .12s ease; }
 .composer-action-menu[data-starting-style], .composer-action-menu[data-ending-style] { opacity: 0; transform: translateY(4px) scale(.98); }
-.composer-action-menu > header { display: grid; gap: 2px; padding: 11px 12px 9px; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, #f8fbf7, #edf4ef); }
-.composer-action-menu > header span { color: var(--accent); font-size: 6px; font-weight: 800; letter-spacing: .14em; }
-.composer-action-menu > header b { font-size: 13px; }
-.composer-action-menu > button { width: 100%; min-height: 62px; display: grid; grid-template-columns: 35px minmax(0, 1fr) 16px; align-items: center; gap: 9px; padding: 8px 11px; border: 0; outline: 0; background: white; color: var(--text); text-align: left; cursor: pointer; }
+.composer-action-menu > header { min-height: 38px; display: flex; align-items: center; padding: 7px 11px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.composer-action-menu > header b { font-size: 10px; letter-spacing: .02em; }
+.composer-action-menu > button { width: 100%; min-height: 56px; display: grid; grid-template-columns: 28px minmax(0, 1fr) 14px; align-items: center; gap: 8px; padding: 7px 10px; border: 0; outline: 0; background: white; color: var(--text); text-align: left; cursor: pointer; }
 .composer-action-menu > button:hover, .composer-action-menu > button[data-highlighted] { background: var(--accent-soft); }
-.composer-action-menu > button > i { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #b9cabe; border-radius: 8px; background: white; color: var(--accent); }
-.composer-action-menu > button > i svg { width: 17px; height: 17px; }
-.composer-action-menu > button > span { display: grid; gap: 3px; }
+.composer-action-menu > button > i { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #b9cabe; border-radius: 7px; background: white; color: var(--accent); }
+.composer-action-menu > button > i svg { width: 15px; height: 15px; }
+.composer-action-menu > button > span { display: grid; gap: 2px; }
 .composer-action-menu > button b { color: var(--accent); font-size: 8px; letter-spacing: .06em; }
-.composer-action-menu > button small { color: var(--muted); font-size: 9px; }
-.composer-action-menu > button > svg { width: 14px; height: 14px; color: var(--muted); }
-.composer-action-foot { min-height: 31px; display: flex; align-items: center; gap: 6px; padding: 6px 11px; border-top: 1px solid var(--line); background: var(--surface); color: var(--faint); font-size: 7px; }
-.composer-action-foot svg { width: 12px; height: 12px; }
+.composer-action-menu > button small { color: var(--muted); font-size: 8px; line-height: 1.3; }
+.composer-action-menu > button > svg { width: 13px; height: 13px; color: var(--muted); }
 
 .attachment-trigger { position: relative; overflow: hidden; }
 .attachment-trigger > span { width: 100%; height: 100%; display: grid; place-items: center; font: 500 15px/1 system-ui, sans-serif; }

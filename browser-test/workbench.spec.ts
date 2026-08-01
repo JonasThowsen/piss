@@ -519,7 +519,7 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await page.reload();
 
   await page.getByRole("button", { name: "Open workflow actions" }).click();
-  await page.getByRole("menuitem", { name: /engineering workflow/i }).click();
+  await page.getByRole("menuitem", { name: /engineering loop/i }).click();
   const dialog = page.getByRole("dialog", { name: "Define, build, prove" });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Objective").fill("Add a durable guided workflow with visible approval gates");
