@@ -17,6 +17,7 @@ export interface AppConfigShape {
   readonly piCommand: string;
   readonly piSessionRoots?: ReadonlyArray<string>;
   readonly workflowResourceDir?: string;
+  readonly browserExecutablePath?: string;
   readonly browserAuth: BrowserAuthConfig;
   readonly workspaceSeeds: ReadonlyArray<WorkspaceSeed>;
   readonly workspaceDiscoveryRoots: ReadonlyArray<string>;
@@ -81,6 +82,8 @@ function loadFromEnvironment(): AppConfigShape {
       : [join(homedir(), ".pi", "agent", "sessions")],
     workflowResourceDir: process.env.PISS_WORKFLOW_RESOURCE_DIR
       ?? fileURLToPath(new URL("../workflow-resources", import.meta.url)),
+    browserExecutablePath: process.env.PISS_BROWSER_EXECUTABLE_PATH
+      ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
     browserAuth: {
       devBypass,
       allowedUsers,

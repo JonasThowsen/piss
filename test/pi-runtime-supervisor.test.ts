@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
@@ -37,6 +37,9 @@ let currentModel = models[0];
 let currentThinking = "medium";
 let buffer = "";
 let compactAttempts = 0;
+let workflowInterventionMode = false;
+let workflowFailureMode = false;
+let heldBuildArgs;
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
@@ -99,10 +102,24 @@ process.stdin.on("data", (chunk) => {
           const workflowId = /Workflow ID: ([^\\n]+)/.exec(command.message)?.[1];
           const skill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
           const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
-          const outcome = stage === "define" || stage === "plan" ? "ready" : "passed";
+          if (stage === "define" && command.message.includes("Exercise workflow user interventions")) workflowInterventionMode = true;
+          if (stage === "define" && command.message.includes("Exercise failed workflow continuation")) workflowFailureMode = true;
+          const outcome = stage === "define" || stage === "plan" ? "ready" : workflowFailureMode && stage === "review" ? "failed" : "passed";
           const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# One-task plan" } : {}) };
-          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
-          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+          const emitCheckpoint = () => {
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
+            setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+          };
+          if (workflowInterventionMode && stage === "build" && !heldBuildArgs) {
+            heldBuildArgs = args;
+            console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "Waiting for build guidance" } }));
+            return;
+          }
+          if (workflowInterventionMode && stage === "verify") {
+            setTimeout(emitCheckpoint, 250);
+            return;
+          }
+          emitCheckpoint();
           return;
         }
         if (command.message.startsWith("Continue the task that was interrupted by the PISS control-plane restart.") || command.message.startsWith("The previous run ended after tool execution without a final response.")) {
@@ -118,6 +135,12 @@ process.stdin.on("data", (chunk) => {
           console.log(JSON.stringify({ type: "compaction_start", reason: "overflow" }));
           console.log(JSON.stringify({ type: "compaction_end", reason: "overflow", result: { tokensBefore: 200000, estimatedTokensAfter: 24000 }, aborted: false, willRetry: true }));
           console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Recovered" }], stopReason: "stop" } }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
+        if (command.message === "Malformed browser artifact") {
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "malformed-browser", toolName: "piss_browser_screenshot", result: { content: [{ type: "text", text: "captured" }], details: { pissBrowserArtifact: { version: 99, stagingName: "not-an-artifact.png", artifact: {} } } }, isError: false }));
+          console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Malformed capture handled" }], stopReason: "stop" } }));
           setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
           return;
         }
@@ -152,8 +175,20 @@ process.stdin.on("data", (chunk) => {
     if (command.type === "extension_ui_response") {
       console.log(JSON.stringify({ type: "agent_settled" }));
     }
-    if (command.type === "steer") console.log(JSON.stringify({ id: command.id, type: "response", command: "steer", success: true }));
-    if (command.type === "follow_up") console.log(JSON.stringify({ id: command.id, type: "response", command: "follow_up", success: true }));
+    if (command.type === "steer") {
+      console.log(JSON.stringify({ id: command.id, type: "response", command: "steer", success: true }));
+      if (command.message.startsWith("[Workflow user intervention")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+      if (heldBuildArgs) {
+        const args = heldBuildArgs;
+        heldBuildArgs = undefined;
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-build-guided", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
+        setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+      }
+    }
+    if (command.type === "follow_up") {
+      console.log(JSON.stringify({ id: command.id, type: "response", command: "follow_up", success: true }));
+      if (command.message.startsWith("[Queued user follow-up")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+    }
     if (command.type === "abort") console.log(JSON.stringify({ id: command.id, type: "response", command: "abort", success: true }));
   }
 });
@@ -202,6 +237,23 @@ function runtimeLayer(config: AppConfigShape, workspace: Workspace) {
   );
   return PiRuntimeSupervisorLive.pipe(Layer.provideMerge(dependencies));
 }
+
+test("loads PISS browser resources without trusting project-local resources", () => {
+  const workspace = {
+    id: decodeWorkspaceId("piss-browser-deadbeef"),
+    name: "Browser test",
+    root: "/tmp/browser-test",
+    trustProjectResources: false,
+    createdAt: new Date().toISOString(),
+    sessionCount: 0,
+    activeSessionCount: 0,
+  } satisfies Workspace;
+  const args = processArguments(workspace, "Browser session", "/opt/piss/workflow-resources");
+  assert.ok(args.includes("/opt/piss/workflow-resources/piss-browser.ts"));
+  assert.ok(args.includes("/opt/piss/workflow-resources/skills/piss-ui-verification"));
+  assert.ok(args.includes("--no-approve"));
+  assert.ok(!args.includes("--approve"));
+});
 
 test("multi-megabyte tool output is detached from live event projections", () => {
   const fullText = "🧪 large output\n".repeat(200_000);
@@ -475,6 +527,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "/extension-notify");
           const notified = yield* supervisor.get(created.id);
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Malformed browser artifact");
+          let malformedArtifact = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && !malformedArtifact.events.some((event) => event.type === "browser_artifact_failed"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            malformedArtifact = yield* supervisor.get(created.id);
+          }
           const hangingCommand = yield* supervisor
             .prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "/extension-hang")
             .pipe(Effect.forkChild({ startImmediately: true }));
@@ -526,6 +584,93 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             { sessionId: created.id, runtimeId: created.runtimeId },
             { runtimeId: created.runtimeId, action: "accept" },
           );
+
+          const interventionSession = yield* supervisor.create({ workspaceId, name: "Workflow intervention" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
+            { runtimeId: interventionSession.runtimeId, action: "start", objective: "Exercise workflow user interventions", maxRepairAttempts: 2 },
+          );
+          let interventionSpec = yield* supervisor.get(interventionSession.id);
+          for (let attempt = 0; attempt < 100 && interventionSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            interventionSpec = yield* supervisor.get(interventionSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
+            { runtimeId: interventionSession.runtimeId, action: "approve" },
+          );
+          let interventionPlan = yield* supervisor.get(interventionSession.id);
+          for (let attempt = 0; attempt < 100 && interventionPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            interventionPlan = yield* supervisor.get(interventionSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
+            { runtimeId: interventionSession.runtimeId, action: "approve" },
+          );
+          let interventionBuild = yield* supervisor.get(interventionSession.id);
+          for (let attempt = 0; attempt < 100 && interventionBuild.workflow?.phase !== "building"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            interventionBuild = yield* supervisor.get(interventionSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
+            { runtimeId: interventionSession.runtimeId, action: "intervene", feedback: "Keep the implementation slice narrow" },
+          );
+          let interventionVerify = yield* supervisor.get(interventionSession.id);
+          for (let attempt = 0; attempt < 100 && interventionVerify.workflow?.phase !== "verifying"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            interventionVerify = yield* supervisor.get(interventionSession.id);
+          }
+          const queuedVerification = yield* supervisor.mutateWorkflow(
+            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
+            { runtimeId: interventionSession.runtimeId, action: "intervene", feedback: "Summarize deployment risk after review" },
+          );
+          let interventionReady = yield* supervisor.get(interventionSession.id);
+          for (let attempt = 0; attempt < 300 && (interventionReady.workflow?.phase !== "readyToShip" || interventionReady.workflow.queuedIntervention || interventionReady.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            interventionReady = yield* supervisor.get(interventionSession.id);
+          }
+          yield* supervisor.stop({ sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId });
+
+          const failedWorkflowSession = yield* supervisor.create({ workspaceId, name: "Failed workflow continuation" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
+            { runtimeId: failedWorkflowSession.runtimeId, action: "start", objective: "Exercise failed workflow continuation", maxRepairAttempts: 1 },
+          );
+          let failedWorkflowSpec = yield* supervisor.get(failedWorkflowSession.id);
+          for (let attempt = 0; attempt < 100 && failedWorkflowSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            failedWorkflowSpec = yield* supervisor.get(failedWorkflowSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
+            { runtimeId: failedWorkflowSession.runtimeId, action: "approve" },
+          );
+          let failedWorkflowPlan = yield* supervisor.get(failedWorkflowSession.id);
+          for (let attempt = 0; attempt < 100 && failedWorkflowPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            failedWorkflowPlan = yield* supervisor.get(failedWorkflowSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
+            { runtimeId: failedWorkflowSession.runtimeId, action: "approve" },
+          );
+          let firstFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
+          for (let attempt = 0; attempt < 300 && firstFailedWorkflow.workflow?.phase !== "failed"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            firstFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
+            { runtimeId: failedWorkflowSession.runtimeId, action: "continueRepairs", additionalRepairAttempts: 2 },
+          );
+          let continuedFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
+          for (let attempt = 0; attempt < 300 && (continuedFailedWorkflow.workflow?.phase !== "failed" || continuedFailedWorkflow.workflow.repairAttempts <= firstFailedWorkflow.workflow!.repairAttempts); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            continuedFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
+          }
+          yield* supervisor.stop({ sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId });
           const staleResult = yield* supervisor.abort({ sessionId: created.id, runtimeId: "stale-runtime" }).pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
@@ -619,7 +764,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -636,6 +781,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(JSON.stringify(result.recoveredFinalResponse.events), /Recovered missing final response/);
     assert.equal(result.notified.status, "finished", "handled extension commands do not strand the session as working");
     assert.match(JSON.stringify(result.notified.events), /MCP Server Status/);
+    assert.match(JSON.stringify(result.malformedArtifact.events), /browser_artifact_failed/);
+    assert.match(JSON.stringify(result.malformedArtifact.events), /descriptor is invalid/);
     assert.equal(Exit.isFailure(result.hangingResult), true);
     assert.equal(result.afterHangingAbort.status, "finished", "aborting an unacknowledged extension command keeps the session usable");
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
@@ -663,6 +810,16 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.workflowReady.workflow?.phase, "readyToShip");
     assert.equal(result.workflowReady.status, "finished");
     assert.equal(result.workflowAccepted.workflow?.phase, "accepted");
+    assert.match(JSON.stringify(result.interventionReady.events), /Workflow user intervention — BUILD/);
+    assert.match(result.queuedVerification.workflow?.queuedIntervention ?? "", /Queued user follow-up after engineering loop — VERIFY/);
+    assert.equal(result.interventionReady.workflow?.queuedIntervention, undefined);
+    assert.match(JSON.stringify(result.interventionReady.events), /Queued user follow-up after engineering loop — VERIFY/);
+    assert.equal(result.firstFailedWorkflow.workflow?.phase, "failed");
+    assert.equal(result.firstFailedWorkflow.workflow?.repairAttempts, 2);
+    assert.equal(result.firstFailedWorkflow.workflow?.maxRepairAttempts, 1);
+    assert.equal(result.continuedFailedWorkflow.workflow?.phase, "failed");
+    assert.equal(result.continuedFailedWorkflow.workflow?.repairAttempts, 5);
+    assert.equal(result.continuedFailedWorkflow.workflow?.maxRepairAttempts, 4);
     assert.doesNotMatch(JSON.stringify({ models: result.models, events: result.configuredModel.events }), /super-secret|credential@example/);
     assert.equal(result.staleResult, "StaleRuntimeGenerationError");
     assert.equal(result.interactiveBlocked.status, "blocked");
@@ -698,7 +855,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
       assert.ok(args.includes("rpc"));
       assert.ok(args.includes("--approve"));
       assert.ok(args.includes("--extension"));
+      assert.ok(args.some((arg) => arg.endsWith("/piss-browser.ts")));
       assert.ok(args.includes("--skill"));
+      assert.ok(args.some((arg) => arg.endsWith("/skills/piss-ui-verification")));
     }
   } finally {
     if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;

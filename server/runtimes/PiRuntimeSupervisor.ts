@@ -10,6 +10,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
+import * as Schema from "effect/Schema";
+import { SessionArtifact as SessionArtifactSchema } from "../../shared/domain.ts";
 import type {
   AvailableModel,
   CreateOwnedSessionInput,
@@ -27,6 +29,7 @@ import type {
   OwnedSessionSummary,
   OwnedSessionTimelinePageResponse,
   PiSlashCommand,
+  SessionArtifact,
   SessionUsage,
   ThinkingLevel,
   Workspace,
@@ -62,6 +65,13 @@ import {
   removeOwnedSessionTimeline,
 } from "./OwnedSessionTimelineStore.ts";
 import { WorkspaceHasSessionsError, type WorkspaceManagedByConfigurationError, WorkspacePathError, type WorkspaceRecordNotFoundError, type WorkspaceStorageError } from "../workspaces/errors.ts";
+import {
+  adoptBrowserScreenshot,
+  prepareRuntimeArtifactStaging,
+  removeOwnedSessionArtifacts,
+  removeRuntimeArtifactStaging,
+  type BrowserScreenshotCandidate,
+} from "./OwnedSessionArtifactStore.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -548,6 +558,30 @@ function slashCommand(value: unknown): PiSlashCommand | undefined {
   };
 }
 
+const decodeSessionArtifact = Schema.decodeUnknownSync(SessionArtifactSchema);
+
+type BrowserScreenshotHandoff =
+  | { readonly _tag: "none" }
+  | { readonly _tag: "invalid" }
+  | { readonly _tag: "candidate"; readonly candidate: BrowserScreenshotCandidate };
+
+function browserScreenshotHandoffFromRpc(message: RpcMessage): BrowserScreenshotHandoff {
+  if (message.type !== "tool_execution_end" || message.toolName !== "piss_browser_screenshot" || message.isError === true) return { _tag: "none" };
+  const result = typeof message.result === "object" && message.result !== null && !Array.isArray(message.result)
+    ? message.result as Record<string, unknown>
+    : undefined;
+  const details = typeof result?.details === "object" && result.details !== null && !Array.isArray(result.details)
+    ? result.details as Record<string, unknown>
+    : undefined;
+  const raw = typeof details?.pissBrowserArtifact === "object" && details.pissBrowserArtifact !== null && !Array.isArray(details.pissBrowserArtifact)
+    ? details.pissBrowserArtifact as Record<string, unknown>
+    : undefined;
+  if (raw?.version !== 1 || typeof raw.stagingName !== "string") return { _tag: "invalid" };
+  try {
+    return { _tag: "candidate", candidate: { version: 1, stagingName: raw.stagingName, artifact: decodeSessionArtifact(raw.artifact) } };
+  } catch { return { _tag: "invalid" }; }
+}
+
 function workflowCheckpointFromRpc(
   message: RpcMessage,
   sequence: number,
@@ -614,10 +648,14 @@ async function detectBranch(workspaceFd: number): Promise<string | null> {
   }
 }
 
-function processArguments(workspace: Workspace, name: string, workflowResourceDir: string | undefined, sessionFile?: string): ReadonlyArray<string> {
+export function processArguments(workspace: Workspace, name: string, workflowResourceDir: string | undefined, sessionFile?: string): ReadonlyArray<string> {
   const workflowResources = workflowResourceDir ? [
     "--extension",
     join(workflowResourceDir, "piss-workflow.ts"),
+    "--extension",
+    join(workflowResourceDir, "piss-browser.ts"),
+    "--skill",
+    join(workflowResourceDir, "skills", "piss-ui-verification"),
     ...["define", "plan", "build", "verify", "review"].flatMap((phase) => [
       "--skill",
       join(workflowResourceDir, "skills", `piss-engineering-${phase}`),
@@ -632,6 +670,11 @@ function processArguments(workspace: Workspace, name: string, workflowResourceDi
     ...workflowResources,
     workspace.trustProjectResources ? "--approve" : "--no-approve",
   ];
+}
+
+function workflowInterventionMessage(phase: EngineeringWorkflowPhase, feedback: string, queued: boolean): string {
+  const label = queued ? "Queued user follow-up after engineering loop" : "Workflow user intervention";
+  return `[${label} — ${phase.toUpperCase()}]\n\n${feedback}`;
 }
 
 function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): string {
@@ -741,6 +784,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const storagePath = join(config.stateDir, "owned-sessions.json");
     const timelineDirectory = join(config.stateDir, "timelines");
     const timelinePersistenceTails = new Map<string, Promise<void>>();
+    const artifactAdoptionTails = new Map<string, Promise<void>>();
+    const removingSessionIds = new Set<string>();
     let persistenceTail = Promise.resolve();
     let continueWorkflowAfterSettle = (_session: MutableOwnedSession): void => undefined;
 
@@ -874,9 +919,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
 
     const removeTimeline = (sessionId: string): Effect.Effect<void, SessionStorageError> => Effect.tryPromise({
       try: async () => {
+        await artifactAdoptionTails.get(sessionId);
+        artifactAdoptionTails.delete(sessionId);
         await timelinePersistenceTails.get(sessionId);
         timelinePersistenceTails.delete(sessionId);
-        await removeOwnedSessionTimeline(timelineDirectory, sessionId);
+        await Promise.all([
+          removeOwnedSessionTimeline(timelineDirectory, sessionId),
+          removeOwnedSessionArtifacts(config.stateDir, sessionId),
+        ]);
       },
       catch: (cause) => new SessionStorageError({ message: `Could not remove timeline for session ${sessionId}`, cause }),
     });
@@ -969,7 +1019,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       });
     }), { discard: true });
     if (reconciledPersistedWorkflow || loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
-    yield* Effect.addFinalizer(() => Effect.promise(() => Promise.all([...timelinePersistenceTails.values()])).pipe(Effect.asVoid));
+    yield* Effect.addFinalizer(() => Effect.promise(async () => {
+      await Promise.all([...artifactAdoptionTails.values()]);
+      await Promise.all([...timelinePersistenceTails.values()]);
+    }));
 
     const notifyAttention = (session: MutableOwnedSession): void => {
       const status = session.snapshot.status;
@@ -1024,6 +1077,35 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         notifyAttention(session);
         void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist owned-session state transition", cause));
       }
+    };
+
+    const queueBrowserScreenshotHandoff = (session: MutableOwnedSession, handoff: Exclude<BrowserScreenshotHandoff, { readonly _tag: "none" }>): void => {
+      const sessionId = session.snapshot.id;
+      const runtimeId = session.snapshot.runtimeId;
+      if (removingSessionIds.has(sessionId)) return;
+      const previous = artifactAdoptionTails.get(sessionId) ?? Promise.resolve();
+      const next = previous.then(async () => {
+        if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
+        if (handoff._tag === "invalid") {
+          appendEvent(session, "browser_artifact_failed", { message: "Browser screenshot could not be published: artifact descriptor is invalid" });
+          return;
+        }
+        try {
+          const artifact: SessionArtifact = await adoptBrowserScreenshot(config.stateDir, sessionId, runtimeId, handoff.candidate);
+          if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
+          appendEvent(session, "browser_artifact_created", { artifact });
+        } catch (cause) {
+          if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
+          const raw = cause instanceof Error ? cause.message : "artifact validation failed";
+          const message = raw.includes("/") ? "Browser screenshot artifact validation failed" : `Browser screenshot could not be published: ${raw}`;
+          appendEvent(session, "browser_artifact_failed", { message });
+        }
+      });
+      const settled = next.catch((cause) => console.error(`Browser screenshot handoff failed for session ${sessionId}`, cause));
+      artifactAdoptionTails.set(sessionId, settled);
+      void settled.finally(() => {
+        if (artifactAdoptionTails.get(sessionId) === settled) artifactAdoptionTails.delete(sessionId);
+      });
     };
 
     const failPending = (session: MutableOwnedSession, message: string, cause?: unknown, command?: string): void => {
@@ -1194,9 +1276,42 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       if (reportedCheckpoint && session.snapshot.workflow?.id === reportedCheckpoint.workflowId && !isTerminalWorkflowPhase(session.snapshot.workflow.phase)) {
         const previousPhase = session.snapshot.workflow.phase;
         const workflow = applyWorkflowCheckpoint(session.snapshot.workflow, reportedCheckpoint.checkpoint);
+        const queuedIntervention = workflow.phase === "readyToShip" || workflow.phase === "failed" ? workflow.queuedIntervention : undefined;
         session.workflowDispatchPending = workflow.phase !== previousPhase && isAutonomousWorkflowPhase(workflow.phase);
         session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
         void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow checkpoint", cause));
+        if (queuedIntervention) {
+          void Effect.runPromise(request(session, {
+            id: `workflow:${workflow.id}:queued-intervention:${randomUUID()}`,
+            type: "follow_up",
+            message: queuedIntervention,
+          }).pipe(
+            Effect.andThen(Effect.sync(() => {
+              const current = session.snapshot.workflow;
+              if (current?.id !== workflow.id || current.queuedIntervention !== queuedIntervention) return;
+              session.snapshot = {
+                ...session.snapshot,
+                workflow: { ...current, queuedIntervention: undefined, updatedAt: now() },
+                lastActivityAt: now(),
+              };
+            })),
+            Effect.andThen(persist()),
+          )).catch((cause) => {
+            const current = session.snapshot.workflow;
+            if (current?.id === workflow.id && (current.phase === "readyToShip" || current.phase === "failed")) {
+              const updatedAt = now();
+              const deliveryError = `The queued user follow-up could not be delivered: ${cause instanceof Error ? cause.message : "unknown error"}`;
+              session.snapshot = {
+                ...session.snapshot,
+                workflow: current.phase === "readyToShip"
+                  ? { ...current, phase: "blocked", blockedFromPhase: "reviewing", queuedIntervention, updatedAt, error: deliveryError }
+                  : { ...current, queuedIntervention, updatedAt, error: `${current.error ?? "The workflow failed"}\n${deliveryError}` },
+                lastActivityAt: updatedAt,
+              };
+              void Effect.runPromise(persist()).catch((persistCause) => console.error("Could not persist blocked workflow follow-up", persistCause));
+            }
+          });
+        }
       }
       if (message.type === "agent_settled"
         && session.snapshot.status === "working"
@@ -1217,7 +1332,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         });
         return true;
       }
+      const screenshotHandoff = browserScreenshotHandoffFromRpc(message);
       appendEvent(session, message.type, message);
+      if (screenshotHandoff._tag !== "none") queueBrowserScreenshotHandoff(session, screenshotHandoff);
       if (message.type === "agent_settled" && session.workflowDispatchPending) continueWorkflowAfterSettle(session);
       return true;
     };
@@ -1225,6 +1342,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const attach = (session: MutableOwnedSession): void => {
       const child = session.child;
       if (!child) return;
+      const runtimeId = session.snapshot.runtimeId;
       const framer = new JsonlFramer();
       child.stdout.on("data", (chunk: Buffer) => {
         try {
@@ -1255,6 +1373,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         session.stderr = `${session.stderr}${chunk.toString("utf8")}`.slice(-MAX_STDERR_BYTES);
       });
       child.once("close", (code, signal) => {
+        const adoptionTail = artifactAdoptionTails.get(session.snapshot.id) ?? Promise.resolve();
+        void adoptionTail.then(() => removeRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId)).catch(() => undefined);
         if (session.snapshot.status === "stopped" || session.snapshot.status === "stopping") return;
         const detail = session.stderr.trim() || `Pi exited with code ${code ?? "none"} and signal ${signal ?? "none"}`;
         if (session.snapshot.status === "crashed" && session.stderr.trim() && session.snapshot.error?.includes("EPIPE")) {
@@ -1448,14 +1568,26 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         const id = randomUUID();
         const runtimeId = randomUUID();
         const createdAt = now();
+        const artifactStagingDirectory = yield* Effect.tryPromise({
+          try: () => prepareRuntimeArtifactStaging(config.stateDir, id, runtimeId),
+          catch: (cause) => new SessionStorageError({ message: "Could not prepare browser artifact staging", cause }),
+        }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
         const child = yield* Effect.try({
           try: () => spawn(config.piCommand, processArguments(workspace, sessionName, config.workflowResourceDir), {
             cwd: "/proc/self/fd/3",
             detached: true,
+            env: {
+              ...process.env,
+              ...(config.browserExecutablePath ? { PISS_BROWSER_EXECUTABLE_PATH: config.browserExecutablePath } : {}),
+              PISS_BROWSER_ARTIFACT_STAGING_DIR: artifactStagingDirectory,
+            },
             stdio: ["pipe", "pipe", "pipe", rootHandle.fd],
           }) as ChildProcessWithoutNullStreams,
           catch: (cause) => new PiSpawnError({ command: config.piCommand, cause }),
-        }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
+        }).pipe(Effect.tapError(() => Effect.all([
+          Effect.promise(() => rootHandle.close()),
+          Effect.promise(() => removeRuntimeArtifactStaging(config.stateDir, id, runtimeId)),
+        ], { discard: true })));
         const mutationLock = yield* Semaphore.make(1);
         const session: MutableOwnedSession = {
           child,
@@ -1663,14 +1795,26 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
       const branch = yield* Effect.promise(() => detectBranch(rootHandle.fd));
       const runtimeId = randomUUID();
+      const artifactStagingDirectory = yield* Effect.tryPromise({
+        try: () => prepareRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId),
+        catch: (cause) => new SessionStorageError({ message: "Could not prepare browser artifact staging", cause }),
+      }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
       const child = yield* Effect.try({
         try: () => spawn(config.piCommand, processArguments(workspace, session.snapshot.name, config.workflowResourceDir, durableTranscript ? sessionFile! : undefined), {
           cwd: "/proc/self/fd/3",
           detached: true,
+          env: {
+            ...process.env,
+            ...(config.browserExecutablePath ? { PISS_BROWSER_EXECUTABLE_PATH: config.browserExecutablePath } : {}),
+            PISS_BROWSER_ARTIFACT_STAGING_DIR: artifactStagingDirectory,
+          },
           stdio: ["pipe", "pipe", "pipe", rootHandle.fd],
         }) as ChildProcessWithoutNullStreams,
         catch: (cause) => new PiSpawnError({ command: config.piCommand, cause }),
-      }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
+      }).pipe(Effect.tapError(() => Effect.all([
+        Effect.promise(() => rootHandle.close()),
+        Effect.promise(() => removeRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId)),
+      ], { discard: true })));
       session.child = child;
       session.termination = undefined;
       session.quarantined = false;
@@ -1930,6 +2074,31 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           return cloneSession(session.snapshot);
         }
         if (!current) return yield* unavailable("This session has no engineering workflow");
+        if (input.action === "continueRepairs") {
+          if (current.phase !== "failed") return yield* unavailable("Only a failed workflow can continue with more repairs");
+          if (current.queuedIntervention) return yield* unavailable("Wait for the queued workflow follow-up to be delivered");
+          const maxRepairAttempts = Math.min(
+            100,
+            Math.max(current.maxRepairAttempts, current.repairAttempts) + input.additionalRepairAttempts,
+          );
+          if (maxRepairAttempts <= current.repairAttempts) return yield* unavailable("This workflow has reached the maximum cumulative repair budget");
+          const updatedAt = now();
+          session.snapshot = {
+            ...session.snapshot,
+            workflow: {
+              ...current,
+              phase: "repairing",
+              maxRepairAttempts,
+              blockedFromPhase: null,
+              updatedAt,
+              error: null,
+            },
+            lastActivityAt: updatedAt,
+          };
+          yield* persist();
+          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          return cloneSession(session.snapshot);
+        }
         if (input.action === "approve") {
           const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
             ? "planning"
@@ -1942,6 +2111,34 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           yield* persist();
           yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
           return cloneSession(session.snapshot);
+        }
+        if (input.action === "intervene") {
+          const feedback = input.feedback.trim();
+          if (current.phase === "building" || current.phase === "repairing") {
+            if (session.snapshot.status !== "working") return yield* unavailable("Guide the current phase only while Pi is working");
+            yield* request(session, {
+              id: `workflow:${current.id}:intervention:${randomUUID()}`,
+              type: "steer",
+              message: workflowInterventionMessage(current.phase, feedback, false),
+            });
+            return cloneSession(session.snapshot);
+          }
+          if (current.phase === "verifying" || current.phase === "reviewing") {
+            const intervention = workflowInterventionMessage(current.phase, feedback, true);
+            const queuedIntervention = current.queuedIntervention
+              ? `${current.queuedIntervention}\n\n---\n\n${intervention}`
+              : intervention;
+            if (queuedIntervention.length > 64 * 1024) return yield* unavailable("Queued workflow follow-up exceeds 64 KiB");
+            const updatedAt = now();
+            session.snapshot = {
+              ...session.snapshot,
+              workflow: { ...current, queuedIntervention, updatedAt },
+              lastActivityAt: updatedAt,
+            };
+            yield* persist();
+            return cloneSession(session.snapshot);
+          }
+          return yield* unavailable("User intervention is unavailable in this workflow phase");
         }
         if (input.action === "revise") {
           const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
@@ -2262,34 +2459,38 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             if (sessions.get(session.snapshot.id) !== session) {
               return yield* Effect.fail(new SessionNotFoundError({ sessionId: session.snapshot.id }));
             }
-            if (!TERMINAL_STATUSES.has(session.snapshot.status)) {
-              session.resumeAfterRestart = false;
-              session.resumeRunAfterRestart = false;
-              for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
-              session.interactiveTimers.clear();
-              session.snapshot = {
-                ...session.snapshot,
-                status: transitionAttentionState(session.snapshot.status, "stopRequested"),
-                interactiveRequests: [],
-                lastActivityAt: now(),
-              };
-              failPending(session, "Pi runtime was archived");
-            }
-            yield* terminate(session);
-            if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
-              return yield* Effect.fail(new PiCommandError({
-                sessionId: session.snapshot.id,
-                message: "Pi process exit could not be confirmed; the session remains supervised",
-              }));
-            }
-            session.child = null;
-            yield* removeTimeline(session.snapshot.id);
-            sessions.delete(session.snapshot.id);
-            yield* persist();
-            if (![...sessions.values()].some((candidate) => candidate.snapshot.workspaceId === session.snapshot.workspaceId)) {
-              const workspace = yield* workspaces.findById(session.snapshot.workspaceId);
-              if (workspace) yield* fileMentions.release(workspace.root);
-            }
+            const sessionId = session.snapshot.id;
+            removingSessionIds.add(sessionId);
+            yield* Effect.gen(function* () {
+              if (!TERMINAL_STATUSES.has(session.snapshot.status)) {
+                session.resumeAfterRestart = false;
+                session.resumeRunAfterRestart = false;
+                for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
+                session.interactiveTimers.clear();
+                session.snapshot = {
+                  ...session.snapshot,
+                  status: transitionAttentionState(session.snapshot.status, "stopRequested"),
+                  interactiveRequests: [],
+                  lastActivityAt: now(),
+                };
+                failPending(session, "Pi runtime was archived");
+              }
+              yield* terminate(session);
+              if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
+                return yield* Effect.fail(new PiCommandError({
+                  sessionId,
+                  message: "Pi process exit could not be confirmed; the session remains supervised",
+                }));
+              }
+              session.child = null;
+              yield* removeTimeline(sessionId);
+              sessions.delete(sessionId);
+              yield* persist();
+              if (![...sessions.values()].some((candidate) => candidate.snapshot.workspaceId === session.snapshot.workspaceId)) {
+                const workspace = yield* workspaces.findById(session.snapshot.workspaceId);
+                if (workspace) yield* fileMentions.release(workspace.root);
+              }
+            }).pipe(Effect.ensuring(Effect.sync(() => removingSessionIds.delete(sessionId))));
           }))),
         ),
     });

@@ -104,6 +104,15 @@ process.stdin.on("data", (chunk) => {
       if (command.message === "Huge tool output") {
         console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "huge-call", toolName: "bash", args: { command: "generate" } }));
         console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "huge-call", toolName: "bash", result: { content: [{ type: "text", text: "UNICODE-OUTPUT-🧪".repeat(180000) + "END-OF-HUGE-OUTPUT" }] }, isError: false }));
+        console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Large output captured" }], stopReason: "stop" } }));
+      }
+      if (command.message === "Capture browser evidence") {
+        const artifactId = "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41";
+        const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+        writeFileSync(process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + artifactId + ".png", png);
+        const artifact = { id: artifactId, kind: "browser-screenshot", mediaType: "image/png", byteCount: png.length, width: 1, height: 1, pageUrl: "http://127.0.0.1:4000/", pageTitle: "Fixture", label: "HTTP evidence", createdAt: new Date().toISOString() };
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "browser-shot", toolName: "piss_browser_screenshot", result: { content: [{ type: "text", text: "captured" }, { type: "image", data: png.toString("base64"), mimeType: "image/png" }], details: { pissBrowserArtifact: { version: 1, stagingName: artifactId + ".png", artifact } } }, isError: false }));
+        console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Browser evidence captured" }], stopReason: "stop" } }));
       }
       if (command.message === "Request interactive input") {
         console.log(JSON.stringify({ type: "extension_ui_request", id: "http-request-confirm", method: "confirm", title: "Continue?", message: "Confirm through HTTP" }));
@@ -454,6 +463,35 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     const outputText = await outputResponse.text();
     assert.equal(outputResponse.status, 200, outputText);
     assert.match(outputText, /END-OF-HUGE-OUTPUT/u);
+
+    const captureCommand = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "prompt", text: "Capture browser evidence" }),
+    });
+    assert.equal(captureCommand.status, 202, await captureCommand.text());
+    let artifactSnapshotText = "";
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const response = await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders });
+      artifactSnapshotText = await response.text();
+      if (artifactSnapshotText.includes("browser_artifact_created") && artifactSnapshotText.includes('"status":"finished"')) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.match(artifactSnapshotText, /browser_artifact_created/);
+    assert.doesNotMatch(artifactSnapshotText, /iVBORw0KGgo/);
+    assert.doesNotMatch(artifactSnapshotText, /browser-staging/);
+    const artifactId = "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41";
+    const artifactResponse = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${artifactId}`, { headers: identityHeaders });
+    const artifactBytes = Buffer.from(await artifactResponse.arrayBuffer());
+    assert.equal(artifactResponse.status, 200);
+    assert.equal(artifactResponse.headers.get("content-type"), "image/png");
+    assert.equal(artifactResponse.headers.get("cache-control"), "private, no-store");
+    assert.equal(artifactBytes.subarray(1, 4).toString("ascii"), "PNG");
+    const artifactHead = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${artifactId}`, { method: "HEAD", headers: identityHeaders });
+    assert.equal(artifactHead.status, 200);
+    assert.equal((await artifactHead.arrayBuffer()).byteLength, 0);
+    assert.equal((await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${artifactId}`)).status, 401);
+    assert.equal((await fetch(`${base}/api/sessions/${created.session.id}/artifacts/663dd98b-a517-48f6-a85d-639ae76077e9`, { headers: identityHeaders })).status, 404);
 
     const timelineResponse = await fetch(`${base}/api/sessions/${created.session.id}/timeline?beforeSequence=999999&limit=5`, { headers: identityHeaders });
     const timelineText = await timelineResponse.text();

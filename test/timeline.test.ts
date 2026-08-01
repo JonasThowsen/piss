@@ -35,6 +35,36 @@ test("projects completed and streaming Pi messages without duplicate assistant t
   });
 });
 
+test("projects streaming and completed Pi thinking as inspectable activity", () => {
+  const streaming = eventTimeline([
+    event(1, "message_start", { message: { role: "assistant", content: [] } }),
+    event(2, "message_update", { assistantMessageEvent: { type: "thinking_delta", delta: "Inspecting the " } }),
+    event(3, "message_update", { assistantMessageEvent: { type: "thinking_delta", delta: "workflow state" } }),
+  ]);
+  assert.deepEqual(streaming, [{
+    _tag: "thinking",
+    key: "thinking-live-1",
+    sequence: 3,
+    text: "Inspecting the workflow state",
+    live: true,
+  }]);
+
+  const completed = eventTimeline([
+    ...[
+      event(1, "message_start", { message: { role: "assistant", content: [] } }),
+      event(2, "message_update", { assistantMessageEvent: { type: "thinking_delta", delta: "Inspecting the workflow state" } }),
+    ],
+    event(3, "message_end", { message: { role: "assistant", content: [
+      { type: "thinking", thinking: "Inspecting the workflow state" },
+      { type: "text", text: "I found the implementation path." },
+    ] } }),
+  ]);
+  assert.deepEqual(completed, [
+    { _tag: "thinking", key: "thinking-3", sequence: 3, text: "Inspecting the workflow state" },
+    { _tag: "message", key: "message-3", sequence: 3, role: "assistant", text: "I found the implementation path.", imageCount: 0 },
+  ]);
+});
+
 test("keeps image-only user messages visible without retaining image bytes", () => {
   const timeline = eventTimeline([
     event(1, "message_end", { message: { role: "user", content: [{ type: "image", mimeType: "image/png" }] } }),
@@ -71,6 +101,43 @@ test("merges incremental polling responses and coalesces completed activity", ()
     merged,
     "an overlapping response cannot resurrect superseded tool activity",
   );
+});
+
+test("projects durable browser screenshots as first-class timeline evidence", () => {
+  const timeline = eventTimeline([
+    event(7, "browser_artifact_created", {
+      artifact: {
+        id: "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41",
+        kind: "browser-screenshot",
+        mediaType: "image/png",
+        byteCount: 1024,
+        width: 390,
+        height: 844,
+        pageUrl: "http://127.0.0.1:4000/settings",
+        pageTitle: "Settings",
+        label: "Mobile settings",
+        createdAt: "2026-04-15T10:00:00.000Z",
+      },
+    }),
+  ]);
+
+  assert.deepEqual(timeline, [{
+    _tag: "browser-image",
+    key: "browser-artifact-7",
+    sequence: 7,
+    artifact: {
+      id: "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41",
+      kind: "browser-screenshot",
+      mediaType: "image/png",
+      byteCount: 1024,
+      width: 390,
+      height: 844,
+      pageUrl: "http://127.0.0.1:4000/settings",
+      pageTitle: "Settings",
+      label: "Mobile settings",
+      createdAt: "2026-04-15T10:00:00.000Z",
+    },
+  }]);
 });
 
 test("renders fire-and-forget extension notifications as durable output", () => {

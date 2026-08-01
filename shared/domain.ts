@@ -148,6 +148,30 @@ export const OwnedSessionEvent = Schema.Struct({
 });
 export type OwnedSessionEvent = typeof OwnedSessionEvent.Type;
 
+export const SessionArtifactId = Schema.String.check(
+  Schema.isMinLength(36),
+  Schema.isMaxLength(36),
+  Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+);
+export type SessionArtifactId = typeof SessionArtifactId.Type;
+
+export const SessionArtifact = Schema.Struct({
+  id: SessionArtifactId,
+  kind: Schema.Literal("browser-screenshot"),
+  mediaType: Schema.Literal("image/png"),
+  byteCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(10 * 1024 * 1024)),
+  width: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(16_384)),
+  height: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(65_535)),
+  pageUrl: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  pageTitle: Schema.String.check(Schema.isMaxLength(4 * 1024)),
+  label: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
+  createdAt: Schema.String,
+});
+export type SessionArtifact = typeof SessionArtifact.Type;
+
+export const BrowserArtifactCreatedData = Schema.Struct({ artifact: SessionArtifact });
+export type BrowserArtifactCreatedData = typeof BrowserArtifactCreatedData.Type;
+
 export const SessionUsage = Schema.Struct({
   userMessages: NonNegativeInt,
   assistantMessages: NonNegativeInt,
@@ -214,11 +238,12 @@ export const EngineeringWorkflow = Schema.Struct({
   phase: EngineeringWorkflowPhase,
   objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
   repairAttempts: NonNegativeInt,
-  maxRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10)),
+  maxRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
   specification: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   plan: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   checkpoint: Schema.NullOr(EngineeringWorkflowCheckpoint),
   blockedFromPhase: Schema.NullOr(EngineeringWorkflowPhase),
+  queuedIntervention: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
@@ -464,7 +489,12 @@ export const EngineeringWorkflowMutationInput = Schema.Union([
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    action: Schema.Literal("revise"),
+    action: Schema.Literal("continueRepairs"),
+    additionalRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10)),
+  }),
+  Schema.Struct({
+    runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    action: Schema.Literals(["revise", "intervene"]),
     feedback: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
   }),
 ]);

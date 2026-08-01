@@ -368,10 +368,11 @@ export function App() {
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
-  const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise">();
+  const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise" | "intervene" | "continueRepairs">();
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [workflowFeedback, setWorkflowFeedback] = useState("");
   const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
+  const [workflowAdditionalRepairs, setWorkflowAdditionalRepairs] = useState("2");
 
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
   const [archivePending, setArchivePending] = useState(false);
@@ -457,6 +458,7 @@ export function App() {
   const compactionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workflowReturnFocusRef = useRef<HTMLElement | null>(null);
   const workflowObjectiveRef = useRef<HTMLTextAreaElement>(null);
+  const workflowRepairInputRef = useRef<HTMLInputElement>(null);
   const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceActionReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -1668,6 +1670,47 @@ export function App() {
     void runWorkflowMutation({ runtimeId: session.runtimeId, action: "revise", feedback });
   };
 
+  const submitWorkflowIntervention = (event: FormEvent) => {
+    event.preventDefault();
+    const session = selectedSessionRef.current;
+    const feedback = workflowFeedback.trim();
+    if (!session || !feedback || busy) return;
+    void runWorkflowMutation({ runtimeId: session.runtimeId, action: "intervene", feedback });
+  };
+
+  const continueFailedWorkflow = async (additionalRepairAttempts: number) => {
+    const session = selectedSessionRef.current;
+    if (!session || busy) return;
+    const targetId = session.id;
+    setBusy(true);
+    setOperationError(undefined);
+    try {
+      const activeSession = session.status === "stopped" || session.status === "crashed"
+        ? (await Effect.runPromise(resumeOwnedSession(session.id, session.runtimeId))).session
+        : session;
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(activeSession);
+      const result = await Effect.runPromise(mutateEngineeringWorkflow(activeSession.id, {
+        runtimeId: activeSession.runtimeId,
+        action: "continueRepairs",
+        additionalRepairAttempts,
+      }));
+      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(result.session);
+      setWorkflowDialog(undefined);
+      await refresh(false);
+    } catch (cause) {
+      if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
+      await refresh(false);
+    } finally {
+      if (selectedSessionIdRef.current === targetId) setBusy(false);
+    }
+  };
+
+  const submitWorkflowContinuation = (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    void continueFailedWorkflow(Math.max(1, Math.min(10, Number.parseInt(workflowAdditionalRepairs, 10) || 1)));
+  };
+
   const mutateCurrentWorkflow = (action: "approve" | "accept" | "cancel" | "resume") => {
     const session = selectedSessionRef.current;
     if (!session || busy) return;
@@ -1678,6 +1721,18 @@ export function App() {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowFeedback("");
     setWorkflowDialog("revise");
+  };
+
+  const openWorkflowIntervention = (returnFocus: HTMLElement) => {
+    workflowReturnFocusRef.current = returnFocus;
+    setWorkflowFeedback("");
+    setWorkflowDialog("intervene");
+  };
+
+  const openWorkflowContinuation = (returnFocus: HTMLElement) => {
+    workflowReturnFocusRef.current = returnFocus;
+    setWorkflowAdditionalRepairs("2");
+    setWorkflowDialog("continueRepairs");
   };
 
   const runNativeSlashCommand = (nativeCommand: NativeSlashCommandName) => {
@@ -2001,6 +2056,23 @@ export function App() {
                     {item.text && <LazyMarkdown text={item.text} />}
                     {item.imageCount > 0 && <div className="message-images"><Image aria-hidden="true" /> {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
                   </article>
+                : item._tag === "thinking"
+                  ? <details className={`thinking-trace ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key} open={item.live ? true : undefined}>
+                      <summary><span><Sparkles aria-hidden="true" />PI THINKING</span><small>{item.live ? "STREAMING" : "REASONING"}</small><strong aria-hidden="true"><ChevronRight /></strong></summary>
+                      <div className="thinking-content"><LazyMarkdown text={item.text} /></div>
+                    </details>
+                : item._tag === "browser-image"
+                  ? (() => {
+                      const artifactUrl = `/api/sessions/${encodeURIComponent(selectedSession.id)}/artifacts/${encodeURIComponent(item.artifact.id)}`;
+                      const label = (item.artifact.label ?? item.artifact.pageTitle) || "Browser screenshot";
+                      return <figure className="browser-evidence" key={item.key} data-timeline-key={item.key}>
+                        <header><span><Image aria-hidden="true" />BROWSER EVIDENCE</span><time dateTime={item.artifact.createdAt}>{new Date(item.artifact.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
+                        <a className="browser-evidence-preview" href={artifactUrl} target="_blank" rel="noreferrer" aria-label={`Open full-resolution browser evidence: ${label}`}>
+                          <img src={artifactUrl} loading="lazy" alt={label} width={item.artifact.width} height={item.artifact.height} />
+                        </a>
+                        <figcaption><div><b>{label}</b><span>{item.artifact.width} × {item.artifact.height} · {Math.ceil(item.artifact.byteCount / 1024).toLocaleString()} KB</span><small title={item.artifact.pageUrl}>{item.artifact.pageUrl}</small></div><a href={artifactUrl} download={`browser-evidence-${item.artifact.id}.png`}><ExternalLink aria-hidden="true" />DOWNLOAD</a></figcaption>
+                      </figure>;
+                    })()
                 : item._tag === "status"
                   ? <div className={`timeline-status ${item.tone}`} key={item.key} data-timeline-key={item.key} role="status">
                       <span>{item.tone === "running" ? <RefreshCw aria-hidden="true" /> : item.tone === "success" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
@@ -2050,7 +2122,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : ""}`}>
+          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : selectedSession.workflow && workflowRunsAutonomously(selectedSession.workflow.phase) ? " workflow-monitor-mode" : ""}`}>
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -2066,9 +2138,11 @@ export function App() {
               onCancel={() => mutateCurrentWorkflow("cancel")}
               onResume={() => mutateCurrentWorkflow("resume")}
               onRevise={openWorkflowRevision}
+              onIntervene={openWorkflowIntervention}
+              onContinueRepairs={openWorkflowContinuation}
               onReviewChanges={() => setActiveView("changes")}
             />}
-            {!(selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase)) && <>
+            {!(selectedSession.workflow && workflowOwnsComposer(selectedSession.workflow.phase)) && <>
             <div className="composer" ref={composerRef}>
               <span className="sr-only" id="composer-picker-status" aria-live="polite">
                 {slashCommandMenu?.loading
@@ -2450,6 +2524,48 @@ export function App() {
         <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>SEND REVISION <ArrowRight aria-hidden="true" /></>}</button></footer>
       </DialogSurface>}
 
+      {workflowDialog === "intervene" && selectedSession?.workflow && <DialogSurface
+        className="session-dialog workflow-dialog"
+        pending={busy}
+        returnFocus={workflowReturnFocusRef.current}
+        fallbackFocus={sessionHeadingRef.current}
+        initialFocus={workflowObjectiveRef}
+        onClose={() => setWorkflowDialog(undefined)}
+        render={<form onSubmit={submitWorkflowIntervention} />}
+      >
+        {(() => {
+          const queuesAfterLoop = selectedSession.workflow.phase === "verifying" || selectedSession.workflow.phase === "reviewing";
+          return <>
+            <header><div><span>USER INTERVENTION</span><Dialog.Title render={<b />}>{queuesAfterLoop ? "Queue feedback after the loop" : "Guide the current phase"}</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close intervention"><X aria-hidden="true" /></Dialog.Close></header>
+            <div className="dialog-body workflow-dialog-body">
+              <p className="workflow-intervention-note">{queuesAfterLoop ? "Pi will finish verification and review before receiving this as a labeled follow-up." : "Pi will receive this immediately as labeled steering without leaving the approved workflow phase."}</p>
+              <label>{queuesAfterLoop ? "Follow-up" : "Guidance"}<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={6} placeholder={queuesAfterLoop ? "What should Pi consider after the autonomous loop finishes?" : "What should Pi adjust or keep in mind during this phase?"} /></label>
+              {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
+            </div>
+            <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>{queuesAfterLoop ? "QUEUE FOLLOW-UP" : "SEND GUIDANCE"} <ArrowRight aria-hidden="true" /></>}</button></footer>
+          </>;
+        })()}
+      </DialogSurface>}
+
+      {workflowDialog === "continueRepairs" && selectedSession?.workflow?.phase === "failed" && <DialogSurface
+        className="session-dialog workflow-dialog"
+        pending={busy}
+        returnFocus={workflowReturnFocusRef.current}
+        fallbackFocus={sessionHeadingRef.current}
+        initialFocus={workflowRepairInputRef}
+        onClose={() => setWorkflowDialog(undefined)}
+        render={<form onSubmit={submitWorkflowContinuation} />}
+      >
+        <header><div><span>REPAIR BUDGET EXHAUSTED</span><Dialog.Title render={<b />}>Continue the failed workflow</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close repair continuation"><X aria-hidden="true" /></Dialog.Close></header>
+        <div className="dialog-body workflow-dialog-body">
+          <div className="workflow-intro"><i aria-hidden="true"><RefreshCw /></i><div><b>Resume from the blocking findings</b><p>The approved specification and plan stay in place. Pi returns to Repair, then reruns Verify and Review.</p></div></div>
+          <p className="workflow-failure-summary"><b>LATEST FINDINGS</b>{compact(selectedSession.workflow.checkpoint?.summary ?? selectedSession.workflow.error ?? "Inspect the failed workflow before continuing.", 420)}</p>
+          <label className="workflow-repair-limit">Additional repair attempts<input ref={workflowRepairInputRef} type="number" inputMode="numeric" min={1} max={10} value={workflowAdditionalRepairs} onChange={(event) => setWorkflowAdditionalRepairs(event.target.value)} onBlur={() => setWorkflowAdditionalRepairs(String(Math.max(1, Math.min(10, Number.parseInt(workflowAdditionalRepairs, 10) || 1))))} /><small>Explicitly extends this workflow’s cumulative budget; you can continue again if needed.</small></label>
+          {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
+        </div>
+        <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy} type="submit">{busy ? "RESUMING…" : <>CONTINUE REPAIRS <ArrowRight aria-hidden="true" /></>}</button></footer>
+      </DialogSurface>}
+
       {compactionDialogOpen && selectedSession && <CompactionDialog
         returnFocus={compactionReturnFocusRef.current}
         fallbackFocus={sessionHeadingRef.current}
@@ -2478,7 +2594,15 @@ export function App() {
 const WORKFLOW_STAGES = ["DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
 function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase !== "defining" && !isTerminalWorkflowPhase(phase);
+  return phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "blocked";
+}
+
+function workflowRunsAutonomously(phase: EngineeringWorkflow["phase"]): boolean {
+  return phase === "defining" || phase === "planning" || phase === "building" || phase === "verifying" || phase === "reviewing" || phase === "repairing";
+}
+
+function workflowOwnsComposer(phase: EngineeringWorkflow["phase"]): boolean {
+  return !isTerminalWorkflowPhase(phase);
 }
 
 function workflowActivityLabel(phase: EngineeringWorkflow["phase"]): string {
@@ -2494,6 +2618,13 @@ function workflowActivityLabel(phase: EngineeringWorkflow["phase"]): string {
 
 function workflowStageIndex(workflow: EngineeringWorkflow): number {
   const phase = workflow.phase === "blocked" && workflow.blockedFromPhase ? workflow.blockedFromPhase : workflow.phase;
+  if (phase === "failed" && workflow.checkpoint) {
+    if (workflow.checkpoint.stage === "define") return 0;
+    if (workflow.checkpoint.stage === "plan") return 1;
+    if (workflow.checkpoint.stage === "build") return 2;
+    if (workflow.checkpoint.stage === "verify") return 3;
+    return 4;
+  }
   if (phase === "defining" || phase === "awaitingSpecApproval") return 0;
   if (phase === "planning" || phase === "awaitingPlanApproval") return 1;
   if (phase === "building" || phase === "repairing") return 2;
@@ -2503,7 +2634,7 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
   return -1;
 }
 
-function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCancel, onResume, onRevise, onReviewChanges }: {
+function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCancel, onResume, onRevise, onIntervene, onContinueRepairs, onReviewChanges }: {
   readonly workflow: EngineeringWorkflow;
   readonly pending: boolean;
   readonly onApprove: () => void;
@@ -2511,6 +2642,8 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   readonly onCancel: () => void;
   readonly onResume: () => void;
   readonly onRevise: (returnFocus: HTMLElement) => void;
+  readonly onIntervene: (returnFocus: HTMLElement) => void;
+  readonly onContinueRepairs: (returnFocus: HTMLElement) => void;
   readonly onReviewChanges: () => void;
 }) {
   const activeStage = workflowStageIndex(workflow);
@@ -2550,7 +2683,14 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-approve" disabled={pending} type="button" onClick={onAccept}><Check aria-hidden="true" />{pending ? "ACCEPTING…" : "ACCEPT RESULT"}</button>
       </>}
       {workflow.phase === "accepted" && <span className="workflow-accepted"><CheckCheck aria-hidden="true" />Result accepted · changes remain uncommitted</span>}
+      {workflow.phase === "failed" && <>
+        <span className="workflow-failed-next">Blocking findings remain · extend the repair budget to continue.</span>
+        <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
+        <button className="workflow-continue" disabled={pending || Boolean(workflow.queuedIntervention)} type="button" onClick={(event) => onContinueRepairs(event.currentTarget)}><RefreshCw aria-hidden="true" />{workflow.queuedIntervention ? "DELIVERING FOLLOW-UP…" : "CONTINUE REPAIRS"}</button>
+      </>}
       {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
+      {(workflow.phase === "building" || workflow.phase === "repairing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />GUIDE CURRENT PHASE</button>}
+      {(workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{workflow.queuedIntervention ? "ADD TO QUEUE" : "QUEUE AFTER LOOP"}</button>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
   </section>;

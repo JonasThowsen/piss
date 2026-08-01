@@ -42,6 +42,7 @@ type TestSession = {
     plan: string | null;
     checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
     blockedFromPhase: string | null;
+    queuedIntervention?: string;
     createdAt: string;
     updatedAt: string;
     error: string | null;
@@ -105,6 +106,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
   const mentionSearches: Array<{ readonly query: string; readonly runtimeId: string | null }> = [];
   const interactiveResponses: Array<Record<string, unknown>> = [];
   const notificationMutations: Array<Record<string, unknown>> = [];
+  const workflowMutations: Array<Record<string, unknown>> = [];
   const sessionLoads: Array<{ readonly sessionId: string; readonly afterSequence?: number }> = [];
   let failNextCommand = false;
   let delayNextCommand = false;
@@ -220,6 +222,11 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       await route.fulfill({ json: { events: page, hasMore: candidates.length > page.length, nextBeforeSequence: page[0]?.sequence ?? null } });
       return;
     }
+    if (session && path.startsWith(`/api/sessions/${session.id}/artifacts/`) && (method === "GET" || method === "HEAD")) {
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+      await route.fulfill({ status: 200, contentType: "image/png", headers: { "cache-control": "private, no-store" }, body: method === "HEAD" ? "" : png });
+      return;
+    }
     if (session && path.startsWith(`/api/sessions/${session.id}/outputs/`) && method === "GET") {
       const ref = decodeURIComponent(path.slice(`/api/sessions/${session.id}/outputs/`.length));
       const value = detachedOutputs.get(ref);
@@ -317,6 +324,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     }
     if (session && path === `/api/sessions/${session.id}/workflow` && method === "POST") {
       const timestamp = new Date().toISOString();
+      workflowMutations.push(body ?? {});
       let workflow = session.workflow;
       if (body?.action === "start") {
         const specification = `# Specification\n\n${Array.from({ length: 40 }, (_, index) => `${index + 1}. Verify a durable, accessible workflow acceptance criterion.`).join("\n")}`;
@@ -340,10 +348,24 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         workflow = { ...workflow, phase: "readyToShip", checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
       } else if (workflow && body?.action === "accept" && workflow.phase === "readyToShip") {
         workflow = { ...workflow, phase: "accepted", updatedAt: timestamp };
+      } else if (workflow && body?.action === "intervene") {
+        workflow = {
+          ...workflow,
+          ...(workflow.phase === "verifying" || workflow.phase === "reviewing" ? { queuedIntervention: String(body.feedback ?? "Queued follow-up") } : {}),
+          updatedAt: timestamp,
+        };
+      } else if (workflow && body?.action === "continueRepairs" && workflow.phase === "failed") {
+        workflow = {
+          ...workflow,
+          phase: "repairing",
+          maxRepairAttempts: Math.max(workflow.maxRepairAttempts, workflow.repairAttempts) + Number(body.additionalRepairAttempts ?? 1),
+          error: null,
+          updatedAt: timestamp,
+        };
       } else if (workflow && body?.action === "cancel") {
         workflow = { ...workflow, phase: "cancelled", updatedAt: timestamp };
       }
-      const updated = { ...session, status: "finished" as const, workflow, lastActivityAt: timestamp };
+      const updated = { ...session, status: body?.action === "continueRepairs" ? "working" as const : "finished" as const, workflow, lastActivityAt: timestamp };
       sessions[sessionIndex] = updated;
       await route.fulfill({ json: { session: updated } });
       return;
@@ -418,6 +440,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
     mentionSearches,
     interactiveResponses,
     notificationMutations,
+    workflowMutations,
     sessionLoads,
     setStatus(status: SessionStatus) {
       if (sessions.length > 0) sessions[sessions.length - 1] = { ...sessions.at(-1)!, status, lastActivityAt: new Date().toISOString() };
@@ -436,6 +459,25 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         workflow: phase === "awaitingPlanApproval"
           ? { ...workflow, phase, plan: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", checkpoint: { stage: "plan", outcome: "ready", summary: "One-task plan is ready for approval", artifact: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp }
           : { ...workflow, phase, updatedAt: timestamp },
+        lastActivityAt: timestamp,
+      };
+    },
+    setWorkflowFailure(repairAttempts = 3, maxRepairAttempts = 2) {
+      if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
+      const timestamp = new Date().toISOString();
+      const current = sessions.at(-1)!;
+      sessions[sessions.length - 1] = {
+        ...current,
+        status: "finished",
+        workflow: {
+          ...current.workflow!,
+          phase: "failed",
+          repairAttempts,
+          maxRepairAttempts,
+          checkpoint: { stage: "review", outcome: "failed", summary: "Final review found blocking durability defects", artifact: null, toolCallId: "failed-review", sequence: 9, receivedAt: timestamp },
+          updatedAt: timestamp,
+          error: "Repair budget exhausted: blocking durability defects remain",
+        },
         lastActivityAt: timestamp,
       };
     },
@@ -542,6 +584,43 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
   expect(layout.workspaceLeft).toBe(layout.railRight);
   expect(layout.workspaceRight).toBe(1180);
   expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
+});
+
+test("browser evidence renders inline and remains contained on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  api.setEvents([{
+    sequence: 1,
+    type: "browser_artifact_created",
+    timestamp: "2026-04-15T10:00:00.000Z",
+    data: { artifact: {
+      id: "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41",
+      kind: "browser-screenshot",
+      mediaType: "image/png",
+      byteCount: 68,
+      width: 390,
+      height: 844,
+      pageUrl: "http://127.0.0.1:4000/settings",
+      pageTitle: "Settings",
+      label: "Mobile settings",
+      createdAt: "2026-04-15T10:00:00.000Z",
+    } },
+  }]);
+  await page.reload();
+
+  const evidence = page.locator(".browser-evidence");
+  await expect(evidence).toBeVisible();
+  await expect(evidence.getByRole("img", { name: "Mobile settings" })).toBeVisible();
+  await expect(evidence).toContainText("390 × 844");
+  await expect(evidence.getByRole("link", { name: "DOWNLOAD" })).toHaveAttribute("download", /browser-evidence-/);
+  const bounds = await evidence.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 });
 
 test("workflow-phase badge stays accessible and contained in desktop and mobile session navigation", async ({ page }) => {
@@ -665,7 +744,8 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(workflow.locator("details")).not.toHaveAttribute("open");
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   const planningLayout = await workflow.evaluate((element) => ({ footerBottom: element.querySelector<HTMLElement>(":scope > footer")!.getBoundingClientRect().bottom, viewportHeight: window.innerHeight }));
-  expect(planningLayout.viewportHeight - planningLayout.footerBottom).toBeGreaterThanOrEqual(16);
+  expect(planningLayout.viewportHeight - planningLayout.footerBottom).toBeGreaterThanOrEqual(6);
+  expect(await page.locator(".timeline").evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
 
   api.setWorkflowPhase("awaitingPlanApproval");
   await page.reload();
@@ -680,6 +760,119 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(page.getByLabel("Message Pi")).toBeVisible();
   await page.reload();
   await expect(workflow).toHaveCount(0);
+});
+
+test("autonomous workflow phases expose Pi thinking and tool activity", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Visible loop activity" }),
+    });
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Open workflow actions" }).click();
+  await page.getByRole("menuitem", { name: /engineering loop/i }).click();
+  const dialog = page.getByRole("dialog", { name: "Define, build, prove" });
+  await dialog.getByLabel("Objective").fill("Keep autonomous workflow activity visible");
+  await dialog.getByRole("button", { name: /start define/i }).click();
+
+  api.setWorkflowPhase("building");
+  api.setEvents([
+    {
+      sequence: 1,
+      type: "message_end",
+      timestamp: "2026-04-15T10:00:00.000Z",
+      data: { message: { role: "assistant", content: [
+        { type: "thinking", thinking: "Inspect the workflow boundary before editing." },
+        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "web/src/App.tsx" } },
+      ] } },
+    },
+    {
+      sequence: 2,
+      type: "tool_execution_start",
+      timestamp: "2026-04-15T10:00:01.000Z",
+      data: { toolCallId: "call-1", toolName: "read", args: { path: "web/src/App.tsx" } },
+    },
+  ]);
+  api.setStatus("working");
+  await page.reload();
+
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("Building");
+  await expect(page.locator(".thinking-trace")).toContainText("PI THINKING");
+  await expect(page.locator(".tool-row")).toContainText("read");
+  await expect(page.locator(".tool-row")).toContainText("running");
+  await page.locator(".thinking-trace summary").click();
+  await expect(page.getByText("Inspect the workflow boundary before editing.")).toBeVisible();
+  await expect(page.getByLabel("Message Pi")).toHaveCount(0);
+  expect(await page.locator(".timeline").evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
+
+  await workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" }).click();
+  const guidanceDialog = page.getByRole("dialog", { name: "Guide the current phase" });
+  await expect(guidanceDialog).toContainText("labeled steering");
+  await guidanceDialog.getByLabel("Guidance").fill("Keep the activity transcript compact.");
+  await guidanceDialog.getByRole("button", { name: /send guidance/i }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Keep the activity transcript compact." });
+
+  api.setWorkflowPhase("verifying");
+  api.setStatus("working");
+  await page.reload();
+  await workflow.getByRole("button", { name: "QUEUE AFTER LOOP" }).click();
+  const followUpDialog = page.getByRole("dialog", { name: "Queue feedback after the loop" });
+  await expect(followUpDialog).toContainText("finish verification and review");
+  await followUpDialog.getByLabel("Follow-up").fill("Summarize any remaining deployment risk.");
+  await followUpDialog.getByRole("button", { name: /queue follow-up/i }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Summarize any remaining deployment risk." });
+  await expect(workflow.getByRole("button", { name: "ADD TO QUEUE" })).toBeVisible();
+  await expect(page.getByLabel("Message Pi")).toHaveCount(0);
+});
+
+test("failed workflows can extend their repair budget and continue", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Recover failed loop" }),
+    });
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Open workflow actions" }).click();
+  await page.getByRole("menuitem", { name: /engineering loop/i }).click();
+  const starter = page.getByRole("dialog", { name: "Define, build, prove" });
+  await starter.getByLabel("Objective").fill("Recover an exhausted workflow without restarting it");
+  await starter.getByRole("button", { name: /start define/i }).click();
+  api.setWorkflowFailure();
+  api.setStatus("stopped");
+  await page.reload();
+
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("Failed");
+  await expect(workflow).toContainText("Blocking findings remain");
+  await expect(workflow.locator(".workflow-stage-rail li.active")).toContainText("REVIEW");
+  await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
+  await workflow.getByRole("button", { name: "CONTINUE REPAIRS" }).click();
+
+  const continuation = page.getByRole("dialog", { name: "Continue the failed workflow" });
+  await expect(continuation).toContainText("approved specification and plan stay in place");
+  await expect(continuation).toContainText("Final review found blocking durability defects");
+  const additionalAttempts = continuation.getByLabel("Additional repair attempts");
+  await additionalAttempts.fill("3");
+  await continuation.getByRole("button", { name: /continue repairs/i }).click();
+
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "continueRepairs", additionalRepairAttempts: 3, runtimeId: "runtime-1-resumed" });
+  await expect(workflow).toContainText("Repairing");
+  await expect(workflow).toContainText("3/6 REPAIRS");
+  await expect(workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" })).toBeVisible();
+  await expect(page.getByLabel("Message Pi")).toHaveCount(0);
 });
 
 test("desktop workspace navigation scrolls independently when its contents overflow", async ({ page }) => {

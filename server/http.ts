@@ -36,6 +36,7 @@ import {
 import { AppConfig, type AppConfigShape } from "./config.ts";
 import { HttpRequestError, HttpServerError, StaticAssetError } from "./errors.ts";
 import { PiRuntimeSupervisor } from "./runtimes/PiRuntimeSupervisor.ts";
+import { loadOwnedSessionArtifact } from "./runtimes/OwnedSessionArtifactStore.ts";
 import { PushNotifications } from "./notifications/PushNotifications.ts";
 import { WorkspaceReview } from "./reviews/WorkspaceReview.ts";
 import { WorkspaceDirectory } from "./workspaces/WorkspaceDirectory.ts";
@@ -485,6 +486,29 @@ function makeRequestHandler() {
           return;
         }
 
+        const artifactMatch = /^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/.exec(pathname);
+        if (artifactMatch && (request.method === "GET" || request.method === "HEAD")) {
+          yield* requireBrowser(request, config, false);
+          const values = yield* Effect.try({
+            try: () => ({ sessionId: decodeURIComponent(artifactMatch[1]!), artifactId: decodeURIComponent(artifactMatch[2]!) }),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed artifact reference", cause }),
+          });
+          yield* supervisor.get(values.sessionId);
+          const body = yield* Effect.tryPromise({
+            try: () => loadOwnedSessionArtifact(config.stateDir, values.sessionId, values.artifactId),
+            catch: () => new HttpRequestError({ status: 404, message: "Artifact not found" }),
+          });
+          response.writeHead(200, {
+            ...securityHeaders(),
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": `inline; filename="browser-evidence-${values.artifactId}.png"`,
+            "Content-Length": String(body.length),
+            "Content-Type": "image/png",
+          });
+          response.end(request.method === "HEAD" ? undefined : body);
+          return;
+        }
+
         const eventsMatch = /^\/api\/sessions\/([^/]+)\/events$/.exec(pathname);
         if (eventsMatch && request.method === "GET") {
           yield* requireBrowser(request, config, false);
@@ -765,7 +789,7 @@ function makeRequestHandler() {
           return;
         }
 
-        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || eventsMatch || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || workflowMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
+        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || artifactMatch || eventsMatch || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || workflowMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
           json(response, 405, { error: "Method not allowed" });
           return;
         }

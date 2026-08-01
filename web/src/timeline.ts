@@ -1,13 +1,23 @@
-import type { OwnedSessionEvent } from "../../shared/domain.ts";
+import * as Schema from "effect/Schema";
+import { BrowserArtifactCreatedData, type OwnedSessionEvent, type SessionArtifact } from "../../shared/domain.ts";
 
 export type TimelineItem =
   | { readonly _tag: "message"; readonly key: string; readonly sequence: number; readonly role: "user" | "assistant"; readonly text: string; readonly imageCount: number; readonly live?: boolean }
+  | { readonly _tag: "thinking"; readonly key: string; readonly sequence: number; readonly text: string; readonly live?: boolean }
+  | { readonly _tag: "browser-image"; readonly key: string; readonly sequence: number; readonly artifact: SessionArtifact }
   | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
   | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" }
   | { readonly _tag: "notice"; readonly key: string; readonly text: string; readonly tone: "info" | "warning" | "error" };
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+const decodeBrowserArtifactCreated = Schema.decodeUnknownSync(BrowserArtifactCreatedData);
+
+function browserArtifact(data: Record<string, unknown> | undefined): SessionArtifact | undefined {
+  try { return decodeBrowserArtifactCreated(data).artifact; }
+  catch { return; }
 }
 
 function messageImages(message: unknown): number {
@@ -24,6 +34,15 @@ function messageText(message: unknown): string {
     const item = record(part);
     return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
   }).join("\n");
+}
+
+function messageThinking(message: unknown): string {
+  const content = record(message)?.content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part) => {
+    const item = record(part);
+    return item?.type === "thinking" && typeof item.thinking === "string" ? [item.thinking] : [];
+  }).join("\n\n");
 }
 
 export function valueText(value: unknown): string {
@@ -114,10 +133,19 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
   let activeCompaction: number | undefined;
   let activeRetry: number | undefined;
   let liveText = "";
-  let liveKey = "";
+  let liveTextKey = "";
+  let liveThinking = "";
+  let liveThinkingKey = "";
 
   for (const event of events) {
     const data = record(event.data);
+    if (event.type === "browser_artifact_created") {
+      const artifact = browserArtifact(data);
+      if (artifact) items.push({ _tag: "browser-image", key: `browser-artifact-${event.sequence}`, sequence: event.sequence, artifact });
+    }
+    if (event.type === "browser_artifact_failed" && typeof data?.message === "string") {
+      items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, text: data.message, tone: "error" });
+    }
     // TODO(tracer): Project stateful setStatus/setWidget/set_editor_text RPC
     // methods once the web shell has session-scoped extension UI state.
     if (event.type === "extension_ui_request" && data?.method === "notify" && typeof data.message === "string") {
@@ -182,27 +210,39 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       const message = record(data?.message);
       if (message?.role === "assistant") {
         liveText = "";
-        liveKey = `live-${event.sequence}`;
+        liveTextKey = `live-${event.sequence}`;
+        liveThinking = "";
+        liveThinkingKey = `thinking-live-${event.sequence}`;
       }
     }
     if (event.type === "message_update") {
       const update = record(data?.assistantMessageEvent);
       if (update?.type === "text_delta" && typeof update.delta === "string") {
-        if (!liveKey) liveKey = `live-${event.sequence}`;
+        if (!liveTextKey) liveTextKey = `live-${event.sequence}`;
         liveText += update.delta;
+      }
+      if (update?.type === "thinking_delta" && typeof update.delta === "string") {
+        if (!liveThinkingKey) liveThinkingKey = `thinking-live-${event.sequence}`;
+        liveThinking += update.delta;
       }
     }
     if (event.type === "message_end") {
       const message = record(data?.message);
       const role = message?.role;
       const text = messageText(message);
+      const thinking = messageThinking(message);
       const imageCount = messageImages(message);
+      if (role === "assistant" && thinking) {
+        items.push({ _tag: "thinking", key: `thinking-${event.sequence}`, sequence: event.sequence, text: thinking });
+      }
       if ((role === "user" || role === "assistant") && (text || imageCount > 0)) {
         items.push({ _tag: "message", key: `message-${event.sequence}`, sequence: event.sequence, role, text, imageCount });
       }
       if (role === "assistant") {
         liveText = "";
-        liveKey = "";
+        liveTextKey = "";
+        liveThinking = "";
+        liveThinkingKey = "";
       }
     }
     if (event.type === "tool_execution_start") {
@@ -253,6 +293,8 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
     }
   }
 
-  if (liveText) items.push({ _tag: "message", key: liveKey, sequence: events.at(-1)?.sequence ?? 0, role: "assistant", text: liveText, imageCount: 0, live: true });
+  const liveSequence = events.at(-1)?.sequence ?? 0;
+  if (liveThinking) items.push({ _tag: "thinking", key: liveThinkingKey, sequence: liveSequence, text: liveThinking, live: true });
+  if (liveText) items.push({ _tag: "message", key: liveTextKey, sequence: liveSequence, role: "assistant", text: liveText, imageCount: 0, live: true });
   return items;
 }

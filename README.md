@@ -20,13 +20,14 @@ https://piss.<tailnet>.ts.net
 - Browser-created trusted workspaces and multiple supervised Pi sessions
 - Durable session metadata and validated resume from Pi JSONL transcripts
 - Native conversation and tool-event timelines
+- Managed loopback Chromium verification with accessibility-driven interaction and durable inline screenshot evidence
 - Prompt, steer, follow-up, abort, archive, and resume controls
 - Guided engineering workflows with Define and Plan approvals plus bounded Build, Verify, Review, and repair phases
 - Runtime-generation and command-ID protection against stale or duplicate delivery
 - Model, thinking-level, context, usage, queue, and compaction controls
 - Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)
 - Workspace-scoped file mentions and read-only Git review in a Bubblewrap sandbox
-- PNG, JPEG, GIF, and WebP attachments with signature and size validation
+- PNG, JPEG, GIF, and WebP prompt attachments plus privately stored browser screenshots with signature and size validation
 - Per-session browser drafts and an update-safe offline application shell
 - Opt-in privacy-safe Web Push notifications
 - Mobile navigation, keyboard shortcuts, and global session picking
