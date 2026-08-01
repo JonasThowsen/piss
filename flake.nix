@@ -142,7 +142,7 @@
               checkPhase = ''
                 runHook preCheck
                 npm run check
-                npm run test:browser
+                CI=1 npm run test:browser
                 runHook postCheck
               '';
               installPhase = ''
