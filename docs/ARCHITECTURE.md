@@ -12,7 +12,7 @@ PISS is a Pi-native remote workspace, not a generic IDE. It owns:
 - Pi process lifecycle;
 - browser authentication and command routing;
 - session discovery, status, and attention state;
-- web views of Pi messages, tools, queues, statistics, review data, and extension UI.
+- web views of Pi messages, tools, queues, statistics, review data, extension UI, and durable guided workflows.
 
 It does not own a general-purpose terminal, arbitrary browser-triggered process execution, provider-neutral agent adapters, or collaborative editing.
 
@@ -39,7 +39,7 @@ Browser ── HTTPS ── PISS server ── JSONL stdin/stdout ── pi --mo
 
 The server owns multiple Pi RPC child processes. RPC exposes prompts, queues, models, compaction, statistics, extension commands, and interactive extension requests while retaining process isolation per active session.
 
-Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, and ephemeral runtime projections. If Pi settles after tool execution without a displayable assistant response, PISS requests the missing final response once. An unexpected or forced server restart stops direct children and resumes durable sessions in a new runtime generation; runs interrupted while working receive a transcript-aware continuation prompt. Declarative server updates avoid that recovery path by remaining staged until every runtime is quiescent. Transparent survival of the exact in-flight tool process across arbitrary control-plane replacement remains deferred.
+Pi JSONL files are transcript truth. PISS stores bounded ownership metadata, workspace registrations, accepted command IDs, notification subscriptions, guided-workflow phase and approval state, and ephemeral runtime projections. If Pi settles after tool execution without a displayable assistant response, PISS requests the missing final response once. An unexpected or forced server restart stops direct children and resumes durable sessions in a new runtime generation; runs interrupted while working receive a transcript-aware continuation prompt. Declarative server updates avoid that recovery path by remaining staged until every runtime is quiescent. Transparent survival of the exact in-flight tool process across arbitrary control-plane replacement remains deferred.
 
 ## Effect architecture
 
@@ -60,6 +60,8 @@ web/                       React client and PWA worker
 ```
 
 Node HTTP, filesystem, process, and sandbox APIs remain in infrastructure services. React components render state and initiate use cases; Effect Schema decodes server responses at the browser boundary.
+
+The first guided workflow is a one-task engineering tracer. PISS owns its durable Define → Plan → Build → Verify → Review state machine and explicit approval gates. A bundled, fixed-path Pi extension exposes a structured checkpoint tool, while curated bundled skills define phase behavior. Checkpoints are validated against the current workflow ID, runtime generation, expected phase, bounded repair budget, and persisted approved artifacts. Skills never own durable orchestration, and the browser never drives continuation timers.
 
 ## Deployment architecture
 
@@ -83,6 +85,7 @@ Server units use a two-phase update handoff. A NixOS switch reloads the new unit
 | Workspace definitions | PISS state store |
 | Workspace-to-session association | PISS state store |
 | Runtime state | in-memory supervisor, reconciled with processes |
+| Engineering workflow phase, approvals, and bounded artifacts | PISS state store |
 | Browser drafts and outgoing tray | browser local storage |
 | Browser reconnect view | bounded event projection and transcript reconstruction |
 

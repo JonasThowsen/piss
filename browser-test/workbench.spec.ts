@@ -32,6 +32,20 @@ type TestSession = {
   autoCompactionEnabled: boolean | null;
   pendingMessageCount: number;
   compaction: { status: "idle" | "running" | "succeeded" | "failed"; reason: string | null; tokensBefore: number | null; estimatedTokensAfter: number | null; error: string | null; updatedAt: string | null };
+  workflow: null | {
+    id: string;
+    phase: "defining" | "awaitingSpecApproval" | "planning" | "awaitingPlanApproval" | "building" | "verifying" | "reviewing" | "repairing" | "readyToShip" | "blocked" | "cancelled" | "failed";
+    objective: string;
+    repairAttempts: number;
+    maxRepairAttempts: number;
+    specification: string | null;
+    plan: string | null;
+    checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
+    blockedFromPhase: string | null;
+    createdAt: string;
+    updatedAt: string;
+    error: string | null;
+  };
   createdAt: string;
   lastActivityAt: string;
   events: unknown[];
@@ -184,6 +198,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         autoCompactionEnabled: true,
         pendingMessageCount: 0,
         compaction: { status: "idle", reason: null, tokensBefore: null, estimatedTokensAfter: null, error: null, updatedAt: null },
+        workflow: null,
         createdAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: new Date().toISOString(),
         events: [],
@@ -298,6 +313,36 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       }
       sessions[sessionIndex] = configured;
       await route.fulfill({ json: { session: configured } });
+      return;
+    }
+    if (session && path === `/api/sessions/${session.id}/workflow` && method === "POST") {
+      const timestamp = new Date().toISOString();
+      let workflow = session.workflow;
+      if (body?.action === "start") {
+        workflow = {
+          id: "browser-workflow-1",
+          phase: "awaitingSpecApproval",
+          objective: typeof body.objective === "string" ? body.objective : "Build the workflow",
+          repairAttempts: 0,
+          maxRepairAttempts: typeof body.maxRepairAttempts === "number" ? body.maxRepairAttempts : 3,
+          specification: "# Specification\n\nDeliver one durable workflow tracer with explicit approval gates.",
+          plan: null,
+          checkpoint: { stage: "define", outcome: "ready", summary: "Specification is ready for approval", artifact: "# Specification\n\nDeliver one durable workflow tracer with explicit approval gates.", toolCallId: "define-checkpoint", sequence: 1, receivedAt: timestamp },
+          blockedFromPhase: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          error: null,
+        };
+      } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingSpecApproval") {
+        workflow = { ...workflow, phase: "awaitingPlanApproval", plan: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", checkpoint: { stage: "plan", outcome: "ready", summary: "One-task plan is ready for approval", artifact: "# One-task plan\n\nImplement the smallest end-to-end workflow path.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp };
+      } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingPlanApproval") {
+        workflow = { ...workflow, phase: "readyToShip", checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
+      } else if (workflow && body?.action === "cancel") {
+        workflow = { ...workflow, phase: "cancelled", updatedAt: timestamp };
+      }
+      const updated = { ...session, status: "finished" as const, workflow, lastActivityAt: timestamp };
+      sessions[sessionIndex] = updated;
+      await route.fulfill({ json: { session: updated } });
       return;
     }
     if (session && path === `/api/sessions/${session.id}/interactive` && method === "POST") {
@@ -458,6 +503,36 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
   expect(layout.workspaceLeft).toBe(layout.railRight);
   expect(layout.workspaceRight).toBe(1180);
   expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
+});
+
+test("mobile composer starts and approves a guided engineering workflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Workflow session" }),
+    });
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Open workflow actions" }).click();
+  await page.getByRole("menuitem", { name: /engineering workflow/i }).click();
+  const dialog = page.getByRole("dialog", { name: "Define, build, prove" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Objective").fill("Add a durable guided workflow with visible approval gates");
+  await dialog.getByRole("button", { name: /start define/i }).click();
+
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("Spec approval");
+  await expect(workflow).toContainText("Specification is ready for approval");
+  await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
+  await expect(workflow).toContainText("Plan approval");
+  await workflow.getByRole("button", { name: "APPROVE PLAN" }).click();
+  await expect(workflow).toContainText("Ready to ship");
+  await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
 });
 
 test("desktop workspace navigation scrolls independently when its contents overflow", async ({ page }) => {
@@ -1462,8 +1537,9 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await blockedRemoval.getByRole("button", { name: "CANCEL" }).click();
 
   expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("22px");
-  await expect(page.locator(".composer-insertions svg")).toHaveCount(2);
+  await expect(page.locator(".composer-insertions svg")).toHaveCount(4);
   expect(await page.locator(".attachment-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
+  expect(await page.locator(".composer-action-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("20px");
   expect(await page.locator(".mention-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
   expect(await page.locator(".send-button").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
 });

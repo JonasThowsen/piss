@@ -362,6 +362,20 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.equal(acknowledgedResponse.status, 200);
     const acknowledged = await acknowledgedResponse.json() as { session: { status: string } };
     assert.equal(acknowledged.session.status, "idle");
+    const workflowCancelResponse = await fetch(`${base}/api/sessions/${created.session.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "cancel" }),
+    });
+    assert.equal(workflowCancelResponse.status, 200);
+    const workflowCancel = await workflowCancelResponse.json() as { session: { workflow: unknown } };
+    assert.equal(workflowCancel.session.workflow, null);
+    const staleWorkflowResponse = await fetch(`${base}/api/sessions/${created.session.id}/workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: "stale-runtime", action: "cancel" }),
+    });
+    assert.equal(staleWorkflowResponse.status, 409);
     assert.equal(await readFile(join(directory, "fake-pi-cwd"), "utf8"), join(directory, "created-workspace"));
     const detailResponse = await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders });
     assert.equal(detailResponse.status, 200);

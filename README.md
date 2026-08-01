@@ -21,6 +21,7 @@ https://piss.<tailnet>.ts.net
 - Durable session metadata and validated resume from Pi JSONL transcripts
 - Native conversation and tool-event timelines
 - Prompt, steer, follow-up, abort, archive, and resume controls
+- Guided engineering workflows with Define and Plan approvals plus bounded Build, Verify, Review, and repair phases
 - Runtime-generation and command-ID protection against stale or duplicate delivery
 - Model, thinking-level, context, usage, queue, and compaction controls
 - Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)
@@ -121,7 +122,7 @@ nix flake update piss
 sudo nixos-rebuild switch --flake .#your-host
 ```
 
-Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update is staged without restarting PISS. The update activator asks the running generation to wait until working, queued, compacting, and interactive sessions have settled; it then performs a short restart and automatically resumes the idle runtimes from their Pi transcripts on the new generation. You can deploy while other sessions are working—the old generation keeps serving them until activation is safe.
+Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update is staged without restarting PISS. The update activator asks the running generation to wait until working, queued, compacting, interactive, and autonomous workflow phases have settled; it then performs a short restart and automatically resumes the idle runtimes from their Pi transcripts on the new generation. You can deploy while other sessions are working—the old generation keeps serving them until activation is safe.
 
 The first upgrade from a release without this handoff is staged but not activated automatically, because the old process cannot understand the safe-activation signal. Wait until its sessions are idle and restart `piss.service` once; subsequent updates use the quiescent handoff automatically.
 
