@@ -737,6 +737,38 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   expect(approvalLayout.artifactHeight).toBeGreaterThanOrEqual(350);
   expect(approvalLayout.artifactScrollHeight).toBeGreaterThan(approvalLayout.artifactHeight);
   expect(approvalLayout.viewportHeight - approvalLayout.footerBottom).toBeGreaterThanOrEqual(16);
+  const specificationOverflow = await workflow.locator(".workflow-artifact").evaluate((artifact) => {
+    const longValue = `/dev/site/${"unbroken-component-route-".repeat(18)}`;
+    const paragraph = document.createElement("p");
+    paragraph.dataset.testid = "long-spec-prose";
+    paragraph.textContent = `A readable requirement containing ${longValue} must wrap inside the specification card.`;
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = longValue;
+    pre.append(code);
+    artifact.append(paragraph, pre);
+    const artifactBounds = artifact.getBoundingClientRect();
+    const paragraphBounds = paragraph.getBoundingClientRect();
+    pre.scrollLeft = 120;
+    return {
+      artifactRight: artifactBounds.right,
+      paragraphRight: paragraphBounds.right,
+      artifactClientWidth: artifact.clientWidth,
+      detailsClientWidth: artifact.parentElement?.clientWidth ?? 0,
+      artifactTouchAction: getComputedStyle(artifact).touchAction,
+      preClientWidth: pre.clientWidth,
+      preScrollWidth: pre.scrollWidth,
+      preScrollLeft: pre.scrollLeft,
+      viewportWidth: window.innerWidth,
+      documentScrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(specificationOverflow.artifactClientWidth).toBeLessThanOrEqual(specificationOverflow.detailsClientWidth);
+  expect(specificationOverflow.paragraphRight).toBeLessThanOrEqual(specificationOverflow.artifactRight + 1);
+  expect(specificationOverflow.preScrollWidth).toBeGreaterThan(specificationOverflow.preClientWidth);
+  expect(specificationOverflow.preScrollLeft).toBeGreaterThan(0);
+  expect(specificationOverflow.artifactTouchAction).toContain("pan-x");
+  expect(specificationOverflow.documentScrollWidth).toBeLessThanOrEqual(specificationOverflow.viewportWidth);
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
   await expect(workflow).toContainText("Planning");

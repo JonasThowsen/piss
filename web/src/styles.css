@@ -234,10 +234,10 @@ button { color: inherit; }
 .session-view { width: 100%; height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; overflow: hidden; }
 .session-view.workflow-focus-view { grid-template-rows: 54px 0 minmax(0, 1fr); }
 .workflow-focus-view .control-deck { min-height: 0; height: 100%; overflow: hidden; }
-.workflow-focus-view .engineering-workflow:has(details[open]) { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.workflow-focus-view .workflow-copy:has(details[open]) { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.workflow-focus-view .workflow-copy details[open] { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.workflow-focus-view .workflow-artifact { min-height: 0; height: 100%; max-height: none; }
+.workflow-focus-view .engineering-workflow:has(details[open]) { min-width: 0; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.workflow-focus-view .workflow-copy:has(details[open]) { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-focus-view .workflow-copy details[open] { min-width: 0; min-height: 0; max-width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-focus-view .workflow-artifact { width: auto; min-width: 0; min-height: 0; max-width: none; height: 100%; max-height: none; justify-self: stretch; }
 .capability-tabs {
   display: flex;
   align-items: center;
@@ -551,7 +551,7 @@ button { color: inherit; }
 .outbox-message.rejected > i { background: var(--danger); }
 .outbox-message.rejected header b, .outbox-message.rejected header small { color: var(--danger); }
 
-.engineering-workflow { margin: 0 auto 8px; overflow: hidden; border: 1px solid #b8c8bd; border-radius: 9px; background: linear-gradient(135deg, #f8fbf7 0%, #eef5f0 100%); box-shadow: 0 4px 18px rgba(35, 62, 46, .07); }
+.engineering-workflow { width: 100%; min-width: 0; max-width: 100%; margin: 0 auto 8px; overflow: hidden; border: 1px solid #b8c8bd; border-radius: 9px; background: linear-gradient(135deg, #f8fbf7 0%, #eef5f0 100%); box-shadow: 0 4px 18px rgba(35, 62, 46, .07); }
 .engineering-workflow > header { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 11px; border-bottom: 1px solid rgba(49, 92, 70, .14); }
 .workflow-identity { min-width: 0; display: flex; align-items: center; gap: 9px; }
 .workflow-identity > i { width: 29px; height: 29px; display: grid; flex: none; place-items: center; border: 1px solid rgba(49, 92, 70, .22); border-radius: 7px; background: white; color: var(--accent); }
@@ -570,17 +570,22 @@ button { color: inherit; }
 .workflow-stage-rail li.complete::before, .workflow-stage-rail li.active::before { background: #7fa18d; }
 .workflow-stage-rail li.complete i { border-color: var(--accent); background: var(--accent); color: white; }
 .workflow-stage-rail li.active i { border-color: var(--accent); background: white; box-shadow: 0 0 0 3px rgba(49, 92, 70, .1); }
-.workflow-copy { padding: 7px 11px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
+.workflow-copy { min-width: 0; padding: 7px 11px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
 .workflow-copy > p { margin: 0; color: #475149; font-size: 9px; line-height: 1.45; }
 .workflow-copy > strong { display: block; margin-top: 5px; color: var(--danger); font-size: 8px; line-height: 1.4; }
-.workflow-copy details { margin-top: 7px; border: 1px solid rgba(49, 92, 70, .16); border-radius: 5px; background: rgba(255, 255, 255, .75); }
+.workflow-copy details { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; margin-top: 7px; border: 1px solid rgba(49, 92, 70, .16); border-radius: 5px; background: rgba(255, 255, 255, .75); }
 .workflow-copy summary { min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--accent); font-size: 7px; font-weight: 800; letter-spacing: .08em; cursor: pointer; list-style: none; }
 .workflow-copy summary::-webkit-details-marker { display: none; }
 .workflow-copy summary svg { width: 13px; height: 13px; }
 .workflow-copy summary svg:last-child { margin-left: auto; transition: transform .15s ease; }
 .workflow-copy details[open] summary svg:last-child { transform: rotate(90deg); }
-.workflow-artifact { max-height: min(420px, 45vh); overflow: auto; padding: 8px 10px; border-top: 1px solid rgba(49, 92, 70, .12); color: var(--text); font-size: 10px; line-height: 1.5; }
+.workflow-artifact { width: 100%; min-width: 0; max-width: 100%; max-height: min(420px, 45vh); overflow: auto; padding: 8px 10px; border-top: 1px solid rgba(49, 92, 70, .12); color: var(--text); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; overscroll-behavior: contain; touch-action: pan-x pan-y; }
 .workflow-focus-mode .workflow-artifact { max-height: min(620px, 60vh); }
+.workflow-artifact > * { min-width: 0; max-width: 100%; }
+.workflow-artifact pre { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; touch-action: pan-x pan-y; }
+.workflow-artifact pre code { white-space: pre; }
+.workflow-artifact :not(pre) > code { white-space: break-spaces; overflow-wrap: anywhere; }
+.workflow-artifact table { display: block; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; touch-action: pan-x pan-y; }
 .workflow-artifact > :first-child { margin-top: 0; }
 .workflow-artifact > :last-child { margin-bottom: 0; }
 .engineering-workflow > footer { min-height: 39px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 5px 8px; border-top: 1px solid rgba(49, 92, 70, .12); background: rgba(255, 255, 255, .56); }
