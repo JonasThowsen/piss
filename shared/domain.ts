@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
@@ -248,7 +249,9 @@ export const OwnedSession = Schema.Struct({
   autoCompactionEnabled: Schema.NullOr(Schema.Boolean),
   pendingMessageCount: NonNegativeInt,
   compaction: CompactionState,
-  workflow: Schema.NullOr(EngineeringWorkflow),
+  workflow: Schema.NullOr(EngineeringWorkflow).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   events: Schema.Array(OwnedSessionEvent),
@@ -269,7 +272,9 @@ export const OwnedSessionSummary = Schema.Struct({
   sessionFile: Schema.NullOr(Schema.String),
   model: Schema.NullOr(AvailableModel),
   thinkingLevel: Schema.NullOr(ThinkingLevel),
-  workflow: Schema.NullOr(EngineeringWorkflowSummary),
+  workflow: Schema.NullOr(EngineeringWorkflowSummary).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   eventCount: NonNegativeInt,
