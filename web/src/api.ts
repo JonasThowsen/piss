@@ -18,6 +18,7 @@ import {
   WorkspaceListResponse,
   type CreateOwnedSessionInput,
   type CreateWorkspaceInput,
+  type EngineeringWorkflowMutationInput,
   type ImageInput,
   type OwnedSessionCommandAction,
   type ThinkingLevel,
@@ -339,6 +340,20 @@ export function setSessionThinkingLevel(input: {
     Effect.mapError((cause) => cause instanceof ApiError
       ? cause
       : new ApiError({ message: "The configured session did not match its schema", cause })),
+  );
+}
+
+export function mutateEngineeringWorkflow(sessionId: string, input: EngineeringWorkflowMutationInput) {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/workflow`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(5 * 60_000),
+    body: JSON.stringify(input),
+  }).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(OwnedSessionDetailResponse)),
+    Effect.mapError((cause) => cause instanceof ApiError
+      ? cause
+      : new ApiError({ message: "The engineering workflow response did not match its schema", cause })),
   );
 }
 

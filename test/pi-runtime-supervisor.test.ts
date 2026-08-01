@@ -95,6 +95,16 @@ process.stdin.on("data", (chunk) => {
         if (command.message === "Delay prompt acknowledgement") console.log(JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 190000, estimatedTokensAfter: 30000 }, aborted: false, willRetry: false }));
         console.log(JSON.stringify({ type: "agent_start" }));
         console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+        if (command.message.startsWith("/skill:piss-engineering-")) {
+          const workflowId = /Workflow ID: ([^\\n]+)/.exec(command.message)?.[1];
+          const skill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
+          const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
+          const outcome = stage === "define" || stage === "plan" ? "ready" : "passed";
+          const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# One-task plan" } : {}) };
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", args, result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+          return;
+        }
         if (command.message.startsWith("Continue the task that was interrupted by the PISS control-plane restart.") || command.message.startsWith("The previous run ended after tool execution without a final response.")) {
           const recoveredText = command.message.startsWith("Continue the task") ? "Recovered final response after restart" : "Recovered missing final response";
           const message = { role: "assistant", content: [{ type: "text", text: recoveredText }], stopReason: "stop" };
@@ -392,7 +402,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
       workspaceSeeds: [],
       workspaceDiscoveryRoots: [],
     };
-    const live = runtimeLayer(config, workspace);
+    const live = runtimeLayer({ ...config, workflowResourceDir: join(process.cwd(), "workflow-resources") }, workspace);
 
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -444,6 +454,33 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           );
           const compactionFailed = yield* supervisor.get(created.id);
           const autoCompaction = yield* supervisor.setAutoCompaction({ sessionId: created.id, runtimeId: created.runtimeId }, false);
+          yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            { runtimeId: created.runtimeId, action: "start", objective: "Implement one workflow tracer", maxRepairAttempts: 2 },
+          );
+          let workflowSpec = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && workflowSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            workflowSpec = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            { runtimeId: created.runtimeId, action: "approve" },
+          );
+          let workflowPlan = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && workflowPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            workflowPlan = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            { runtimeId: created.runtimeId, action: "approve" },
+          );
+          let workflowReady = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 300 && (workflowReady.workflow?.phase !== "readyToShip" || workflowReady.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            workflowReady = yield* supervisor.get(created.id);
+          }
           const staleResult = yield* supervisor.abort({ sessionId: created.id, runtimeId: "stale-runtime" }).pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
@@ -537,7 +574,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -576,6 +613,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.compactionFailed.compaction.status, "failed");
     assert.match(result.compactionFailed.compaction.error ?? "", /simulated compaction failure/);
     assert.equal(result.autoCompaction.autoCompactionEnabled, false);
+    assert.equal(result.workflowSpec.workflow?.specification, "# Approved specification");
+    assert.equal(result.workflowPlan.workflow?.plan, "# One-task plan");
+    assert.equal(result.workflowReady.workflow?.phase, "readyToShip");
+    assert.equal(result.workflowReady.status, "finished");
     assert.doesNotMatch(JSON.stringify({ models: result.models, events: result.configuredModel.events }), /super-secret|credential@example/);
     assert.equal(result.staleResult, "StaleRuntimeGenerationError");
     assert.equal(result.interactiveBlocked.status, "blocked");
@@ -610,6 +651,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
       assert.ok(args.includes("--mode"));
       assert.ok(args.includes("rpc"));
       assert.ok(args.includes("--approve"));
+      assert.ok(args.includes("--extension"));
+      assert.ok(args.includes("--skill"));
     }
   } finally {
     if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;

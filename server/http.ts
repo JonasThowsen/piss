@@ -10,6 +10,7 @@ import { validateImages } from "../shared/imageValidation.ts";
 import {
   CreateOwnedSessionInput,
   CreateWorkspaceInput,
+  EngineeringWorkflowMutationInput,
   ImportOwnedSessionInput,
   InteractiveResponseInput,
   OwnedSessionCommandInput,
@@ -257,6 +258,15 @@ function decodeConfigurationRequest(request: IncomingMessage) {
     Effect.mapError((cause) => cause instanceof HttpRequestError
       ? cause
       : new HttpRequestError({ status: 400, message: "Invalid session configuration", cause })),
+  );
+}
+
+function decodeWorkflowMutation(request: IncomingMessage) {
+  return readJson(request).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(EngineeringWorkflowMutationInput)),
+    Effect.mapError((cause) => cause instanceof HttpRequestError
+      ? cause
+      : new HttpRequestError({ status: 400, message: "Invalid engineering workflow request", cause })),
   );
 }
 
@@ -660,6 +670,19 @@ function makeRequestHandler() {
           return;
         }
 
+        const workflowMatch = /^\/api\/sessions\/([^/]+)\/workflow$/.exec(pathname);
+        if (workflowMatch && request.method === "POST") {
+          yield* requireBrowser(request, config, true);
+          const sessionId = yield* Effect.try({
+            try: () => decodeURIComponent(workflowMatch[1]!),
+            catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed session ID", cause }),
+          });
+          const input = yield* decodeWorkflowMutation(request);
+          const session = yield* supervisor.mutateWorkflow({ sessionId, runtimeId: input.runtimeId }, input);
+          json(response, 200, { session } satisfies OwnedSessionDetailResponse);
+          return;
+        }
+
         const interactiveMatch = /^\/api\/sessions\/([^/]+)\/interactive$/.exec(pathname);
         if (interactiveMatch && request.method === "POST") {
           yield* requireBrowser(request, config, true);
@@ -742,7 +765,7 @@ function makeRequestHandler() {
           return;
         }
 
-        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || eventsMatch || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
+        if (pathname === "/api/notifications" || pathname === "/api/workspaces" || workspaceMatch || pathname === "/api/directories" || pathname === "/api/sessions" || pathname === "/api/sessions/import" || eventsMatch || detailMatch || mentionsMatch || reviewMatch || modelsMatch || statsMatch || configurationMatch || workflowMatch || interactiveMatch || acknowledgeMatch || resumeMatch || commandMatch) {
           json(response, 405, { error: "Method not allowed" });
           return;
         }

@@ -39,6 +39,7 @@
                 ./package-lock.json
                 ./server
                 ./shared
+                ./workflow-resources
               ];
               nativeBuildInputs = [ pkgs.makeWrapper ];
               npmBuildScript = "build:server";
@@ -48,11 +49,13 @@
 
                 mkdir -p $out/bin $out/lib/piss
                 cp dist/server.js $out/lib/piss/server.js
+                cp -r workflow-resources $out/lib/piss/workflow-resources
                 npm prune --omit=dev --offline
                 cp -r node_modules $out/lib/piss/node_modules
 
                 makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
                   --add-flags $out/lib/piss/server.js \
+                  --set PISS_WORKFLOW_RESOURCE_DIR $out/lib/piss/workflow-resources \
                   --prefix NODE_PATH : $out/lib/piss/node_modules \
                   --prefix PATH : ${
                     nixpkgs.lib.makeBinPath [
@@ -122,6 +125,7 @@
                 ./shared
                 ./test
                 ./web
+                ./workflow-resources
               ];
               nativeBuildInputs = [ pkgs.makeWrapper ];
               nativeCheckInputs = [
@@ -147,12 +151,14 @@
                 mkdir -p $out/bin $out/lib/piss
                 cp dist/server.js $out/lib/piss/server.js
                 cp -r dist/public $out/lib/piss/public
+                cp -r workflow-resources $out/lib/piss/workflow-resources
                 npm prune --omit=dev --offline
                 cp -r node_modules $out/lib/piss/node_modules
 
                 makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/piss \
                   --add-flags $out/lib/piss/server.js \
                   --set PISS_PUBLIC_DIR $out/lib/piss/public \
+                  --set PISS_WORKFLOW_RESOURCE_DIR $out/lib/piss/workflow-resources \
                   --prefix NODE_PATH : $out/lib/piss/node_modules \
                   --prefix PATH : ${
                     nixpkgs.lib.makeBinPath [

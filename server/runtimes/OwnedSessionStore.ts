@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { chmod, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import * as Schema from "effect/Schema";
-import { AvailableModel, CompactionState, InteractiveRequest, OwnedSessionStatus, SessionUsage, ThinkingLevel, WorkspaceId } from "../../shared/domain.ts";
+import { AvailableModel, CompactionState, EngineeringWorkflow, InteractiveRequest, OwnedSessionStatus, SessionUsage, ThinkingLevel, WorkspaceId } from "../../shared/domain.ts";
 
 const MAX_STORAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_PERSISTED_SESSIONS = 100;
@@ -33,6 +33,7 @@ export const PersistedOwnedSession = Schema.Struct({
   autoCompactionEnabled: Schema.optional(Schema.NullOr(Schema.Boolean)),
   pendingMessageCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   compaction: Schema.optional(CompactionState),
+  workflow: Schema.optional(Schema.NullOr(EngineeringWorkflow)),
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),

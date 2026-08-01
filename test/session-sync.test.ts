@@ -33,6 +33,7 @@ function session(events: ReadonlyArray<OwnedSessionEvent>, overrides: Partial<Ow
     autoCompactionEnabled: true,
     pendingMessageCount: 0,
     compaction: { status: "idle", reason: null, tokensBefore: null, estimatedTokensAfter: null, error: null, updatedAt: null },
+    workflow: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     lastActivityAt: events.at(-1)?.timestamp ?? "2026-01-01T00:00:00.000Z",
     events,

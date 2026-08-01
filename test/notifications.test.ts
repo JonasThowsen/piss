@@ -30,6 +30,7 @@ function session(): OwnedSession {
     autoCompactionEnabled: true,
     pendingMessageCount: 0,
     compaction: { status: "idle", reason: null, tokensBefore: null, estimatedTokensAfter: null, error: null, updatedAt: null },
+    workflow: null,
     createdAt: new Date().toISOString(),
     lastActivityAt: new Date().toISOString(),
     events: [{ sequence: 1, type: "message_end", timestamp: new Date().toISOString(), data: { message: { content: "super secret prompt" } } }],

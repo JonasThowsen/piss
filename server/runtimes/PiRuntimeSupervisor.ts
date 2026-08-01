@@ -13,6 +13,10 @@ import * as Semaphore from "effect/Semaphore";
 import type {
   AvailableModel,
   CreateOwnedSessionInput,
+  EngineeringWorkflow,
+  EngineeringWorkflowCheckpoint,
+  EngineeringWorkflowMutationInput,
+  EngineeringWorkflowPhase,
   ImportOwnedSessionInput,
   FileMention,
   ImageInput,
@@ -29,6 +33,7 @@ import type {
   WorkspaceId,
 } from "../../shared/domain.ts";
 import { canAcceptPrompt, canConfigureSession, transitionAttentionState } from "../../shared/sessionState.ts";
+import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, isTerminalWorkflowPhase } from "../../shared/engineeringWorkflow.ts";
 import { AppConfig } from "../config.ts";
 import { PushNotifications } from "../notifications/PushNotifications.ts";
 import { FileMentionSearch, FileMentionSearchError } from "../files/FileMentionSearch.ts";
@@ -98,6 +103,7 @@ interface MutableOwnedSession {
   resumeRunAfterRestart: boolean;
   finalResponseRecoveryAttempted: boolean;
   quarantined: boolean;
+  workflowDispatchPending: boolean;
   termination?: Promise<void>;
   readonly pending: Map<string, PendingCommand>;
   readonly mutationLock: Semaphore.Semaphore;
@@ -142,10 +148,11 @@ export interface PiRuntimeSupervisorShape {
   readonly refreshUsage: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly compact: (target: RuntimeTarget) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly setAutoCompaction: (target: RuntimeTarget, enabled: boolean) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
+  readonly mutateWorkflow: (target: RuntimeTarget, input: EngineeringWorkflowMutationInput) => Effect.Effect<OwnedSession, RuntimeCommandError | SessionStorageError>;
   readonly prompt: (target: RuntimeTarget, text: string, images?: ReadonlyArray<ImageInput>, commandId?: string) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
   readonly steer: (target: RuntimeTarget, text: string, images?: ReadonlyArray<ImageInput>, commandId?: string) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
   readonly followUp: (target: RuntimeTarget, text: string, images?: ReadonlyArray<ImageInput>, commandId?: string) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
-  readonly abort: (target: RuntimeTarget) => Effect.Effect<void, RuntimeCommandError>;
+  readonly abort: (target: RuntimeTarget) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
   readonly stop: (target: RuntimeTarget) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
   readonly remove: (target: RuntimeTarget) => Effect.Effect<void, RuntimeCommandError | SessionStorageError>;
   readonly removeWorkspace: (id: WorkspaceId) => Effect.Effect<void, WorkspaceHasSessionsError | WorkspaceRecordNotFoundError | WorkspaceManagedByConfigurationError | WorkspaceStorageError>;
@@ -164,10 +171,11 @@ function cloneSession(session: OwnedSession): OwnedSession {
 }
 
 export function isSessionUpdateSafe(
-  session: Pick<OwnedSession, "status" | "pendingMessageCount" | "compaction" | "interactiveRequests">,
+  session: Pick<OwnedSession, "status" | "pendingMessageCount" | "compaction" | "interactiveRequests" | "workflow">,
   pendingCommandCount = 0,
 ): boolean {
   return (session.status === "idle" || session.status === "finished" || session.status === "stopped" || session.status === "crashed")
+    && (!session.workflow || !isAutonomousWorkflowPhase(session.workflow.phase))
     && session.pendingMessageCount === 0
     && session.compaction.status !== "running"
     && session.interactiveRequests.length === 0
@@ -187,6 +195,13 @@ function summarizeSession(session: OwnedSession): OwnedSessionSummary {
     sessionFile: session.sessionFile,
     model: session.model,
     thinkingLevel: session.thinkingLevel,
+    workflow: session.workflow && {
+      id: session.workflow.id,
+      phase: session.workflow.phase,
+      repairAttempts: session.workflow.repairAttempts,
+      maxRepairAttempts: session.workflow.maxRepairAttempts,
+      updatedAt: session.workflow.updatedAt,
+    },
     createdAt: session.createdAt,
     lastActivityAt: session.lastActivityAt,
     eventCount: session.events.length,
@@ -533,6 +548,35 @@ function slashCommand(value: unknown): PiSlashCommand | undefined {
   };
 }
 
+function workflowCheckpointFromRpc(
+  message: RpcMessage,
+  sequence: number,
+): { readonly workflowId: string; readonly checkpoint: EngineeringWorkflowCheckpoint } | undefined {
+  if (message.type !== "tool_execution_end" || message.toolName !== "piss_workflow_checkpoint" || message.isError === true) return;
+  if (typeof message.toolCallId !== "string" || !message.toolCallId || message.toolCallId.length > 256) return;
+  if (typeof message.args !== "object" || message.args === null || Array.isArray(message.args)) return;
+  const args = message.args as Record<string, unknown>;
+  const stages = new Set(["define", "plan", "build", "verify", "review"]);
+  const outcomes = new Set(["ready", "passed", "failed", "blocked"]);
+  if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
+  if (typeof args.stage !== "string" || !stages.has(args.stage)) return;
+  if (typeof args.outcome !== "string" || !outcomes.has(args.outcome)) return;
+  if (typeof args.summary !== "string" || !args.summary || args.summary.length > 16 * 1024) return;
+  if (args.artifact !== undefined && (typeof args.artifact !== "string" || args.artifact.length > 64 * 1024)) return;
+  return {
+    workflowId: args.workflowId,
+    checkpoint: {
+      stage: args.stage as EngineeringWorkflowCheckpoint["stage"],
+      outcome: args.outcome as EngineeringWorkflowCheckpoint["outcome"],
+      summary: args.summary,
+      artifact: typeof args.artifact === "string" ? args.artifact : null,
+      toolCallId: message.toolCallId,
+      sequence,
+      receivedAt: now(),
+    },
+  };
+}
+
 async function detectBranch(workspaceFd: number): Promise<string | null> {
   const options = { cwd: `/proc/self/fd/${workspaceFd}`, timeout: 2_000, maxBuffer: 16 * 1024, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } };
   try {
@@ -548,15 +592,44 @@ async function detectBranch(workspaceFd: number): Promise<string | null> {
   }
 }
 
-function processArguments(workspace: Workspace, name: string, sessionFile?: string): ReadonlyArray<string> {
+function processArguments(workspace: Workspace, name: string, workflowResourceDir: string | undefined, sessionFile?: string): ReadonlyArray<string> {
+  const workflowResources = workflowResourceDir ? [
+    "--extension",
+    join(workflowResourceDir, "piss-workflow.ts"),
+    ...["define", "plan", "build", "verify", "review"].flatMap((phase) => [
+      "--skill",
+      join(workflowResourceDir, "skills", `piss-engineering-${phase}`),
+    ]),
+  ] : [];
   return [
     "--mode",
     "rpc",
     "--name",
     name,
     ...(sessionFile ? ["--session", sessionFile] : []),
+    ...workflowResources,
     workspace.trustProjectResources ? "--approve" : "--no-approve",
   ];
+}
+
+function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): string {
+  const contract = `Workflow ID: ${workflow.id}\nYou must finish this phase by calling piss_workflow_checkpoint with this exact workflow ID.`;
+  switch (workflow.phase) {
+    case "defining":
+      return `/skill:piss-engineering-define\n${contract}\n\nObjective:\n${workflow.objective}${feedback ? `\n\nUser-requested revision:\n${feedback}` : ""}`;
+    case "planning":
+      return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}${feedback ? `\n\nUser-requested revision:\n${feedback}` : ""}`;
+    case "building":
+      return `/skill:piss-engineering-build\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}`;
+    case "repairing":
+      return `/skill:piss-engineering-build\n${contract}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}`;
+    case "verifying":
+      return `/skill:piss-engineering-verify\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}`;
+    case "reviewing":
+      return `/skill:piss-engineering-review\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nApproved one-task plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}`;
+    default:
+      throw new Error(`Workflow phase ${workflow.phase} cannot start an agent run`);
+  }
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -647,6 +720,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const timelineDirectory = join(config.stateDir, "timelines");
     const timelinePersistenceTails = new Map<string, Promise<void>>();
     let persistenceTail = Promise.resolve();
+    let continueWorkflowAfterSettle = (_session: MutableOwnedSession): void => undefined;
 
     const publishSession = (session: MutableOwnedSession): void => {
       const snapshot = cloneSession(session.snapshot);
@@ -681,6 +755,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       autoCompactionEnabled: session.snapshot.autoCompactionEnabled,
       pendingMessageCount: session.snapshot.pendingMessageCount,
       compaction: session.snapshot.compaction,
+      workflow: session.snapshot.workflow,
       createdAt: session.snapshot.createdAt,
       lastActivityAt: session.snapshot.lastActivityAt,
       error: session.snapshot.error,
@@ -820,6 +895,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         resumeRunAfterRestart: record.resumeRunAfterRestart === true && record.resumeAfterRestart === true && status === "stopped",
         finalResponseRecoveryAttempted: false,
         quarantined: status === "crashed",
+        workflowDispatchPending: false,
         pending: new Map(),
         mutationLock,
         workspaceIdentity: expectedWorkspace,
@@ -844,6 +920,15 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           autoCompactionEnabled: record.autoCompactionEnabled ?? null,
           pendingMessageCount: record.pendingMessageCount ?? 0,
           compaction: record.compaction ?? idleCompaction(),
+          workflow: record.workflow && isAutonomousWorkflowPhase(record.workflow.phase)
+            ? {
+                ...record.workflow,
+                phase: "blocked",
+                blockedFromPhase: record.workflow.phase,
+                updatedAt: now(),
+                error: "The control plane restarted during autonomous workflow execution; review the workspace before resuming",
+              }
+            : record.workflow ?? null,
           createdAt: record.createdAt,
           lastActivityAt: record.lastActivityAt,
           events: [...timeline.events],
@@ -863,6 +948,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
 
     const notifyAttention = (session: MutableOwnedSession): void => {
       const status = session.snapshot.status;
+      if (session.snapshot.workflow && isAutonomousWorkflowPhase(session.snapshot.workflow.phase)) return;
       if (status !== "finished" && status !== "blocked" && status !== "crashed") return;
       void Effect.runPromise(notifications.notify(cloneSession(session.snapshot), status)).catch(() => undefined);
     };
@@ -887,9 +973,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         ...session.snapshot,
         status: type === "agent_start"
           ? transitionAttentionState(previousStatus, "agentStarted")
-          : type === "agent_settled"
-            ? transitionAttentionState(previousStatus, "agentSettled")
-            : previousStatus,
+          : type === "agent_settled" && session.snapshot.workflow && isAutonomousWorkflowPhase(session.snapshot.workflow.phase)
+            ? "working"
+            : type === "agent_settled"
+              ? transitionAttentionState(previousStatus, "agentSettled")
+              : previousStatus,
         lastActivityAt: timestamp,
         events: retained.events,
       };
@@ -1077,10 +1165,19 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           session.snapshot = { ...session.snapshot, error: null };
         }
       }
+      const reportedCheckpoint = workflowCheckpointFromRpc(message, session.sequence + 1);
+      if (reportedCheckpoint && session.snapshot.workflow?.id === reportedCheckpoint.workflowId && !isTerminalWorkflowPhase(session.snapshot.workflow.phase)) {
+        const previousPhase = session.snapshot.workflow.phase;
+        const workflow = applyWorkflowCheckpoint(session.snapshot.workflow, reportedCheckpoint.checkpoint);
+        session.workflowDispatchPending = workflow.phase !== previousPhase && isAutonomousWorkflowPhase(workflow.phase);
+        session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
+        void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow checkpoint", cause));
+      }
       if (message.type === "agent_settled"
         && session.snapshot.status === "working"
         && session.snapshot.error === null
         && !session.finalResponseRecoveryAttempted
+        && !reportedCheckpoint
         && runEndedAfterToolsWithoutFinalResponse(session.snapshot.events)) {
         session.finalResponseRecoveryAttempted = true;
         // TODO(tracer): Reconcile by durable transcript entry ID once live RPC
@@ -1096,6 +1193,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return true;
       }
       appendEvent(session, message.type, message);
+      if (message.type === "agent_settled" && session.workflowDispatchPending) continueWorkflowAfterSettle(session);
       return true;
     };
 
@@ -1202,6 +1300,52 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       });
     };
 
+    const dispatchWorkflowPhase = (
+      session: MutableOwnedSession,
+      feedback?: string,
+    ): Effect.Effect<void, PiCommandError | SessionStorageError> => Effect.gen(function* () {
+      const workflow = session.snapshot.workflow;
+      if (!workflow || (!isAutonomousWorkflowPhase(workflow.phase) && workflow.phase !== "defining" && workflow.phase !== "planning")) {
+        return yield* Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message: "This workflow phase cannot start an agent run" }));
+      }
+      session.workflowDispatchPending = false;
+      session.finalResponseRecoveryAttempted = false;
+      session.snapshot = { ...session.snapshot, status: "working", error: null, lastActivityAt: now() };
+      yield* persist();
+      yield* request(session, {
+        id: `workflow:${workflow.id}:${workflow.phase}:${randomUUID()}`,
+        type: "prompt",
+        message: workflowPhasePrompt(workflow, feedback),
+      });
+    });
+
+    const blockWorkflow = (session: MutableOwnedSession, cause: unknown): Effect.Effect<void, SessionStorageError> => {
+      const workflow = session.snapshot.workflow;
+      if (!workflow || isTerminalWorkflowPhase(workflow.phase)) return Effect.void;
+      const message = cause instanceof Error ? cause.message : "Workflow phase dispatch failed";
+      session.workflowDispatchPending = false;
+      session.snapshot = {
+        ...session.snapshot,
+        status: "finished",
+        workflow: {
+          ...workflow,
+          phase: "blocked",
+          blockedFromPhase: workflow.phase,
+          updatedAt: now(),
+          error: message,
+        },
+      };
+      return persist();
+    };
+
+    continueWorkflowAfterSettle = (session) => {
+      if (!session.workflowDispatchPending) return;
+      session.workflowDispatchPending = false;
+      void Effect.runPromise(session.mutationLock.withPermit(dispatchWorkflowPhase(session))).catch((cause) => {
+        void Effect.runPromise(blockWorkflow(session, cause)).catch((persistCause) => console.error("Could not block failed engineering workflow", persistCause));
+      });
+    };
+
     const resolveTarget = (target: RuntimeTarget): Effect.Effect<MutableOwnedSession, RuntimeCommandError> => {
       const session = sessions.get(target.sessionId);
       if (!session) return Effect.fail(new SessionNotFoundError({ sessionId: target.sessionId }));
@@ -1280,7 +1424,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         const runtimeId = randomUUID();
         const createdAt = now();
         const child = yield* Effect.try({
-          try: () => spawn(config.piCommand, processArguments(workspace, sessionName), {
+          try: () => spawn(config.piCommand, processArguments(workspace, sessionName, config.workflowResourceDir), {
             cwd: "/proc/self/fd/3",
             detached: true,
             stdio: ["pipe", "pipe", "pipe", rootHandle.fd],
@@ -1298,6 +1442,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           resumeRunAfterRestart: false,
           finalResponseRecoveryAttempted: false,
           quarantined: false,
+          workflowDispatchPending: false,
           pending: new Map(),
           mutationLock,
           workspaceIdentity: { device: rootStat.dev, inode: rootStat.ino },
@@ -1320,6 +1465,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             autoCompactionEnabled: null,
             pendingMessageCount: 0,
             compaction: idleCompaction(),
+            workflow: null,
             createdAt,
             lastActivityAt: createdAt,
             events: [],
@@ -1411,6 +1557,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         resumeRunAfterRestart: false,
         finalResponseRecoveryAttempted: false,
         quarantined: false,
+        workflowDispatchPending: false,
         pending: new Map(),
         mutationLock,
         workspaceIdentity: { device: workspaceState.rootStat.dev, inode: workspaceState.rootStat.ino },
@@ -1433,6 +1580,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           autoCompactionEnabled: null,
           pendingMessageCount: 0,
           compaction: idleCompaction(),
+          workflow: null,
           createdAt,
           lastActivityAt: createdAt,
           events: [],
@@ -1491,7 +1639,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       const branch = yield* Effect.promise(() => detectBranch(rootHandle.fd));
       const runtimeId = randomUUID();
       const child = yield* Effect.try({
-        try: () => spawn(config.piCommand, processArguments(workspace, session.snapshot.name, durableTranscript ? sessionFile! : undefined), {
+        try: () => spawn(config.piCommand, processArguments(workspace, session.snapshot.name, config.workflowResourceDir, durableTranscript ? sessionFile! : undefined), {
           cwd: "/proc/self/fd/3",
           detached: true,
           stdio: ["pipe", "pipe", "pipe", rootHandle.fd],
@@ -1705,6 +1853,88 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           );
         }))),
       );
+
+    const mutateWorkflow: PiRuntimeSupervisorShape["mutateWorkflow"] = (target, input) => resolveTarget(target).pipe(
+      Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {
+        const current = session.snapshot.workflow;
+        const unavailable = (message: string) => Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message }));
+        if (input.action === "cancel") {
+          if (!current || isTerminalWorkflowPhase(current.phase)) return cloneSession(session.snapshot);
+          session.workflowDispatchPending = false;
+          const updatedAt = now();
+          session.snapshot = {
+            ...session.snapshot,
+            workflow: { ...current, phase: "cancelled", blockedFromPhase: null, updatedAt, error: null },
+            lastActivityAt: updatedAt,
+          };
+          yield* persist();
+          return cloneSession(session.snapshot);
+        }
+        if (input.action === "start") {
+          if (!canAcceptPrompt(session.snapshot.status)) return yield* unavailable("Start an engineering workflow only while Pi is idle");
+          if (current && !isTerminalWorkflowPhase(current.phase)) return yield* unavailable("This session already has an active engineering workflow");
+          const createdAt = now();
+          const workflow: EngineeringWorkflow = {
+            id: randomUUID(),
+            phase: "defining",
+            objective: input.objective.trim(),
+            repairAttempts: 0,
+            maxRepairAttempts: input.maxRepairAttempts ?? 3,
+            specification: null,
+            plan: null,
+            checkpoint: null,
+            blockedFromPhase: null,
+            createdAt,
+            updatedAt: createdAt,
+            error: null,
+          };
+          session.snapshot = { ...session.snapshot, workflow, lastActivityAt: createdAt };
+          yield* persist();
+          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          return cloneSession(session.snapshot);
+        }
+        if (!current) return yield* unavailable("This session has no engineering workflow");
+        if (input.action === "approve") {
+          const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
+            ? "planning"
+            : current.phase === "awaitingPlanApproval"
+              ? "building"
+              : current.phase;
+          if (phase === current.phase) return yield* unavailable("This workflow is not waiting for approval");
+          const updatedAt = now();
+          session.snapshot = { ...session.snapshot, workflow: { ...current, phase, checkpoint: current.checkpoint, updatedAt, error: null }, lastActivityAt: updatedAt };
+          yield* persist();
+          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          return cloneSession(session.snapshot);
+        }
+        if (input.action === "revise") {
+          const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
+            ? "defining"
+            : current.phase === "awaitingPlanApproval"
+              ? "planning"
+              : current.phase;
+          if (phase === current.phase) return yield* unavailable("Only a specification or plan awaiting approval can be revised");
+          const updatedAt = now();
+          session.snapshot = { ...session.snapshot, workflow: { ...current, phase, updatedAt, error: null }, lastActivityAt: updatedAt };
+          yield* persist();
+          yield* dispatchWorkflowPhase(session, input.feedback.trim()).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          return cloneSession(session.snapshot);
+        }
+        if (input.action === "resume") {
+          if (current.phase !== "blocked" || !current.blockedFromPhase) return yield* unavailable("This workflow is not resumable");
+          if (!isAutonomousWorkflowPhase(current.blockedFromPhase) && current.blockedFromPhase !== "defining" && current.blockedFromPhase !== "planning") {
+            return yield* unavailable("This workflow must be revised or cancelled");
+          }
+          const updatedAt = now();
+          const workflow = { ...current, phase: current.blockedFromPhase, blockedFromPhase: null, updatedAt, error: null };
+          session.snapshot = { ...session.snapshot, workflow, lastActivityAt: updatedAt };
+          yield* persist();
+          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          return cloneSession(session.snapshot);
+        }
+        return yield* unavailable("Unsupported workflow action");
+      }))),
+    );
 
     const refreshConfiguration = (session: MutableOwnedSession) =>
       request(session, { type: "get_state" }).pipe(
@@ -1935,16 +2165,29 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       refreshUsage,
       compact,
       setAutoCompaction,
+      mutateWorkflow,
       prompt: (target, text, images, commandId) => sendText(target, "prompt", text, images, commandId),
       steer: (target, text, images, commandId) => sendText(target, "steer", text, images, commandId),
       followUp: (target, text, images, commandId) => sendText(target, "follow_up", text, images, commandId),
       abort: (target) => resolveTarget(target).pipe(
-        Effect.flatMap((session) => Effect.sync(() => {
+        Effect.flatMap((session) => Effect.gen(function* () {
           // Release an HTTP submission waiting on an extension command before
           // asking Pi to abort. RPC abort does not cancel command handlers that
           // are blocked in unsupported terminal-only UI.
           failPending(session, "Pi command was aborted before it acknowledged the request", undefined, "prompt");
-        }).pipe(Effect.andThen(request(session, { type: "abort" })))),
+          const workflow = session.snapshot.workflow;
+          if (workflow && !isTerminalWorkflowPhase(workflow.phase)) {
+            const updatedAt = now();
+            session.workflowDispatchPending = false;
+            session.snapshot = {
+              ...session.snapshot,
+              workflow: { ...workflow, phase: "cancelled", blockedFromPhase: null, updatedAt, error: "The workflow was cancelled when its run was aborted" },
+              lastActivityAt: updatedAt,
+            };
+            yield* persist();
+          }
+          yield* request(session, { type: "abort" });
+        })),
         Effect.asVoid,
       ),
       stop: (target) =>
@@ -1953,6 +2196,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             if (TERMINAL_STATUSES.has(session.snapshot.status)) return Effect.void;
             session.resumeAfterRestart = false;
             session.resumeRunAfterRestart = false;
+            const workflow = session.snapshot.workflow;
             const interruptedRequests = session.snapshot.interactiveRequests.length;
             for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
             session.interactiveTimers.clear();
@@ -1962,6 +2206,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               interactiveRequests: [],
               lastActivityAt: now(),
               error: interruptedRequests > 0 ? `${interruptedRequests} pending interactive request${interruptedRequests === 1 ? " was" : "s were"} cancelled when the runtime stopped` : session.snapshot.error,
+              workflow: workflow && !isTerminalWorkflowPhase(workflow.phase)
+                ? { ...workflow, phase: "cancelled", blockedFromPhase: null, updatedAt: now(), error: "The workflow was cancelled when its runtime stopped" }
+                : workflow,
             };
             failPending(session, "Pi runtime was stopped");
             return terminate(session).pipe(

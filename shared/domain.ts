@@ -180,6 +180,58 @@ export const CompactionState = Schema.Struct({
 });
 export type CompactionState = typeof CompactionState.Type;
 
+export const EngineeringWorkflowPhase = Schema.Literals([
+  "defining",
+  "awaitingSpecApproval",
+  "planning",
+  "awaitingPlanApproval",
+  "building",
+  "verifying",
+  "reviewing",
+  "repairing",
+  "readyToShip",
+  "blocked",
+  "cancelled",
+  "failed",
+]);
+export type EngineeringWorkflowPhase = typeof EngineeringWorkflowPhase.Type;
+
+export const EngineeringWorkflowCheckpoint = Schema.Struct({
+  stage: Schema.Literals(["define", "plan", "build", "verify", "review"]),
+  outcome: Schema.Literals(["ready", "passed", "failed", "blocked"]),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  artifact: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+  toolCallId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  sequence: NonNegativeInt,
+  receivedAt: Schema.String,
+});
+export type EngineeringWorkflowCheckpoint = typeof EngineeringWorkflowCheckpoint.Type;
+
+export const EngineeringWorkflow = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  phase: EngineeringWorkflowPhase,
+  objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+  repairAttempts: NonNegativeInt,
+  maxRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10)),
+  specification: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+  plan: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+  checkpoint: Schema.NullOr(EngineeringWorkflowCheckpoint),
+  blockedFromPhase: Schema.NullOr(EngineeringWorkflowPhase),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+});
+export type EngineeringWorkflow = typeof EngineeringWorkflow.Type;
+
+export const EngineeringWorkflowSummary = Schema.Struct({
+  id: Schema.String,
+  phase: EngineeringWorkflowPhase,
+  repairAttempts: NonNegativeInt,
+  maxRepairAttempts: NonNegativeInt,
+  updatedAt: Schema.String,
+});
+export type EngineeringWorkflowSummary = typeof EngineeringWorkflowSummary.Type;
+
 export const OwnedSession = Schema.Struct({
   id: Schema.String,
   runtimeId: Schema.String,
@@ -196,6 +248,7 @@ export const OwnedSession = Schema.Struct({
   autoCompactionEnabled: Schema.NullOr(Schema.Boolean),
   pendingMessageCount: NonNegativeInt,
   compaction: CompactionState,
+  workflow: Schema.NullOr(EngineeringWorkflow),
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   events: Schema.Array(OwnedSessionEvent),
@@ -216,6 +269,7 @@ export const OwnedSessionSummary = Schema.Struct({
   sessionFile: Schema.NullOr(Schema.String),
   model: Schema.NullOr(AvailableModel),
   thinkingLevel: Schema.NullOr(ThinkingLevel),
+  workflow: Schema.NullOr(EngineeringWorkflowSummary),
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   eventCount: NonNegativeInt,
@@ -390,3 +444,22 @@ export const ResumeOwnedSessionInput = Schema.Struct({
   runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
 });
 export type ResumeOwnedSessionInput = typeof ResumeOwnedSessionInput.Type;
+
+export const EngineeringWorkflowMutationInput = Schema.Union([
+  Schema.Struct({
+    runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    action: Schema.Literal("start"),
+    objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+    maxRepairAttempts: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))),
+  }),
+  Schema.Struct({
+    runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    action: Schema.Literals(["approve", "cancel", "resume"]),
+  }),
+  Schema.Struct({
+    runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    action: Schema.Literal("revise"),
+    feedback: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+  }),
+]);
+export type EngineeringWorkflowMutationInput = typeof EngineeringWorkflowMutationInput.Type;
