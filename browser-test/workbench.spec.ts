@@ -1762,7 +1762,11 @@ test("older timeline pages preserve scroll position and detached tool output loa
 
   await expect(page.getByText(/Current 49/)).toBeVisible({ timeout: 5_000 });
   const loadOlder = page.getByRole("button", { name: "LOAD EARLIER ACTIVITY" });
-  await loadOlder.scrollIntoViewIfNeeded();
+  const timeline = page.locator(".timeline");
+  await timeline.hover();
+  await page.mouse.wheel(0, -10_000);
+  await expect.poll(() => timeline.evaluate((element) => element.scrollTop)).toBe(0);
+  await expect(loadOlder).toBeVisible();
   const current31 = page.getByText(/Current 31/);
   const before = await current31.boundingBox();
   await loadOlder.click();
