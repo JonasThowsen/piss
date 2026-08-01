@@ -28,32 +28,84 @@ export class ApiError extends Data.TaggedError("ApiError")<{
   readonly message: string;
   readonly status?: number;
   readonly cause?: unknown;
+  readonly retryable?: boolean;
 }> {}
 
-function responseJson(response: Response): Effect.Effect<unknown, ApiError> {
-  return Effect.tryPromise({
-    try: () => response.json(),
-    catch: (cause) => new ApiError({ message: "The server returned invalid JSON", status: response.status, cause }),
-  });
+const RETRY_DELAYS_MS = [250, 750, 1_500] as const;
+const TRANSIENT_RESPONSE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+function requestLabel(path: string, method: string): string {
+  return `${method} ${path.split("?", 1)[0]}`;
 }
 
-function request(path: string, init?: RequestInit): Effect.Effect<unknown, ApiError> {
+function interrupted(cause: unknown): boolean {
+  return cause instanceof DOMException && (cause.name === "AbortError" || cause.name === "TimeoutError");
+}
+
+async function requestOnce(path: string, init: RequestInit, method: string): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (cause) {
+    throw new ApiError({
+      message: "Could not reach the control plane",
+      cause,
+      retryable: !interrupted(cause),
+    });
+  }
+
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    throw new ApiError({
+      message: `The response from ${requestLabel(path, method)} was interrupted`,
+      status: response.status,
+      cause,
+      retryable: !interrupted(cause),
+    });
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch (cause) {
+    const retryable = TRANSIENT_RESPONSE_STATUSES.has(response.status);
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim() || "an unknown content type";
+    const message = retryable
+      ? `The server is temporarily unavailable (${response.status})`
+      : `Expected JSON from ${requestLabel(path, method)}, but received ${contentType} (${response.status})`;
+    throw new ApiError({ message, status: response.status, cause, retryable });
+  }
+
+  if (response.ok) return body;
+  const message = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+    ? body.error
+    : `The server responded with ${response.status}`;
+  throw new ApiError({ message, status: response.status, retryable: TRANSIENT_RESPONSE_STATUSES.has(response.status) });
+}
+
+function request(path: string, init?: RequestInit, policy?: { readonly retryTransient?: boolean }): Effect.Effect<unknown, ApiError> {
   return Effect.tryPromise({
-    try: () => fetch(path, { cache: "no-store", signal: AbortSignal.timeout(15_000), ...init }),
-    catch: (cause) => new ApiError({ message: "Could not reach the control plane", cause }),
-  }).pipe(
-    Effect.flatMap((response) =>
-      responseJson(response).pipe(
-        Effect.flatMap((body) => {
-          if (response.ok) return Effect.succeed(body);
-          const message = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
-            ? body.error
-            : `The server responded with ${response.status}`;
-          return Effect.fail(new ApiError({ message, status: response.status }));
-        }),
-      ),
-    ),
-  );
+    try: async () => {
+      const method = init?.method?.toUpperCase() ?? "GET";
+      const mayRetry = policy?.retryTransient === true || method === "GET" || method === "HEAD";
+      const signal = init?.signal ?? AbortSignal.timeout(15_000);
+      const requestInit = { cache: "no-store" as const, ...init, signal };
+      let attempt = 0;
+      while (true) {
+        try {
+          return await requestOnce(path, requestInit, method);
+        } catch (cause) {
+          if (!(cause instanceof ApiError) || !cause.retryable || !mayRetry || attempt >= RETRY_DELAYS_MS.length) throw cause;
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt++]));
+        }
+      }
+    },
+    catch: (cause) => cause instanceof ApiError
+      ? cause
+      : new ApiError({ message: "The API request failed", cause }),
+  });
 }
 
 export const loadNotificationCapability = request("/api/notifications").pipe(
@@ -416,5 +468,9 @@ export function sendSessionCommand(input: {
     headers: { "Content-Type": "application/json" },
     signal: AbortSignal.timeout(120_000),
     body: JSON.stringify({ runtimeId: input.runtimeId, commandId: input.commandId, action: input.action, text: input.text, images: input.images }),
+  }, {
+    // The supervisor persists accepted content-command IDs, so a replay after a
+    // gateway interruption cannot enqueue the same prompt twice.
+    retryTransient: input.action === "prompt" || input.action === "steer" || input.action === "followUp",
   }).pipe(Effect.asVoid);
 }
