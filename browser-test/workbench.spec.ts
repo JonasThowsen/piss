@@ -538,6 +538,10 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(workflow).toContainText("0/2 REPAIRS");
   await expect(workflow).toContainText("Spec approval");
   await expect(workflow).toContainText("Specification is ready for approval");
+  await workflow.locator("summary").click();
+  await expect(workflow.locator(".workflow-artifact")).toBeVisible();
+  const artifactMaxHeight = await workflow.locator(".workflow-artifact").evaluate((element) => Number.parseFloat(getComputedStyle(element).maxHeight));
+  expect(artifactMaxHeight).toBeGreaterThanOrEqual(350);
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
   await expect(workflow).toContainText("Plan approval");
   await workflow.getByRole("button", { name: "APPROVE PLAN" }).click();
