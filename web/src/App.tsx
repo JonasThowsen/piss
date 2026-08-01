@@ -78,6 +78,17 @@ const TIMELINE_WINDOW_SIZE = 180;
 const TIMELINE_WINDOW_SHIFT = 120;
 const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
+function StartupScreen() {
+  return <main className="startup-screen" role="status" aria-label="PISS is starting">
+    <div className="startup-card">
+      <span className="startup-mark" aria-hidden="true">π</span>
+      <b>Pi sin sidecar</b>
+      <small>Opening your workspace</small>
+      <span className="startup-progress" aria-hidden="true" />
+    </div>
+  </main>;
+}
+
 const emptySessionUiState = (): SessionUiState => ({ commandText: "", images: [], delivery: "steer", busy: false, outbox: [] });
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -1707,7 +1718,9 @@ export function App() {
   const pickerShortcutLabel = formatForDisplay(HOTKEYS.openGlobalPicker);
 
   return (
-    <Drawer.Root open={isMobile ? sidebarOpen : true} modal={isMobile} swipeDirection="left" onOpenChange={(open, details) => {
+    <>
+      {state._tag === "Loading" && <StartupScreen />}
+      <Drawer.Root open={isMobile ? sidebarOpen : true} modal={isMobile} swipeDirection="left" onOpenChange={(open, details) => {
       if (!isMobile) { details.cancel(); return; }
       setSidebarOpen(open);
     }}>
@@ -2321,7 +2334,8 @@ export function App() {
         <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch" disabled={busy || !workspaceId} type="submit">{busy ? "STARTING…" : <>START SESSION <ExternalLink aria-hidden="true" /></>}</button></footer>
       </DialogSurface>}
     </div>
-    </Drawer.Root>
+      </Drawer.Root>
+    </>
   );
 }
 

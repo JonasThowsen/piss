@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#f6f8f3" />
+    <meta name="color-scheme" content="light" />
     <meta name="description" content="PISS — an Effect-powered workspace for Pi" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
@@ -11,9 +12,22 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>PISS / Workspaces</title>
+    <style>
+      html, body { width: 100%; min-height: 100%; margin: 0; background: #f6f8f3; color-scheme: light; }
+      #root { min-height: 100vh; min-height: 100dvh; }
+      .startup-screen { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: hidden; background: #f6f8f3; color: #20231f; font-family: "Avenir Next", Avenir, "Noto Sans", "Segoe UI", sans-serif; }
+      .startup-card { display: grid; justify-items: center; gap: 13px; padding: 28px; text-align: center; }
+      .startup-mark { width: 66px; height: 66px; display: grid; place-items: center; border: 1px solid #c9cec6; border-radius: 10px; background: #fff; color: #315c46; font: italic 42px/1 Georgia, serif; box-shadow: 0 10px 32px rgba(32, 35, 31, .08); }
+      .startup-card b { margin-top: 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+      .startup-card small { color: #6c716a; font-size: 9px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+      .startup-progress { width: 92px; height: 2px; overflow: hidden; margin-top: 8px; border-radius: 2px; background: #dce1d9; }
+      .startup-progress::after { content: ""; display: block; width: 42%; height: 100%; border-radius: inherit; background: #315c46; animation: startup-progress 1.2s ease-in-out infinite alternate; }
+      @keyframes startup-progress { from { transform: translateX(-100%); } to { transform: translateX(240%); } }
+      @media (prefers-reduced-motion: reduce) { .startup-progress::after { width: 100%; animation: none; opacity: .7; } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><main class="startup-screen" role="status" aria-label="PISS is starting"><div class="startup-card"><span class="startup-mark" aria-hidden="true">π</span><b>Pi sin sidecar</b><small>Opening your workspace</small><span class="startup-progress" aria-hidden="true"></span></div></main></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
