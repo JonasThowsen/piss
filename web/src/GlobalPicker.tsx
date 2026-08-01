@@ -2,6 +2,7 @@ import { Combobox } from "@base-ui/react/combobox";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, ExternalLink, Search, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { DialogSurface } from "./ModalSurface.tsx";
 import { remapOptionNavigationKey } from "./optionNavigation.ts";
 import { searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
@@ -37,11 +38,14 @@ export function GlobalPicker<Action>({
   const inputRef = useRef<HTMLInputElement>(null);
   const matches = useMemo(() => searchPickerItems(items, query, matcher).slice(0, 50).map(({ item }) => item), [items, matcher, query]);
 
-  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <Dialog.Portal>
-      <Dialog.Backdrop className="global-picker-backdrop" />
-      <Dialog.Viewport className="global-picker-layer">
-        <Dialog.Popup className="global-picker" initialFocus={inputRef} finalFocus={finalFocus}>
+  return <DialogSurface
+    className="global-picker"
+    backdropClassName="global-picker-backdrop"
+    viewportClassName="global-picker-layer"
+    initialFocus={inputRef}
+    finalFocus={finalFocus}
+    onClose={onClose}
+  >
           <header>
             <div><span>GO TO</span><Dialog.Title render={<b />}>{title}</Dialog.Title></div>
             <Dialog.Close aria-label={`Close ${title.toLocaleLowerCase()} picker`}><X aria-hidden="true" /></Dialog.Close>
@@ -104,8 +108,5 @@ export function GlobalPicker<Action>({
             </Combobox.List>
           </Combobox.Root>
           <footer><span><kbd aria-label="Up Arrow"><ArrowUp aria-hidden="true" /></kbd><kbd aria-label="Down Arrow"><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> MOVE</span><span><kbd aria-label="Enter"><CornerDownLeft aria-hidden="true" /></kbd> OPEN</span><b>{matches.length} / {items.length}</b></footer>
-        </Dialog.Popup>
-      </Dialog.Viewport>
-    </Dialog.Portal>
-  </Dialog.Root>;
+  </DialogSurface>;
 }

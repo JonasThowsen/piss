@@ -2,6 +2,7 @@ import { Combobox } from "@base-ui/react/combobox";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, Search, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { DialogSurface } from "./ModalSurface.tsx";
 import { remapOptionNavigationKey } from "./optionNavigation.ts";
 import type { SlashCommandItem } from "./slashCommands.ts";
 
@@ -42,11 +43,14 @@ export function SlashCommandMenu({
     onChoose(command);
   };
 
-  return <Dialog.Root open onOpenChange={(open) => { if (!open) onDismiss(); }}>
-    <Dialog.Portal>
-      <Dialog.Backdrop className="slash-command-backdrop" />
-      <Dialog.Viewport className="slash-command-layer">
-        <Dialog.Popup className="slash-command-menu" initialFocus={searchRef} finalFocus={false}>
+  return <DialogSurface
+    className="slash-command-menu"
+    backdropClassName="slash-command-backdrop"
+    viewportClassName="slash-command-layer"
+    initialFocus={searchRef}
+    finalFocus={false}
+    onClose={onDismiss}
+  >
           <header>
             <div><span>RUNTIME CATALOG</span><Dialog.Title render={<b />}>Pi commands</Dialog.Title></div>
             <Dialog.Close aria-label="Close Pi commands"><X aria-hidden="true" /></Dialog.Close>
@@ -112,8 +116,5 @@ export function SlashCommandMenu({
             </Combobox.List>
           </Combobox.Root>
           <footer className="slash-command-footer"><span><kbd><ArrowUp aria-hidden="true" /><ArrowDown aria-hidden="true" /></kbd><kbd>C-N</kbd><kbd>C-P</kbd> move</span><span><kbd><CornerDownLeft aria-hidden="true" /></kbd> insert command</span><span><kbd>esc</kbd> close</span></footer>
-        </Dialog.Popup>
-      </Dialog.Viewport>
-    </Dialog.Portal>
-  </Dialog.Root>;
+  </DialogSurface>;
 }

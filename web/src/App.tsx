@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactElement, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import * as Effect from "effect/Effect";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Collapsible } from "@base-ui/react/collapsible";
@@ -18,6 +18,7 @@ import { isTerminalWorkflowPhase, workflowPhaseLabel } from "../../shared/engine
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, mutateEngineeringWorkflow, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
+import { DialogSurface, AlertDialogSurface } from "./ModalSurface.tsx";
 import { nextOptionIndex, optionNavigationDirection, remapOptionNavigationKey, scrollOptionIntoView } from "./optionNavigation.ts";
 import { markOutboxQueued, nextDeliveredOutboxExpiration, pruneDeliveredOutbox, reconcileOutbox, type OutboxItem } from "./outbox.ts";
 import { compact, eventTimeline, valueText } from "./timeline.ts";
@@ -370,7 +371,7 @@ export function App() {
   const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise">();
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [workflowFeedback, setWorkflowFeedback] = useState("");
-  const [workflowRepairLimit, setWorkflowRepairLimit] = useState(3);
+  const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
 
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
   const [archivePending, setArchivePending] = useState(false);
@@ -1636,7 +1637,7 @@ export function App() {
   const openWorkflowStarter = (returnFocus: HTMLElement) => {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowObjective(commandText.trim());
-    setWorkflowRepairLimit(3);
+    setWorkflowRepairLimit("3");
     setWorkflowDialog("start");
   };
 
@@ -1653,7 +1654,7 @@ export function App() {
       runtimeId: session.runtimeId,
       action: "start",
       objective,
-      maxRepairAttempts: workflowRepairLimit,
+      maxRepairAttempts: Math.max(1, Math.min(10, Number.parseInt(workflowRepairLimit, 10) || 1)),
     });
   };
 
@@ -2281,11 +2282,15 @@ export function App() {
         onRespond={(response) => void answerInteractive(interactiveRequest, response)}
       />}
 
-      {isMobile && mentionMenu && <Dialog.Root key={`${mentionMenu.active.start}:${mentionMenu.active.end}`} open onOpenChange={(open) => { if (!open && isMobileRef.current) closeMentionPicker(); }}>
-        <Dialog.Portal>
-          <Dialog.Backdrop className="mention-picker-backdrop" />
-          <Dialog.Viewport className="mention-picker-layer">
-            <Dialog.Popup className="mention-picker" initialFocus={mentionSearchInputRef} finalFocus={composerTextareaRef}>
+      {isMobile && mentionMenu && <DialogSurface
+        key={`${mentionMenu.active.start}:${mentionMenu.active.end}`}
+        className="mention-picker"
+        backdropClassName="mention-picker-backdrop"
+        viewportClassName="mention-picker-layer"
+        initialFocus={mentionSearchInputRef}
+        finalFocus={() => composerTextareaRef.current}
+        onClose={() => { if (isMobileRef.current) closeMentionPicker(); }}
+      >
               <header><div><span>WORKSPACE FILES</span><Dialog.Title render={<b />}>Mention a file</Dialog.Title></div><Dialog.Close aria-label="Close file mentions"><X aria-hidden="true" /></Dialog.Close></header>
               <Combobox.Root
                 items={mentionMenu.mentions}
@@ -2323,10 +2328,7 @@ export function App() {
                   {!mentionMenu.loading && mentionMenu.mentions.map((item, index) => <Combobox.Item className="mention-option" index={index} key={`${item.kind}:${item.path}`} value={item} nativeButton render={<button type="button" />}><i aria-hidden="true">{item.kind === "directory" ? <Folder /> : <FileText />}</i><span><b>{item.name}</b><small>{item.path}</small></span></Combobox.Item>)}
                 </Combobox.List>
               </Combobox.Root>
-            </Dialog.Popup>
-          </Dialog.Viewport>
-        </Dialog.Portal>
-      </Dialog.Root>}
+      </DialogSurface>}
 
       {workspaceCreatorOpen && <WorkspaceDialog
         returnFocus={workspaceCreatorReturnFocusRef.current}
@@ -2416,7 +2418,7 @@ export function App() {
         <div className="dialog-body workflow-dialog-body">
           <div className="workflow-intro"><i aria-hidden="true"><Workflow /></i><div><b>One approved tracer, end to end</b><p>PISS guides Pi through Define and Plan approvals, then runs a bounded Build → Verify → Review loop. It stops before commit, push, or deployment.</p></div></div>
           <label>Objective<textarea ref={workflowObjectiveRef} value={workflowObjective} onChange={(event) => setWorkflowObjective(event.target.value)} maxLength={64 * 1024} rows={6} placeholder="Describe the outcome, user, constraints, and what success looks like…" /></label>
-          <label className="workflow-repair-limit">Repair budget<input type="number" min={1} max={10} value={workflowRepairLimit} onChange={(event) => setWorkflowRepairLimit(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} /><small>Maximum autonomous repair cycles before PISS blocks for you.</small></label>
+          <label className="workflow-repair-limit">Repair budget<input type="number" inputMode="numeric" min={1} max={10} value={workflowRepairLimit} onChange={(event) => setWorkflowRepairLimit(event.target.value)} onBlur={() => setWorkflowRepairLimit(String(Math.max(1, Math.min(10, Number.parseInt(workflowRepairLimit, 10) || 1))))} /><small>Maximum autonomous repair cycles before PISS blocks for you.</small></label>
           {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
         </div>
         <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowObjective.trim()} type="submit">{busy ? "STARTING…" : <>START DEFINE <Sparkles aria-hidden="true" /></>}</button></footer>
@@ -2581,68 +2583,6 @@ function ActionMenu({ className, triggerClassName, triggerLabel, menuLabel, acti
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   </BaseMenu.Root>;
-}
-
-type ModalSurfaceProps = {
-  readonly className: string;
-  readonly pending?: boolean;
-  readonly returnFocus?: HTMLElement | null;
-  readonly fallbackFocus?: HTMLElement | null;
-  readonly initialFocus?: RefObject<HTMLElement | null> | true;
-  readonly onClose: () => void;
-  readonly render?: ReactElement;
-  readonly children: ReactNode;
-};
-
-function focusAfterModal(returnFocus?: HTMLElement | null, fallbackFocus?: HTMLElement | null): HTMLElement | null {
-  return returnFocus?.isConnected && !returnFocus.matches(":disabled") ? returnFocus : fallbackFocus?.isConnected ? fallbackFocus : null;
-}
-
-function DialogSurface({ className, pending = false, returnFocus, fallbackFocus, initialFocus = true, onClose, render, children }: ModalSurfaceProps) {
-  return <Dialog.Root
-    open
-    disablePointerDismissal={pending}
-    onOpenChange={(open, details) => {
-      if (open) return;
-      if (pending) { details.cancel(); return; }
-      onClose();
-    }}
-  >
-    <Dialog.Portal>
-      <Dialog.Backdrop className="dialog-backdrop" />
-      <Dialog.Viewport className="dialog-layer">
-        <Dialog.Popup
-          className={className}
-          initialFocus={initialFocus}
-          finalFocus={() => focusAfterModal(returnFocus, fallbackFocus)}
-          render={render}
-        >{children}</Dialog.Popup>
-      </Dialog.Viewport>
-    </Dialog.Portal>
-  </Dialog.Root>;
-}
-
-function AlertDialogSurface({ className, pending = false, returnFocus, fallbackFocus, initialFocus = true, onClose, render, children }: ModalSurfaceProps) {
-  return <AlertDialog.Root
-    open
-    onOpenChange={(open, details) => {
-      if (open) return;
-      if (pending) { details.cancel(); return; }
-      onClose();
-    }}
-  >
-    <AlertDialog.Portal>
-      <AlertDialog.Backdrop className="dialog-backdrop" />
-      <AlertDialog.Viewport className="dialog-layer">
-        <AlertDialog.Popup
-          className={className}
-          initialFocus={initialFocus}
-          finalFocus={() => focusAfterModal(returnFocus, fallbackFocus)}
-          render={render}
-        >{children}</AlertDialog.Popup>
-      </AlertDialog.Viewport>
-    </AlertDialog.Portal>
-  </AlertDialog.Root>;
 }
 
 function RenameSessionDialog({ session, returnFocus, fallbackFocus, onClose, onRenamed }: {

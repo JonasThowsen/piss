@@ -522,10 +522,20 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await page.getByRole("menuitem", { name: /engineering loop/i }).click();
   const dialog = page.getByRole("dialog", { name: "Define, build, prove" });
   await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveClass(/modal-surface/);
+  const dialogBounds = await dialog.boundingBox();
+  expect(dialogBounds?.y).toBeLessThanOrEqual(8);
+  expect(dialogBounds?.height).toBeGreaterThanOrEqual(828);
+  const repairBudget = dialog.getByLabel("Repair budget");
+  await repairBudget.fill("");
+  await expect(repairBudget).toHaveValue("");
+  await repairBudget.fill("2");
+  await expect(repairBudget).toHaveValue("2");
   await dialog.getByLabel("Objective").fill("Add a durable guided workflow with visible approval gates");
   await dialog.getByRole("button", { name: /start define/i }).click();
 
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("0/2 REPAIRS");
   await expect(workflow).toContainText("Spec approval");
   await expect(workflow).toContainText("Specification is ready for approval");
   await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
