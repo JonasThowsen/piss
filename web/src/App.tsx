@@ -14,7 +14,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
-import { isTerminalWorkflowPhase, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
+import { isTerminalWorkflowPhase, workflowNeedsApproval, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, mutateEngineeringWorkflow, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
@@ -2044,7 +2044,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          {activeView !== "changes" && <section className="control-deck">
+          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase) ? " workflow-approval-mode" : ""}`}>
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -2061,6 +2061,7 @@ export function App() {
               onRevise={openWorkflowRevision}
               onReviewChanges={() => setActiveView("changes")}
             />}
+            {!(selectedSession.workflow && workflowNeedsApproval(selectedSession.workflow.phase)) && <>
             <div className="composer" ref={composerRef}>
               <span className="sr-only" id="composer-picker-status" aria-live="polite">
                 {slashCommandMenu?.loading
@@ -2214,6 +2215,7 @@ export function App() {
               <span className={`runtime-state ${displayStatus(selectedSession.status)}`}><i />{ATTENTION_STATE_LABELS[selectedSession.status]}</span>
               <span className="sr-only" aria-live="polite">{selectedSession.name} is {ATTENTION_STATE_LABELS[selectedSession.status]}</span>
             </div>
+            </>}
           </section>}
         </Tabs.Root> : selectedSessionId ? <div className="blank-state session-loading" role="status" aria-live="polite">
           <span aria-hidden="true"><i /></span>
