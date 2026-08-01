@@ -11,11 +11,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, projectEventWithDetachedOutput, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
-import { WorkspaceId, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
+import { WorkspaceId, type EngineeringWorkflow, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
 
 const decodeWorkspaceId = Schema.decodeUnknownSync(WorkspaceId);
 
@@ -101,7 +101,7 @@ process.stdin.on("data", (chunk) => {
           const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
           const outcome = stage === "define" || stage === "plan" ? "ready" : "passed";
           const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# One-task plan" } : {}) };
-          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", args, result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
           setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
           return;
         }
@@ -366,6 +366,47 @@ test("bounded tool events retain lifecycle correlation identifiers", () => {
   });
   assert.deepEqual((agentEnd as { messages: Array<{ content: unknown[] }> }).messages[0]?.content[0], { type: "image", mimeType: "image/jpeg" });
   assert.doesNotMatch(JSON.stringify(agentEnd), /another-secret/);
+});
+
+test("reconciles a checkpoint from Pi's persisted tool result shape", () => {
+  const workflow: EngineeringWorkflow = {
+    id: "workflow-1",
+    phase: "defining",
+    objective: "Recover the approval gate",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: null,
+    plan: null,
+    checkpoint: null,
+    blockedFromPhase: null,
+    createdAt: "2026-08-01T12:00:00.000Z",
+    updatedAt: "2026-08-01T12:00:00.000Z",
+    error: null,
+  };
+  const event: OwnedSessionEvent = {
+    id: "session-1:7",
+    sequence: 7,
+    type: "tool_execution_end",
+    timestamp: "2026-08-01T12:01:00.000Z",
+    data: {
+      type: "tool_execution_end",
+      toolCallId: "define-checkpoint",
+      toolName: "piss_workflow_checkpoint",
+      result: {
+        content: [{ type: "text", text: "Reported define checkpoint: ready" }],
+        details: { workflowId: "workflow-1", stage: "define", outcome: "ready", summary: "Specification ready", artifact: "# Specification" },
+        terminate: true,
+      },
+      isError: false,
+    },
+  };
+
+  const reconciled = reconcilePersistedWorkflow(workflow, [event]);
+
+  assert.equal(reconciled.phase, "awaitingSpecApproval");
+  assert.equal(reconciled.specification, "# Specification");
+  assert.equal(reconciled.checkpoint?.sequence, 7);
+  assert.equal(reconciled.updatedAt, event.timestamp);
 });
 
 test("owns a Pi RPC process and projects its lifecycle", async () => {

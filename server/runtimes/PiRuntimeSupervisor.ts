@@ -551,11 +551,18 @@ function slashCommand(value: unknown): PiSlashCommand | undefined {
 function workflowCheckpointFromRpc(
   message: RpcMessage,
   sequence: number,
+  receivedAt = now(),
 ): { readonly workflowId: string; readonly checkpoint: EngineeringWorkflowCheckpoint } | undefined {
   if (message.type !== "tool_execution_end" || message.toolName !== "piss_workflow_checkpoint" || message.isError === true) return;
   if (typeof message.toolCallId !== "string" || !message.toolCallId || message.toolCallId.length > 256) return;
-  if (typeof message.args !== "object" || message.args === null || Array.isArray(message.args)) return;
-  const args = message.args as Record<string, unknown>;
+  const result = typeof message.result === "object" && message.result !== null && !Array.isArray(message.result)
+    ? message.result as Record<string, unknown>
+    : undefined;
+  const argsValue = typeof message.args === "object" && message.args !== null && !Array.isArray(message.args)
+    ? message.args
+    : result?.details;
+  if (typeof argsValue !== "object" || argsValue === null || Array.isArray(argsValue)) return;
+  const args = argsValue as Record<string, unknown>;
   const stages = new Set(["define", "plan", "build", "verify", "review"]);
   const outcomes = new Set(["ready", "passed", "failed", "blocked"]);
   if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
@@ -572,9 +579,24 @@ function workflowCheckpointFromRpc(
       artifact: typeof args.artifact === "string" ? args.artifact : null,
       toolCallId: message.toolCallId,
       sequence,
-      receivedAt: now(),
+      receivedAt,
     },
   };
+}
+
+export function reconcilePersistedWorkflow(
+  workflow: EngineeringWorkflow,
+  events: ReadonlyArray<OwnedSessionEvent>,
+): EngineeringWorkflow {
+  let reconciled = workflow;
+  for (const event of events) {
+    if (event.sequence <= (reconciled.checkpoint?.sequence ?? 0) || isTerminalWorkflowPhase(reconciled.phase)) continue;
+    if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) continue;
+    const reported = workflowCheckpointFromRpc(event.data as RpcMessage, event.sequence, event.timestamp);
+    if (!reported || reported.workflowId !== reconciled.id) continue;
+    reconciled = applyWorkflowCheckpoint(reconciled, reported.checkpoint);
+  }
+  return reconciled;
 }
 
 async function detectBranch(workspaceFd: number): Promise<string | null> {
@@ -863,6 +885,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       try: () => loadOwnedSessions(storagePath),
       catch: (cause) => new SessionStorageError({ message: "Could not load owned-session metadata", cause }),
     });
+    let reconciledPersistedWorkflow = false;
     yield* Effect.forEach(loaded, (record) => Effect.gen(function* () {
       const workspace = yield* workspaces.findById(record.workspaceId);
       if (!workspace) {
@@ -881,6 +904,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         try: () => loadOwnedSessionTimeline(timelineDirectory, record.id),
         catch: (cause) => new SessionStorageError({ message: `Could not load persisted timeline for session ${record.id}`, cause }),
       });
+      const reconciledWorkflow = record.workflow ? reconcilePersistedWorkflow(record.workflow, timeline.events) : null;
+      if (reconciledWorkflow?.checkpoint?.sequence !== record.workflow?.checkpoint?.sequence) reconciledPersistedWorkflow = true;
       const mutationLock = yield* Semaphore.make(1);
       const interrupted = record.status !== "stopped" && record.status !== "crashed";
       const interruptedRequestCount = record.interactiveRequests?.length ?? 0;
@@ -920,15 +945,15 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           autoCompactionEnabled: record.autoCompactionEnabled ?? null,
           pendingMessageCount: record.pendingMessageCount ?? 0,
           compaction: record.compaction ?? idleCompaction(),
-          workflow: record.workflow && isAutonomousWorkflowPhase(record.workflow.phase)
+          workflow: reconciledWorkflow && isAutonomousWorkflowPhase(reconciledWorkflow.phase)
             ? {
-                ...record.workflow,
+                ...reconciledWorkflow,
                 phase: "blocked",
-                blockedFromPhase: record.workflow.phase,
+                blockedFromPhase: reconciledWorkflow.phase,
                 updatedAt: now(),
                 error: "The control plane restarted during autonomous workflow execution; review the workspace before resuming",
               }
-            : record.workflow ?? null,
+            : reconciledWorkflow,
           createdAt: record.createdAt,
           lastActivityAt: record.lastActivityAt,
           events: [...timeline.events],
@@ -943,7 +968,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         },
       });
     }), { discard: true });
-    if (loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
+    if (reconciledPersistedWorkflow || loaded.some((record) => record.status !== "stopped" && record.status !== "crashed" || (record.interactiveRequests?.length ?? 0) > 0)) yield* persist();
     yield* Effect.addFinalizer(() => Effect.promise(() => Promise.all([...timelinePersistenceTails.values()])).pipe(Effect.asVoid));
 
     const notifyAttention = (session: MutableOwnedSession): void => {
