@@ -7,6 +7,7 @@ type SharedModalSurfaceProps = {
   readonly backdropClassName?: string;
   readonly viewportClassName?: string;
   readonly pending?: boolean;
+  readonly size?: "viewport" | "content";
   readonly returnFocus?: HTMLElement | null;
   readonly fallbackFocus?: HTMLElement | null;
   readonly initialFocus?: RefObject<HTMLElement | null> | true | false;
@@ -20,6 +21,10 @@ function classes(base: string, additional?: string): string {
   return additional ? `${base} ${additional}` : base;
 }
 
+function surfaceClasses(size: "viewport" | "content", className: string): string {
+  return `modal-surface modal-surface-${size} ${className}`;
+}
+
 function focusAfterModal(returnFocus?: HTMLElement | null, fallbackFocus?: HTMLElement | null): HTMLElement | null {
   return returnFocus?.isConnected && !returnFocus.matches(":disabled") ? returnFocus : fallbackFocus?.isConnected ? fallbackFocus : null;
 }
@@ -29,6 +34,7 @@ export function DialogSurface({
   backdropClassName = "dialog-backdrop",
   viewportClassName = "dialog-layer",
   pending = false,
+  size = "viewport",
   returnFocus,
   fallbackFocus,
   initialFocus = true,
@@ -50,7 +56,7 @@ export function DialogSurface({
       <Dialog.Backdrop className={classes("modal-backdrop", backdropClassName)} />
       <Dialog.Viewport className={classes("modal-layer", viewportClassName)}>
         <Dialog.Popup
-          className={classes("modal-surface", className)}
+          className={surfaceClasses(size, className)}
           initialFocus={initialFocus}
           finalFocus={finalFocus ?? (() => focusAfterModal(returnFocus, fallbackFocus))}
           render={render}
@@ -65,6 +71,7 @@ export function AlertDialogSurface({
   backdropClassName = "dialog-backdrop",
   viewportClassName = "dialog-layer",
   pending = false,
+  size = "content",
   returnFocus,
   fallbackFocus,
   initialFocus = true,
@@ -85,7 +92,7 @@ export function AlertDialogSurface({
       <AlertDialog.Backdrop className={classes("modal-backdrop", backdropClassName)} />
       <AlertDialog.Viewport className={classes("modal-layer", viewportClassName)}>
         <AlertDialog.Popup
-          className={classes("modal-surface", className)}
+          className={surfaceClasses(size, className)}
           initialFocus={initialFocus}
           finalFocus={finalFocus ?? (() => focusAfterModal(returnFocus, fallbackFocus))}
           render={render}

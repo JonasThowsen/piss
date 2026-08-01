@@ -1717,7 +1717,16 @@ test("sessions can be renamed from the mobile drawer and stay renamed after relo
   await page.reload();
   await expect(page.locator(".brand b")).toHaveText("Release guardian");
   await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
-  await expect(page.getByRole("button", { name: "Session settings for Release guardian" })).toBeVisible();
+  const renamedSettings = page.getByRole("button", { name: "Session settings for Release guardian" });
+  await expect(renamedSettings).toBeVisible();
+  await renamedSettings.click();
+  await page.getByRole("menuitem", { name: "ARCHIVE" }).click();
+  const archiveDialog = page.getByRole("alertdialog", { name: "Archive session?" });
+  await expect(archiveDialog).toHaveClass(/modal-surface-content/);
+  const archiveBounds = await archiveDialog.boundingBox();
+  expect(archiveBounds?.height).toBeLessThan(420);
+  expect(archiveBounds?.y).toBeGreaterThan(150);
+  await archiveDialog.getByRole("button", { name: "CANCEL" }).click();
 });
 
 test("session drafts and delayed command failures stay scoped to their session", async ({ page }) => {

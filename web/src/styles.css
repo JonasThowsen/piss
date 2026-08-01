@@ -1065,7 +1065,9 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .shell.mobile-keyboard-open .timeline { padding-top: 10px; }
   .shell.mobile-keyboard-open .engineering-workflow { display: none; }
   .modal-layer { align-items: stretch; justify-items: stretch; padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); }
-  .modal-surface { width: 100%; height: 100%; max-height: none; border-radius: 10px; animation: none; }
+  .modal-surface { width: 100%; border-radius: 10px; animation: none; }
+  .modal-surface-viewport { height: 100%; max-height: none; }
+  .modal-surface-content { align-self: center; height: auto; max-height: min(520px, calc(100dvh - 24px)); overflow: hidden; }
   .global-picker { position: relative; grid-template-rows: auto minmax(0, 1fr); }
   .global-picker > header { position: absolute; top: 12px; right: 12px; z-index: 1; min-height: 0; padding: 0; border: 0; background: transparent; }
   .global-picker > header div { display: none; }
