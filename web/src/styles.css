@@ -604,9 +604,8 @@ button.composer-config-state { width: 100%; cursor: pointer; }
 .composer-config-state.error { color: var(--danger); }
 .composer-config-state svg { width: 13px; height: 13px; }
 .attachment-trigger, .mention-trigger, .composer-action-trigger { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--soft-panel); color: var(--muted); cursor: pointer; }
-.composer-action-trigger { grid-template-columns: 15px 8px; gap: 0; border-radius: 17px; }
-.composer-action-trigger svg:first-child { width: 15px; height: 15px; color: var(--accent); }
-.composer-action-trigger svg:last-child { width: 8px; height: 8px; }
+.composer-action-trigger { border-radius: 50%; }
+.composer-action-trigger svg { width: 18px; height: 18px; stroke-width: 1.7; }
 .composer-action-trigger:hover:not(:disabled), .composer-action-trigger:focus-visible, .composer-action-trigger[data-popup-open] { border-color: #9eb6a8; outline: 0; background: var(--accent-soft); color: var(--accent); }
 .composer-action-trigger:disabled { opacity: .42; cursor: not-allowed; }
 .composer-action-positioner { z-index: 95; width: min(330px, calc(100vw - 16px)); outline: 0; }
@@ -1005,7 +1004,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .composer textarea { min-height: 52px; max-height: 128px; padding: 13px 14px 5px; font-size: 16px; }
   .composer-images { gap: 7px; padding: 3px 12px 7px; }
   .composer-footer { min-height: 50px; grid-template-columns: minmax(40px, 1fr) auto 42px; gap: 5px; padding: 2px 7px 6px 8px; }
-  .composer-insertions { gap: 0; }
+  .composer-insertions { gap: 8px; }
   .mention-trigger { display: none; }
   .composer-config { gap: 0; }
   .composer-config-trigger { min-height: 40px; padding-inline: 5px; }
@@ -1020,8 +1019,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .timeline-status > div { display: grid; gap: 2px; padding: 5px 8px; }
   .timeline-status small { font-size: 7px; }
   .attachment-trigger, .mention-trigger, .composer-action-trigger { width: 40px; height: 40px; }
-  .composer-action-trigger { grid-template-columns: 17px 8px; border-radius: 20px; }
-  .composer-action-trigger svg:first-child { width: 17px; height: 17px; }
+  .composer-action-trigger svg { width: 20px; height: 20px; }
   .composer-images button { width: 50px; height: 50px; flex-basis: 50px; }
   .send-button { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
   .mention-menu { max-height: min(260px, 36vh); }

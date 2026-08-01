@@ -2520,7 +2520,7 @@ function ComposerActionMenu({ disabled, onStartWorkflow }: {
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   return <BaseMenu.Root>
-    <BaseMenu.Trigger className="composer-action-trigger" ref={trigger} disabled={disabled} aria-label="Open workflow actions" title="Workflow actions"><Sparkles aria-hidden="true" /><ChevronDown aria-hidden="true" /></BaseMenu.Trigger>
+    <BaseMenu.Trigger className="composer-action-trigger" ref={trigger} disabled={disabled} aria-label="Open workflow actions" title="Workflow actions"><Workflow aria-hidden="true" /></BaseMenu.Trigger>
     <BaseMenu.Portal>
       <BaseMenu.Positioner className="composer-action-positioner" side="top" align="start" sideOffset={8} collisionPadding={8} positionMethod="fixed">
         <BaseMenu.Popup className="composer-action-menu" aria-label="Workflow actions" aria-labelledby="" onKeyDown={remapOptionNavigationKey}>
