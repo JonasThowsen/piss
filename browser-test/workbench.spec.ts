@@ -1537,9 +1537,9 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await blockedRemoval.getByRole("button", { name: "CANCEL" }).click();
 
   expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("22px");
-  await expect(page.locator(".composer-insertions svg")).toHaveCount(4);
+  await expect(page.locator(".composer-insertions svg")).toHaveCount(3);
   expect(await page.locator(".attachment-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
-  expect(await page.locator(".composer-action-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("20px");
+  expect(await page.locator(".composer-action-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
   expect(await page.locator(".mention-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
   expect(await page.locator(".send-button").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
 });
