@@ -99,31 +99,60 @@ export function mergeSessionEvents(
     if (!bySequence.has(event.sequence)) bySequence.set(event.sequence, event);
   }
 
-  const events: OwnedSessionEvent[] = [];
-  for (const event of [...bySequence.values()].sort((left, right) => left.sequence - right.sequence)) {
-    const id = toolCallId(event);
-    if (id && (event.type === "tool_execution_update" || event.type === "tool_execution_end")) {
-      for (let index = events.length - 1; index >= 0; index -= 1) {
-        const candidate = events[index]!;
-        if (toolCallId(candidate) !== id) continue;
-        if (candidate.type === "tool_execution_update" || event.type === "tool_execution_end" && candidate.type === "tool_execution_start") {
-          events.splice(index, 1);
-        }
-      }
-    }
+  const ordered = [...bySequence.values()].sort((left, right) => left.sequence - right.sequence);
+  const discarded = new Set<number>();
+  const toolStarts = new Map<string, number[]>();
+  const latestToolUpdate = new Map<string, number>();
+  let pendingMessageActivity: number[] = [];
+
+  // Mark superseded lifecycle events in one pass. The former implementation
+  // searched all retained events for every completed tool, which made each
+  // streaming token quadratic in the size of a long-running session.
+  for (const event of ordered) {
+    if (event.type === "message_start" || event.type === "message_update") pendingMessageActivity.push(event.sequence);
     if (event.type === "message_end") {
-      const previousMessage = events.findLastIndex((candidate) => candidate.type === "message_end");
-      for (let index = events.length - 1; index > previousMessage; index -= 1) {
-        if (events[index]?.type === "message_start" || events[index]?.type === "message_update") events.splice(index, 1);
-      }
+      for (const sequence of pendingMessageActivity) discarded.add(sequence);
+      pendingMessageActivity = [];
     }
-    events.push(event);
-    while (events.length > MAX_CLIENT_EVENTS) {
-      const disposable = events.findIndex((candidate, index) =>
-        index < events.length - 1 && candidate.type !== "message_end" && candidate.type !== "tool_execution_end"
-      );
-      events.splice(disposable >= 0 ? disposable : 0, 1);
+
+    const id = toolCallId(event);
+    if (!id) continue;
+    if (event.type === "tool_execution_start") {
+      const starts = toolStarts.get(id);
+      if (starts) starts.push(event.sequence);
+      else toolStarts.set(id, [event.sequence]);
     }
+    if (event.type === "tool_execution_update") {
+      const previous = latestToolUpdate.get(id);
+      if (previous !== undefined) discarded.add(previous);
+      latestToolUpdate.set(id, event.sequence);
+    }
+    if (event.type === "tool_execution_end") {
+      for (const sequence of toolStarts.get(id) ?? []) discarded.add(sequence);
+      const update = latestToolUpdate.get(id);
+      if (update !== undefined) discarded.add(update);
+      toolStarts.delete(id);
+      latestToolUpdate.delete(id);
+    }
+  }
+
+  let events = ordered.filter((event) => !discarded.has(event.sequence));
+  let excess = events.length - MAX_CLIENT_EVENTS;
+  if (excess > 0) {
+    const additionallyDiscarded = new Set<number>();
+    for (let index = 0; index < events.length - 1 && excess > 0; index += 1) {
+      const event = events[index]!;
+      if (event.type === "message_end" || event.type === "tool_execution_end") continue;
+      additionallyDiscarded.add(event.sequence);
+      excess -= 1;
+    }
+    for (const event of events) {
+      if (excess <= 0) break;
+      if (additionallyDiscarded.has(event.sequence)) continue;
+      additionallyDiscarded.add(event.sequence);
+      excess -= 1;
+    }
+    events = events.filter((event) => !additionallyDiscarded.has(event.sequence));
   }
   return events;
 }

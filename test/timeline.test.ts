@@ -103,6 +103,40 @@ test("merges incremental polling responses and coalesces completed activity", ()
   );
 });
 
+test("coalesces repeated tool lifecycles without discarding settled results", () => {
+  const merged = mergeSessionEvents([], [
+    event(1, "tool_execution_start", { toolCallId: "reused", toolName: "bash" }),
+    event(2, "tool_execution_update", { toolCallId: "reused", partialResult: "first" }),
+    event(3, "tool_execution_end", { toolCallId: "reused", result: "settled" }),
+    event(4, "tool_execution_start", { toolCallId: "reused", toolName: "bash" }),
+    event(5, "tool_execution_update", { toolCallId: "reused", partialResult: "stale" }),
+    event(6, "tool_execution_update", { toolCallId: "reused", partialResult: "current" }),
+  ]);
+
+  assert.deepEqual(merged.map((item) => [item.sequence, item.type]), [
+    [3, "tool_execution_end"],
+    [4, "tool_execution_start"],
+    [6, "tool_execution_update"],
+  ]);
+});
+
+test("merges a maximum-size completed history without blocking the UI thread", () => {
+  const current = Array.from({ length: 20_000 }, (_, index) => event(index + 1, "tool_execution_end", {
+    toolCallId: `call-${index}`,
+    toolName: "bash",
+    result: "done",
+  }));
+  const startedAt = performance.now();
+  const merged = mergeSessionEvents(current, [event(20_001, "message_update", {
+    assistantMessageEvent: { type: "text_delta", delta: "x" },
+  })]);
+  const elapsed = performance.now() - startedAt;
+
+  assert.equal(merged.length, 20_000);
+  assert.equal(merged.at(-1)?.sequence, 20_001);
+  assert.ok(elapsed < 1_000, `maximum-size merge took ${elapsed.toFixed(1)}ms`);
+});
+
 test("projects durable browser screenshots as first-class timeline evidence", () => {
   const timeline = eventTimeline([
     event(7, "browser_artifact_created", {
