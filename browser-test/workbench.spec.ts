@@ -94,7 +94,7 @@ function sessionSummary(session: TestSession) {
   return { ...summary, eventCount: events.length };
 }
 
-async function installApi(page: Page, options: { readonly empty?: boolean; readonly emptyReview?: boolean; readonly notifications?: boolean } = {}) {
+async function installApi(page: Page, options: { readonly empty?: boolean; readonly emptyReview?: boolean; readonly notifications?: boolean; readonly delaySessionCreationMs?: number } = {}) {
   let sessions: TestSession[] = [];
   const workspaces: Array<typeof workspace> = options.empty ? [] : [{ ...workspace }];
   const commands: Array<Record<string, unknown>> = [];
@@ -184,6 +184,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       return;
     }
     if (path === "/api/sessions" && method === "POST") {
+      if (options.delaySessionCreationMs) await new Promise((resolve) => setTimeout(resolve, options.delaySessionCreationMs));
       const number = sessions.length + 1;
       const created: TestSession = {
         id: `session-${number}`,
@@ -591,6 +592,27 @@ test("desktop keeps session navigation left of the active chat", async ({ page }
   expect(layout.workspaceLeft).toBe(layout.railRight);
   expect(layout.workspaceRight).toBe(1180);
   expect(layout.composerLeft).toBeGreaterThanOrEqual(layout.workspaceLeft);
+});
+
+test("mobile session creation stays content-sized while the request is pending", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page, { delaySessionCreationMs: 600 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "New session" });
+  await expect(dialog).toHaveClass(/modal-surface-content/);
+  const initialBounds = await dialog.boundingBox();
+  expect(initialBounds?.height).toBeLessThan(420);
+  expect(initialBounds?.y).toBeGreaterThan(150);
+
+  await dialog.getByRole("button", { name: /start session/i }).click();
+  await expect(dialog.getByRole("button", { name: /starting/i })).toBeVisible();
+  const pendingBounds = await dialog.boundingBox();
+  expect(pendingBounds?.height).toBeLessThan(420);
+  expect(Math.abs((pendingBounds?.height ?? 0) - (initialBounds?.height ?? 0))).toBeLessThanOrEqual(2);
+  await expect(dialog).toBeHidden();
 });
 
 test("browser evidence renders inline and remains contained on mobile", async ({ page }) => {
@@ -1798,7 +1820,7 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await expect(settingsDialog.getByRole("heading", { name: "Notifications" })).toBeVisible();
   const settingsBackdrop = page.locator(".dialog-layer");
   await expect(settingsBackdrop).toHaveCSS("background-color", "rgba(28, 31, 28, 0.5)");
-  await expect(settingsBackdrop).toHaveCSS("backdrop-filter", "blur(10px) saturate(0.7)");
+  await expect(settingsBackdrop).toHaveCSS("backdrop-filter", "none");
   await page.setViewportSize({ width: 390, height: 360 });
   const settingsBody = settingsDialog.locator(".settings-dialog-body");
   await settingsBody.evaluate((element) => { element.style.height = "100px"; });
@@ -1984,12 +2006,12 @@ test("mobile workbench keeps creation, models, queues, and navigation functional
   await expect(blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" })).toBeDisabled();
   await blockedRemoval.getByRole("button", { name: "CANCEL" }).click();
 
-  expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("22px");
+  expect(await page.locator(".composer").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("4px");
   await expect(page.locator(".composer-insertions svg")).toHaveCount(3);
-  expect(await page.locator(".attachment-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
-  expect(await page.locator(".composer-action-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
-  expect(await page.locator(".mention-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
-  expect(await page.locator(".send-button").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("50%");
+  expect(await page.locator(".attachment-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("3px");
+  expect(await page.locator(".composer-action-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("3px");
+  expect(await page.locator(".mention-trigger").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("3px");
+  expect(await page.locator(".send-button").evaluate((element) => getComputedStyle(element).borderRadius)).toBe("3px");
 });
 
 test("sessions can be renamed from the mobile drawer and stay renamed after reload", async ({ page }) => {

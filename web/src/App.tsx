@@ -2602,7 +2602,7 @@ export function App() {
         onConfirm={() => void compactNow()}
       />}
 
-      {creatorOpen && state._tag === "Ready" && <DialogSurface className="session-dialog" pending={busy} returnFocus={creatorReturnFocusRef.current} fallbackFocus={sessionHeadingRef.current} initialFocus={newSessionInputRef} onClose={closeCreator} render={<form onSubmit={createSession} />}>
+      {creatorOpen && state._tag === "Ready" && <DialogSurface className="session-dialog" size="content" pending={busy} returnFocus={creatorReturnFocusRef.current} fallbackFocus={sessionHeadingRef.current} initialFocus={newSessionInputRef} onClose={closeCreator} render={<form onSubmit={createSession} />}>
         <header><div><Dialog.Title render={<b />}>New session</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close"><X aria-hidden="true" /></Dialog.Close></header>
         <div className="dialog-body">
           {chosenWorkspace && <div className="session-workspace">
