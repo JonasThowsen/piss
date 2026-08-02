@@ -501,7 +501,12 @@ export const EngineeringWorkflowMutationInput = Schema.Union([
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-    action: Schema.Literals(["approve", "accept", "cancel", "resume"]),
+    action: Schema.Literals(["approve", "accept", "cancel"]),
+  }),
+  Schema.Struct({
+    runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    action: Schema.Literal("resume"),
+    feedback: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),

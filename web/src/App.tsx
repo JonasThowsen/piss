@@ -368,7 +368,7 @@ export function App() {
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
-  const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise" | "intervene" | "continueRepairs">();
+  const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise" | "resume" | "intervene" | "continueRepairs">();
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [workflowFeedback, setWorkflowFeedback] = useState("");
   const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
@@ -1686,6 +1686,14 @@ export function App() {
     void runWorkflowMutation({ runtimeId: session.runtimeId, action: "revise", feedback });
   };
 
+  const submitWorkflowResume = (event: FormEvent) => {
+    event.preventDefault();
+    const session = selectedSessionRef.current;
+    const feedback = workflowFeedback.trim();
+    if (!session || session.workflow?.phase !== "blocked" || !feedback || busy) return;
+    void runWorkflowMutation({ runtimeId: session.runtimeId, action: "resume", feedback });
+  };
+
   const submitWorkflowIntervention = (event: FormEvent) => {
     event.preventDefault();
     const session = selectedSessionRef.current;
@@ -1727,7 +1735,7 @@ export function App() {
     void continueFailedWorkflow(Math.max(1, Math.min(10, Number.parseInt(workflowAdditionalRepairs, 10) || 1)));
   };
 
-  const mutateCurrentWorkflow = (action: "approve" | "accept" | "cancel" | "resume") => {
+  const mutateCurrentWorkflow = (action: "approve" | "accept" | "cancel") => {
     const session = selectedSessionRef.current;
     if (!session) return;
     void runWorkflowMutation({ runtimeId: session.runtimeId, action });
@@ -1737,6 +1745,12 @@ export function App() {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowFeedback("");
     setWorkflowDialog("revise");
+  };
+
+  const openWorkflowResume = (returnFocus: HTMLElement) => {
+    workflowReturnFocusRef.current = returnFocus;
+    setWorkflowFeedback("");
+    setWorkflowDialog("resume");
   };
 
   const openWorkflowIntervention = (returnFocus: HTMLElement) => {
@@ -2165,7 +2179,7 @@ export function App() {
               onApprove={() => mutateCurrentWorkflow("approve")}
               onAccept={() => mutateCurrentWorkflow("accept")}
               onCancel={() => mutateCurrentWorkflow("cancel")}
-              onResume={() => mutateCurrentWorkflow("resume")}
+              onResume={openWorkflowResume}
               onRevise={openWorkflowRevision}
               onIntervene={openWorkflowIntervention}
               onContinueRepairs={openWorkflowContinuation}
@@ -2553,6 +2567,24 @@ export function App() {
         <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>SEND REVISION <ArrowRight aria-hidden="true" /></>}</button></footer>
       </DialogSurface>}
 
+      {workflowDialog === "resume" && selectedSession?.workflow?.phase === "blocked" && <DialogSurface
+        className="session-dialog workflow-dialog"
+        pending={busy}
+        returnFocus={workflowReturnFocusRef.current}
+        fallbackFocus={sessionHeadingRef.current}
+        initialFocus={workflowObjectiveRef}
+        onClose={() => setWorkflowDialog(undefined)}
+        render={<form onSubmit={submitWorkflowResume} />}
+      >
+        <header><div><span>WORKFLOW BLOCKED</span><Dialog.Title render={<b />}>Unblock {selectedSession.workflow.blockedFromPhase ? workflowPhaseLabel(selectedSession.workflow.blockedFromPhase) : "phase"}</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close blocked workflow dialog"><X aria-hidden="true" /></Dialog.Close></header>
+        <div className="dialog-body workflow-dialog-body">
+          <p className="workflow-intervention-note">Explain what changed or provide the authorization, approved procedure, decision, or non-sensitive evidence Pi requested. Do not paste credentials or secret values.</p>
+          <label>Unblock guidance<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={7} placeholder="Provide the missing decision or approved procedure, and identify where Pi can verify it…" /></label>
+          {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
+        </div>
+        <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "RESUMING…" : <>RESUME WITH GUIDANCE <ArrowRight aria-hidden="true" /></>}</button></footer>
+      </DialogSurface>}
+
       {workflowDialog === "intervene" && selectedSession?.workflow && <DialogSurface
         className="session-dialog workflow-dialog"
         pending={busy}
@@ -2669,7 +2701,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   readonly onApprove: () => void;
   readonly onAccept: () => void;
   readonly onCancel: () => void;
-  readonly onResume: () => void;
+  readonly onResume: (returnFocus: HTMLElement) => void;
   readonly onRevise: (returnFocus: HTMLElement) => void;
   readonly onIntervene: (returnFocus: HTMLElement) => void;
   readonly onContinueRepairs: (returnFocus: HTMLElement) => void;
@@ -2706,7 +2738,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-revise" disabled={pending} type="button" onClick={(event) => onRevise(event.currentTarget)}>REQUEST CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
       </>}
-      {workflow.phase === "blocked" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onResume}><ArrowRight aria-hidden="true" />RESUME PHASE</button>}
+      {workflow.phase === "blocked" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />PROVIDE GUIDANCE</button>}
       {workflow.phase === "readyToShip" && <>
         <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onAccept}><Check aria-hidden="true" />{pending ? "ACCEPTING…" : "ACCEPT RESULT"}</button>
