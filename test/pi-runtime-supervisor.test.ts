@@ -40,6 +40,11 @@ let compactAttempts = 0;
 let workflowInterventionMode = false;
 let workflowFailureMode = false;
 let heldBuildArgs;
+const stageRejectedVideo = (recordingId) => {
+  const path = process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + recordingId + ".webm";
+  writeFileSync(path, "rejected-video-bytes");
+  if (process.env.FAKE_PI_STAGED_VIDEO_PATHS) appendFileSync(process.env.FAKE_PI_STAGED_VIDEO_PATHS, path + "\\n");
+};
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
@@ -153,6 +158,27 @@ process.stdin.on("data", (chunk) => {
         if (command.message === "Malformed browser artifact") {
           console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "malformed-browser", toolName: "piss_browser_screenshot", result: { content: [{ type: "text", text: "captured" }], details: { pissBrowserArtifact: { version: 99, stagingName: "not-an-artifact.png", artifact: {} } } }, isError: false }));
           console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Malformed capture handled" }], stopReason: "stop" } }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
+        if (command.message === "Malformed browser video") {
+          const recordingId = "663dd98b-a517-48f6-a85d-639ae76077e9";
+          const ignoredId = "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41";
+          stageRejectedVideo(recordingId);
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "failed-video-start", toolName: "piss_browser_video_start", result: { details: { pissBrowserRecording: { version: 1, state: "started", recordingId: ignoredId } } }, isError: true }));
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "wrong-close-state", toolName: "piss_browser_close", result: { details: { pissBrowserRecording: { version: 1, state: "started", recordingId: ignoredId } } }, isError: false }));
+          for (let replay = 0; replay < 2; replay += 1) console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "video-start", toolName: "piss_browser_video_start", result: { content: [{ type: "text", text: "started" }], details: { pissBrowserRecording: { version: 1, state: "started", recordingId } } }, isError: false }));
+          for (let replay = 0; replay < 2; replay += 1) console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "video-stop", toolName: "piss_browser_video_stop", result: { content: [{ type: "text", text: "stopped" }], details: { pissBrowserRecording: { version: 1, state: "finalized", recordingId }, pissBrowserArtifact: { version: 99, stagingName: recordingId + ".webm", artifact: {} } } }, isError: false }));
+          console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Malformed video handled" }], stopReason: "stop" } }));
+          setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
+          return;
+        }
+        if (command.message === "Unmatched browser video") {
+          const recordingId = "79f4dd97-5ca4-4ea6-9418-e1d3ea35f18a";
+          stageRejectedVideo(recordingId);
+          const artifact = { id: recordingId, kind: "browser-video", mediaType: "video/webm", byteCount: 20, width: 320, height: 240, durationMs: 1000, pageUrl: "http://127.0.0.1:4000/", pageTitle: "Unmatched", createdAt: new Date().toISOString() };
+          console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "unmatched-video-stop", toolName: "piss_browser_video_stop", result: { content: [{ type: "text", text: "stopped" }], details: { pissBrowserRecording: { version: 1, state: "finalized", recordingId }, pissBrowserArtifact: { version: 1, stagingName: recordingId + ".webm", artifact } } }, isError: false }));
+          console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Unmatched video handled" }], stopReason: "stop" } }));
           setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 50);
           return;
         }
@@ -480,9 +506,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
   const previousArgsFile = process.env.FAKE_PI_ARGS;
   const previousCommandsFile = process.env.FAKE_PI_COMMANDS;
   const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
+  const previousStagedVideoPaths = process.env.FAKE_PI_STAGED_VIDEO_PATHS;
+  const stagedVideoPaths = join(directory, "staged-video-paths.txt");
   process.env.FAKE_PI_ARGS = argsFile;
   process.env.FAKE_PI_COMMANDS = commandsFile;
   process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-test.jsonl");
+  process.env.FAKE_PI_STAGED_VIDEO_PATHS = stagedVideoPaths;
 
   try {
     const piCommand = await fakePi(directory, true);
@@ -541,9 +570,27 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           const notified = yield* supervisor.get(created.id);
           yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Malformed browser artifact");
           let malformedArtifact = yield* supervisor.get(created.id);
-          for (let attempt = 0; attempt < 100 && !malformedArtifact.events.some((event) => event.type === "browser_artifact_failed"); attempt += 1) {
+          for (let attempt = 0; attempt < 100 && (malformedArtifact.status !== "finished" || !malformedArtifact.events.some((event) => event.type === "browser_artifact_failed")); attempt += 1) {
             yield* Effect.sleep("10 millis");
             malformedArtifact = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Malformed browser video");
+          let malformedVideo = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && (malformedVideo.status !== "finished" || !JSON.stringify(malformedVideo.events).includes("Browser video could not be published")); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            malformedVideo = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Unmatched browser video");
+          let unmatchedVideo = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && (unmatchedVideo.status !== "finished" || !JSON.stringify(unmatchedVideo.events).includes("no matching active recording")); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            unmatchedVideo = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "Unmatched browser video");
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const paths = yield* Effect.promise(() => readFile(stagedVideoPaths, "utf8").catch(() => ""));
+            if (paths.trim().split("\n").length >= 3) break;
+            yield* Effect.sleep("10 millis");
           }
           const hangingCommand = yield* supervisor
             .prompt({ sessionId: created.id, runtimeId: created.runtimeId }, "/extension-hang")
@@ -776,7 +823,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -795,6 +842,14 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(JSON.stringify(result.notified.events), /MCP Server Status/);
     assert.match(JSON.stringify(result.malformedArtifact.events), /browser_artifact_failed/);
     assert.match(JSON.stringify(result.malformedArtifact.events), /descriptor is invalid/);
+    assert.match(JSON.stringify(result.malformedVideo.events), /Browser video could not be published/);
+    assert.equal(result.malformedVideo.events.filter((event) => event.type === "browser_recording_started").length, 1);
+    assert.equal(result.malformedVideo.events.filter((event) => event.type === "browser_artifact_failed" && JSON.stringify(event.data).includes("663dd98b-a517-48f6-a85d-639ae76077e9")).length, 1);
+    assert.doesNotMatch(JSON.stringify(result.malformedVideo.events.filter((event) => event.type.startsWith("browser_"))), /2c240f9a-6091-49a9-bcfa-0c49e6e3aa41/);
+    assert.equal(result.unmatchedVideo.events.filter((event) => event.type === "browser_artifact_failed" && JSON.stringify(event.data).includes("79f4dd97-5ca4-4ea6-9418-e1d3ea35f18a")).length, 1);
+    const rejectedStagingPaths = (await readFile(stagedVideoPaths, "utf8")).trim().split("\n");
+    assert.equal(rejectedStagingPaths.length, 3, "malformed, unmatched, and replayed handoffs each staged bytes");
+    for (const path of rejectedStagingPaths) await assert.rejects(readFile(path), /ENOENT/);
     assert.equal(Exit.isFailure(result.hangingResult), true);
     assert.equal(result.afterHangingAbort.status, "finished", "aborting an unacknowledged extension command keeps the session usable");
     assert.deepEqual(result.models.map((model) => model.id), ["model-a", "model-b"]);
@@ -880,6 +935,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     else process.env.FAKE_PI_COMMANDS = previousCommandsFile;
     if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
+    if (previousStagedVideoPaths === undefined) delete process.env.FAKE_PI_STAGED_VIDEO_PATHS;
+    else process.env.FAKE_PI_STAGED_VIDEO_PATHS = previousStagedVideoPaths;
     await rm(directory, { recursive: true, force: true });
   }
 });

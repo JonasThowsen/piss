@@ -66,11 +66,12 @@ import {
 } from "./OwnedSessionTimelineStore.ts";
 import { WorkspaceHasSessionsError, type WorkspaceManagedByConfigurationError, WorkspacePathError, type WorkspaceRecordNotFoundError, type WorkspaceStorageError } from "../workspaces/errors.ts";
 import {
-  adoptBrowserScreenshot,
+  adoptBrowserArtifact,
+  discardRuntimeBrowserVideo,
   prepareRuntimeArtifactStaging,
   removeOwnedSessionArtifacts,
   removeRuntimeArtifactStaging,
-  type BrowserScreenshotCandidate,
+  type BrowserArtifactCandidate,
 } from "./OwnedSessionArtifactStore.ts";
 
 const execFileAsync = promisify(execFile);
@@ -560,26 +561,64 @@ function slashCommand(value: unknown): PiSlashCommand | undefined {
 
 const decodeSessionArtifact = Schema.decodeUnknownSync(SessionArtifactSchema);
 
-type BrowserScreenshotHandoff =
+type BrowserArtifactHandoff =
   | { readonly _tag: "none" }
-  | { readonly _tag: "invalid" }
-  | { readonly _tag: "candidate"; readonly candidate: BrowserScreenshotCandidate };
+  | { readonly _tag: "invalid"; readonly media: "screenshot" | "video"; readonly recordingId?: string }
+  | { readonly _tag: "candidate"; readonly candidate: BrowserArtifactCandidate };
 
-function browserScreenshotHandoffFromRpc(message: RpcMessage): BrowserScreenshotHandoff {
-  if (message.type !== "tool_execution_end" || message.toolName !== "piss_browser_screenshot" || message.isError === true) return { _tag: "none" };
+type BrowserRecordingLifecycle =
+  | { readonly state: "started" | "finalized" | "interrupted"; readonly recordingId: string; readonly message?: string }
+  | undefined;
+
+function rpcResultDetails(message: RpcMessage): Record<string, unknown> | undefined {
   const result = typeof message.result === "object" && message.result !== null && !Array.isArray(message.result)
     ? message.result as Record<string, unknown>
     : undefined;
-  const details = typeof result?.details === "object" && result.details !== null && !Array.isArray(result.details)
+  return typeof result?.details === "object" && result.details !== null && !Array.isArray(result.details)
     ? result.details as Record<string, unknown>
     : undefined;
-  const raw = typeof details?.pissBrowserArtifact === "object" && details.pissBrowserArtifact !== null && !Array.isArray(details.pissBrowserArtifact)
-    ? details.pissBrowserArtifact as Record<string, unknown>
-    : undefined;
-  if (raw?.version !== 1 || typeof raw.stagingName !== "string") return { _tag: "invalid" };
+}
+
+function browserArtifactHandoffFromRpc(message: RpcMessage): BrowserArtifactHandoff {
+  const media = message.toolName === "piss_browser_screenshot" ? "screenshot" : message.toolName === "piss_browser_video_stop" ? "video" : undefined;
+  if (message.type !== "tool_execution_end" || !media || message.isError === true) return { _tag: "none" };
+  const details = rpcResultDetails(message);
+  const rawValue = details?.pissBrowserArtifact;
+  const raw = typeof rawValue === "object" && rawValue !== null && !Array.isArray(rawValue) ? rawValue as Record<string, unknown> : undefined;
+  const lifecycleValue = details?.pissBrowserRecording;
+  const lifecycle = typeof lifecycleValue === "object" && lifecycleValue !== null && !Array.isArray(lifecycleValue) ? lifecycleValue as Record<string, unknown> : undefined;
+  const recordingId = media === "video" && typeof lifecycle?.recordingId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(lifecycle.recordingId) ? lifecycle.recordingId : undefined;
+  if (raw?.version !== 1 || typeof raw.stagingName !== "string") return { _tag: "invalid", media, ...(recordingId ? { recordingId } : {}) };
   try {
-    return { _tag: "candidate", candidate: { version: 1, stagingName: raw.stagingName, artifact: decodeSessionArtifact(raw.artifact) } };
-  } catch { return { _tag: "invalid" }; }
+    const artifact = decodeSessionArtifact(raw.artifact);
+    if (media === "screenshot" && artifact.kind !== "browser-screenshot" || media === "video" && artifact.kind !== "browser-video") return { _tag: "invalid", media, ...(recordingId ? { recordingId } : {}) };
+    return { _tag: "candidate", candidate: { version: 1, stagingName: raw.stagingName, artifact } };
+  } catch { return { _tag: "invalid", media, ...(recordingId ? { recordingId } : {}) }; }
+}
+
+function browserRecordingLifecycleFromRpc(message: RpcMessage): BrowserRecordingLifecycle {
+  if (message.type !== "tool_execution_end" || message.isError === true) return;
+  const expectedState = message.toolName === "piss_browser_video_start" ? "started"
+    : message.toolName === "piss_browser_video_stop" ? "finalized"
+      : message.toolName === "piss_browser_close" ? "interrupted"
+        : undefined;
+  if (!expectedState) return;
+  const rawValue = rpcResultDetails(message)?.pissBrowserRecording;
+  if (typeof rawValue !== "object" || rawValue === null || Array.isArray(rawValue)) return;
+  const raw = rawValue as Record<string, unknown>;
+  if (raw.version !== 1 || raw.state !== expectedState
+    || typeof raw.recordingId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(raw.recordingId)) return;
+  return { state: expectedState, recordingId: raw.recordingId, ...(typeof raw.message === "string" ? { message: raw.message.slice(0, 4 * 1024) } : {}) };
+}
+
+function hasTerminalBrowserRecordingEvent(session: MutableOwnedSession, recordingId: string): boolean {
+  return session.snapshot.events.some((event) => {
+    if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return false;
+    const data = event.data as Record<string, unknown>;
+    if (event.type === "browser_artifact_failed") return data.recordingId === recordingId;
+    if (event.type !== "browser_artifact_created" || typeof data.artifact !== "object" || data.artifact === null || Array.isArray(data.artifact)) return false;
+    return (data.artifact as Record<string, unknown>).id === recordingId;
+  });
 }
 
 function workflowCheckpointFromRpc(
@@ -785,6 +824,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const timelineDirectory = join(config.stateDir, "timelines");
     const timelinePersistenceTails = new Map<string, Promise<void>>();
     const artifactAdoptionTails = new Map<string, Promise<void>>();
+    const activeBrowserRecordings = new Map<string, { readonly runtimeId: string; readonly recordingId: string }>();
     const removingSessionIds = new Set<string>();
     let persistenceTail = Promise.resolve();
     let continueWorkflowAfterSettle = (_session: MutableOwnedSession): void => undefined;
@@ -921,6 +961,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       try: async () => {
         await artifactAdoptionTails.get(sessionId);
         artifactAdoptionTails.delete(sessionId);
+        activeBrowserRecordings.delete(sessionId);
         await timelinePersistenceTails.get(sessionId);
         timelinePersistenceTails.delete(sessionId);
         await Promise.all([
@@ -1079,33 +1120,124 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
     };
 
-    const queueBrowserScreenshotHandoff = (session: MutableOwnedSession, handoff: Exclude<BrowserScreenshotHandoff, { readonly _tag: "none" }>): void => {
+    for (const session of sessions.values()) {
+      let unresolvedRecordingId: string | undefined;
+      for (const event of session.snapshot.events) {
+        if (event.type === "browser_recording_started" && typeof event.data === "object" && event.data !== null && "recordingId" in event.data && typeof event.data.recordingId === "string") {
+          unresolvedRecordingId = event.data.recordingId;
+        }
+        if ((event.type === "browser_artifact_created" || event.type === "browser_artifact_failed") && typeof event.data === "object" && event.data !== null) {
+          const data = event.data as Record<string, unknown>;
+          const artifact = typeof data.artifact === "object" && data.artifact !== null ? data.artifact as Record<string, unknown> : undefined;
+          if (data.recordingId === unresolvedRecordingId || artifact?.id === unresolvedRecordingId) unresolvedRecordingId = undefined;
+        }
+      }
+      if (unresolvedRecordingId) appendEvent(session, "browser_artifact_failed", {
+        recordingId: unresolvedRecordingId,
+        message: "Browser recording was interrupted by a control-plane restart before publication",
+      }, true);
+    }
+
+    const queueBrowserArtifactHandoff = (session: MutableOwnedSession, handoff: Exclude<BrowserArtifactHandoff, { readonly _tag: "none" }>): void => {
       const sessionId = session.snapshot.id;
       const runtimeId = session.snapshot.runtimeId;
       if (removingSessionIds.has(sessionId)) return;
       const previous = artifactAdoptionTails.get(sessionId) ?? Promise.resolve();
       const next = previous.then(async () => {
         if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
+        const videoRecordingId = handoff._tag === "candidate" && handoff.candidate.artifact.kind === "browser-video"
+          ? handoff.candidate.artifact.id
+          : handoff._tag === "invalid" && handoff.media === "video"
+            ? handoff.recordingId ?? activeBrowserRecordings.get(sessionId)?.recordingId
+            : undefined;
+        const discardRejectedVideo = async (recordingId: string): Promise<boolean> => {
+          try {
+            await discardRuntimeBrowserVideo(config.stateDir, sessionId, runtimeId, recordingId);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        if (videoRecordingId && hasTerminalBrowserRecordingEvent(session, videoRecordingId)) {
+          await discardRejectedVideo(videoRecordingId);
+          return;
+        }
+        if (videoRecordingId) {
+          const active = activeBrowserRecordings.get(sessionId);
+          if (active?.runtimeId !== runtimeId || active.recordingId !== videoRecordingId) {
+            const discarded = await discardRejectedVideo(videoRecordingId);
+            if (hasTerminalBrowserRecordingEvent(session, videoRecordingId)) return;
+            appendEvent(session, "browser_artifact_failed", {
+              recordingId: videoRecordingId,
+              message: discarded
+                ? "Browser video could not be published: no matching active recording"
+                : "Browser video could not be published and its staged output could not be removed",
+            }, true);
+            return;
+          }
+        }
         if (handoff._tag === "invalid") {
-          appendEvent(session, "browser_artifact_failed", { message: "Browser screenshot could not be published: artifact descriptor is invalid" }, true);
+          const discarded = !videoRecordingId || await discardRejectedVideo(videoRecordingId);
+          if (handoff.media === "video") activeBrowserRecordings.delete(sessionId);
+          if (videoRecordingId && hasTerminalBrowserRecordingEvent(session, videoRecordingId)) return;
+          appendEvent(session, "browser_artifact_failed", {
+            message: discarded
+              ? `Browser ${handoff.media} could not be published: artifact descriptor is invalid`
+              : "Browser video descriptor is invalid and its staged output could not be removed",
+            ...(videoRecordingId ? { recordingId: videoRecordingId } : {}),
+          }, true);
           return;
         }
         try {
-          const artifact: SessionArtifact = await adoptBrowserScreenshot(config.stateDir, sessionId, runtimeId, handoff.candidate);
+          const artifact: SessionArtifact = await adoptBrowserArtifact(config.stateDir, sessionId, runtimeId, handoff.candidate, config.browserFfprobePath ?? "ffprobe");
           if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
-          appendEvent(session, "browser_artifact_created", { artifact }, true);
+          if (artifact.kind === "browser-video") activeBrowserRecordings.delete(sessionId);
+          if (!hasTerminalBrowserRecordingEvent(session, artifact.id)) appendEvent(session, "browser_artifact_created", { artifact }, true);
         } catch (cause) {
           if (removingSessionIds.has(sessionId) || sessions.get(sessionId) !== session) return;
+          if (handoff._tag === "candidate" && handoff.candidate.artifact.kind === "browser-video") activeBrowserRecordings.delete(sessionId);
           const raw = cause instanceof Error ? cause.message : "artifact validation failed";
-          const message = raw.includes("/") ? "Browser screenshot artifact validation failed" : `Browser screenshot could not be published: ${raw}`;
-          appendEvent(session, "browser_artifact_failed", { message }, true);
+          const media = handoff._tag === "candidate" && handoff.candidate.artifact.kind === "browser-video" ? "video" : "screenshot";
+          const message = raw.includes("/") ? `Browser ${media} artifact validation failed` : `Browser ${media} could not be published: ${raw}`;
+          const recordingId = handoff._tag === "candidate" ? handoff.candidate.artifact.id : videoRecordingId;
+          if (!recordingId || !hasTerminalBrowserRecordingEvent(session, recordingId)) appendEvent(session, "browser_artifact_failed", { message, ...(recordingId ? { recordingId } : {}) }, true);
         }
       });
-      const settled = next.catch((cause) => console.error(`Browser screenshot handoff failed for session ${sessionId}`, cause));
+      const settled = next.catch((cause) => console.error(`Browser artifact handoff failed for session ${sessionId}`, cause));
       artifactAdoptionTails.set(sessionId, settled);
-      void settled.finally(() => {
-        if (artifactAdoptionTails.get(sessionId) === settled) artifactAdoptionTails.delete(sessionId);
-      });
+      void settled.finally(() => { if (artifactAdoptionTails.get(sessionId) === settled) artifactAdoptionTails.delete(sessionId); });
+    };
+
+    const recordBrowserLifecycle = (session: MutableOwnedSession, lifecycle: BrowserRecordingLifecycle, message: RpcMessage): void => {
+      const sessionId = session.snapshot.id;
+      const runtimeId = session.snapshot.runtimeId;
+      if (!lifecycle) {
+        if (message.type === "tool_execution_end" && message.toolName === "piss_browser_video_stop" && message.isError === true) {
+          const active = activeBrowserRecordings.get(sessionId);
+          if (active?.runtimeId === runtimeId && !hasTerminalBrowserRecordingEvent(session, active.recordingId)) {
+            activeBrowserRecordings.delete(sessionId);
+            appendEvent(session, "browser_artifact_failed", {
+              recordingId: active.recordingId,
+              message: "Browser recording finalization failed; start a new recording after addressing the tool error",
+            }, true);
+          }
+        }
+        return;
+      }
+      const active = activeBrowserRecordings.get(sessionId);
+      if (lifecycle.state === "started") {
+        if (hasTerminalBrowserRecordingEvent(session, lifecycle.recordingId) || active?.recordingId === lifecycle.recordingId) return;
+        if (active?.runtimeId === runtimeId) return;
+        activeBrowserRecordings.set(sessionId, { runtimeId, recordingId: lifecycle.recordingId });
+        appendEvent(session, "browser_recording_started", { recordingId: lifecycle.recordingId }, true);
+      } else if (lifecycle.state === "interrupted" && active?.runtimeId === runtimeId && active.recordingId === lifecycle.recordingId) {
+        activeBrowserRecordings.delete(sessionId);
+        if (!hasTerminalBrowserRecordingEvent(session, lifecycle.recordingId)) {
+          appendEvent(session, "browser_artifact_failed", { recordingId: lifecycle.recordingId, message: lifecycle.message ?? "Browser recording was interrupted before publication" }, true);
+        }
+      }
+      // A finalized lifecycle leaves the matching active entry in place until
+      // the queued descriptor is validated and atomically adopted.
     };
 
     const failPending = (session: MutableOwnedSession, message: string, cause?: unknown, command?: string): void => {
@@ -1332,9 +1464,17 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         });
         return true;
       }
-      const screenshotHandoff = browserScreenshotHandoffFromRpc(message);
+      let artifactHandoff = browserArtifactHandoffFromRpc(message);
+      const recordingLifecycle = browserRecordingLifecycleFromRpc(message);
+      if (message.toolName === "piss_browser_video_stop" && artifactHandoff._tag !== "none" && recordingLifecycle?.state !== "finalized") {
+        const recordingId = artifactHandoff._tag === "candidate" && artifactHandoff.candidate.artifact.kind === "browser-video"
+          ? artifactHandoff.candidate.artifact.id
+          : artifactHandoff._tag === "invalid" ? artifactHandoff.recordingId : undefined;
+        artifactHandoff = { _tag: "invalid", media: "video", ...(recordingId ? { recordingId } : {}) };
+      }
       appendEvent(session, message.type, message);
-      if (screenshotHandoff._tag !== "none") queueBrowserScreenshotHandoff(session, screenshotHandoff);
+      recordBrowserLifecycle(session, recordingLifecycle, message);
+      if (artifactHandoff._tag !== "none") queueBrowserArtifactHandoff(session, artifactHandoff);
       if (message.type === "agent_settled" && session.workflowDispatchPending) continueWorkflowAfterSettle(session);
       return true;
     };
@@ -1373,6 +1513,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         session.stderr = `${session.stderr}${chunk.toString("utf8")}`.slice(-MAX_STDERR_BYTES);
       });
       child.once("close", (code, signal) => {
+        const activeRecording = activeBrowserRecordings.get(session.snapshot.id);
+        if (activeRecording?.runtimeId === runtimeId) {
+          activeBrowserRecordings.delete(session.snapshot.id);
+          appendEvent(session, "browser_artifact_failed", {
+            recordingId: activeRecording.recordingId,
+            message: "Browser recording was interrupted because its runtime exited before publication",
+          }, true);
+        }
         const adoptionTail = artifactAdoptionTails.get(session.snapshot.id) ?? Promise.resolve();
         void adoptionTail.then(() => removeRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId)).catch(() => undefined);
         if (session.snapshot.status === "stopped" || session.snapshot.status === "stopping") return;

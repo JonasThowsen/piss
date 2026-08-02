@@ -28,6 +28,7 @@ let
         pkgs.bashInteractive
         pkgs.nix
         pkgs.chromium
+        pkgs.ffmpeg
       ];
     }
   );
@@ -258,6 +259,7 @@ in
         pkgs.bashInteractive
         pkgs.nix
         pkgs.chromium
+        pkgs.ffmpeg
       ];
       wantedBy = [ "default.target" ];
       after = [ "network-online.target" ];
@@ -269,6 +271,8 @@ in
         PISS_PORT = toString cfg.port;
         PISS_PI_COMMAND = cfg.piCommand;
         PISS_BROWSER_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
+        PISS_BROWSER_FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
+        PISS_BROWSER_FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
         # This stable profile path changes atomically on activation without
         # changing the service unit or restarting its owned Pi runtimes.
         PISS_PUBLIC_DIR = "/etc/piss/public";

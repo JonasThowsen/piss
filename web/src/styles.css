@@ -312,6 +312,8 @@ button { color: inherit; }
 .browser-evidence-preview { display: grid; max-height: min(64vh, 680px); overflow: auto; background: repeating-conic-gradient(#e8ebe5 0 25%, #f5f6f3 0 50%) 0 / 18px 18px; }
 .browser-evidence-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .browser-evidence-preview img { width: 100%; height: auto; display: block; object-fit: contain; }
+.browser-video-frame { width: 100%; display: grid; place-items: center; overflow: hidden; aspect-ratio: 16 / 10; max-height: min(64vh, 680px); background: repeating-linear-gradient(135deg, #242a26 0 12px, #202521 12px 24px); }
+.browser-video-frame video { width: 100%; height: 100%; max-width: 100%; display: block; object-fit: contain; background: transparent; }
 .browser-evidence figcaption { min-width: 0; display: flex; align-items: center; gap: 16px; padding: 11px 12px 12px; border-top: 1px solid var(--line); }
 .browser-evidence figcaption > div { min-width: 0; display: grid; gap: 3px; }
 .browser-evidence figcaption b { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1004,6 +1006,7 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .thinking-content .message-content { font-size: 12px; line-height: 1.55; }
   .browser-evidence { margin-bottom: 18px; border-radius: 6px; }
   .browser-evidence-preview { max-height: 56vh; }
+  .browser-video-frame { max-height: 56vh; }
   .browser-evidence figcaption { gap: 8px; padding: 9px; }
   .browser-evidence figcaption > a { width: 34px; padding: 0; justify-content: center; font-size: 0; }
   .review-stream { padding: 8px 7px 28px; }

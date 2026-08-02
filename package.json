@@ -33,7 +33,8 @@
     "dev": "PISS_DEV_BYPASS_AUTH=1 concurrently -k -n server,web -c cyan,green \"tsx watch server/main.ts\" \"vite\"",
     "start": "node dist/server.js",
     "test": "node --import tsx --test test/**/*.test.ts",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:browser-recording:packaged": "node --import tsx test/packaged-browser-recording.fixture.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

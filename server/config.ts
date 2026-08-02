@@ -18,6 +18,7 @@ export interface AppConfigShape {
   readonly piSessionRoots?: ReadonlyArray<string>;
   readonly workflowResourceDir?: string;
   readonly browserExecutablePath?: string;
+  readonly browserFfprobePath?: string;
   readonly browserAuth: BrowserAuthConfig;
   readonly workspaceSeeds: ReadonlyArray<WorkspaceSeed>;
   readonly workspaceDiscoveryRoots: ReadonlyArray<string>;
@@ -84,6 +85,7 @@ function loadFromEnvironment(): AppConfigShape {
       ?? fileURLToPath(new URL("../workflow-resources", import.meta.url)),
     browserExecutablePath: process.env.PISS_BROWSER_EXECUTABLE_PATH
       ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    browserFfprobePath: process.env.PISS_BROWSER_FFPROBE_PATH ?? "ffprobe",
     browserAuth: {
       devBypass,
       allowedUsers,

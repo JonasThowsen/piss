@@ -630,6 +630,37 @@ test("browser evidence renders inline and remains contained on mobile", async ({
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 });
 
+test("browser video evidence uses bounded native controls on a 320px viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+  api.setEvents([{
+    sequence: 1, type: "browser_artifact_created", timestamp: "2026-04-15T10:00:00.000Z",
+    data: { artifact: {
+      id: "663dd98b-a517-48f6-a85d-639ae76077e9", kind: "browser-video", mediaType: "video/webm", byteCount: 8192,
+      width: 800, height: 600, durationMs: 1250, pageUrl: "http://127.0.0.1:4000/demo", pageTitle: "Demo",
+      label: "Interaction sequence", createdAt: "2026-04-15T10:00:00.000Z",
+    } },
+  }]);
+  await page.reload();
+
+  const evidence = page.locator(".browser-video-evidence");
+  await expect(evidence).toBeVisible();
+  const video = evidence.getByLabel("Browser recording: Interaction sequence");
+  await expect(video).toHaveAttribute("controls", "");
+  await expect(video).toHaveAttribute("playsinline", "");
+  await expect(video).toHaveAttribute("preload", "metadata");
+  await expect(evidence).toContainText("1.3s");
+  await expect(evidence.getByRole("link", { name: "DOWNLOAD" })).toHaveAttribute("download", /\.webm$/);
+  const bounds = await evidence.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+});
+
 test("workflow-phase badge stays accessible and contained in desktop and mobile session navigation", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);

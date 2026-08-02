@@ -19,7 +19,7 @@ The current implementation proves these end-to-end paths:
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
 - an authenticated user can start a guided engineering workflow from the composer, approve its specification and complete delivery plan, and let PISS implement ordered vertical slices before advancing through whole-specification Verify → Review checkpoints and a bounded repair loop;
-- an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, then publish a validated screenshot as durable inline chat evidence.
+- an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
 
@@ -32,7 +32,7 @@ These paths are covered by focused Node tests, an HTTP integration test with moc
 - Concurrent writable sessions in one checkout are warned about rather than automatically isolated.
 - The guided engineering workflow executes a complete multi-slice delivery plan in one durable Pi conversation; independently persisted per-slice checkpoints, independent review sessions, constrained commits, pushes, and deployment remain later slices.
 - An unexpected control-plane restart blocks an autonomous workflow for inspection rather than automatically repeating possibly destructive work.
-- The managed browser tracer currently publishes screenshots only; WebM recording, the broader interaction matrix, and retention controls remain follow-up slices.
+- Managed browser evidence remains intentionally short-lived and quota-bounded: recordings are silent VP8 WebM up to 60 seconds/50 MiB, with no generated poster, arbitrary JavaScript/selectors, external top-level navigation, or long-form retention policy.
 
 ## Next tracer — managed worktree sessions
 

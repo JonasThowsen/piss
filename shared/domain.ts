@@ -155,18 +155,34 @@ export const SessionArtifactId = Schema.String.check(
 );
 export type SessionArtifactId = typeof SessionArtifactId.Type;
 
-export const SessionArtifact = Schema.Struct({
+const BrowserArtifactBase = {
   id: SessionArtifactId,
-  kind: Schema.Literal("browser-screenshot"),
-  mediaType: Schema.Literal("image/png"),
-  byteCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(10 * 1024 * 1024)),
   width: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(16_384)),
   height: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(65_535)),
   pageUrl: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
   pageTitle: Schema.String.check(Schema.isMaxLength(4 * 1024)),
   label: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
   createdAt: Schema.String,
+};
+
+export const BrowserScreenshotArtifact = Schema.Struct({
+  ...BrowserArtifactBase,
+  kind: Schema.Literal("browser-screenshot"),
+  mediaType: Schema.Literal("image/png"),
+  byteCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(10 * 1024 * 1024)),
 });
+export type BrowserScreenshotArtifact = typeof BrowserScreenshotArtifact.Type;
+
+export const BrowserVideoArtifact = Schema.Struct({
+  ...BrowserArtifactBase,
+  kind: Schema.Literal("browser-video"),
+  mediaType: Schema.Literal("video/webm"),
+  byteCount: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(50 * 1024 * 1024)),
+  durationMs: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(62_000)),
+});
+export type BrowserVideoArtifact = typeof BrowserVideoArtifact.Type;
+
+export const SessionArtifact = Schema.Union([BrowserScreenshotArtifact, BrowserVideoArtifact]);
 export type SessionArtifact = typeof SessionArtifact.Type;
 
 export const BrowserArtifactCreatedData = Schema.Struct({ artifact: SessionArtifact });

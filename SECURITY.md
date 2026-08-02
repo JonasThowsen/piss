@@ -32,7 +32,7 @@ PISS refuses non-loopback binds and refuses the development bypass when `NODE_EN
 - Text drafts are stored in browser local storage for up to 30 days. Do not use an untrusted browser profile.
 - Image count, base64 encoding, signature, and aggregate size are validated before delivery to Pi.
 - PISS-managed browser top-level navigation is restricted to literal loopback HTTP(S) URLs. It uses a fresh profile and blocks external redirects/popups; local applications may still request external subresources.
-- Browser screenshots are adopted from per-runtime staging only after regular-file, no-symlink, PNG signature, dimension, size, and quota checks. They remain under private PISS state and are served only through authenticated session-scoped no-store URLs.
+- Browser screenshots and short WebM recordings are adopted from per-runtime staging only after regular-file, no-symlink, media signature/stream, dimension, duration, size, ownership, and mixed quota checks. Bytes remain under private PISS state; authenticated session-scoped no-store URLs serve PNGs directly and WebM through bounded single-range streaming. Media bytes never enter timeline JSON.
 - Web Push reveals the device push endpoint and an encrypted generic payload to the browser vendor. Payloads do not contain prompts, output, workspace names, errors, absolute paths, or credentials.
 - The PWA caches only fixed public shell assets; API and session responses are excluded.
 

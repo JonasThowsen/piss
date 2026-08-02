@@ -23,6 +23,10 @@
               root = ./.;
               fileset = nixpkgs.lib.fileset.unions files;
             };
+          playwrightFfmpeg = pkgs.runCommand "playwright-ffmpeg-1011" { } ''
+            mkdir -p $out/ffmpeg-1011
+            ln -s ${pkgs.ffmpeg}/bin/ffmpeg $out/ffmpeg-1011/ffmpeg-linux
+          '';
           common = {
             version = "0.1.0";
             npmDepsHash = "sha256-p1wo4I4a/3uRICEpNN2Ud6TlWKWPb+KJ55UHXGf/2Ew=";
@@ -57,11 +61,15 @@
                   --add-flags $out/lib/piss/server.js \
                   --set PISS_WORKFLOW_RESOURCE_DIR $out/lib/piss/workflow-resources \
                   --set PISS_BROWSER_EXECUTABLE_PATH ${pkgs.chromium}/bin/chromium \
+                  --set PISS_BROWSER_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
+                  --set PISS_BROWSER_FFPROBE_PATH ${pkgs.ffmpeg}/bin/ffprobe \
+                  --set PLAYWRIGHT_BROWSERS_PATH ${playwrightFfmpeg} \
                   --prefix NODE_PATH : $out/lib/piss/node_modules \
                   --prefix PATH : ${
                     nixpkgs.lib.makeBinPath [
                       pkgs.gitMinimal
                       pkgs.bubblewrap
+                      pkgs.ffmpeg
                     ]
                   }
 
@@ -131,6 +139,7 @@
               nativeBuildInputs = [ pkgs.makeWrapper ];
               nativeCheckInputs = [
                 pkgs.chromium
+                pkgs.ffmpeg
                 pkgs.fontconfig
                 pkgs.dejavu_fonts
                 pkgs.gitMinimal
@@ -164,11 +173,15 @@
                   --set PISS_PUBLIC_DIR $out/lib/piss/public \
                   --set PISS_WORKFLOW_RESOURCE_DIR $out/lib/piss/workflow-resources \
                   --set PISS_BROWSER_EXECUTABLE_PATH ${pkgs.chromium}/bin/chromium \
+                  --set PISS_BROWSER_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
+                  --set PISS_BROWSER_FFPROBE_PATH ${pkgs.ffmpeg}/bin/ffprobe \
+                  --set PLAYWRIGHT_BROWSERS_PATH ${playwrightFfmpeg} \
                   --prefix NODE_PATH : $out/lib/piss/node_modules \
                   --prefix PATH : ${
                     nixpkgs.lib.makeBinPath [
                       pkgs.gitMinimal
                       pkgs.bubblewrap
+                      pkgs.ffmpeg
                     ]
                   }
 
@@ -200,12 +213,17 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          playwrightFfmpeg = pkgs.runCommand "playwright-ffmpeg-1011" { } ''
+            mkdir -p $out/ffmpeg-1011
+            ln -s ${pkgs.ffmpeg}/bin/ffmpeg $out/ffmpeg-1011/ffmpeg-linux
+          '';
         in
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
               nodejs_24
               chromium
+              ffmpeg
               bubblewrap
               gitMinimal
               tailscale
@@ -215,6 +233,9 @@
             shellHook = ''
               export PATH="$PWD/node_modules/.bin:$PATH"
               export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="${pkgs.chromium}/bin/chromium"
+              export PISS_BROWSER_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
+              export PISS_BROWSER_FFPROBE_PATH="${pkgs.ffmpeg}/bin/ffprobe"
+              export PLAYWRIGHT_BROWSERS_PATH="${playwrightFfmpeg}"
               echo "PISS development shell — Node $(node --version)"
               echo "Run npm ci once, then npm run dev"
             '';

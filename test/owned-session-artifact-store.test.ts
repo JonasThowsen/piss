@@ -1,17 +1,24 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { statSync, watch } from "node:fs";
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
+  adoptBrowserArtifact,
   adoptBrowserScreenshot,
   loadOwnedSessionArtifact,
+  openOwnedSessionArtifact,
   prepareRuntimeArtifactStaging,
   removeOwnedSessionArtifacts,
   type BrowserScreenshotCandidate,
+  type BrowserVideoCandidate,
 } from "../server/runtimes/OwnedSessionArtifactStore.ts";
+
+const execFileAsync = promisify(execFile);
 
 function png(width = 2, height = 3): Buffer {
   const bytes = Buffer.alloc(24);
@@ -59,6 +66,86 @@ test("adopts only the current runtime's validated PNG and removes it with the se
   } finally { await rm(stateDir, { recursive: true, force: true }); }
 });
 
+test("adopts a validated VP8 WebM without loading it into JSON transport", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "piss-video-artifact-"));
+  const id = randomUUID();
+  try {
+    const staging = await prepareRuntimeArtifactStaging(stateDir, "session-video", "runtime-video");
+    const path = join(staging, `${id}.webm`);
+    await execFileAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1", "-an", "-c:v", "libvpx", "-b:v", "200k", "-y", path]);
+    const byteCount = statSync(path).size;
+    const video: BrowserVideoCandidate = {
+      version: 1,
+      stagingName: `${id}.webm`,
+      artifact: {
+        id, kind: "browser-video", mediaType: "video/webm", byteCount,
+        width: 320, height: 240, durationMs: 1_000,
+        pageUrl: "http://127.0.0.1:3000/", pageTitle: "Fixture",
+        label: "Motion", createdAt: "2026-04-15T10:00:00.000Z",
+      },
+    };
+    const adopted = await adoptBrowserArtifact(stateDir, "session-video", "runtime-video", video, process.env.PISS_BROWSER_FFPROBE_PATH ?? "ffprobe");
+    assert.equal(adopted.kind, "browser-video");
+    const opened = await openOwnedSessionArtifact(stateDir, "session-video", id);
+    try {
+      assert.equal(opened.mediaType, "video/webm");
+      assert.equal(opened.byteCount, byteCount);
+    } finally { await opened.handle.close(); }
+    await assert.rejects(loadOwnedSessionArtifact(stateDir, "session-video", id), /not found/i);
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test("rejects symlinked, malformed, and descriptor-mismatched WebM candidates", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "piss-video-artifact-reject-"));
+  const id = randomUUID();
+  try {
+    const staging = await prepareRuntimeArtifactStaging(stateDir, "session-video", "runtime-video");
+    const outside = join(stateDir, "outside.webm");
+    await execFileAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1", "-an", "-c:v", "libvpx", "-b:v", "200k", "-y", outside]);
+    const validBytes = statSync(outside).size;
+    const candidateFor = (byteCount: number, durationMs = 1_000): BrowserVideoCandidate => ({
+      version: 1, stagingName: `${id}.webm`,
+      artifact: { id, kind: "browser-video", mediaType: "video/webm", byteCount, width: 320, height: 240, durationMs, pageUrl: "http://127.0.0.1:3000/", pageTitle: "Fixture", createdAt: "2026-04-15T10:00:00.000Z" },
+    });
+    await symlink(outside, join(staging, `${id}.webm`));
+    await assert.rejects(adoptBrowserArtifact(stateDir, "session-video", "runtime-video", candidateFor(validBytes)));
+    assert.deepEqual(await readdir(staging), []);
+    await writeFile(join(staging, `${id}.webm`), "not-webm");
+    await assert.rejects(adoptBrowserArtifact(stateDir, "session-video", "runtime-video", candidateFor(8)), /valid WebM/);
+    assert.deepEqual(await readdir(staging), []);
+    await copyFile(outside, join(staging, `${id}.webm`));
+    await assert.rejects(adoptBrowserArtifact(stateDir, "session-video", "runtime-video", candidateFor(validBytes, 3_000)), /metadata/);
+    assert.deepEqual(await readdir(staging), []);
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
+test("publishes only the private copy when runtime staging mutates during probe", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "piss-video-artifact-mutation-"));
+  const id = randomUUID();
+  try {
+    const staging = await prepareRuntimeArtifactStaging(stateDir, "session-video", "runtime-video");
+    const source = join(staging, `${id}.webm`);
+    await execFileAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1", "-an", "-c:v", "libvpx", "-b:v", "200k", "-y", source]);
+    const byteCount = statSync(source).size;
+    const probe = join(stateDir, "mutating-ffprobe");
+    const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+    await writeFile(probe, `#!/bin/sh\nprintf not-webm > ${quote(source)}\nexec ${quote(process.env.PISS_BROWSER_FFPROBE_PATH ?? "ffprobe")} "$@"\n`);
+    await chmod(probe, 0o755);
+    const video: BrowserVideoCandidate = {
+      version: 1, stagingName: `${id}.webm`,
+      artifact: { id, kind: "browser-video", mediaType: "video/webm", byteCount, width: 320, height: 240, durationMs: 1_000, pageUrl: "http://127.0.0.1:3000/", pageTitle: "Fixture", createdAt: "2026-04-15T10:00:00.000Z" },
+    };
+    await adoptBrowserArtifact(stateDir, "session-video", "runtime-video", video, probe);
+    assert.deepEqual(await readdir(staging), []);
+    const opened = await openOwnedSessionArtifact(stateDir, "session-video", id);
+    try {
+      const signature = Buffer.alloc(4);
+      await opened.handle.read(signature, 0, 4, 0);
+      assert.equal(signature.toString("hex"), "1a45dfa3");
+    } finally { await opened.handle.close(); }
+  } finally { await rm(stateDir, { recursive: true, force: true }); }
+});
+
 test("serializes concurrent adoption at the bounded per-session screenshot quota", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "piss-artifact-quota-"));
   try {
@@ -71,6 +158,7 @@ test("serializes concurrent adoption at the bounded per-session screenshot quota
     const rejected = results.filter((result) => result.status === "rejected");
     assert.equal(rejected.length, 1);
     assert.match(String(rejected[0]?.reason), /quota/);
+    assert.deepEqual(await readdir(staging), []);
   } finally { await rm(stateDir, { recursive: true, force: true }); }
 });
 
@@ -105,6 +193,7 @@ test("publishes only a complete final artifact and leaves no temporary files", a
 
     await writeFile(join(staging, destinationName), bytes);
     await assert.rejects(adoptBrowserScreenshot(stateDir, sessionId, "runtime-a", candidate(id, bytes.length)), /exist/i);
+    assert.deepEqual(await readdir(staging), []);
     assert.deepEqual(await readdir(directory), [destinationName]);
     assert.deepEqual(await loadOwnedSessionArtifact(stateDir, sessionId, id), bytes);
   } finally { await rm(stateDir, { recursive: true, force: true }); }

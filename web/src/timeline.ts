@@ -4,7 +4,8 @@ import { BrowserArtifactCreatedData, type OwnedSessionEvent, type SessionArtifac
 export type TimelineItem =
   | { readonly _tag: "message"; readonly key: string; readonly sequence: number; readonly role: "user" | "assistant"; readonly text: string; readonly imageCount: number; readonly live?: boolean }
   | { readonly _tag: "thinking"; readonly key: string; readonly sequence: number; readonly text: string; readonly live?: boolean }
-  | { readonly _tag: "browser-image"; readonly key: string; readonly sequence: number; readonly artifact: SessionArtifact }
+  | { readonly _tag: "browser-image"; readonly key: string; readonly sequence: number; readonly artifact: Extract<SessionArtifact, { readonly kind: "browser-screenshot" }> }
+  | { readonly _tag: "browser-video"; readonly key: string; readonly sequence: number; readonly artifact: Extract<SessionArtifact, { readonly kind: "browser-video" }> }
   | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
   | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" }
   | { readonly _tag: "notice"; readonly key: string; readonly text: string; readonly tone: "info" | "warning" | "error" };
@@ -141,7 +142,8 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
     const data = record(event.data);
     if (event.type === "browser_artifact_created") {
       const artifact = browserArtifact(data);
-      if (artifact) items.push({ _tag: "browser-image", key: `browser-artifact-${event.sequence}`, sequence: event.sequence, artifact });
+      if (artifact?.kind === "browser-screenshot") items.push({ _tag: "browser-image", key: `browser-artifact-${event.sequence}`, sequence: event.sequence, artifact });
+      if (artifact?.kind === "browser-video") items.push({ _tag: "browser-video", key: `browser-artifact-${event.sequence}`, sequence: event.sequence, artifact });
     }
     if (event.type === "browser_artifact_failed" && typeof data?.message === "string") {
       items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, text: data.message, tone: "error" });

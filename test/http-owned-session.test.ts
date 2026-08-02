@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { request as nodeRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseSingleByteRange } from "../server/http.ts";
 
 const execFileAsync = promisify(execFile);
+
+ test("parses only one bounded HTTP byte range", () => {
+  assert.deepEqual(parseSingleByteRange("bytes=2-5", 10), { start: 2, end: 5 });
+  assert.deepEqual(parseSingleByteRange("bytes=4-", 10), { start: 4, end: 9 });
+  assert.deepEqual(parseSingleByteRange("bytes=-3", 10), { start: 7, end: 9 });
+  assert.equal(parseSingleByteRange("bytes=0-1,4-5", 10), "invalid");
+  assert.equal(parseSingleByteRange("bytes=10-", 10), "invalid");
+  assert.equal(parseSingleByteRange("bytes=-0", 10), "invalid");
+});
 
 async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -49,7 +60,7 @@ async function* serverSentEvents(response: Response): AsyncGenerator<{ readonly 
 async function fakePi(directory: string): Promise<string> {
   const path = join(directory, "fake-pi.mjs");
   await writeFile(path, `#!${process.execPath}
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 if (process.env.FAKE_PI_CWD_FILE) writeFileSync(process.env.FAKE_PI_CWD_FILE, process.cwd());
 const sessionFile = process.env.FAKE_PI_SESSION_DIR + "/" + encodeURIComponent(process.cwd()) + ".jsonl";
 if (!existsSync(sessionFile)) writeFileSync(sessionFile, JSON.stringify({ type: "session", version: 3, id: "http-pi-session", timestamp: new Date().toISOString(), cwd: process.cwd() }) + "\\n");
@@ -106,6 +117,14 @@ process.stdin.on("data", (chunk) => {
         console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "huge-call", toolName: "bash", result: { content: [{ type: "text", text: "UNICODE-OUTPUT-🧪".repeat(180000) + "END-OF-HUGE-OUTPUT" }] }, isError: false }));
         console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Large output captured" }], stopReason: "stop" } }));
       }
+      if (command.message === "Capture browser video") {
+        const artifactId = "663dd98b-a517-48f6-a85d-639ae76077e9";
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "browser-video-start", toolName: "piss_browser_video_start", result: { content: [{ type: "text", text: "started" }], details: { pissBrowserRecording: { version: 1, state: "started", recordingId: artifactId } } }, isError: false }));
+        copyFileSync(process.env.PISS_TEST_WEBM, process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + artifactId + ".webm");
+        const artifact = { id: artifactId, kind: "browser-video", mediaType: "video/webm", byteCount: statSync(process.env.PISS_TEST_WEBM).size, width: 320, height: 240, durationMs: 1000, pageUrl: "http://127.0.0.1:4000/", pageTitle: "Fixture", label: "HTTP motion", createdAt: new Date().toISOString() };
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "browser-video-stop", toolName: "piss_browser_video_stop", result: { content: [{ type: "text", text: "stopped" }], details: { pissBrowserRecording: { version: 1, state: "finalized", recordingId: artifactId }, pissBrowserArtifact: { version: 1, stagingName: artifactId + ".webm", artifact } } }, isError: false }));
+        console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Browser video captured" }], stopReason: "stop" } }));
+      }
       if (command.message === "Capture browser evidence") {
         const artifactId = "2c240f9a-6091-49a9-bcfa-0c49e6e3aa41";
         const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
@@ -143,6 +162,11 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
   const publicDir = join(directory, "public");
   await mkdir(publicDir);
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>PISS</title>");
+  const videoFixture = join(directory, "fixture.webm");
+  await execFileAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1", "-an", "-c:v", "libvpx", "-b:v", "200k", "-y", videoFixture]);
+  // Valid trailing Matroska padding keeps this fixture large enough to force
+  // socket backpressure and exercise server-side abort cleanup.
+  await appendFile(videoFixture, Buffer.alloc(8 * 1024 * 1024));
   const piCommand = await fakePi(directory);
   const port = await availablePort();
   const origin = "https://piss.example.ts.net";
@@ -167,6 +191,8 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
       PISS_WORKSPACES: JSON.stringify([{ name: "HTTP test", root: directory, trustProjectResources: false }]),
       FAKE_PI_CWD_FILE: join(directory, "fake-pi-cwd"),
       FAKE_PI_SESSION_DIR: directory,
+      PISS_TEST_WEBM: videoFixture,
+      PISS_BROWSER_FFPROBE_PATH: process.env.PISS_BROWSER_FFPROBE_PATH ?? "ffprobe",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -492,6 +518,64 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     assert.equal((await artifactHead.arrayBuffer()).byteLength, 0);
     assert.equal((await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${artifactId}`)).status, 401);
     assert.equal((await fetch(`${base}/api/sessions/${created.session.id}/artifacts/663dd98b-a517-48f6-a85d-639ae76077e9`, { headers: identityHeaders })).status, 404);
+
+    const videoCommand = await fetch(`${base}/api/sessions/${created.session.id}/commands`, {
+      method: "POST", headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
+      body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "prompt", text: "Capture browser video" }),
+    });
+    assert.equal(videoCommand.status, 202, await videoCommand.text());
+    const videoId = "663dd98b-a517-48f6-a85d-639ae76077e9";
+    let videoSnapshot = "";
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const payload = await (await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders })).json() as { session: { events: Array<{ type: string; data?: { artifact?: { id?: string } } }> } };
+      videoSnapshot = JSON.stringify(payload);
+      if (payload.session.events.some((event) => event.type === "browser_artifact_created" && event.data?.artifact?.id === videoId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.match(videoSnapshot, /browser-video/);
+    assert.doesNotMatch(videoSnapshot, /GkXfo/);
+    const videoFull = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { headers: identityHeaders });
+    const videoBytes = Buffer.from(await videoFull.arrayBuffer());
+    assert.equal(videoFull.status, 200, `${videoSnapshot}\n${logs}`);
+    assert.equal(videoFull.headers.get("content-type"), "video/webm");
+    assert.equal(videoFull.headers.get("accept-ranges"), "bytes");
+    assert.equal(videoBytes.subarray(0, 4).toString("hex"), "1a45dfa3");
+    const partial = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { headers: { ...identityHeaders, Range: "bytes=0-15" } });
+    assert.equal(partial.status, 206);
+    assert.equal(partial.headers.get("content-range"), `bytes 0-15/${videoBytes.length}`);
+    assert.equal((await partial.arrayBuffer()).byteLength, 16);
+    const suffix = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { headers: { ...identityHeaders, Range: "bytes=-8" } });
+    assert.equal(suffix.status, 206);
+    assert.equal((await suffix.arrayBuffer()).byteLength, 8);
+    const rangeHead = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { method: "HEAD", headers: { ...identityHeaders, Range: "bytes=2-9" } });
+    assert.equal(rangeHead.status, 206);
+    assert.equal(rangeHead.headers.get("content-length"), "8");
+    assert.equal((await rangeHead.arrayBuffer()).byteLength, 0);
+    const invalidRange = await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { headers: { ...identityHeaders, Range: "bytes=0-1,4-5" } });
+    assert.equal(invalidRange.status, 416);
+    assert.equal(invalidRange.headers.get("content-range"), `bytes */${videoBytes.length}`);
+
+    assert.ok(child.pid);
+    const fileDescriptorsBeforeAbort = (await readdir(`/proc/${child.pid}/fd`)).length;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await new Promise<void>((resolve, reject) => {
+        const abortedRequest = nodeRequest(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { headers: identityHeaders }, (abortedResponse) => {
+          abortedResponse.once("data", () => { abortedResponse.destroy(); resolve(); });
+          abortedResponse.once("error", () => resolve());
+        });
+        abortedRequest.once("error", reject);
+        abortedRequest.end();
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const fileDescriptorsAfterAbort = (await readdir(`/proc/${child.pid}/fd`)).length;
+    assert.ok(fileDescriptorsAfterAbort <= fileDescriptorsBeforeAbort + 2, `aborted media streams leaked descriptors: ${fileDescriptorsBeforeAbort} -> ${fileDescriptorsAfterAbort}`);
+    assert.equal((await fetch(`${base}/api/sessions/${created.session.id}/artifacts/${videoId}`, { method: "HEAD", headers: identityHeaders })).status, 200);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const settled = await (await fetch(`${base}/api/sessions/${created.session.id}`, { headers: identityHeaders })).json() as { session: { status: string } };
+      if (settled.session.status === "finished") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
 
     const timelineResponse = await fetch(`${base}/api/sessions/${created.session.id}/timeline?beforeSequence=999999&limit=5`, { headers: identityHeaders });
     const timelineText = await timelineResponse.text();

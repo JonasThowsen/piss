@@ -36,7 +36,7 @@ import {
 import { AppConfig, type AppConfigShape } from "./config.ts";
 import { HttpRequestError, HttpServerError, StaticAssetError } from "./errors.ts";
 import { PiRuntimeSupervisor } from "./runtimes/PiRuntimeSupervisor.ts";
-import { loadOwnedSessionArtifact } from "./runtimes/OwnedSessionArtifactStore.ts";
+import { openOwnedSessionArtifact } from "./runtimes/OwnedSessionArtifactStore.ts";
 import { PushNotifications } from "./notifications/PushNotifications.ts";
 import { WorkspaceReview } from "./reviews/WorkspaceReview.ts";
 import { WorkspaceDirectory } from "./workspaces/WorkspaceDirectory.ts";
@@ -66,6 +66,23 @@ function securityHeaders(): Record<string, string> {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
   };
+}
+
+type ByteRange = { readonly start: number; readonly end: number };
+export function parseSingleByteRange(raw: string | undefined, size: number): ByteRange | undefined | "invalid" {
+  if (raw === undefined) return;
+  if (raw.includes(",")) return "invalid";
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(raw);
+  if (!match || !match[1] && !match[2]) return "invalid";
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix < 1) return "invalid";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return "invalid";
+  return { start, end: Math.min(requestedEnd, size - 1) };
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -494,18 +511,73 @@ function makeRequestHandler() {
             catch: (cause) => new HttpRequestError({ status: 400, message: "Malformed artifact reference", cause }),
           });
           yield* supervisor.get(values.sessionId);
-          const body = yield* Effect.tryPromise({
-            try: () => loadOwnedSessionArtifact(config.stateDir, values.sessionId, values.artifactId),
+          const artifact = yield* Effect.tryPromise({
+            try: () => openOwnedSessionArtifact(config.stateDir, values.sessionId, values.artifactId),
             catch: () => new HttpRequestError({ status: 404, message: "Artifact not found" }),
           });
-          response.writeHead(200, {
+          const rawRange = Array.isArray(request.headers.range) ? request.headers.range.join(",") : request.headers.range;
+          const range = artifact.kind === "browser-video" ? parseSingleByteRange(rawRange, artifact.byteCount) : undefined;
+          if (range === "invalid") {
+            yield* Effect.promise(() => artifact.handle.close());
+            response.writeHead(416, {
+              ...securityHeaders(),
+              "Accept-Ranges": "bytes",
+              "Cache-Control": "private, no-store",
+              "Content-Disposition": `inline; filename="browser-evidence-${values.artifactId}.webm"`,
+              "Content-Range": `bytes */${artifact.byteCount}`,
+              "Content-Length": "0",
+              "Content-Type": "video/webm",
+            });
+            response.end();
+            return;
+          }
+          const start = range?.start ?? 0;
+          const end = range?.end ?? artifact.byteCount - 1;
+          const status = range ? 206 : 200;
+          response.writeHead(status, {
             ...securityHeaders(),
             "Cache-Control": "private, no-store",
-            "Content-Disposition": `inline; filename="browser-evidence-${values.artifactId}.png"`,
-            "Content-Length": String(body.length),
-            "Content-Type": "image/png",
+            "Content-Disposition": `inline; filename="browser-evidence-${values.artifactId}.${artifact.extension}"`,
+            "Content-Length": String(end - start + 1),
+            "Content-Type": artifact.mediaType,
+            ...(artifact.kind === "browser-video" ? { "Accept-Ranges": "bytes" } : {}),
+            ...(range ? { "Content-Range": `bytes ${start}-${end}/${artifact.byteCount}` } : {}),
           });
-          response.end(request.method === "HEAD" ? undefined : body);
+          if (request.method === "HEAD") {
+            yield* Effect.promise(() => artifact.handle.close());
+            response.end();
+            return;
+          }
+          yield* Effect.tryPromise({
+            try: () => new Promise<void>((resolveStream, rejectStream) => {
+              const stream = artifact.handle.createReadStream({ start, end, autoClose: false });
+              let settled = false;
+              const settle = (cause?: unknown) => {
+                if (settled) return;
+                settled = true;
+                request.off("aborted", aborted);
+                response.off("close", closed);
+                response.off("error", failed);
+                response.off("finish", finished);
+                stream.off("error", failed);
+                void artifact.handle.close().finally(() => cause ? rejectStream(cause) : resolveStream());
+              };
+              const aborted = () => { stream.destroy(); settle(); };
+              const closed = () => {
+                if (!response.writableFinished) stream.destroy();
+                settle();
+              };
+              const failed = (cause: unknown) => { stream.destroy(); settle(cause); };
+              const finished = () => settle();
+              request.once("aborted", aborted);
+              response.once("close", closed);
+              response.once("error", failed);
+              response.once("finish", finished);
+              stream.once("error", failed);
+              stream.pipe(response);
+            }),
+            catch: (cause) => new HttpRequestError({ status: 500, message: "Could not stream artifact", cause }),
+          });
           return;
         }
 

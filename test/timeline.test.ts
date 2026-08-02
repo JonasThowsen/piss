@@ -140,6 +140,21 @@ test("projects durable browser screenshots as first-class timeline evidence", ()
   }]);
 });
 
+test("projects durable browser videos separately from screenshots", () => {
+  const timeline = eventTimeline([event(8, "browser_artifact_created", {
+    artifact: {
+      id: "663dd98b-a517-48f6-a85d-639ae76077e9",
+      kind: "browser-video", mediaType: "video/webm", byteCount: 4096,
+      width: 800, height: 600, durationMs: 1250,
+      pageUrl: "http://127.0.0.1:4000/demo", pageTitle: "Demo", label: "Interaction",
+      createdAt: "2026-04-15T10:00:00.000Z",
+    },
+  })]);
+  assert.equal(timeline.length, 1);
+  assert.equal(timeline[0]?._tag, "browser-video");
+  if (timeline[0]?._tag === "browser-video") assert.equal(timeline[0].artifact.durationMs, 1250);
+});
+
 test("renders fire-and-forget extension notifications as durable output", () => {
   const timeline = eventTimeline([
     event(1, "extension_ui_request", { method: "notify", message: "MCP Server Status:\n\n✓ jomat: connected", notifyType: "info" }),

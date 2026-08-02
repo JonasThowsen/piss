@@ -9,7 +9,7 @@ import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
-import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ClipboardCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ClipboardCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Video, Workflow, X } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
@@ -2087,6 +2087,19 @@ export function App() {
                           <img src={artifactUrl} loading="lazy" alt={label} width={item.artifact.width} height={item.artifact.height} />
                         </a>
                         <figcaption><div><b>{label}</b><span>{item.artifact.width} × {item.artifact.height} · {Math.ceil(item.artifact.byteCount / 1024).toLocaleString()} KB</span><small title={item.artifact.pageUrl}>{item.artifact.pageUrl}</small></div><a href={artifactUrl} download={`browser-evidence-${item.artifact.id}.png`}><ExternalLink aria-hidden="true" />DOWNLOAD</a></figcaption>
+                      </figure>;
+                    })()
+                : item._tag === "browser-video"
+                  ? (() => {
+                      const artifactUrl = `/api/sessions/${encodeURIComponent(selectedSession.id)}/artifacts/${encodeURIComponent(item.artifact.id)}`;
+                      const label = (item.artifact.label ?? item.artifact.pageTitle) || "Browser recording";
+                      const seconds = Math.max(.1, item.artifact.durationMs / 1000).toLocaleString([], { maximumFractionDigits: 1 });
+                      return <figure className="browser-evidence browser-video-evidence" key={item.key} data-timeline-key={item.key}>
+                        <header><span><Video aria-hidden="true" />BROWSER RECORDING</span><time dateTime={item.artifact.createdAt}>{new Date(item.artifact.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
+                        <div className="browser-video-frame">
+                          <video src={artifactUrl} controls playsInline preload="metadata" aria-label={`Browser recording: ${label}`} />
+                        </div>
+                        <figcaption><div><b>{label}</b><span>{item.artifact.width} × {item.artifact.height} · {seconds}s · {Math.ceil(item.artifact.byteCount / 1024).toLocaleString()} KB</span><small title={item.artifact.pageUrl}>{item.artifact.pageUrl}</small></div><a href={artifactUrl} download={`browser-evidence-${item.artifact.id}.webm`}><ExternalLink aria-hidden="true" />DOWNLOAD</a></figcaption>
                       </figure>;
                     })()
                 : item._tag === "status"
