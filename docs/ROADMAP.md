@@ -18,7 +18,7 @@ The current implementation proves these end-to-end paths:
 - Web Push and the offline shell avoid caching or transmitting private session content;
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
-- an authenticated user can start a guided engineering workflow from the composer, approve its specification and complete delivery plan, and let PISS implement ordered vertical slices before advancing through whole-specification Verify → Review checkpoints and a bounded repair loop;
+- an authenticated user can start a guided engineering workflow from the composer, approve its specification and complete delivery plan, and let PISS implement ordered vertical slices before advancing through whole-specification Verify → Review checkpoints, bounded repairs, and independent read-only supervisor adjudication of blockers;
 - an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
@@ -30,7 +30,7 @@ These paths are covered by focused Node tests, an HTTP integration test with moc
 - The outgoing tray is device-local. Pi's native `queue_update` and JSONL transcript remain authoritative rather than duplicating queued prompt text in PISS storage.
 - Existing registered Git worktrees are supported, but browser-managed worktree creation is not.
 - Concurrent writable sessions in one checkout are warned about rather than automatically isolated.
-- The guided engineering workflow executes a complete multi-slice delivery plan in one durable Pi conversation; independently persisted per-slice checkpoints, independent review sessions, constrained commits, pushes, and deployment remain later slices.
+- The guided engineering workflow executes a complete multi-slice delivery plan in one durable worker conversation and lazily creates a durable read-only supervisor when blocked; proactive pre-plan readiness review, independently persisted per-slice checkpoints, constrained commits, pushes, and deployment remain later slices.
 - An unexpected control-plane restart blocks an autonomous workflow for inspection rather than automatically repeating possibly destructive work.
 - Managed browser evidence remains intentionally short-lived and quota-bounded: recordings are silent VP8 WebM up to 60 seconds/50 MiB, with no generated poster, arbitrary JavaScript/selectors, external top-level navigation, or long-form retention policy.
 

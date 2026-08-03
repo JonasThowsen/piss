@@ -249,6 +249,26 @@ export const EngineeringWorkflowCheckpoint = Schema.Struct({
 });
 export type EngineeringWorkflowCheckpoint = typeof EngineeringWorkflowCheckpoint.Type;
 
+export const EngineeringWorkflowSupervisorAdvice = Schema.Struct({
+  action: Schema.Literals(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  guidance: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+  basis: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  receivedAt: Schema.String,
+});
+export type EngineeringWorkflowSupervisorAdvice = typeof EngineeringWorkflowSupervisorAdvice.Type;
+
+export const EngineeringWorkflowSupervisor = Schema.Struct({
+  sessionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  status: Schema.Literals(["idle", "consulting"]),
+  consultations: NonNegativeInt,
+  blockerFingerprint: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+  repeatedBlockerCount: NonNegativeInt,
+  pendingGuidance: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
+  lastAdvice: Schema.NullOr(EngineeringWorkflowSupervisorAdvice),
+});
+export type EngineeringWorkflowSupervisor = typeof EngineeringWorkflowSupervisor.Type;
+
 export const EngineeringWorkflow = Schema.Struct({
   id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   phase: EngineeringWorkflowPhase,
@@ -260,6 +280,7 @@ export const EngineeringWorkflow = Schema.Struct({
   checkpoint: Schema.NullOr(EngineeringWorkflowCheckpoint),
   blockedFromPhase: Schema.NullOr(EngineeringWorkflowPhase),
   queuedIntervention: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
+  supervisor: Schema.optional(EngineeringWorkflowSupervisor),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),

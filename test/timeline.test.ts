@@ -137,6 +137,26 @@ test("merges a maximum-size completed history without blocking the UI thread", (
   assert.ok(elapsed < 1_000, `maximum-size merge took ${elapsed.toFixed(1)}ms`);
 });
 
+test("projects supervisor consultation as one settled workflow status", () => {
+  const timeline = eventTimeline([
+    event(5, "workflow_supervisor_consulting", { repeatedBlockerCount: 1 }),
+    event(8, "workflow_supervisor_advice", {
+      action: "resume_with_guidance",
+      summary: "Use the approved deterministic recovery path",
+      automaticRecovery: true,
+    }),
+  ]);
+
+  assert.deepEqual(timeline, [{
+    _tag: "status",
+    key: "workflow-supervisor-5",
+    sequence: 8,
+    label: "Loop supervisor resumed workflow",
+    detail: "Use the approved deterministic recovery path",
+    tone: "success",
+  }]);
+});
+
 test("projects durable browser screenshots as first-class timeline evidence", () => {
   const timeline = eventTimeline([
     event(7, "browser_artifact_created", {

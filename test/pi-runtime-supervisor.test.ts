@@ -39,6 +39,8 @@ let buffer = "";
 let compactAttempts = 0;
 let workflowInterventionMode = false;
 let workflowFailureMode = false;
+let workflowSupervisorMode = false;
+let workflowSupervisorBlockReported = false;
 let heldBuildArgs;
 const stageRejectedVideo = (recordingId) => {
   const path = process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + recordingId + ".webm";
@@ -106,11 +108,20 @@ process.stdin.on("data", (chunk) => {
         if (command.message.startsWith("/skill:piss-engineering-")) {
           const workflowId = /Workflow ID: ([^\\n]+)/.exec(command.message)?.[1];
           const skill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
+          if (skill === "supervisor") {
+            const advice = { workflowId, action: "resume_with_guidance", summary: "Use the approved deterministic recovery path", guidance: "Retry with the documented bounded recovery procedure", basis: "Approved delivery plan recovery section" };
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-supervisor-advice", toolName: "piss_workflow_supervisor_advice", result: { content: [{ type: "text", text: "advice" }], details: advice }, isError: false }));
+            setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+            return;
+          }
           const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
           if (stage === "define" && command.message.includes("Exercise workflow user interventions")) workflowInterventionMode = true;
           if (stage === "define" && command.message.includes("Exercise failed workflow continuation")) workflowFailureMode = true;
-          const outcome = stage === "define" || stage === "plan" ? "ready" : workflowFailureMode && stage === "review" ? "failed" : "passed";
-          const args = { workflowId, stage, outcome, summary: stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan" } : {}) };
+          if (stage === "define" && command.message.includes("Exercise automatic supervisor recovery")) workflowSupervisorMode = true;
+          const supervisorBlocksBuild = workflowSupervisorMode && stage === "build" && !workflowSupervisorBlockReported;
+          if (supervisorBlocksBuild) workflowSupervisorBlockReported = true;
+          const outcome = stage === "define" || stage === "plan" ? "ready" : supervisorBlocksBuild ? "blocked" : workflowFailureMode && stage === "review" ? "failed" : "passed";
+          const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan" } : {}) };
           const emitCheckpoint = () => {
             console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
             setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
@@ -313,6 +324,13 @@ test("loads PISS browser resources without trusting project-local resources", ()
   assert.ok(args.includes("/opt/piss/workflow-resources/skills/piss-ui-verification"));
   assert.ok(args.includes("--no-approve"));
   assert.ok(!args.includes("--approve"));
+  assert.equal(args[args.indexOf("--exclude-tools") + 1], "piss_workflow_supervisor_advice");
+
+  const supervisorArgs = processArguments(workspace, "Supervisor", "/opt/piss/workflow-resources", undefined, true);
+  const toolIndex = supervisorArgs.indexOf("--tools");
+  assert.ok(supervisorArgs.includes("/opt/piss/workflow-resources/skills/piss-engineering-supervisor"));
+  assert.equal(supervisorArgs[toolIndex + 1], "read,grep,find,ls,piss_workflow_supervisor_advice");
+  assert.ok(!supervisorArgs.includes("--approve"));
 });
 
 test("multi-megabyte tool output is detached from live event projections", () => {
@@ -752,6 +770,41 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             continuedFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
           }
           yield* supervisor.stop({ sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId });
+
+          const supervisedSession = yield* supervisor.create({ workspaceId, name: "Automatically supervised workflow" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
+            { runtimeId: supervisedSession.runtimeId, action: "start", objective: "Exercise automatic supervisor recovery", maxRepairAttempts: 2 },
+          );
+          let supervisedSpec = yield* supervisor.get(supervisedSession.id);
+          for (let attempt = 0; attempt < 100 && supervisedSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            supervisedSpec = yield* supervisor.get(supervisedSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
+            { runtimeId: supervisedSession.runtimeId, action: "approve" },
+          );
+          let supervisedPlan = yield* supervisor.get(supervisedSession.id);
+          for (let attempt = 0; attempt < 100 && supervisedPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            supervisedPlan = yield* supervisor.get(supervisedSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
+            { runtimeId: supervisedSession.runtimeId, action: "approve" },
+          );
+          let supervisedReady = yield* supervisor.get(supervisedSession.id);
+          for (let attempt = 0; attempt < 500 && supervisedReady.workflow?.phase !== "readyToShip"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            supervisedReady = yield* supervisor.get(supervisedSession.id);
+          }
+          const supervisorSibling = supervisedReady.workflow?.supervisor
+            ? yield* supervisor.get(supervisedReady.workflow.supervisor.sessionId)
+            : undefined;
+          yield* supervisor.stop({ sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId });
+          if (supervisorSibling) yield* supervisor.stop({ sessionId: supervisorSibling.id, runtimeId: supervisorSibling.runtimeId });
+
           const staleResult = yield* supervisor.abort({ sessionId: created.id, runtimeId: "stale-runtime" }).pipe(
             Effect.as("unexpected-success"),
             Effect.catch((error) => Effect.succeed(error._tag)),
@@ -845,7 +898,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, supervisedReady, supervisorSibling, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -911,6 +964,12 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.continuedFailedWorkflow.workflow?.phase, "failed");
     assert.equal(result.continuedFailedWorkflow.workflow?.repairAttempts, 5);
     assert.equal(result.continuedFailedWorkflow.workflow?.maxRepairAttempts, 4);
+    assert.equal(result.supervisedReady.workflow?.phase, "readyToShip");
+    assert.equal(result.supervisedReady.workflow?.repairAttempts, 1);
+    assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.action, "resume_with_guidance");
+    assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_consulting/);
+    assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_advice/);
+    assert.ok(result.supervisorSibling?.name.startsWith("Supervisor ·"));
     assert.doesNotMatch(JSON.stringify({ models: result.models, events: result.configuredModel.events }), /super-secret|credential@example/);
     assert.equal(result.staleResult, "StaleRuntimeGenerationError");
     assert.equal(result.interactiveBlocked.status, "blocked");
@@ -944,7 +1003,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     for (const args of argumentSets) {
       assert.ok(args.includes("--mode"));
       assert.ok(args.includes("rpc"));
-      assert.ok(args.includes("--approve"));
+      if (args.includes("--tools")) {
+        assert.ok(args.includes("--no-approve"));
+        assert.ok(!args.includes("--approve"));
+      } else assert.ok(args.includes("--approve"));
       assert.ok(args.includes("--extension"));
       assert.ok(args.some((arg) => arg.endsWith("/piss-browser.ts")));
       assert.ok(args.includes("--skill"));

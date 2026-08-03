@@ -162,6 +162,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
   const tools = new Map<string, number>();
   let activeCompaction: number | undefined;
   let activeRetry: number | undefined;
+  let activeSupervisor: number | undefined;
   let liveText = "";
   let liveTextKey = "";
   let liveThinking = "";
@@ -176,6 +177,32 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
     }
     if (event.type === "browser_artifact_failed" && typeof data?.message === "string") {
       items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, sequence: event.sequence, text: data.message, tone: "error" });
+    }
+    if (event.type === "workflow_supervisor_consulting") {
+      activeSupervisor = items.length;
+      items.push({
+        _tag: "status",
+        key: `workflow-supervisor-${event.sequence}`,
+        sequence: event.sequence,
+        label: "Loop supervisor reviewing blocker",
+        detail: typeof data?.repeatedBlockerCount === "number" ? `Bounded consultation ${data.repeatedBlockerCount}` : "Inspecting the approved plan and blocker evidence",
+        tone: "running",
+      });
+    }
+    if (event.type === "workflow_supervisor_advice" && typeof data?.summary === "string") {
+      const automatic = data.automaticRecovery === true;
+      const unsafe = data.action === "unsafe_stop";
+      const status: TimelineItem = {
+        _tag: "status",
+        key: activeSupervisor === undefined ? `workflow-supervisor-${event.sequence}` : items[activeSupervisor]!._tag === "status" ? items[activeSupervisor]!.key : `workflow-supervisor-${event.sequence}`,
+        sequence: event.sequence,
+        label: automatic ? "Loop supervisor resumed workflow" : unsafe ? "Loop supervisor stopped unsafe work" : "Loop supervisor requested human authority",
+        detail: data.summary,
+        tone: automatic ? "success" : "error",
+      };
+      if (activeSupervisor === undefined) items.push(status);
+      else items[activeSupervisor] = status;
+      activeSupervisor = undefined;
     }
     // TODO(tracer): Project stateful setStatus/setWidget/set_editor_text RPC
     // methods once the web shell has session-scoped extension UI state.

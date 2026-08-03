@@ -43,6 +43,15 @@ type TestSession = {
     checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
     blockedFromPhase: string | null;
     queuedIntervention?: string;
+    supervisor?: {
+      sessionId: string;
+      status: "idle" | "consulting";
+      consultations: number;
+      blockerFingerprint: string | null;
+      repeatedBlockerCount: number;
+      pendingGuidance: string | null;
+      lastAdvice: null | { action: "resume_with_guidance" | "retry_transient" | "enter_repair" | "human_authority_required" | "unsafe_stop"; summary: string; guidance: string | null; basis: string; receivedAt: string };
+    };
     createdAt: string;
     updatedAt: string;
     error: string | null;
@@ -475,7 +484,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         lastActivityAt: timestamp,
       };
     },
-    setWorkflowBlocked(summary = "Build needs an operator-approved production procedure") {
+    setWorkflowBlocked(summary = "Build needs an operator-approved production procedure", supervisorConsulting = false) {
       if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
       const timestamp = new Date().toISOString();
       const current = sessions.at(-1)!;
@@ -487,6 +496,15 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           phase: "blocked",
           blockedFromPhase: "building",
           checkpoint: { stage: "build", outcome: "blocked", summary, artifact: null, toolCallId: "blocked-build", sequence: 7, receivedAt: timestamp },
+          supervisor: supervisorConsulting ? {
+            sessionId: "supervisor-session-1",
+            status: "consulting" as const,
+            consultations: 1,
+            blockerFingerprint: "blocker-fingerprint",
+            repeatedBlockerCount: 1,
+            pendingGuidance: null,
+            lastAdvice: null,
+          } : undefined,
           updatedAt: timestamp,
           error: summary,
         },
@@ -929,11 +947,16 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   const starter = page.getByRole("dialog", { name: "Define, build, prove" });
   await starter.getByLabel("Objective").fill("Run a production bootstrap safely");
   await starter.getByRole("button", { name: /start define/i }).click();
-  api.setWorkflowBlocked();
+  api.setWorkflowBlocked("Build needs an operator-approved production procedure", true);
   await page.reload();
 
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("Blocked");
+  await expect(workflow).toContainText("Loop supervisor is reviewing this blocker");
+  await expect(workflow.getByRole("button", { name: "PROVIDE GUIDANCE" })).toHaveCount(0);
+
+  api.setWorkflowBlocked();
+  await page.reload();
   await expect(workflow.getByRole("button", { name: "PROVIDE GUIDANCE" })).toBeEnabled();
   await workflow.getByRole("button", { name: "PROVIDE GUIDANCE" }).click();
 

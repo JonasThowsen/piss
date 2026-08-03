@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -19,6 +19,7 @@ import type {
   EngineeringWorkflowCheckpoint,
   EngineeringWorkflowMutationInput,
   EngineeringWorkflowPhase,
+  EngineeringWorkflowSupervisorAdvice,
   ImportOwnedSessionInput,
   FileMention,
   ImageInput,
@@ -88,6 +89,7 @@ const SESSION_REPLAY_TIMEOUT_MS = 2 * 60_000;
 const IMAGE_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_PENDING_COMMANDS = 16;
 const MAX_ACTIVE_RUN_IMAGE_CHARACTERS = 40 * 1024 * 1024;
+const MAX_SUPERVISOR_REPEATS_PER_BLOCKER = 2;
 const TERMINATE_TIMEOUT_MS = 2_000;
 const INTERRUPTED_RUN_CONTINUATION = "Continue the task that was interrupted by the PISS control-plane restart. Inspect the existing work and recent tool results first; do not repeat completed destructive or deployment steps unnecessarily. Finish the remaining verification and provide the final response.";
 const MISSING_FINAL_RESPONSE_CONTINUATION = "The previous run ended after tool execution without a final response. Inspect the completed tool results, perform only checks that are still necessary, and provide the final response.";
@@ -175,6 +177,11 @@ export class PiRuntimeSupervisor extends Context.Service<PiRuntimeSupervisor, Pi
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function workflowBlockerFingerprint(checkpoint: EngineeringWorkflowCheckpoint): string {
+  const normalized = `${checkpoint.stage}\n${checkpoint.summary.toLowerCase().replace(/\s+/gu, " ").trim()}`;
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 32);
 }
 
 function cloneSession(session: OwnedSession): OwnedSession {
@@ -621,6 +628,39 @@ function hasTerminalBrowserRecordingEvent(session: MutableOwnedSession, recordin
   });
 }
 
+type ReportedSupervisorAdvice = {
+  readonly workflowId: string;
+  readonly advice: EngineeringWorkflowSupervisorAdvice;
+};
+
+function workflowSupervisorAdviceFromRpc(message: RpcMessage, receivedAt = now()): ReportedSupervisorAdvice | undefined {
+  if (message.type !== "tool_execution_end" || message.toolName !== "piss_workflow_supervisor_advice" || message.isError === true) return;
+  const result = typeof message.result === "object" && message.result !== null && !Array.isArray(message.result)
+    ? message.result as Record<string, unknown>
+    : undefined;
+  const argsValue = typeof message.args === "object" && message.args !== null && !Array.isArray(message.args)
+    ? message.args
+    : result?.details;
+  if (typeof argsValue !== "object" || argsValue === null || Array.isArray(argsValue)) return;
+  const args = argsValue as Record<string, unknown>;
+  const actions = new Set(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]);
+  if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
+  if (typeof args.action !== "string" || !actions.has(args.action)) return;
+  if (typeof args.summary !== "string" || !args.summary || args.summary.length > 16 * 1024) return;
+  if (args.guidance !== undefined && (typeof args.guidance !== "string" || args.guidance.length > 64 * 1024)) return;
+  if (typeof args.basis !== "string" || !args.basis || args.basis.length > 16 * 1024) return;
+  return {
+    workflowId: args.workflowId,
+    advice: {
+      action: args.action as EngineeringWorkflowSupervisorAdvice["action"],
+      summary: args.summary,
+      guidance: typeof args.guidance === "string" ? args.guidance : null,
+      basis: args.basis,
+      receivedAt,
+    },
+  };
+}
+
 function workflowCheckpointFromRpc(
   message: RpcMessage,
   sequence: number,
@@ -687,7 +727,7 @@ async function detectBranch(workspaceFd: number): Promise<string | null> {
   }
 }
 
-export function processArguments(workspace: Workspace, name: string, workflowResourceDir: string | undefined, sessionFile?: string): ReadonlyArray<string> {
+export function processArguments(workspace: Workspace, name: string, workflowResourceDir: string | undefined, sessionFile?: string, supervisor = false): ReadonlyArray<string> {
   const workflowResources = workflowResourceDir ? [
     "--extension",
     join(workflowResourceDir, "piss-workflow.ts"),
@@ -695,7 +735,7 @@ export function processArguments(workspace: Workspace, name: string, workflowRes
     join(workflowResourceDir, "piss-browser.ts"),
     "--skill",
     join(workflowResourceDir, "skills", "piss-ui-verification"),
-    ...["define", "plan", "build", "verify", "review"].flatMap((phase) => [
+    ...["define", "plan", "build", "verify", "review", "supervisor"].flatMap((phase) => [
       "--skill",
       join(workflowResourceDir, "skills", `piss-engineering-${phase}`),
     ]),
@@ -707,7 +747,10 @@ export function processArguments(workspace: Workspace, name: string, workflowRes
     name,
     ...(sessionFile ? ["--session", sessionFile] : []),
     ...workflowResources,
-    workspace.trustProjectResources ? "--approve" : "--no-approve",
+    ...(supervisor
+      ? ["--tools", "read,grep,find,ls,piss_workflow_supervisor_advice"]
+      : ["--exclude-tools", "piss_workflow_supervisor_advice"]),
+    workspace.trustProjectResources && !supervisor ? "--approve" : "--no-approve",
   ];
 }
 
@@ -735,6 +778,32 @@ export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: st
     default:
       throw new Error(`Workflow phase ${workflow.phase} cannot start an agent run`);
   }
+}
+
+function workflowSupervisorPrompt(workflow: EngineeringWorkflow): string {
+  const supervisor = workflow.supervisor;
+  const checkpoint = workflow.checkpoint;
+  return `/skill:piss-engineering-supervisor
+Workflow ID: ${workflow.id}
+You must finish by calling piss_workflow_supervisor_advice with this exact workflow ID.
+
+Blocked phase: ${workflow.blockedFromPhase ?? "unknown"}
+Consultation: ${supervisor?.consultations ?? 0}
+Repeated blocker count: ${supervisor?.repeatedBlockerCount ?? 0} of ${MAX_SUPERVISOR_REPEATS_PER_BLOCKER}
+
+Approved specification:
+${workflow.specification ?? "[missing specification]"}
+
+Approved delivery plan:
+${workflow.plan ?? "[missing plan]"}
+
+Blocked checkpoint:
+${checkpoint ? `${checkpoint.stage}/${checkpoint.outcome}: ${checkpoint.summary}` : workflow.error ?? "[missing checkpoint]"}
+
+Previous supervisor advice:
+${supervisor?.lastAdvice ? `${supervisor.lastAdvice.action}: ${supervisor.lastAdvice.summary}\nBasis: ${supervisor.lastAdvice.basis}` : "[none]"}
+
+Adjudicate only within existing approved authority. Prefer bounded automatic recovery when evidence supports it, but never invent or grant credentials, production/business approval, backup evidence, or permission to cross a safety boundary.`;
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -1405,10 +1474,17 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           session.snapshot = { ...session.snapshot, error: null };
         }
       }
+      const reportedAdvice = workflowSupervisorAdviceFromRpc(message);
+      let supervisorConsultationRequested = false;
       const reportedCheckpoint = workflowCheckpointFromRpc(message, session.sequence + 1);
       if (reportedCheckpoint && session.snapshot.workflow?.id === reportedCheckpoint.workflowId && !isTerminalWorkflowPhase(session.snapshot.workflow.phase)) {
         const previousPhase = session.snapshot.workflow.phase;
         const workflow = applyWorkflowCheckpoint(session.snapshot.workflow, reportedCheckpoint.checkpoint);
+        if (reportedCheckpoint.checkpoint.outcome === "blocked"
+          && (reportedCheckpoint.checkpoint.stage === "build" || reportedCheckpoint.checkpoint.stage === "verify" || reportedCheckpoint.checkpoint.stage === "review")
+          && workflow.phase === "blocked") {
+          supervisorConsultationRequested = true;
+        }
         const queuedIntervention = workflow.phase === "readyToShip" || workflow.phase === "failed" ? workflow.queuedIntervention : undefined;
         session.workflowDispatchPending = workflow.phase !== previousPhase && isAutonomousWorkflowPhase(workflow.phase);
         session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
@@ -1476,6 +1552,28 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       appendEvent(session, message.type, message);
       recordBrowserLifecycle(session, recordingLifecycle, message);
       if (artifactHandoff._tag !== "none") queueBrowserArtifactHandoff(session, artifactHandoff);
+      if (supervisorConsultationRequested) {
+        void Effect.runPromise(session.mutationLock.withPermit(consultWorkflowSupervisor(session))).catch((cause) => {
+          const workflow = session.snapshot.workflow;
+          if (workflow?.phase === "blocked" && workflow.supervisor?.status === "consulting") {
+            const updatedAt = now();
+            session.snapshot = {
+              ...session.snapshot,
+              workflow: {
+                ...workflow,
+                supervisor: { ...workflow.supervisor, status: "idle" },
+                updatedAt,
+                error: `${workflow.error ?? "The workflow is blocked"}\nSupervisor consultation failed: ${cause instanceof Error ? cause.message : "unknown error"}`,
+              },
+              lastActivityAt: updatedAt,
+            };
+            void Effect.runPromise(persist()).catch((persistCause) => console.error("Could not persist failed supervisor consultation", persistCause));
+          }
+        });
+      }
+      if (reportedAdvice) {
+        void Effect.runPromise(applyWorkflowSupervisorAdvice(session, reportedAdvice)).catch((cause) => console.error("Could not apply workflow supervisor advice", cause));
+      }
       if (message.type === "agent_settled" && session.workflowDispatchPending) continueWorkflowAfterSettle(session);
       return true;
     };
@@ -1613,6 +1711,189 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       });
     });
 
+    const consultWorkflowSupervisor = (worker: MutableOwnedSession): Effect.Effect<void, PiCommandError | SessionStorageError> => Effect.gen(function* () {
+      const workflow = worker.snapshot.workflow;
+      if (!workflow || workflow.phase !== "blocked" || !workflow.checkpoint) return;
+      let supervisorState = workflow.supervisor;
+      let supervisorSession = supervisorState ? sessions.get(supervisorState.sessionId) : undefined;
+      if (!supervisorSession || TERMINAL_STATUSES.has(supervisorSession.snapshot.status)) {
+        const created = yield* createSession({
+          workspaceId: worker.snapshot.workspaceId,
+          name: `Supervisor · ${worker.snapshot.name}`.slice(0, 120),
+        }, true).pipe(
+          Effect.map((session) => session),
+          Effect.catch((cause) => Effect.sync(() => {
+            console.error("Could not create engineering workflow supervisor", cause);
+            return undefined;
+          })),
+        );
+        if (!created) {
+          const updatedAt = now();
+          worker.snapshot = {
+            ...worker.snapshot,
+            workflow: { ...workflow, updatedAt, error: `${workflow.error ?? "The workflow is blocked"}\nThe dedicated supervisor could not be started.` },
+            lastActivityAt: updatedAt,
+          };
+          yield* persist();
+          return;
+        }
+        supervisorSession = sessions.get(created.id);
+        supervisorState = {
+          sessionId: created.id,
+          status: "idle",
+          consultations: workflow.supervisor?.consultations ?? 0,
+          blockerFingerprint: workflow.supervisor?.blockerFingerprint ?? null,
+          repeatedBlockerCount: workflow.supervisor?.repeatedBlockerCount ?? 0,
+          pendingGuidance: null,
+          lastAdvice: workflow.supervisor?.lastAdvice ?? null,
+        };
+      }
+      if (!supervisorSession || !supervisorState) return;
+      const blockerFingerprint = workflowBlockerFingerprint(workflow.checkpoint);
+      const repeatedBlockerCount = supervisorState.blockerFingerprint === blockerFingerprint
+        ? supervisorState.repeatedBlockerCount + 1
+        : 1;
+      const canConsult = repeatedBlockerCount <= MAX_SUPERVISOR_REPEATS_PER_BLOCKER;
+      const updatedAt = now();
+      const updatedSupervisor = {
+        ...supervisorState,
+        status: canConsult ? "consulting" as const : "idle" as const,
+        consultations: supervisorState.consultations + (canConsult ? 1 : 0),
+        blockerFingerprint,
+        repeatedBlockerCount,
+        pendingGuidance: null,
+        ...(!canConsult ? {
+          lastAdvice: {
+            action: "human_authority_required" as const,
+            summary: "The same blocker persisted after the bounded supervisor recovery attempts.",
+            guidance: null,
+            basis: "Repeated blocker fingerprint limit",
+            receivedAt: updatedAt,
+          },
+        } : {}),
+      };
+      const updatedWorkflow = {
+        ...workflow,
+        supervisor: updatedSupervisor,
+        updatedAt,
+        error: canConsult ? workflow.error : `Supervisor escalation required: ${workflow.error ?? workflow.checkpoint.summary}`,
+      };
+      worker.snapshot = { ...worker.snapshot, workflow: updatedWorkflow, lastActivityAt: updatedAt };
+      if (!canConsult) {
+        yield* persist();
+        return;
+      }
+      appendEvent(worker, "workflow_supervisor_consulting", {
+        supervisorSessionId: supervisorSession.snapshot.id,
+        workflowId: workflow.id,
+        blockerFingerprint,
+        repeatedBlockerCount,
+      }, true);
+      yield* persist();
+      yield* request(supervisorSession, {
+        id: `workflow-supervisor:${workflow.id}:${updatedSupervisor.consultations}:${randomUUID()}`,
+        type: supervisorSession.snapshot.status === "working" ? "follow_up" : "prompt",
+        message: workflowSupervisorPrompt(updatedWorkflow),
+      });
+    });
+
+    const applyWorkflowSupervisorAdvice = (
+      supervisorSession: MutableOwnedSession,
+      reported: ReportedSupervisorAdvice,
+    ): Effect.Effect<void, PiCommandError | SessionStorageError> => Effect.gen(function* () {
+      const worker = [...sessions.values()].find((candidate) => {
+        const workflow = candidate.snapshot.workflow;
+        return workflow?.id === reported.workflowId && workflow.supervisor?.sessionId === supervisorSession.snapshot.id;
+      });
+      if (!worker) return;
+      yield* worker.mutationLock.withPermit(Effect.gen(function* () {
+        const workflow = worker.snapshot.workflow;
+        const supervisorState = workflow?.supervisor;
+        if (!workflow || workflow.phase !== "blocked" || !workflow.blockedFromPhase || supervisorState?.status !== "consulting") return;
+        const advice = reported.advice;
+        const automatic = advice.action === "resume_with_guidance" || advice.action === "retry_transient" || advice.action === "enter_repair";
+        const guidance = advice.guidance?.trim() || advice.summary;
+        const nextRepairAttempts = automatic ? workflow.repairAttempts + 1 : workflow.repairAttempts;
+        const canRecover = automatic
+          && nextRepairAttempts <= workflow.maxRepairAttempts
+          && !TERMINAL_STATUSES.has(worker.snapshot.status);
+        const updatedAt = now();
+        const nextPhase: EngineeringWorkflowPhase = advice.action === "enter_repair" ? "repairing" : workflow.blockedFromPhase;
+        const nextSupervisor = {
+          ...supervisorState,
+          status: "idle" as const,
+          pendingGuidance: canRecover ? `[Loop supervisor — ${advice.action.toUpperCase()}]\n\n${guidance}\n\nBasis: ${advice.basis}` : null,
+          lastAdvice: advice,
+        };
+        worker.snapshot = {
+          ...worker.snapshot,
+          status: canRecover ? worker.snapshot.status : "finished",
+          workflow: canRecover
+            ? {
+              ...workflow,
+              phase: nextPhase,
+              repairAttempts: nextRepairAttempts,
+              blockedFromPhase: null,
+              supervisor: nextSupervisor,
+              updatedAt,
+              error: null,
+            }
+            : {
+              ...workflow,
+              supervisor: nextSupervisor,
+              updatedAt,
+              error: automatic
+                ? `Supervisor recovery budget exhausted: ${advice.summary}`
+                : advice.summary,
+            },
+          lastActivityAt: updatedAt,
+        };
+        appendEvent(worker, "workflow_supervisor_advice", {
+          supervisorSessionId: supervisorSession.snapshot.id,
+          workflowId: workflow.id,
+          ...advice,
+          automaticRecovery: canRecover,
+        }, true);
+        yield* persist();
+        if (!canRecover) return;
+        if (worker.snapshot.status === "working") {
+          worker.workflowDispatchPending = true;
+          return;
+        }
+        const pendingGuidance = worker.snapshot.workflow?.supervisor?.pendingGuidance ?? undefined;
+        if (worker.snapshot.workflow?.supervisor) {
+          worker.snapshot = {
+            ...worker.snapshot,
+            workflow: {
+              ...worker.snapshot.workflow,
+              supervisor: { ...worker.snapshot.workflow.supervisor, pendingGuidance: null },
+            },
+          };
+        }
+        yield* dispatchWorkflowPhase(worker, pendingGuidance);
+      }));
+    });
+
+    const stopWorkflowSupervisor = (workflow: EngineeringWorkflow): Effect.Effect<void, SessionStorageError> => {
+      const supervisorSession = workflow.supervisor ? sessions.get(workflow.supervisor.sessionId) : undefined;
+      if (!supervisorSession || TERMINAL_STATUSES.has(supervisorSession.snapshot.status)) return Effect.void;
+      supervisorSession.resumeAfterRestart = false;
+      supervisorSession.resumeRunAfterRestart = false;
+      supervisorSession.snapshot = {
+        ...supervisorSession.snapshot,
+        status: transitionAttentionState(supervisorSession.snapshot.status, "stopRequested"),
+        lastActivityAt: now(),
+      };
+      failPending(supervisorSession, "Workflow supervisor runtime was stopped");
+      return terminate(supervisorSession).pipe(
+        Effect.tap(() => Effect.sync(() => {
+          supervisorSession.snapshot = { ...supervisorSession.snapshot, status: "stopped", pid: null, lastActivityAt: now() };
+          supervisorSession.child = null;
+        })),
+        Effect.andThen(persist()),
+      );
+    };
+
     const blockWorkflow = (session: MutableOwnedSession, cause: unknown): Effect.Effect<void, SessionStorageError> => {
       const workflow = session.snapshot.workflow;
       if (!workflow || isTerminalWorkflowPhase(workflow.phase)) return Effect.void;
@@ -1635,7 +1916,17 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     continueWorkflowAfterSettle = (session) => {
       if (!session.workflowDispatchPending) return;
       session.workflowDispatchPending = false;
-      void Effect.runPromise(session.mutationLock.withPermit(dispatchWorkflowPhase(session))).catch((cause) => {
+      const pendingGuidance = session.snapshot.workflow?.supervisor?.pendingGuidance ?? undefined;
+      if (session.snapshot.workflow?.supervisor?.pendingGuidance) {
+        session.snapshot = {
+          ...session.snapshot,
+          workflow: {
+            ...session.snapshot.workflow,
+            supervisor: { ...session.snapshot.workflow.supervisor, pendingGuidance: null },
+          },
+        };
+      }
+      void Effect.runPromise(session.mutationLock.withPermit(dispatchWorkflowPhase(session, pendingGuidance))).catch((cause) => {
         void Effect.runPromise(blockWorkflow(session, cause)).catch((persistCause) => console.error("Could not block failed engineering workflow", persistCause));
       });
     };
@@ -1693,7 +1984,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       ),
     );
 
-    const create: PiRuntimeSupervisorShape["create"] = (input) =>
+    const createSession = (input: CreateOwnedSessionInput, supervisor = false) =>
       creationLock.withPermit(Effect.gen(function* () {
         const sessionName = input.name.trim() || "New session";
         const initialPrompt = input.prompt?.trim();
@@ -1722,7 +2013,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           catch: (cause) => new SessionStorageError({ message: "Could not prepare browser artifact staging", cause }),
         }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
         const child = yield* Effect.try({
-          try: () => spawn(config.piCommand, processArguments(workspace, sessionName, config.workflowResourceDir), {
+          try: () => spawn(config.piCommand, processArguments(workspace, sessionName, config.workflowResourceDir, undefined, supervisor), {
             cwd: "/proc/self/fd/3",
             detached: true,
             env: {
@@ -1829,6 +2120,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           }),
         );
       }));
+
+    const create: PiRuntimeSupervisorShape["create"] = (input) => createSession(input);
 
     const importSession: PiRuntimeSupervisorShape["import"] = (input) => creationLock.withPermit(Effect.gen(function* () {
       const workspace = yield* workspaces.findById(input.workspaceId);
@@ -1949,8 +2242,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         try: () => prepareRuntimeArtifactStaging(config.stateDir, session.snapshot.id, runtimeId),
         catch: (cause) => new SessionStorageError({ message: "Could not prepare browser artifact staging", cause }),
       }).pipe(Effect.tapError(() => Effect.promise(() => rootHandle.close())));
+      const supervisorSession = [...sessions.values()].some((candidate) => candidate.snapshot.workflow?.supervisor?.sessionId === session.snapshot.id);
       const child = yield* Effect.try({
-        try: () => spawn(config.piCommand, processArguments(workspace, session.snapshot.name, config.workflowResourceDir, durableTranscript ? sessionFile! : undefined), {
+        try: () => spawn(config.piCommand, processArguments(workspace, session.snapshot.name, config.workflowResourceDir, durableTranscript ? sessionFile! : undefined, supervisorSession), {
           cwd: "/proc/self/fd/3",
           detached: true,
           env: {
@@ -2063,6 +2357,20 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               Effect.catch((persistCause) => Effect.sync(() => console.error("Could not persist automatic resume failure", persistCause))),
             );
           }),
+        ), { concurrency: 1, discard: true });
+    }
+
+    const legacyBlockedWorkers = [...sessions.values()].filter((session) => {
+      const workflow = session.snapshot.workflow;
+      return workflow?.phase === "blocked"
+        && !workflow.supervisor
+        && (workflow.checkpoint?.stage === "build" || workflow.checkpoint?.stage === "verify" || workflow.checkpoint?.stage === "review")
+        && !TERMINAL_STATUSES.has(session.snapshot.status);
+    });
+    if (legacyBlockedWorkers.length > 0) {
+      yield* Effect.forEach(legacyBlockedWorkers, (session) =>
+        session.mutationLock.withPermit(consultWorkflowSupervisor(session)).pipe(
+          Effect.catch((cause) => Effect.sync(() => console.error("Could not consult a supervisor for an existing blocked workflow", cause))),
         ), { concurrency: 1, discard: true });
     }
 
@@ -2186,6 +2494,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             lastActivityAt: updatedAt,
           };
           yield* persist();
+          yield* stopWorkflowSupervisor(current);
           return cloneSession(session.snapshot);
         }
         if (input.action === "cancel") {
@@ -2198,6 +2507,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             lastActivityAt: updatedAt,
           };
           yield* persist();
+          yield* stopWorkflowSupervisor(current);
           return cloneSession(session.snapshot);
         }
         if (input.action === "start") {
@@ -2309,7 +2619,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             return yield* unavailable("This workflow must be revised or cancelled");
           }
           const updatedAt = now();
-          const workflow = { ...current, phase: current.blockedFromPhase, blockedFromPhase: null, updatedAt, error: null };
+          const workflow = {
+            ...current,
+            phase: current.blockedFromPhase,
+            blockedFromPhase: null,
+            ...(current.supervisor ? { supervisor: { ...current.supervisor, status: "idle" as const, pendingGuidance: null } } : {}),
+            updatedAt,
+            error: null,
+          };
           session.snapshot = { ...session.snapshot, workflow, lastActivityAt: updatedAt };
           yield* persist();
           yield* dispatchWorkflowPhase(session, input.feedback?.trim()).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));

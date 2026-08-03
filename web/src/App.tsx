@@ -2909,7 +2909,8 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-revise" disabled={pending} type="button" onClick={(event) => onRevise(event.currentTarget)}>REQUEST CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
       </>}
-      {workflow.phase === "blocked" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />PROVIDE GUIDANCE</button>}
+      {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>}
+      {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />PROVIDE GUIDANCE</button>}
       {workflow.phase === "readyToShip" && <>
         <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onAccept}><Check aria-hidden="true" />{pending ? "ACCEPTING…" : "ACCEPT RESULT"}</button>
