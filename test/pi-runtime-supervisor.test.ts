@@ -109,7 +109,7 @@ process.stdin.on("data", (chunk) => {
           const workflowId = /Workflow ID: ([^\\n]+)/.exec(command.message)?.[1];
           const skill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
           if (skill === "supervisor") {
-            const advice = { workflowId, action: "resume_with_guidance", summary: "Use the approved deterministic recovery path", guidance: "Retry with the documented bounded recovery procedure", basis: "Approved delivery plan recovery section" };
+            const advice = { workflowId, action: "resume_with_guidance", problem: "The build needs to retry the documented recovery procedure.", summary: "Use the approved deterministic recovery path", guidance: "Retry with the documented bounded recovery procedure", basis: "Approved delivery plan recovery section" };
             console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-supervisor-advice", toolName: "piss_workflow_supervisor_advice", result: { content: [{ type: "text", text: "advice" }], details: advice }, isError: false }));
             setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
             return;
@@ -967,6 +967,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.supervisedReady.workflow?.phase, "readyToShip");
     assert.equal(result.supervisedReady.workflow?.repairAttempts, 1);
     assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.action, "resume_with_guidance");
+  assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.problem, "The build needs to retry the documented recovery procedure.");
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_consulting/);
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_advice/);
     assert.ok(result.supervisorSibling?.name.startsWith("Supervisor ·"));

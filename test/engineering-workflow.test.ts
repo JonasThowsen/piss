@@ -104,3 +104,11 @@ test("workflow skills treat the specification as the completion boundary rather 
   assert.match(review, /entire approved specification is covered/i);
   assert.doesNotMatch([plan, build, verify, review].join("\n"), /one-task plan/i);
 });
+
+test("workflow supervisors state blockers plainly for the operator", async () => {
+  const supervisor = await readFile(new URL("../workflow-resources/skills/piss-engineering-supervisor/SKILL.md", import.meta.url), "utf8");
+
+  assert.match(supervisor, /one short, plain-language sentence/i);
+  assert.match(supervisor, /do not use unexplained acronyms/i);
+  assert.match(supervisor, /keep technical detail and citations in `summary` and `basis`/i);
+});

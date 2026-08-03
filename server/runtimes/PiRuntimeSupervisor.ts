@@ -646,6 +646,7 @@ function workflowSupervisorAdviceFromRpc(message: RpcMessage, receivedAt = now()
   const actions = new Set(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]);
   if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
   if (typeof args.action !== "string" || !actions.has(args.action)) return;
+  if (args.problem !== undefined && (typeof args.problem !== "string" || !args.problem || args.problem.length > 512)) return;
   if (typeof args.summary !== "string" || !args.summary || args.summary.length > 16 * 1024) return;
   if (args.guidance !== undefined && (typeof args.guidance !== "string" || args.guidance.length > 64 * 1024)) return;
   if (typeof args.basis !== "string" || !args.basis || args.basis.length > 16 * 1024) return;
@@ -653,6 +654,7 @@ function workflowSupervisorAdviceFromRpc(message: RpcMessage, receivedAt = now()
     workflowId: args.workflowId,
     advice: {
       action: args.action as EngineeringWorkflowSupervisorAdvice["action"],
+      ...(typeof args.problem === "string" ? { problem: args.problem } : {}),
       summary: args.summary,
       guidance: typeof args.guidance === "string" ? args.guidance : null,
       basis: args.basis,
@@ -1765,6 +1767,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         ...(!canConsult ? {
           lastAdvice: {
             action: "human_authority_required" as const,
+            problem: "The workflow could not resolve the same problem automatically and needs your decision.",
             summary: "The same blocker persisted after the bounded supervisor recovery attempts.",
             guidance: null,
             basis: "Repeated blocker fingerprint limit",

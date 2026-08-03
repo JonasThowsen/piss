@@ -50,7 +50,7 @@ type TestSession = {
       blockerFingerprint: string | null;
       repeatedBlockerCount: number;
       pendingGuidance: string | null;
-      lastAdvice: null | { action: "resume_with_guidance" | "retry_transient" | "enter_repair" | "human_authority_required" | "unsafe_stop"; summary: string; guidance: string | null; basis: string; receivedAt: string };
+      lastAdvice: null | { action: "resume_with_guidance" | "retry_transient" | "enter_repair" | "human_authority_required" | "unsafe_stop"; problem?: string; summary: string; guidance: string | null; basis: string; receivedAt: string };
     };
     createdAt: string;
     updatedAt: string;
@@ -496,15 +496,22 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           phase: "blocked",
           blockedFromPhase: "building",
           checkpoint: { stage: "build", outcome: "blocked", summary, artifact: null, toolCallId: "blocked-build", sequence: 7, receivedAt: timestamp },
-          supervisor: supervisorConsulting ? {
+          supervisor: {
             sessionId: "supervisor-session-1",
-            status: "consulting" as const,
+            status: supervisorConsulting ? "consulting" as const : "idle" as const,
             consultations: 1,
             blockerFingerprint: "blocker-fingerprint",
             repeatedBlockerCount: 1,
             pendingGuidance: null,
-            lastAdvice: null,
-          } : undefined,
+            lastAdvice: supervisorConsulting ? null : {
+              action: "human_authority_required" as const,
+              problem: "The workflow needs your permission before it deploys the production revision.",
+              summary,
+              guidance: null,
+              basis: "The approved plan requires operator confirmation before deployment.",
+              receivedAt: timestamp,
+            },
+          },
           updatedAt: timestamp,
           error: summary,
         },
@@ -957,8 +964,18 @@ test("blocked workflows collect operator guidance before resuming the phase", as
 
   api.setWorkflowBlocked();
   await page.reload();
-  await expect(workflow.getByRole("button", { name: "PROVIDE GUIDANCE" })).toBeEnabled();
-  await workflow.getByRole("button", { name: "PROVIDE GUIDANCE" }).click();
+  await expect(workflow).toContainText("The workflow needs your permission before it deploys the production revision.");
+  await expect(workflow).toContainText("Would you like the workflow to continue?");
+  await expect(workflow.getByText("Build needs an operator-approved production procedure", { exact: true })).not.toBeVisible();
+  await expect(workflow.getByRole("button", { name: "CONTINUE" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "GIVE FEEDBACK" })).toBeEnabled();
+  await workflow.getByRole("button", { name: "CONTINUE" }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "resume", feedback: expect.stringContaining("operator chose to continue") });
+  await expect(workflow).toContainText("Building");
+
+  api.setWorkflowBlocked();
+  await page.reload();
+  await workflow.getByRole("button", { name: "GIVE FEEDBACK" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Unblock Building" });
   await expect(dialog).toContainText("Do not paste credentials or secret values");

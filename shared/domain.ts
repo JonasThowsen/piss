@@ -251,6 +251,7 @@ export type EngineeringWorkflowCheckpoint = typeof EngineeringWorkflowCheckpoint
 
 export const EngineeringWorkflowSupervisorAdvice = Schema.Struct({
   action: Schema.Literals(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]),
+  problem: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
   summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
   guidance: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   basis: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),

@@ -1866,6 +1866,16 @@ export function App() {
     void runWorkflowMutation({ runtimeId: session.runtimeId, action: "resume", feedback });
   };
 
+  const continueBlockedWorkflow = () => {
+    const session = selectedSessionRef.current;
+    if (!session || session.workflow?.phase !== "blocked" || busy) return;
+    void runWorkflowMutation({
+      runtimeId: session.runtimeId,
+      action: "resume",
+      feedback: "The operator chose to continue. Proceed only within the approved specification and delivery plan. Do not infer credentials, facts, evidence, or permission beyond this decision; if another concrete input is required, explain it plainly and block again.",
+    });
+  };
+
   const submitWorkflowIntervention = (event: FormEvent) => {
     event.preventDefault();
     const session = selectedSessionRef.current;
@@ -2350,6 +2360,7 @@ export function App() {
               onApprove={() => mutateCurrentWorkflow("approve")}
               onAccept={() => mutateCurrentWorkflow("accept")}
               onCancel={() => mutateCurrentWorkflow("cancel")}
+              onContinue={continueBlockedWorkflow}
               onResume={openWorkflowResume}
               onRevise={openWorkflowRevision}
               onIntervene={openWorkflowIntervention}
@@ -2866,12 +2877,21 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
   return -1;
 }
 
-function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCancel, onResume, onRevise, onIntervene, onContinueRepairs, onReviewChanges }: {
+function workflowBlockerProblem(workflow: EngineeringWorkflow): string {
+  const advice = workflow.supervisor?.lastAdvice;
+  if (advice?.problem?.trim()) return advice.problem.trim();
+  if (advice?.action === "human_authority_required") return "The workflow needs your permission before it can continue.";
+  if (advice?.action === "unsafe_stop") return "Continuing may break an approved safety or data-integrity rule.";
+  return workflow.checkpoint?.summary ?? workflow.error ?? "The workflow needs your decision before it can continue.";
+}
+
+function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCancel, onContinue, onResume, onRevise, onIntervene, onContinueRepairs, onReviewChanges }: {
   readonly workflow: EngineeringWorkflow;
   readonly pending: boolean;
   readonly onApprove: () => void;
   readonly onAccept: () => void;
   readonly onCancel: () => void;
+  readonly onContinue: () => void;
   readonly onResume: (returnFocus: HTMLElement) => void;
   readonly onRevise: (returnFocus: HTMLElement) => void;
   readonly onIntervene: (returnFocus: HTMLElement) => void;
@@ -2881,6 +2901,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   const activeStage = workflowStageIndex(workflow);
   const approval = workflow.phase === "awaitingSpecApproval" || workflow.phase === "awaitingPlanApproval";
   const terminal = isTerminalWorkflowPhase(workflow.phase);
+  const blockerCanContinue = workflow.supervisor?.lastAdvice?.action !== "unsafe_stop";
   const artifactLabel = workflow.phase === "awaitingSpecApproval"
     ? "SPECIFICATION"
     : workflow.phase === "awaitingPlanApproval"
@@ -2900,9 +2921,21 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
       {WORKFLOW_STAGES.map((stage, index) => <li className={index < activeStage ? "complete" : index === activeStage ? "active" : "pending"} key={stage}><i>{index < activeStage ? <Check aria-hidden="true" /> : index + 1}</i><span>{stage}</span></li>)}
     </ol>
     <div className="workflow-copy">
-      <p>{workflow.checkpoint?.summary ?? workflow.objective}</p>
-      {workflow.error && <strong role="alert">{workflow.error}</strong>}
-      {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+      {workflow.phase === "blocked" ? <>
+        <div className="workflow-blocker" role="alert">
+          <small>WHAT’S STOPPING IT</small>
+          <p>{workflowBlockerProblem(workflow)}</p>
+          <b>{blockerCanContinue ? "Would you like the workflow to continue?" : "Give feedback if the approved scope or safety constraints should be reconsidered."}</b>
+        </div>
+        {workflow.supervisor?.lastAdvice && <details className="workflow-blocker-details">
+          <summary><ClipboardCheck aria-hidden="true" /> TECHNICAL DETAILS<ChevronRight aria-hidden="true" /></summary>
+          <div><p>{workflow.supervisor.lastAdvice.summary}</p><small>BASIS</small><p>{workflow.supervisor.lastAdvice.basis}</p></div>
+        </details>}
+      </> : <>
+        <p>{workflow.checkpoint?.summary ?? workflow.objective}</p>
+        {workflow.error && <strong role="alert">{workflow.error}</strong>}
+        {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+      </>}
     </div>
     <footer>
       {approval && <>
@@ -2910,7 +2943,10 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
       </>}
       {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>}
-      {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />PROVIDE GUIDANCE</button>}
+      {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <>
+        {blockerCanContinue && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onContinue}><ArrowRight aria-hidden="true" />CONTINUE</button>}
+        <button className="workflow-revise" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />GIVE FEEDBACK</button>
+      </>}
       {workflow.phase === "readyToShip" && <>
         <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onAccept}><Check aria-hidden="true" />{pending ? "ACCEPTING…" : "ACCEPT RESULT"}</button>

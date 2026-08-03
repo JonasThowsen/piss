@@ -13,7 +13,8 @@ const checkpoint = Type.Object({
 const supervisorAdvice = Type.Object({
   workflowId: Type.String({ minLength: 1, maxLength: 128, description: "The exact blocked workflow ID supplied by PISS" }),
   action: StringEnum(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"] as const),
-  summary: Type.String({ minLength: 1, maxLength: 16 * 1024, description: "Concise adjudication for the worker and timeline" }),
+  problem: Type.String({ minLength: 1, maxLength: 512, description: "One plain-language sentence telling the user what is preventing progress. Avoid unexplained labels, acronyms, and internal gate names." }),
+  summary: Type.String({ minLength: 1, maxLength: 16 * 1024, description: "Technical adjudication for the worker and expandable details" }),
   guidance: Type.Optional(Type.String({ maxLength: 64 * 1024, description: "Concrete worker guidance for an automatic recovery action" })),
   basis: Type.String({ minLength: 1, maxLength: 16 * 1024, description: "Approved specification, plan, evidence, or authority boundary supporting the decision" }),
 });

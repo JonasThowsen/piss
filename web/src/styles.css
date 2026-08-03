@@ -574,6 +574,14 @@ button { color: inherit; }
 .workflow-copy { min-width: 0; padding: 7px 11px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
 .workflow-copy > p { margin: 0; color: #475149; font-size: 9px; line-height: 1.45; }
 .workflow-copy > strong { display: block; margin-top: 5px; color: var(--danger); font-size: 8px; line-height: 1.4; }
+.workflow-blocker { display: grid; gap: 5px; padding: 3px 1px; }
+.workflow-blocker small { color: var(--danger); font-size: 6px; font-weight: 850; letter-spacing: .12em; }
+.workflow-blocker p { margin: 0; color: #663b37; font-size: 11px; font-weight: 650; line-height: 1.45; }
+.workflow-blocker b { color: var(--text); font-size: 8px; font-weight: 700; }
+.workflow-copy .workflow-blocker-details { margin-top: 9px; background: rgba(255, 255, 255, .48); }
+.workflow-blocker-details > div { padding: 0 9px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
+.workflow-blocker-details > div p { margin: 8px 0; color: var(--muted); font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
+.workflow-blocker-details > div small { color: var(--faint); font-size: 6px; font-weight: 800; letter-spacing: .1em; }
 .workflow-copy details { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; margin-top: 7px; border: 1px solid rgba(49, 92, 70, .16); border-radius: var(--radius-panel); background: rgba(255, 255, 255, .75); }
 .workflow-copy summary { min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--accent); font-size: 7px; font-weight: 800; letter-spacing: .08em; cursor: pointer; list-style: none; }
 .workflow-copy summary::-webkit-details-marker { display: none; }
