@@ -101,6 +101,8 @@ test("workflow skills treat the specification as the completion boundary rather 
   assert.match(plan, /coverage map/i);
   assert.match(plan, /final interactive authority checkpoint/i);
   assert.match(plan, /Autonomy envelope/i);
+  assert.match(plan, /non-mutating readiness checks/i);
+  assert.match(plan, /one consolidated Plan blocker/i);
   assert.match(build, /do not call the build checkpoint after only the first tracer/i);
   assert.match(build, /standing operator authorization/i);
   assert.match(verify, /all approved scope has passing evidence/i);

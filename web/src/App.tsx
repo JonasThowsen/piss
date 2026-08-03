@@ -2950,7 +2950,10 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-revise" disabled={pending} type="button" onClick={(event) => onRevise(event.currentTarget)}>REQUEST CHANGES</button>
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE & RUN"}</button>
       </>}
-      {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>}
+      {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <>
+        <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>
+        <button className="workflow-intervene" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />GIVE FEEDBACK</button>
+      </>}
       {interrupted && <button className="workflow-approve" disabled={pending} type="button" onClick={onContinue}><RefreshCw aria-hidden="true" />RESUME WORKFLOW</button>}
       {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <>
         {blockerCanContinue && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onContinue}><ArrowRight aria-hidden="true" />CONTINUE</button>}

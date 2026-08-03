@@ -980,7 +980,8 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("Blocked");
   await expect(workflow).toContainText("Loop supervisor is reviewing this blocker");
-  await expect(workflow.getByRole("button", { name: "PROVIDE GUIDANCE" })).toHaveCount(0);
+  await expect(workflow.getByRole("button", { name: "GIVE FEEDBACK" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "CONTINUE" })).toHaveCount(0);
 
   api.setWorkflowBlocked();
   await page.reload();
