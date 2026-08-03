@@ -367,10 +367,10 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           ...(workflow.phase === "verifying" || workflow.phase === "reviewing" ? { queuedIntervention: String(body.feedback ?? "Queued follow-up") } : {}),
           updatedAt: timestamp,
         };
-      } else if (workflow && body?.action === "resume" && workflow.phase === "blocked" && workflow.blockedFromPhase) {
+      } else if (workflow && body?.action === "resume" && ((workflow.phase === "blocked" && workflow.blockedFromPhase) || (workflow.phase === "cancelled" && workflow.error?.includes("runtime stopped")))) {
         workflow = {
           ...workflow,
-          phase: workflow.blockedFromPhase as NonNullable<TestSession["workflow"]>["phase"],
+          phase: (workflow.phase === "blocked" ? workflow.blockedFromPhase : "building") as NonNullable<TestSession["workflow"]>["phase"],
           blockedFromPhase: null,
           error: null,
           updatedAt: timestamp,
@@ -514,6 +514,23 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           },
           updatedAt: timestamp,
           error: summary,
+        },
+        lastActivityAt: timestamp,
+      };
+    },
+    setWorkflowRuntimeCancelled() {
+      if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
+      const timestamp = new Date().toISOString();
+      const current = sessions.at(-1)!;
+      sessions[sessions.length - 1] = {
+        ...current,
+        status: "working",
+        workflow: {
+          ...current.workflow!,
+          phase: "cancelled",
+          blockedFromPhase: null,
+          error: "The workflow was cancelled when its runtime stopped",
+          updatedAt: timestamp,
         },
         lastActivityAt: timestamp,
       };
@@ -985,6 +1002,14 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   await dialog.getByRole("button", { name: "RESUME WITH GUIDANCE" }).click();
 
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "resume", feedback: guidance });
+  await expect(workflow).toContainText("Building");
+
+  api.setWorkflowRuntimeCancelled();
+  await page.reload();
+  await expect(workflow).toContainText("The Pi runtime stopped before the workflow finished");
+  await expect(workflow.getByRole("button", { name: "RESUME WORKFLOW" })).toBeEnabled();
+  await workflow.getByRole("button", { name: "RESUME WORKFLOW" }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "resume", feedback: expect.stringContaining("Resume the interrupted workflow") });
   await expect(workflow).toContainText("Building");
 });
 

@@ -761,6 +761,24 @@ function workflowInterventionMessage(phase: EngineeringWorkflowPhase, feedback: 
   return `[${label} — ${phase.toUpperCase()}]\n\n${feedback}`;
 }
 
+export function interruptedWorkflowRecoveryPhase(workflow: EngineeringWorkflow): EngineeringWorkflowPhase | null {
+  if (workflow.blockedFromPhase && !isTerminalWorkflowPhase(workflow.blockedFromPhase) && workflow.blockedFromPhase !== "blocked") {
+    return workflow.blockedFromPhase;
+  }
+  if (!workflow.plan) return workflow.specification ? "planning" : "defining";
+  const checkpoint = workflow.checkpoint;
+  if (!checkpoint) return "building";
+  if (checkpoint.outcome === "blocked") {
+    if (checkpoint.stage === "build") return "building";
+    if (checkpoint.stage === "verify") return "verifying";
+    if (checkpoint.stage === "review") return "reviewing";
+  }
+  if (checkpoint.stage === "build" && checkpoint.outcome === "passed") return "verifying";
+  if (checkpoint.stage === "verify" && checkpoint.outcome === "passed") return "reviewing";
+  if (checkpoint.stage === "review" && checkpoint.outcome === "passed") return "readyToShip";
+  return "building";
+}
+
 export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): string {
   const contract = `Workflow ID: ${workflow.id}\nYou must finish this phase by calling piss_workflow_checkpoint with this exact workflow ID.`;
   const guidance = feedback ? `\n\nOperator guidance for this phase:\n${feedback}` : "";
@@ -1697,18 +1715,20 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const dispatchWorkflowPhase = (
       session: MutableOwnedSession,
       feedback?: string,
+      queueBehindActiveRun = false,
     ): Effect.Effect<void, PiCommandError | SessionStorageError> => Effect.gen(function* () {
       const workflow = session.snapshot.workflow;
       if (!workflow || (!isAutonomousWorkflowPhase(workflow.phase) && workflow.phase !== "defining" && workflow.phase !== "planning")) {
         return yield* Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message: "This workflow phase cannot start an agent run" }));
       }
+      const commandType = queueBehindActiveRun && session.snapshot.status === "working" ? "follow_up" as const : "prompt" as const;
       session.workflowDispatchPending = false;
       session.finalResponseRecoveryAttempted = false;
       session.snapshot = { ...session.snapshot, status: "working", error: null, lastActivityAt: now() };
       yield* persist();
       yield* request(session, {
         id: `workflow:${workflow.id}:${workflow.phase}:${randomUUID()}`,
-        type: "prompt",
+        type: commandType,
         message: workflowPhasePrompt(workflow, feedback),
       });
     });
@@ -2617,14 +2637,21 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           return cloneSession(session.snapshot);
         }
         if (input.action === "resume") {
-          if (current.phase !== "blocked" || !current.blockedFromPhase) return yield* unavailable("This workflow is not resumable");
-          if (!isAutonomousWorkflowPhase(current.blockedFromPhase) && current.blockedFromPhase !== "defining" && current.blockedFromPhase !== "planning") {
+          const interruptedCancellation = current.phase === "cancelled" && current.error?.includes("runtime stopped");
+          const recoveryPhase = interruptedCancellation ? interruptedWorkflowRecoveryPhase(current) : current.blockedFromPhase;
+          if ((current.phase !== "blocked" && !interruptedCancellation) || !recoveryPhase) return yield* unavailable("This workflow is not resumable");
+          if (!isAutonomousWorkflowPhase(recoveryPhase)
+            && recoveryPhase !== "defining"
+            && recoveryPhase !== "planning"
+            && recoveryPhase !== "awaitingSpecApproval"
+            && recoveryPhase !== "awaitingPlanApproval"
+            && recoveryPhase !== "readyToShip") {
             return yield* unavailable("This workflow must be revised or cancelled");
           }
           const updatedAt = now();
           const workflow = {
             ...current,
-            phase: current.blockedFromPhase,
+            phase: recoveryPhase,
             blockedFromPhase: null,
             ...(current.supervisor ? { supervisor: { ...current.supervisor, status: "idle" as const, pendingGuidance: null } } : {}),
             updatedAt,
@@ -2632,7 +2659,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           };
           session.snapshot = { ...session.snapshot, workflow, lastActivityAt: updatedAt };
           yield* persist();
-          yield* dispatchWorkflowPhase(session, input.feedback?.trim()).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          if (isAutonomousWorkflowPhase(recoveryPhase) || recoveryPhase === "defining" || recoveryPhase === "planning") {
+            yield* dispatchWorkflowPhase(session, input.feedback?.trim(), interruptedCancellation).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          }
           return cloneSession(session.snapshot);
         }
         return yield* unavailable("Unsupported workflow action");
@@ -2910,7 +2939,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               lastActivityAt: now(),
               error: interruptedRequests > 0 ? `${interruptedRequests} pending interactive request${interruptedRequests === 1 ? " was" : "s were"} cancelled when the runtime stopped` : session.snapshot.error,
               workflow: workflow && !isTerminalWorkflowPhase(workflow.phase)
-                ? { ...workflow, phase: "cancelled", blockedFromPhase: null, updatedAt: now(), error: "The workflow was cancelled when its runtime stopped" }
+                ? { ...workflow, phase: "blocked", blockedFromPhase: workflow.phase === "blocked" ? workflow.blockedFromPhase : workflow.phase, updatedAt: now(), error: "The workflow paused because its runtime stopped" }
                 : workflow,
             };
             failPending(session, "Pi runtime was stopped");

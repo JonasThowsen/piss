@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, interruptedWorkflowRecoveryPhase, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
@@ -307,6 +307,35 @@ test("blocked phase guidance is included when the workflow resumes", () => {
   assert.match(prompt, /Operator guidance for this phase/);
   assert.match(prompt, /\/runbooks\/bootstrap\.md/);
   assert.match(prompt, /CHG-42/);
+});
+
+test("interrupted workflows recover from their preserved checkpoint", () => {
+  const workflow: EngineeringWorkflow = {
+    id: "workflow-interrupted",
+    phase: "cancelled",
+    objective: "Bootstrap production safely",
+    repairAttempts: 0,
+    maxRepairAttempts: 5,
+    specification: "# Approved specification",
+    plan: "# Approved delivery plan",
+    checkpoint: {
+      stage: "build",
+      outcome: "blocked",
+      summary: "Deployment completed; the next bounded operation needs a decision",
+      artifact: null,
+      toolCallId: "build-blocked",
+      sequence: 8,
+      receivedAt: "2026-08-02T20:02:00.000Z",
+    },
+    blockedFromPhase: null,
+    createdAt: "2026-08-02T20:00:00.000Z",
+    updatedAt: "2026-08-02T20:03:00.000Z",
+    error: "The workflow was cancelled when its runtime stopped",
+  };
+
+  assert.equal(interruptedWorkflowRecoveryPhase(workflow), "building");
+  assert.equal(interruptedWorkflowRecoveryPhase({ ...workflow, checkpoint: { ...workflow.checkpoint!, outcome: "passed" } }), "verifying");
+  assert.equal(interruptedWorkflowRecoveryPhase({ ...workflow, blockedFromPhase: "reviewing" }), "reviewing");
 });
 
 test("loads PISS browser resources without trusting project-local resources", () => {

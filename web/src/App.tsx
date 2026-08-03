@@ -1866,13 +1866,17 @@ export function App() {
     void runWorkflowMutation({ runtimeId: session.runtimeId, action: "resume", feedback });
   };
 
-  const continueBlockedWorkflow = () => {
+  const continueWorkflow = () => {
     const session = selectedSessionRef.current;
-    if (!session || session.workflow?.phase !== "blocked" || busy) return;
+    const workflow = session?.workflow;
+    const interrupted = workflow?.phase === "cancelled" && workflow.error?.includes("runtime stopped");
+    if (!session || !workflow || (workflow.phase !== "blocked" && !interrupted) || busy) return;
     void runWorkflowMutation({
       runtimeId: session.runtimeId,
       action: "resume",
-      feedback: "The operator chose to continue. Proceed only within the approved specification and delivery plan. Do not infer credentials, facts, evidence, or permission beyond this decision; if another concrete input is required, explain it plainly and block again.",
+      feedback: interrupted
+        ? "Resume the interrupted workflow using its preserved approved specification and delivery plan. Reconcile any work completed before the runtime interruption, then continue from the first incomplete criterion."
+        : "The operator chose to continue. Proceed only within the approved specification and delivery plan. Do not infer credentials, facts, evidence, or permission beyond this decision; if another concrete input is required, explain it plainly and block again.",
     });
   };
 
@@ -2360,7 +2364,7 @@ export function App() {
               onApprove={() => mutateCurrentWorkflow("approve")}
               onAccept={() => mutateCurrentWorkflow("accept")}
               onCancel={() => mutateCurrentWorkflow("cancel")}
-              onContinue={continueBlockedWorkflow}
+              onContinue={continueWorkflow}
               onResume={openWorkflowResume}
               onRevise={openWorkflowRevision}
               onIntervene={openWorkflowIntervention}
@@ -2877,7 +2881,12 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
   return -1;
 }
 
+function workflowWasInterrupted(workflow: EngineeringWorkflow): boolean {
+  return workflow.phase === "cancelled" && Boolean(workflow.error?.includes("runtime stopped"));
+}
+
 function workflowBlockerProblem(workflow: EngineeringWorkflow): string {
+  if (workflowWasInterrupted(workflow)) return "The Pi runtime stopped before the workflow finished. Its approved specification and plan are still preserved.";
   const advice = workflow.supervisor?.lastAdvice;
   if (advice?.problem?.trim()) return advice.problem.trim();
   if (advice?.action === "human_authority_required") return "The workflow needs your permission before it can continue.";
@@ -2901,6 +2910,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   const activeStage = workflowStageIndex(workflow);
   const approval = workflow.phase === "awaitingSpecApproval" || workflow.phase === "awaitingPlanApproval";
   const terminal = isTerminalWorkflowPhase(workflow.phase);
+  const interrupted = workflowWasInterrupted(workflow);
   const blockerCanContinue = workflow.supervisor?.lastAdvice?.action !== "unsafe_stop";
   const artifactLabel = workflow.phase === "awaitingSpecApproval"
     ? "SPECIFICATION"
@@ -2921,11 +2931,11 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
       {WORKFLOW_STAGES.map((stage, index) => <li className={index < activeStage ? "complete" : index === activeStage ? "active" : "pending"} key={stage}><i>{index < activeStage ? <Check aria-hidden="true" /> : index + 1}</i><span>{stage}</span></li>)}
     </ol>
     <div className="workflow-copy">
-      {workflow.phase === "blocked" ? <>
+      {workflow.phase === "blocked" || interrupted ? <>
         <div className="workflow-blocker" role="alert">
           <small>WHAT’S STOPPING IT</small>
           <p>{workflowBlockerProblem(workflow)}</p>
-          <b>{blockerCanContinue ? "Would you like the workflow to continue?" : "Give feedback if the approved scope or safety constraints should be reconsidered."}</b>
+          <b>{interrupted ? "Resume the workflow from its preserved state?" : blockerCanContinue ? "Would you like the workflow to continue?" : "Give feedback if the approved scope or safety constraints should be reconsidered."}</b>
         </div>
         {workflow.supervisor?.lastAdvice && <details className="workflow-blocker-details">
           <summary><ClipboardCheck aria-hidden="true" /> TECHNICAL DETAILS<ChevronRight aria-hidden="true" /></summary>
@@ -2943,6 +2953,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
       </>}
       {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>}
+      {interrupted && <button className="workflow-approve" disabled={pending} type="button" onClick={onContinue}><RefreshCw aria-hidden="true" />RESUME WORKFLOW</button>}
       {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <>
         {blockerCanContinue && <button className="workflow-approve" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={onContinue}><ArrowRight aria-hidden="true" />CONTINUE</button>}
         <button className="workflow-revise" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />GIVE FEEDBACK</button>
