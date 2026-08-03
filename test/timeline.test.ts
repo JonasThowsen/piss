@@ -196,8 +196,8 @@ test("renders fire-and-forget extension notifications as durable output", () => 
   ]);
 
   assert.deepEqual(timeline, [
-    { _tag: "notice", key: "notice-1", text: "MCP Server Status:\n\n✓ jomat: connected", tone: "info" },
-    { _tag: "notice", key: "notice-2", text: "Authentication required", tone: "warning" },
+    { _tag: "notice", key: "notice-1", sequence: 1, text: "MCP Server Status:\n\n✓ jomat: connected", tone: "info" },
+    { _tag: "notice", key: "notice-2", sequence: 2, text: "Authentication required", tone: "warning" },
   ]);
 });
 
@@ -210,8 +210,8 @@ test("renders compaction and retry lifecycle as settled timeline states", () => 
   ]);
 
   assert.deepEqual(timeline, [
-    { _tag: "status", key: "compaction-1", label: "Context compacted", detail: "198,000 → 24,000 estimated tokens", tone: "success" },
-    { _tag: "status", key: "retry-3", label: "Provider recovered", detail: "The session continued automatically", tone: "success" },
+    { _tag: "status", key: "compaction-1", sequence: 2, label: "Context compacted", detail: "198,000 → 24,000 estimated tokens", tone: "success" },
+    { _tag: "status", key: "retry-3", sequence: 4, label: "Provider recovered", detail: "The session continued automatically", tone: "success" },
   ]);
 });
 
@@ -223,6 +223,7 @@ test("correlates native tool lifecycle and keeps readable accumulated output", (
   assert.deepEqual(running[0], {
     _tag: "tool",
     key: "call-1",
+    sequence: 1,
     name: "bash",
     detail: "one\ntwo",
     error: false,
@@ -239,6 +240,7 @@ test("correlates native tool lifecycle and keeps readable accumulated output", (
   assert.deepEqual(completed[0], {
     _tag: "tool",
     key: "call-1",
+    sequence: 3,
     name: "bash",
     detail: "all tests passed",
     error: false,
@@ -252,6 +254,7 @@ test("correlates native tool lifecycle and keeps readable accumulated output", (
   assert.deepEqual(bounded[0], {
     _tag: "tool",
     key: "call-old",
+    sequence: 10,
     name: "bash",
     detail: "complete",
     error: false,

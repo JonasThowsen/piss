@@ -1178,6 +1178,57 @@ test("returning to the app restores the last opened session", async ({ page }) =
   await expect(page.locator(".brand b")).toHaveText("First session");
 });
 
+test("URL history restores the active session, page, and timeline position", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 620 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "New session in erp" }).click();
+  await page.getByRole("dialog", { name: "New session" }).getByLabel("Session name").fill("URL state session");
+  await page.getByRole("dialog", { name: "New session" }).getByRole("button", { name: /start session/i }).click();
+
+  const timestamp = new Date().toISOString();
+  const messageEvent = (sequence: number) => ({
+    sequence,
+    type: "message_end",
+    timestamp,
+    data: { message: { role: "assistant", content: [{ type: "text", text: `URL position ${sequence} ${"stable content ".repeat(8)}` }] } },
+  });
+  api.setHistoricalEvents(Array.from({ length: 30 }, (_, index) => messageEvent(index + 1)));
+  api.setEvents(Array.from({ length: 40 }, (_, index) => messageEvent(index + 31)));
+  await expect(page.getByText(/URL position 70/)).toBeVisible();
+
+  const timeline = page.locator(".timeline");
+  await timeline.hover();
+  await page.mouse.wheel(0, -10_000);
+  await page.getByRole("button", { name: "LOAD EARLIER ACTIVITY" }).click();
+  await expect(page.getByText(/URL position 1 /)).toBeAttached();
+  await timeline.hover();
+  await page.mouse.wheel(0, -1_400);
+  await expect.poll(() => page.evaluate(() => Number(new URL(location.href).searchParams.get("sequence")))).toBeLessThan(31);
+  await expect(page).toHaveURL(/view=agent&at=message-/);
+  const visibleAnchor = () => timeline.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const rows = [...element.querySelectorAll<HTMLElement>("[data-timeline-key]")];
+    const row = rows.find((candidate) => candidate.getBoundingClientRect().bottom > top + 1)!;
+    return { key: row.dataset.timelineKey, offset: Math.round(row.getBoundingClientRect().top - top) };
+  });
+  const beforeReload = await visibleAnchor();
+
+  await page.reload();
+  await expect(page.locator(".brand b")).toHaveText("URL state session");
+  await expect(page.locator(".capability-tabs").getByRole("tab", { name: "Agent" })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(async () => (await visibleAnchor()).key).toBe(beforeReload.key);
+  await expect.poll(async () => Math.abs((await visibleAnchor()).offset - beforeReload.offset)).toBeLessThanOrEqual(2);
+
+  await page.locator(".capability-tabs").getByRole("tab", { name: "Details" }).click();
+  await expect(page).toHaveURL(/session=session-1&view=details/);
+  await page.reload();
+  await expect(page.locator(".capability-tabs").getByRole("tab", { name: "Details" })).toHaveAttribute("aria-selected", "true");
+  await page.goBack();
+  await expect(page.locator(".capability-tabs").getByRole("tab", { name: "Agent" })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(async () => (await visibleAnchor()).key).toBe(beforeReload.key);
+});
+
 test("global picker fuzzily finds and opens sessions across workspaces", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   await installApi(page);

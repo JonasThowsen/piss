@@ -6,9 +6,9 @@ export type TimelineItem =
   | { readonly _tag: "thinking"; readonly key: string; readonly sequence: number; readonly text: string; readonly live?: boolean }
   | { readonly _tag: "browser-image"; readonly key: string; readonly sequence: number; readonly artifact: Extract<SessionArtifact, { readonly kind: "browser-screenshot" }> }
   | { readonly _tag: "browser-video"; readonly key: string; readonly sequence: number; readonly artifact: Extract<SessionArtifact, { readonly kind: "browser-video" }> }
-  | { readonly _tag: "tool"; readonly key: string; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
-  | { readonly _tag: "status"; readonly key: string; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" }
-  | { readonly _tag: "notice"; readonly key: string; readonly text: string; readonly tone: "info" | "warning" | "error" };
+  | { readonly _tag: "tool"; readonly key: string; readonly sequence: number; readonly name: string; readonly detail: string; readonly error: boolean; readonly state: "running" | "done"; readonly outputRef?: string; readonly outputBytes?: number; readonly outputTruncated?: boolean }
+  | { readonly _tag: "status"; readonly key: string; readonly sequence: number; readonly label: string; readonly detail: string; readonly tone: "running" | "success" | "error" }
+  | { readonly _tag: "notice"; readonly key: string; readonly sequence: number; readonly text: string; readonly tone: "info" | "warning" | "error" };
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -175,13 +175,13 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       if (artifact?.kind === "browser-video") items.push({ _tag: "browser-video", key: `browser-artifact-${event.sequence}`, sequence: event.sequence, artifact });
     }
     if (event.type === "browser_artifact_failed" && typeof data?.message === "string") {
-      items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, text: data.message, tone: "error" });
+      items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, sequence: event.sequence, text: data.message, tone: "error" });
     }
     // TODO(tracer): Project stateful setStatus/setWidget/set_editor_text RPC
     // methods once the web shell has session-scoped extension UI state.
     if (event.type === "extension_ui_request" && data?.method === "notify" && typeof data.message === "string") {
       const tone = data.notifyType === "error" ? "error" : data.notifyType === "warning" ? "warning" : "info";
-      items.push({ _tag: "notice", key: `notice-${event.sequence}`, text: data.message, tone });
+      items.push({ _tag: "notice", key: `notice-${event.sequence}`, sequence: event.sequence, text: data.message, tone });
     }
     if (event.type === "compaction_start") {
       const reason = data?.reason === "overflow" ? "Context limit reached" : data?.reason === "threshold" ? "Context threshold reached" : "Manual compaction";
@@ -189,6 +189,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       items.push({
         _tag: "status",
         key: `compaction-${event.sequence}`,
+        sequence: event.sequence,
         label: "Compacting context",
         detail: `${reason} · preserving recent work and summarizing history`,
         tone: "running",
@@ -202,6 +203,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       const status: TimelineItem = {
         _tag: "status",
         key: activeCompaction === undefined ? `compaction-${event.sequence}` : items[activeCompaction]!._tag === "status" ? items[activeCompaction]!.key : `compaction-${event.sequence}`,
+        sequence: event.sequence,
         label: failed ? data?.aborted === true ? "Compaction cancelled" : "Compaction failed" : "Context compacted",
         detail: failed
           ? typeof data?.errorMessage === "string" ? data.errorMessage : "Pi could not reduce the active context"
@@ -219,6 +221,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       items.push({
         _tag: "status",
         key: `retry-${event.sequence}`,
+        sequence: event.sequence,
         label: "Retrying provider",
         detail: `Attempt ${attempt}${maximum ? ` of ${maximum}` : ""}${typeof data?.delayMs === "number" ? ` · waiting ${Math.ceil(data.delayMs / 1000)}s` : ""}`,
         tone: "running",
@@ -229,6 +232,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       const status: TimelineItem = {
         _tag: "status",
         key: activeRetry === undefined ? `retry-${event.sequence}` : items[activeRetry]!._tag === "status" ? items[activeRetry]!.key : `retry-${event.sequence}`,
+        sequence: event.sequence,
         label: succeeded ? "Provider recovered" : "Provider retry failed",
         detail: succeeded ? "The session continued automatically" : typeof data?.finalError === "string" ? data.finalError : "Retry attempts were exhausted",
         tone: succeeded ? "success" : "error",
@@ -282,6 +286,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       items.push({
         _tag: "tool",
         key: id,
+        sequence: event.sequence,
         name: typeof data?.toolName === "string" ? data.toolName : "tool",
         detail: compact(data?.args) || "Executing…",
         error: false,
@@ -299,6 +304,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
         items.push({
           _tag: "tool",
           key: id,
+          sequence: event.sequence,
           name: typeof data?.toolName === "string" ? data.toolName : "tool",
           detail: valueText(data?.partialResult) || "Execution in progress…",
           error: false,
@@ -313,6 +319,7 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
       const tool: TimelineItem = {
         _tag: "tool",
         key: id || `tool-${event.sequence}`,
+        sequence: event.sequence,
         name: typeof data?.toolName === "string" ? data.toolName : "tool",
         detail: valueText(data?.result) || (data?.isError === true ? "Tool failed" : "Completed"),
         error: data?.isError === true,

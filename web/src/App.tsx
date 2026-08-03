@@ -34,6 +34,7 @@ import { requestUpdateActivation } from "./updateActivation.ts";
 import { fileReviewKey, formatReviewComment, nextDiffSelection, parseUnifiedDiff, readReviewedFiles, selectedDiffLines, selectionLocation, writeReviewedFiles, type DiffLine, type DiffSelection } from "./review.ts";
 import { SlashCommandMenu } from "./SlashCommandMenu.tsx";
 import { activeSlashCommand, applySlashCommand, filterSlashCommands, isSlashCommandInput, nativeSlashCommand, slashCommandCatalog, type ActiveSlashCommand, type NativeSlashCommandName, type SlashCommandItem } from "./slashCommands.ts";
+import { defaultPagePosition, readWorkbenchRoute, writeWorkbenchRoute, type PagePosition, type SessionView, type WorkbenchRoute } from "./urlState.ts";
 import "./styles.css";
 
 type LoadState =
@@ -357,7 +358,8 @@ const LazyMarkdown = memo(function LazyMarkdown({ text }: { readonly text: strin
 });
 
 export function App() {
-  const routedSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
+  const [initialRoute] = useState(readWorkbenchRoute);
+  const routedSessionId = initialRoute.sessionId;
   const [initialRequestedSessionId] = useState(() => routedSessionId ?? readLastOpenedSession());
   const [state, setState] = useState<LoadState>({ _tag: "Loading" });
   const [sessionOpenHistory, setSessionOpenHistory] = useState(readSessionOpenHistory);
@@ -384,7 +386,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [globalPickerOpen, setGlobalPickerOpen] = useState(false);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [activeView, setActiveView] = useState<"agent" | "changes" | "details">("agent");
+  const [activeView, setActiveView] = useState<SessionView>(() => routedSessionId ? initialRoute.view : "agent");
   const [reviewState, setReviewState] = useState<ReviewState>();
   const [name, setName] = useState("");
   const [commandText, setCommandText] = useState(() => initialRequestedSessionId ? readDraft(initialRequestedSessionId)?.text ?? "" : "");
@@ -417,6 +419,12 @@ export function App() {
   const selectedSessionIdRef = useRef<string | undefined>(undefined);
   const selectedSessionRef = useRef<OwnedSession | undefined>(undefined);
   const requestedSessionIdRef = useRef(initialRequestedSessionId);
+  const requestedRouteRef = useRef<WorkbenchRoute | undefined>(routedSessionId ? initialRoute : undefined);
+  const pendingPagePositionRef = useRef<PagePosition | undefined>(routedSessionId ? initialRoute.position : undefined);
+  const restoringPagePositionRef = useRef(Boolean(routedSessionId));
+  const locationSyncFrameRef = useRef(0);
+  const routeRestoreTimerRef = useRef(0);
+  const historicalRouteLoadRef = useRef(0);
   const workspaceIdRef = useRef<string | undefined>(undefined);
   const refreshInFlight = useRef(false);
   const refreshQueued = useRef(false);
@@ -534,7 +542,12 @@ export function App() {
 
   const closeGlobalPicker = useCallback(() => setGlobalPickerOpen(false), []);
 
-  const selectSession = useCallback((sessionId: string | undefined, persistCurrent = true) => {
+  const selectSession = useCallback((
+    sessionId: string | undefined,
+    persistCurrent = true,
+    route: WorkbenchRoute = { sessionId, view: "agent", position: defaultPagePosition("agent") },
+    historyMode: "push" | "replace" | "none" = "replace",
+  ) => {
     const currentId = selectedSessionIdRef.current;
     const currentSnapshot = sessionForFastSwitchCache(sessionSyncRef.current);
     if (currentId && currentSnapshot?.id === currentId) {
@@ -564,12 +577,16 @@ export function App() {
     sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "select", sessionId });
     const fastSnapshot = sessionId ? fastSessionCacheRef.current.get(sessionId) : undefined;
     if (fastSnapshot) sessionSyncRef.current = reduceSessionSync(sessionSyncRef.current, { type: "cachedSnapshot", session: fastSnapshot });
-    followingRef.current = true;
+    window.clearTimeout(routeRestoreTimerRef.current);
+    routeRestoreTimerRef.current = 0;
+    pendingPagePositionRef.current = route.position;
+    restoringPagePositionRef.current = true;
+    followingRef.current = route.view === "agent" && route.position._tag === "latest";
     timelinePrependAnchorRef.current = undefined;
     window.cancelAnimationFrame(timelinePrependFrameRef.current);
     timelineScrollTopRef.current = 0;
     setTimelineWindowEnd(undefined);
-    setAtBottom(true);
+    setAtBottom(followingRef.current);
     setCommandText(nextUi.commandText);
     imagesRef.current = nextUi.images;
     setImages(nextUi.images);
@@ -579,7 +596,7 @@ export function App() {
     setCopyFeedback(undefined);
     reviewGeneration.current += 1;
     setReviewState(undefined);
-    setActiveView("agent");
+    setActiveView(route.view);
     setCompactionDialogOpen(false);
     setArchiveTarget(undefined);
     setOutbox(nextUi.outbox);
@@ -593,10 +610,7 @@ export function App() {
       });
     }
     setSessionOpenHistory(writeLastOpenedSession(sessionId));
-    const url = new URL(window.location.href);
-    if (sessionId) url.searchParams.set("session", sessionId);
-    else url.searchParams.delete("session");
-    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    if (historyMode !== "none") writeWorkbenchRoute(route, historyMode);
   }, [dismissMentionMenu, dispatchSessionSync]);
 
   const refresh = useCallback(async (initial = false) => {
@@ -616,15 +630,24 @@ export function App() {
       const currentId = selectedSessionIdRef.current;
       const selectionChangedDuringRefresh = currentId !== selectionAtStart;
       const requestedId = requestedSessionIdRef.current;
+      const requestedRoute = requestedRouteRef.current;
       const nextId = currentId && (sessions.some((session) => session.id === currentId) || selectionChangedDuringRefresh)
         ? currentId
         : requestedId && sessions.some((session) => session.id === requestedId)
           ? requestedId
           : sessions[0]?.id;
-      if (requestedId && nextId === requestedId) requestedSessionIdRef.current = undefined;
+      if (requestedId && nextId === requestedId) {
+        requestedSessionIdRef.current = undefined;
+        requestedRouteRef.current = undefined;
+      }
       setState({ _tag: "Ready", workspaces, sessions });
       setRefreshProblem(undefined);
-      if (nextId !== currentId) selectSession(nextId);
+      if (nextId !== currentId) {
+        const route = requestedRoute?.sessionId === nextId
+          ? requestedRoute
+          : { sessionId: nextId, view: "agent" as const, position: defaultPagePosition("agent") };
+        selectSession(nextId, true, route, "replace");
+      }
       if (nextId && sessions.some((session) => session.id === nextId) && sessionOpenInFlightRef.current !== nextId && shouldPollSession(sessionSyncRef.current)) {
         const generation = ++detailGeneration.current;
         const request = sessionSyncRequest(sessionSyncRef.current);
@@ -843,6 +866,71 @@ export function App() {
   const oldestSequence = selectedSession?.events.at(0)?.sequence;
   const hasOlderTimeline = timelineHistory.hasMore ?? (oldestSequence !== undefined && oldestSequence > 1);
 
+  useEffect(() => {
+    const requested = pendingPagePositionRef.current;
+    if (activeView !== "agent" || requested?._tag !== "timeline" || !selectedSession || oldestSequence === undefined || oldestSequence <= requested.sequence) return;
+    const generation = ++historicalRouteLoadRef.current;
+    const sessionId = selectedSession.id;
+    setTimelineHistory((current) => ({ ...current, loading: true, error: undefined }));
+    void (async () => {
+      let before = oldestSequence;
+      let hasMore = true;
+      try {
+        while (generation === historicalRouteLoadRef.current && before > requested.sequence && hasMore) {
+          const page = await Effect.runPromise(loadTimelinePage(sessionId, before));
+          if (generation !== historicalRouteLoadRef.current || selectedSessionIdRef.current !== sessionId) return;
+          if (page.events.length === 0) { hasMore = false; break; }
+          dispatchSessionSync({ type: "historicalPage", events: page.events });
+          before = page.events[0]!.sequence;
+          hasMore = page.hasMore;
+        }
+        if (generation === historicalRouteLoadRef.current) setTimelineHistory({ loading: false, hasMore });
+      } catch (cause) {
+        if (generation === historicalRouteLoadRef.current) setTimelineHistory({ loading: false, hasMore: true, error: errorMessage(cause) });
+      }
+    })();
+    return () => { if (historicalRouteLoadRef.current === generation) historicalRouteLoadRef.current += 1; };
+  }, [activeView, dispatchSessionSync, oldestSequence, selectedSession?.id]);
+
+  useEffect(() => {
+    const requested = pendingPagePositionRef.current;
+    if (activeView !== "agent" || requested?._tag !== "timeline") return;
+    const anchorIndex = timeline.findIndex((item) => item.key === requested.anchor || item.sequence === requested.sequence);
+    if (anchorIndex < 0 || anchorIndex >= timelineWindowStart && anchorIndex < effectiveTimelineWindowEnd) return;
+    const nextEnd = Math.min(timeline.length, Math.max(TIMELINE_WINDOW_SIZE, anchorIndex + Math.floor(TIMELINE_WINDOW_SIZE / 2)));
+    setTimelineWindowEnd(nextEnd >= timeline.length ? undefined : nextEnd);
+  }, [activeView, effectiveTimelineWindowEnd, timeline, timelineWindowStart]);
+
+  const syncRoutePosition = (element: HTMLElement, nextAtBottom: boolean) => {
+    if (restoringPagePositionRef.current) return;
+    window.cancelAnimationFrame(locationSyncFrameRef.current);
+    locationSyncFrameRef.current = window.requestAnimationFrame(() => {
+      const sessionId = selectedSessionIdRef.current;
+      const currentRoute = readWorkbenchRoute();
+      if (!sessionId || currentRoute.sessionId !== sessionId || currentRoute.view !== activeView) return;
+      let position: PagePosition;
+      if (activeView !== "agent") {
+        position = { _tag: "scroll", top: Math.round(element.scrollTop) };
+      } else if (nextAtBottom && effectiveTimelineWindowEnd >= timeline.length) {
+        position = { _tag: "latest" };
+      } else {
+        const viewportTop = element.getBoundingClientRect().top;
+        const rows = [...element.querySelectorAll<HTMLElement>("[data-timeline-key][data-timeline-sequence]")];
+        const anchor = rows.find((row) => row.getBoundingClientRect().bottom > viewportTop + 1) ?? rows.at(-1);
+        const sequence = anchor ? Number(anchor.dataset.timelineSequence) : Number.NaN;
+        position = anchor?.dataset.timelineKey && Number.isSafeInteger(sequence)
+          ? { _tag: "timeline", anchor: anchor.dataset.timelineKey, sequence, offset: Math.round(anchor.getBoundingClientRect().top - viewportTop) }
+          : { _tag: "latest" };
+      }
+      writeWorkbenchRoute({ sessionId, view: activeView, position }, "replace");
+    });
+  };
+
+  useEffect(() => () => {
+    window.cancelAnimationFrame(locationSyncFrameRef.current);
+    window.clearTimeout(routeRestoreTimerRef.current);
+  }, []);
+
   const loadOlderTimeline = () => {
     if (!selectedSession || oldestSequence === undefined || timelineHistory.loading || !hasOlderTimeline) return;
     const element = timelineRef.current;
@@ -939,12 +1027,50 @@ export function App() {
         });
       });
     };
-    pinToBottom();
-    // Browsers may restore a nested scroller after the first layout frames on
-    // reload. Reassert the app-owned follow state after native restoration.
-    const restorationTimer = window.setTimeout(pinToBottom, 150);
-    const resizeObserver = new ResizeObserver(pinToBottom);
+    const requested = pendingPagePositionRef.current;
+    const restoreRequestedPosition = () => {
+      if (!requested || pendingPagePositionRef.current !== requested) return false;
+      if (activeView !== "agent" && requested._tag === "scroll") {
+        element.scrollTop = requested.top;
+        timelineScrollTopRef.current = element.scrollTop;
+        return true;
+      }
+      if (activeView === "agent" && requested._tag === "timeline") {
+        const escapedKey = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(requested.anchor) : requested.anchor.replace(/["\\]/gu, "\\$&");
+        const row = element.querySelector<HTMLElement>(`[data-timeline-key="${escapedKey}"]`)
+          ?? element.querySelector<HTMLElement>(`[data-timeline-sequence="${requested.sequence}"]`);
+        if (!row) return false;
+        element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - requested.offset;
+        timelineScrollTopRef.current = element.scrollTop;
+        setAtBottom(false);
+        return true;
+      }
+      if (activeView === "agent" && requested._tag === "latest") {
+        pinToBottom();
+        return true;
+      }
+      return false;
+    };
+    const maintainPosition = () => {
+      if (!restoreRequestedPosition()) pinToBottom();
+    };
+    maintainPosition();
+    // Reassert app-owned position after native nested-scroll restoration and
+    // after lazy markdown, images, or review data change the scroller's size.
+    const restorationTimer = window.setTimeout(maintainPosition, 150);
+    const resizeObserver = new ResizeObserver(maintainPosition);
     for (const child of element.children) resizeObserver.observe(child);
+    if (requested && routeRestoreTimerRef.current === 0 && restoreRequestedPosition()) {
+      routeRestoreTimerRef.current = window.setTimeout(() => {
+        if (pendingPagePositionRef.current === requested) {
+          pendingPagePositionRef.current = undefined;
+          restoringPagePositionRef.current = false;
+        }
+        routeRestoreTimerRef.current = 0;
+        const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+        syncRoutePosition(element, activeView === "agent" && distanceFromBottom < 4);
+      }, 300);
+    }
     return () => {
       window.clearTimeout(restorationTimer);
       resizeObserver.disconnect();
@@ -1207,6 +1333,10 @@ export function App() {
     }
   };
 
+  useEffect(() => {
+    if (activeView === "changes" && selectedSession && reviewState?.sessionId !== selectedSession.id) void requestReview(selectedSession);
+  }, [activeView, selectedSession?.id, selectedSession?.runtimeId]);
+
   const removeActiveMention = () => {
     if (!mentionMenu) return;
     const { start, end } = mentionMenu.active;
@@ -1288,7 +1418,7 @@ export function App() {
       }));
       setBusy(false);
       currentSessionUiRef.current = { ...currentSessionUiRef.current, busy: false };
-      selectSession(session.id);
+      selectSession(session.id, true, { sessionId: session.id, view: "agent", position: defaultPagePosition("agent") }, "push");
       acceptAuthoritativeSession(session);
       creatorReturnFocusRef.current = null;
       setCreatorOpen(false);
@@ -1340,8 +1470,12 @@ export function App() {
     if (!busy) setCreatorOpen(false);
   };
 
-  const openSession = async (sessionId: string) => {
-    selectSession(sessionId);
+  const openSession = async (
+    sessionId: string,
+    route: WorkbenchRoute = { sessionId, view: "agent", position: defaultPagePosition("agent") },
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
+    selectSession(sessionId, true, route, historyMode);
     const requestId = ++sessionOpenRequest.current;
     sessionOpenInFlightRef.current = sessionId;
     setSidebarOpen(false);
@@ -1385,11 +1519,49 @@ export function App() {
     }
   };
 
+  const changeView = (view: SessionView, historyMode: "push" | "replace" = "push") => {
+    const sessionId = selectedSessionIdRef.current;
+    if (!sessionId || view === activeView) return;
+    const position = defaultPagePosition(view);
+    window.clearTimeout(routeRestoreTimerRef.current);
+    routeRestoreTimerRef.current = 0;
+    pendingPagePositionRef.current = position;
+    restoringPagePositionRef.current = true;
+    followingRef.current = view === "agent";
+    setAtBottom(view === "agent");
+    setTimelineWindowEnd(undefined);
+    setActiveView(view);
+    writeWorkbenchRoute({ sessionId, view, position }, historyMode);
+    if (view === "changes" && selectedSessionRef.current) void requestReview(selectedSessionRef.current);
+  };
+
   const chooseGlobalPickerAction = (action: SelectSessionAction) => {
     setGlobalPickerOpen(false);
     globalPickerReturnFocusRef.current = sessionHeadingRef.current;
     if (action._tag === "SelectSession") void openSession(action.sessionId);
   };
+
+  useEffect(() => {
+    const restoreHistoryEntry = () => {
+      const route = readWorkbenchRoute();
+      if (!route.sessionId) return;
+      if (route.sessionId !== selectedSessionIdRef.current) {
+        void openSession(route.sessionId, route, "none");
+        return;
+      }
+      window.clearTimeout(routeRestoreTimerRef.current);
+      routeRestoreTimerRef.current = 0;
+      pendingPagePositionRef.current = route.position;
+      restoringPagePositionRef.current = true;
+      followingRef.current = route.view === "agent" && route.position._tag === "latest";
+      setAtBottom(followingRef.current);
+      setTimelineWindowEnd(undefined);
+      setActiveView(route.view);
+      if (route.view === "changes" && selectedSessionRef.current) void requestReview(selectedSessionRef.current);
+    };
+    window.addEventListener("popstate", restoreHistoryEntry);
+    return () => window.removeEventListener("popstate", restoreHistoryEntry);
+  });
 
   const selectImages = (files: FileList | ReadonlyArray<File>): Promise<void> => {
     const selected = Array.from(files);
@@ -1792,7 +1964,7 @@ export function App() {
         return;
       }
       case "session":
-        setActiveView("details");
+        changeView("details");
         window.requestAnimationFrame(() => document.querySelector<HTMLElement>(".details-tab")?.focus());
         return;
     }
@@ -1999,9 +2171,7 @@ export function App() {
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
         {selectedSession && !sessionIsLoading ? <Tabs.Root className={`session-view${activeView === "agent" && selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-view" : ""}`} value={activeView} onValueChange={(value) => {
-          const next = value as "agent" | "changes" | "details";
-          setActiveView(next);
-          if (next === "changes") void requestReview(selectedSession);
+          changeView(value as SessionView);
         }}>
           <Tabs.List className="capability-tabs" aria-label="Session views">
             <Tabs.Tab className={activeView === "agent" ? "active" : ""} value="agent"><Bot aria-hidden="true" /> Agent</Tabs.Tab>
@@ -2066,6 +2236,7 @@ export function App() {
                 if (element.scrollTop < 24) shiftTimelineWindow("earlier", element);
                 else if (distanceFromBottom < 24 && effectiveTimelineWindowEnd < timeline.length) shiftTimelineWindow("later", element);
                 setAtBottom(nextAtBottom);
+                syncRoutePosition(element, nextAtBottom);
               }}
             >
               <span className="sr-only" aria-live="polite">{copyFeedback ? `${copyFeedback.ok ? "Copied" : "Could not copy"} ${copyFeedback.label}` : ""}</span>
@@ -2081,13 +2252,13 @@ export function App() {
               {selectedSession.error && <div className="runtime-error"><b>RUNTIME ERROR</b>{selectedSession.error}</div>}
               {activeView === "agent" && timeline.length === 0 && selectedSession.status === "starting" && <div className="timeline-empty"><p>Starting…</p></div>}
               {activeView === "agent" && visibleTimeline.map((item) => item._tag === "message"
-                ? <article className={`message ${item.role} ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key}>
+                ? <article className={`message ${item.role} ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence}>
                     <header><span>{item.role === "assistant" ? "PI" : "REMOTE"}</span>{item.live && <i>STREAMING</i>}<button className={`timeline-copy ${copyFeedback?.key === item.key ? copyFeedback.ok ? "copied" : "failed" : ""}`} onClick={() => void copyTimelineText(item.key, `${item.role === "assistant" ? "PI" : "REMOTE"} message`, item.text || `${item.imageCount} image${item.imageCount === 1 ? "" : "s"} attached`)} type="button" aria-label={`${copyFeedback?.key === item.key ? copyFeedback.ok ? "Copied" : "Copy failed" : "Copy"} ${item.role === "assistant" ? "PI" : "REMOTE"} message`}><Copy aria-hidden="true" /><b>{copyFeedback?.key === item.key ? copyFeedback.ok ? "COPIED" : "FAILED" : "COPY"}</b></button></header>
                     {item.text && <LazyMarkdown text={item.text} />}
                     {item.imageCount > 0 && <div className="message-images"><Image aria-hidden="true" /> {item.imageCount} IMAGE{item.imageCount === 1 ? "" : "S"} ATTACHED</div>}
                   </article>
                 : item._tag === "thinking"
-                  ? <details className={`thinking-trace ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key} open={item.live ? true : undefined}>
+                  ? <details className={`thinking-trace ${item.live ? "live" : ""}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence} open={item.live ? true : undefined}>
                       <summary><span><Sparkles aria-hidden="true" />PI THINKING</span><small>{item.live ? "STREAMING" : "REASONING"}</small><strong aria-hidden="true"><ChevronRight /></strong></summary>
                       <div className="thinking-content"><LazyMarkdown text={item.text} /></div>
                     </details>
@@ -2095,7 +2266,7 @@ export function App() {
                   ? (() => {
                       const artifactUrl = `/api/sessions/${encodeURIComponent(selectedSession.id)}/artifacts/${encodeURIComponent(item.artifact.id)}`;
                       const label = (item.artifact.label ?? item.artifact.pageTitle) || "Browser screenshot";
-                      return <figure className="browser-evidence" key={item.key} data-timeline-key={item.key}>
+                      return <figure className="browser-evidence" key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence}>
                         <header><span><Image aria-hidden="true" />BROWSER EVIDENCE</span><time dateTime={item.artifact.createdAt}>{new Date(item.artifact.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
                         <a className="browser-evidence-preview" href={artifactUrl} target="_blank" rel="noreferrer" aria-label={`Open full-resolution browser evidence: ${label}`}>
                           <img src={artifactUrl} loading="lazy" alt={label} width={item.artifact.width} height={item.artifact.height} />
@@ -2108,7 +2279,7 @@ export function App() {
                       const artifactUrl = `/api/sessions/${encodeURIComponent(selectedSession.id)}/artifacts/${encodeURIComponent(item.artifact.id)}`;
                       const label = (item.artifact.label ?? item.artifact.pageTitle) || "Browser recording";
                       const seconds = Math.max(.1, item.artifact.durationMs / 1000).toLocaleString([], { maximumFractionDigits: 1 });
-                      return <figure className="browser-evidence browser-video-evidence" key={item.key} data-timeline-key={item.key}>
+                      return <figure className="browser-evidence browser-video-evidence" key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence}>
                         <header><span><Video aria-hidden="true" />BROWSER RECORDING</span><time dateTime={item.artifact.createdAt}>{new Date(item.artifact.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
                         <div className="browser-video-frame">
                           <video src={artifactUrl} controls playsInline preload="metadata" aria-label={`Browser recording: ${label}`} />
@@ -2117,23 +2288,23 @@ export function App() {
                       </figure>;
                     })()
                 : item._tag === "status"
-                  ? <div className={`timeline-status ${item.tone}`} key={item.key} data-timeline-key={item.key} role="status">
+                  ? <div className={`timeline-status ${item.tone}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence} role="status">
                       <span>{item.tone === "running" ? <RefreshCw aria-hidden="true" /> : item.tone === "success" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
                       <div><b>{item.label}</b><small>{item.detail}</small></div>
                     </div>
                 : item._tag === "notice"
-                  ? <article className={`extension-notice ${item.tone}`} key={item.key} data-timeline-key={item.key} role={item.tone === "error" ? "alert" : "status"}>
+                  ? <article className={`extension-notice ${item.tone}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence} role={item.tone === "error" ? "alert" : "status"}>
                       <header><Bell aria-hidden="true" /><b>{item.tone === "error" ? "EXTENSION ERROR" : item.tone === "warning" ? "EXTENSION WARNING" : "PI NOTICE"}</b></header>
                       <pre>{item.text}</pre>
                     </article>
                 : item.state === "running"
-                  ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key}>
+                  ? <div className={`tool-row ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence}>
                       <i className="running" /><div><b>{item.name}</b><span>{compact(item.detail)}</span></div><small>running</small>
                     </div>
                   : (() => {
                       const output = item.outputRef ? toolOutputs[item.outputRef] : undefined;
                       const text = output?.status === "loaded" ? output.text ?? "" : item.detail;
-                      return <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key} onToggle={(event) => {
+                      return <details className={`tool-result ${item.error ? "error" : ""}`} key={item.key} data-timeline-key={item.key} data-timeline-sequence={item.sequence} onToggle={(event) => {
                         if (event.currentTarget.open && item.outputRef) requestToolOutput(selectedSession.id, item.outputRef);
                       }}>
                         <summary><i /><b>{item.name}</b><span>{compact(item.detail)}</span><small>{item.error ? "error" : "done"}</small><strong aria-hidden="true"><Plus /></strong></summary>
@@ -2183,7 +2354,7 @@ export function App() {
               onRevise={openWorkflowRevision}
               onIntervene={openWorkflowIntervention}
               onContinueRepairs={openWorkflowContinuation}
-              onReviewChanges={() => setActiveView("changes")}
+              onReviewChanges={() => changeView("changes")}
             />}
             {!(selectedSession.workflow && workflowOwnsComposer(selectedSession.workflow.phase)) && <>
             <div className="composer" ref={composerRef}>
