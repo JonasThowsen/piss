@@ -270,6 +270,12 @@ export const EngineeringWorkflowSupervisor = Schema.Struct({
 });
 export type EngineeringWorkflowSupervisor = typeof EngineeringWorkflowSupervisor.Type;
 
+export const EngineeringWorkflowExecutionAuthority = Schema.Struct({
+  mode: Schema.Literal("approved_plan"),
+  grantedAt: Schema.String,
+});
+export type EngineeringWorkflowExecutionAuthority = typeof EngineeringWorkflowExecutionAuthority.Type;
+
 export const EngineeringWorkflow = Schema.Struct({
   id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   phase: EngineeringWorkflowPhase,
@@ -282,6 +288,7 @@ export const EngineeringWorkflow = Schema.Struct({
   blockedFromPhase: Schema.NullOr(EngineeringWorkflowPhase),
   queuedIntervention: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
   supervisor: Schema.optional(EngineeringWorkflowSupervisor),
+  executionAuthority: Schema.optional(EngineeringWorkflowExecutionAuthority),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),

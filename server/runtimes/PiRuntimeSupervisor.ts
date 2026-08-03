@@ -757,7 +757,7 @@ export function processArguments(workspace: Workspace, name: string, workflowRes
 }
 
 function workflowInterventionMessage(phase: EngineeringWorkflowPhase, feedback: string, queued: boolean): string {
-  const label = queued ? "Queued user follow-up after engineering loop" : "Workflow user intervention";
+  const label = queued ? "Queued workflow guidance for the next agent run" : "Workflow user intervention";
   return `[${label} — ${phase.toUpperCase()}]\n\n${feedback}`;
 }
 
@@ -781,6 +781,7 @@ export function interruptedWorkflowRecoveryPhase(workflow: EngineeringWorkflow):
 
 export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): string {
   const contract = `Workflow ID: ${workflow.id}\nYou must finish this phase by calling piss_workflow_checkpoint with this exact workflow ID.`;
+  const authority = `\n\nStanding execution authority:\nThe operator's approval of the complete delivery plan authorizes unattended execution of every operation explicitly listed in that plan, including listed commits, pushes, migrations, deployments, and bounded production reads or writes. Do not stop to request confirmation again for approved work. Do not extend scope, invent credentials or evidence, or bypass a real external policy.`;
   const guidance = feedback ? `\n\nOperator guidance for this phase:\n${feedback}` : "";
   switch (workflow.phase) {
     case "defining":
@@ -788,13 +789,13 @@ export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: st
     case "planning":
       return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}${guidance}`;
     case "building":
-      return `/skill:piss-engineering-build\n${contract}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}${guidance}`;
+      return `/skill:piss-engineering-build\n${contract}${authority}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}${guidance}`;
     case "repairing":
-      return `/skill:piss-engineering-build\n${contract}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}${guidance}`;
+      return `/skill:piss-engineering-build\n${contract}${authority}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}${guidance}`;
     case "verifying":
-      return `/skill:piss-engineering-verify\n${contract}\n\nApproved specification (verify every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}${guidance}`;
+      return `/skill:piss-engineering-verify\n${contract}${authority}\n\nApproved specification (verify every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}${guidance}`;
     case "reviewing":
-      return `/skill:piss-engineering-review\n${contract}\n\nApproved specification (review every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}${guidance}`;
+      return `/skill:piss-engineering-review\n${contract}${authority}\n\nApproved specification (review every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}${guidance}`;
     default:
       throw new Error(`Workflow phase ${workflow.phase} cannot start an agent run`);
   }
@@ -823,7 +824,10 @@ ${checkpoint ? `${checkpoint.stage}/${checkpoint.outcome}: ${checkpoint.summary}
 Previous supervisor advice:
 ${supervisor?.lastAdvice ? `${supervisor.lastAdvice.action}: ${supervisor.lastAdvice.summary}\nBasis: ${supervisor.lastAdvice.basis}` : "[none]"}
 
-Adjudicate only within existing approved authority. Prefer bounded automatic recovery when evidence supports it, but never invent or grant credentials, production/business approval, backup evidence, or permission to cross a safety boundary.`;
+Standing authority already granted:
+Plan approval authorizes unattended execution of every operation explicitly listed in the approved plan, including listed commits, pushes, migrations, deployments, and bounded production reads or writes. Requests to reconfirm those operations are recoverable worker uncertainty, not a human authority boundary.
+
+Adjudicate only within that approved authority. Prefer bounded automatic recovery when evidence supports it, but never invent credentials, evidence, new scope, or permission to cross a real external safety boundary.`;
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -1722,14 +1726,22 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return yield* Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message: "This workflow phase cannot start an agent run" }));
       }
       const commandType = queueBehindActiveRun && session.snapshot.status === "working" ? "follow_up" as const : "prompt" as const;
+      const queuedGuidance = workflow.queuedIntervention;
+      const phaseGuidance = [feedback?.trim(), queuedGuidance?.trim()].filter(Boolean).join("\n\n---\n\n") || undefined;
       session.workflowDispatchPending = false;
       session.finalResponseRecoveryAttempted = false;
-      session.snapshot = { ...session.snapshot, status: "working", error: null, lastActivityAt: now() };
+      session.snapshot = {
+        ...session.snapshot,
+        status: "working",
+        workflow: queuedGuidance ? { ...workflow, queuedIntervention: undefined, updatedAt: now() } : workflow,
+        error: null,
+        lastActivityAt: now(),
+      };
       yield* persist();
       yield* request(session, {
         id: `workflow:${workflow.id}:${workflow.phase}:${randomUUID()}`,
         type: commandType,
-        message: workflowPhasePrompt(workflow, feedback),
+        message: workflowPhasePrompt(workflow, phaseGuidance),
       });
     });
 
@@ -1835,10 +1847,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         if (!workflow || workflow.phase !== "blocked" || !workflow.blockedFromPhase || supervisorState?.status !== "consulting") return;
         const advice = reported.advice;
         const automatic = advice.action === "resume_with_guidance" || advice.action === "retry_transient" || advice.action === "enter_repair";
+        const consumesRepairBudget = advice.action === "enter_repair";
         const guidance = advice.guidance?.trim() || advice.summary;
-        const nextRepairAttempts = automatic ? workflow.repairAttempts + 1 : workflow.repairAttempts;
+        const nextRepairAttempts = consumesRepairBudget ? workflow.repairAttempts + 1 : workflow.repairAttempts;
         const canRecover = automatic
-          && nextRepairAttempts <= workflow.maxRepairAttempts
+          && (!consumesRepairBudget || nextRepairAttempts <= workflow.maxRepairAttempts)
           && !TERMINAL_STATUSES.has(worker.snapshot.status);
         const updatedAt = now();
         const nextPhase: EngineeringWorkflowPhase = advice.action === "enter_repair" ? "repairing" : workflow.blockedFromPhase;
@@ -1866,7 +1879,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               supervisor: nextSupervisor,
               updatedAt,
               error: automatic
-                ? `Supervisor recovery budget exhausted: ${advice.summary}`
+                ? `Supervisor could not recover this blocker: ${advice.summary}`
                 : advice.summary,
             },
           lastActivityAt: updatedAt,
@@ -2583,6 +2596,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           return cloneSession(session.snapshot);
         }
         if (input.action === "approve") {
+          const approvesExecution = current.phase === "awaitingPlanApproval";
           const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
             ? "planning"
             : current.phase === "awaitingPlanApproval"
@@ -2590,15 +2604,26 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               : current.phase;
           if (phase === current.phase) return yield* unavailable("This workflow is not waiting for approval");
           const updatedAt = now();
-          session.snapshot = { ...session.snapshot, workflow: { ...current, phase, checkpoint: current.checkpoint, updatedAt, error: null }, lastActivityAt: updatedAt };
+          session.snapshot = {
+            ...session.snapshot,
+            workflow: {
+              ...current,
+              phase,
+              checkpoint: current.checkpoint,
+              ...(approvesExecution ? { executionAuthority: { mode: "approved_plan" as const, grantedAt: updatedAt } } : {}),
+              updatedAt,
+              error: null,
+            },
+            lastActivityAt: updatedAt,
+          };
           yield* persist();
           yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
           return cloneSession(session.snapshot);
         }
         if (input.action === "intervene") {
           const feedback = input.feedback.trim();
-          if (current.phase === "building" || current.phase === "repairing") {
-            if (session.snapshot.status !== "working") return yield* unavailable("Guide the current phase only while Pi is working");
+          if (!isAutonomousWorkflowPhase(current.phase)) return yield* unavailable("User intervention is unavailable in this workflow phase");
+          if (session.snapshot.status === "working") {
             yield* request(session, {
               id: `workflow:${current.id}:intervention:${randomUUID()}`,
               type: "steer",
@@ -2606,22 +2631,19 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             });
             return cloneSession(session.snapshot);
           }
-          if (current.phase === "verifying" || current.phase === "reviewing") {
-            const intervention = workflowInterventionMessage(current.phase, feedback, true);
-            const queuedIntervention = current.queuedIntervention
-              ? `${current.queuedIntervention}\n\n---\n\n${intervention}`
-              : intervention;
-            if (queuedIntervention.length > 64 * 1024) return yield* unavailable("Queued workflow follow-up exceeds 64 KiB");
-            const updatedAt = now();
-            session.snapshot = {
-              ...session.snapshot,
-              workflow: { ...current, queuedIntervention, updatedAt },
-              lastActivityAt: updatedAt,
-            };
-            yield* persist();
-            return cloneSession(session.snapshot);
-          }
-          return yield* unavailable("User intervention is unavailable in this workflow phase");
+          const intervention = workflowInterventionMessage(current.phase, feedback, true);
+          const queuedIntervention = current.queuedIntervention
+            ? `${current.queuedIntervention}\n\n---\n\n${intervention}`
+            : intervention;
+          if (queuedIntervention.length > 64 * 1024) return yield* unavailable("Queued workflow guidance exceeds 64 KiB");
+          const updatedAt = now();
+          session.snapshot = {
+            ...session.snapshot,
+            workflow: { ...current, queuedIntervention, updatedAt },
+            lastActivityAt: updatedAt,
+          };
+          yield* persist();
+          return cloneSession(session.snapshot);
         }
         if (input.action === "revise") {
           const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"

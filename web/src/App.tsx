@@ -2780,18 +2780,15 @@ export function App() {
         onClose={() => setWorkflowDialog(undefined)}
         render={<form onSubmit={submitWorkflowIntervention} />}
       >
-        {(() => {
-          const queuesAfterLoop = selectedSession.workflow.phase === "verifying" || selectedSession.workflow.phase === "reviewing";
-          return <>
-            <header><div><span>USER INTERVENTION</span><Dialog.Title render={<b />}>{queuesAfterLoop ? "Queue feedback after the loop" : "Guide the current phase"}</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close intervention"><X aria-hidden="true" /></Dialog.Close></header>
-            <div className="dialog-body workflow-dialog-body">
-              <p className="workflow-intervention-note">{queuesAfterLoop ? "Pi will finish verification and review before receiving this as a labeled follow-up." : "Pi will receive this immediately as labeled steering without leaving the approved workflow phase."}</p>
-              <label>{queuesAfterLoop ? "Follow-up" : "Guidance"}<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={6} placeholder={queuesAfterLoop ? "What should Pi consider after the autonomous loop finishes?" : "What should Pi adjust or keep in mind during this phase?"} /></label>
-              {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
-            </div>
-            <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>{queuesAfterLoop ? "QUEUE FOLLOW-UP" : "SEND GUIDANCE"} <ArrowRight aria-hidden="true" /></>}</button></footer>
-          </>;
-        })()}
+        <>
+          <header><div><span>USER GUIDANCE</span><Dialog.Title render={<b />}>Guide the current phase</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close intervention"><X aria-hidden="true" /></Dialog.Close></header>
+          <div className="dialog-body workflow-dialog-body">
+            <p className="workflow-intervention-note">Pi receives this as labeled guidance without leaving the approved autonomous workflow. If the phase is between agent runs, PISS delivers it with the next run.</p>
+            <label>Guidance<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={6} placeholder="What should Pi adjust or keep in mind?" /></label>
+            {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
+          </div>
+          <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>SEND GUIDANCE <ArrowRight aria-hidden="true" /></>}</button></footer>
+        </>
       </DialogSurface>}
 
       {workflowDialog === "continueRepairs" && selectedSession?.workflow?.phase === "failed" && <DialogSurface
@@ -2943,6 +2940,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         </details>}
       </> : <>
         <p>{workflow.checkpoint?.summary ?? workflow.objective}</p>
+        {workflow.phase === "awaitingPlanApproval" && <p className="workflow-autonomy-note"><b>FINAL APPROVAL</b> Approving this plan authorizes PISS to execute every listed operation unattended. Review its autonomy envelope now; the loop will not ask you to reconfirm approved work.</p>}
         {workflow.error && <strong role="alert">{workflow.error}</strong>}
         {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
       </>}
@@ -2950,7 +2948,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
     <footer>
       {approval && <>
         <button className="workflow-revise" disabled={pending} type="button" onClick={(event) => onRevise(event.currentTarget)}>REQUEST CHANGES</button>
-        <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE PLAN"}</button>
+        <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE & RUN"}</button>
       </>}
       {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>}
       {interrupted && <button className="workflow-approve" disabled={pending} type="button" onClick={onContinue}><RefreshCw aria-hidden="true" />RESUME WORKFLOW</button>}
@@ -2970,7 +2968,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
       </>}
       {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
       {(workflow.phase === "building" || workflow.phase === "repairing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />GUIDE CURRENT PHASE</button>}
-      {(workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{workflow.queuedIntervention ? "ADD TO QUEUE" : "QUEUE AFTER LOOP"}</button>}
+      {(workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{workflow.queuedIntervention ? "GUIDANCE QUEUED" : "GUIDE CURRENT PHASE"}</button>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
   </section>;

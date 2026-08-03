@@ -43,6 +43,7 @@ type TestSession = {
     checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
     blockedFromPhase: string | null;
     queuedIntervention?: string;
+    executionAuthority?: { mode: "approved_plan"; grantedAt: string };
     supervisor?: {
       sessionId: string;
       status: "idle" | "consulting";
@@ -358,13 +359,13 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingSpecApproval") {
         workflow = { ...workflow, phase: "planning", updatedAt: timestamp };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingPlanApproval") {
-        workflow = { ...workflow, phase: "readyToShip", checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
+        workflow = { ...workflow, phase: "readyToShip", executionAuthority: { mode: "approved_plan", grantedAt: timestamp }, checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
       } else if (workflow && body?.action === "accept" && workflow.phase === "readyToShip") {
         workflow = { ...workflow, phase: "accepted", updatedAt: timestamp };
       } else if (workflow && body?.action === "intervene") {
         workflow = {
           ...workflow,
-          ...(workflow.phase === "verifying" || workflow.phase === "reviewing" ? { queuedIntervention: String(body.feedback ?? "Queued follow-up") } : {}),
+          ...(session.status === "working" ? {} : { queuedIntervention: String(body.feedback ?? "Queued guidance") }),
           updatedAt: timestamp,
         };
       } else if (workflow && body?.action === "resume" && ((workflow.phase === "blocked" && workflow.blockedFromPhase) || (workflow.phase === "cancelled" && workflow.error?.includes("runtime stopped")))) {
@@ -910,8 +911,10 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   api.setWorkflowPhase("awaitingPlanApproval");
   await page.reload();
   await expect(workflow).toContainText("Plan approval");
+  await expect(workflow).toContainText("FINAL APPROVAL");
+  await expect(workflow).toContainText("execute every listed operation unattended");
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
-  await workflow.getByRole("button", { name: "APPROVE PLAN" }).click();
+  await workflow.getByRole("button", { name: "APPROVE & RUN" }).click();
   await expect(workflow).toContainText("Ready to ship");
   await expect(page.getByLabel("Message Pi")).toBeVisible();
   await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
@@ -949,7 +952,7 @@ test("a new approval gate unlocks while the preceding mutation response is still
   api.setWorkflowPhase("awaitingPlanApproval");
 
   await expect(workflow).toContainText("Plan approval", { timeout: 5_000 });
-  await expect(workflow.getByRole("button", { name: "APPROVE PLAN" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "APPROVE & RUN" })).toBeEnabled();
   await expect(workflow.getByRole("button", { name: "REQUEST CHANGES" })).toBeEnabled();
 });
 
@@ -1065,7 +1068,7 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
 
   await workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" }).click();
   const guidanceDialog = page.getByRole("dialog", { name: "Guide the current phase" });
-  await expect(guidanceDialog).toContainText("labeled steering");
+  await expect(guidanceDialog).toContainText("labeled guidance");
   await guidanceDialog.getByLabel("Guidance").fill("Keep the activity transcript compact.");
   await guidanceDialog.getByRole("button", { name: /send guidance/i }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Keep the activity transcript compact." });
@@ -1073,13 +1076,12 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   api.setWorkflowPhase("verifying");
   api.setStatus("working");
   await page.reload();
-  await workflow.getByRole("button", { name: "QUEUE AFTER LOOP" }).click();
-  const followUpDialog = page.getByRole("dialog", { name: "Queue feedback after the loop" });
-  await expect(followUpDialog).toContainText("finish verification and review");
-  await followUpDialog.getByLabel("Follow-up").fill("Summarize any remaining deployment risk.");
-  await followUpDialog.getByRole("button", { name: /queue follow-up/i }).click();
+  await workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" }).click();
+  const verificationGuidance = page.getByRole("dialog", { name: "Guide the current phase" });
+  await expect(verificationGuidance).toContainText("labeled guidance");
+  await verificationGuidance.getByLabel("Guidance").fill("Summarize any remaining deployment risk.");
+  await verificationGuidance.getByRole("button", { name: /send guidance/i }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Summarize any remaining deployment risk." });
-  await expect(workflow.getByRole("button", { name: "ADD TO QUEUE" })).toBeVisible();
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
 });
 

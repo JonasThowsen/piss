@@ -13,10 +13,11 @@ Prove the complete approved specification works; do not rely on a prose claim or
 3. Run slice-level checks, the relevant broader regression suite, and a production-style build or realistic end-to-end check where applicable.
 4. Exercise the full user-visible journey and real boundaries required by the specification, not only the initial tracer path.
 5. Inspect failures and distinguish implementation defects from unrelated infrastructure failures.
-6. Do not weaken tests, skip required checks, or change acceptance criteria to obtain a pass.
-7. Call `piss_workflow_checkpoint` with the supplied workflow ID and `stage: "verify"`.
+6. Plan approval remains standing authorization for every verification operation and side effect explicitly listed in the plan. Do not request another confirmation for approved production checks or bounded operations.
+7. Do not weaken tests, skip required checks, or change acceptance criteria to obtain a pass.
+8. Call `piss_workflow_checkpoint` with the supplied workflow ID and `stage: "verify"`.
    - Use `outcome: "passed"` only when all approved scope has passing evidence.
    - Use `outcome: "failed"` with exact incomplete slices, failing commands, and symptoms when repair is needed.
-   - Use `outcome: "blocked"` for missing permission, unavailable infrastructure, ambiguity, or an unsafe required action.
+   - Use `outcome: "blocked"` only for a concrete missing capability, unavailable required evidence, new ambiguity outside the approved plan, or an unsafe contradiction—not for permission already granted by Plan approval.
 
 The checkpoint tool is the phase result. Do not emit another assistant response after calling it.

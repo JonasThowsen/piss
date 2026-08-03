@@ -99,9 +99,14 @@ test("workflow skills treat the specification as the completion boundary rather 
 
   assert.match(plan, /specification—not the first tracer—as the workflow's completion boundary/i);
   assert.match(plan, /coverage map/i);
+  assert.match(plan, /final interactive authority checkpoint/i);
+  assert.match(plan, /Autonomy envelope/i);
   assert.match(build, /do not call the build checkpoint after only the first tracer/i);
+  assert.match(build, /standing operator authorization/i);
   assert.match(verify, /all approved scope has passing evidence/i);
+  assert.match(verify, /Do not request another confirmation/i);
   assert.match(review, /entire approved specification is covered/i);
+  assert.match(review, /do not stop to ask the operator to reconfirm/i);
   assert.doesNotMatch([plan, build, verify, review].join("\n"), /one-task plan/i);
 });
 
@@ -111,4 +116,6 @@ test("workflow supervisors state blockers plainly for the operator", async () =>
   assert.match(supervisor, /one short, plain-language sentence/i);
   assert.match(supervisor, /do not use unexplained acronyms/i);
   assert.match(supervisor, /keep technical detail and citations in `summary` and `basis`/i);
+  assert.match(supervisor, /Plan approval is standing operator authorization/i);
+  assert.match(supervisor, /choose `resume_with_guidance`/i);
 });

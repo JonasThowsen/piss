@@ -574,6 +574,8 @@ button { color: inherit; }
 .workflow-copy { min-width: 0; padding: 7px 11px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
 .workflow-copy > p { margin: 0; color: #475149; font-size: 9px; line-height: 1.45; }
 .workflow-copy > strong { display: block; margin-top: 5px; color: var(--danger); font-size: 8px; line-height: 1.4; }
+.workflow-copy > .workflow-autonomy-note { margin-top: 8px; padding: 7px 8px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: #395346; font-size: 8px; line-height: 1.45; }
+.workflow-autonomy-note b { display: block; margin-bottom: 2px; color: var(--accent); font-size: 6px; letter-spacing: .1em; }
 .workflow-blocker { display: grid; gap: 5px; padding: 3px 1px; }
 .workflow-blocker small { color: var(--danger); font-size: 6px; font-weight: 850; letter-spacing: .12em; }
 .workflow-blocker p { margin: 0; color: #663b37; font-size: 11px; font-weight: 650; line-height: 1.45; }

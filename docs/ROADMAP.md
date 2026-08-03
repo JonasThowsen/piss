@@ -18,7 +18,7 @@ The current implementation proves these end-to-end paths:
 - Web Push and the offline shell avoid caching or transmitting private session content;
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
-- an authenticated user can start a guided engineering workflow from the composer, approve its specification and complete delivery plan, and let PISS implement ordered vertical slices before advancing through whole-specification Verify → Review checkpoints, bounded repairs, and independent read-only supervisor adjudication of blockers;
+- an authenticated user can start a guided engineering workflow from the composer, interact through Specification and Plan approval, then grant standing authority for unattended execution through ordered Build → Verify → Review slices, bounded repairs, and independent read-only supervisor adjudication while retaining immediate guidance controls;
 - an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.

@@ -13,9 +13,10 @@ Plan the complete approved specification from the real repository. Do not implem
 3. Partition all approved scope into the smallest sensible sequence of vertical delivery slices. Use the first slice to prove the riskiest end-to-end assumption, then broaden through subsequent slices while keeping the system working.
 4. Give every slice a stable ID, explicit acceptance criteria, dependencies, likely files, and exact verification commands.
 5. Include a coverage map showing where every specification acceptance criterion is delivered and verified. Do not silently omit approved scope.
-6. State irreversible or high-risk operations that require user approval. A deferral is valid only when the approved specification explicitly marks that work out of scope; do not defer work merely to keep the first tracer small.
-7. Keep commit, push, migration, and deployment outside the delivery plan unless the approved specification explicitly permits them.
-8. Call `piss_workflow_checkpoint` with the supplied workflow ID, `stage: "plan"`, `outcome: "ready"`, a concise summary, and the complete delivery plan Markdown in `artifact`.
-9. Report `outcome: "blocked"` when the specification is too ambiguous or unsafe to cover completely.
+6. Treat Plan approval as the final interactive authority checkpoint before unattended execution. The approved plan grants standing authorization to perform every operation it explicitly lists, including commits, pushes, migrations, deployments, and production reads or writes. Do not insert later confirmation gates for listed operations.
+7. Put an **Autonomy envelope** near the top of the plan that plainly lists permitted side effects, environments, data boundaries, rollback/verification requirements, and operations that remain outside scope. Surface every unresolved choice, missing credential, required external approver, or unavailable safety prerequisite now; do not defer a foreseeable question into Build.
+8. Keep commit, push, migration, deployment, and production mutation outside the delivery plan unless the approved specification explicitly permits them. When included, specify bounded targets and acceptance evidence precisely enough for unattended execution.
+9. Call `piss_workflow_checkpoint` with the supplied workflow ID, `stage: "plan"`, `outcome: "ready"`, a concise summary, and the complete delivery plan Markdown in `artifact`.
+10. Report `outcome: "blocked"` when the specification is too ambiguous or unsafe to cover completely.
 
 The checkpoint tool is the phase result. Do not emit another assistant response after calling it.

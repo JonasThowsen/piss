@@ -236,7 +236,7 @@ process.stdin.on("data", (chunk) => {
     }
     if (command.type === "follow_up") {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "follow_up", success: true }));
-      if (command.message.startsWith("[Queued user follow-up")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+      if (command.message.startsWith("[Queued workflow guidance")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
     }
     if (command.type === "abort") console.log(JSON.stringify({ id: command.id, type: "response", command: "abort", success: true }));
   }
@@ -307,6 +307,8 @@ test("blocked phase guidance is included when the workflow resumes", () => {
   assert.match(prompt, /Operator guidance for this phase/);
   assert.match(prompt, /\/runbooks\/bootstrap\.md/);
   assert.match(prompt, /CHG-42/);
+  assert.match(prompt, /standing execution authority/i);
+  assert.match(prompt, /Do not stop to request confirmation again/i);
 });
 
 test("interrupted workflows recover from their preserved checkpoint", () => {
@@ -981,12 +983,13 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(JSON.stringify(result.workflowReady.events), /Approved complete delivery plan/);
     assert.doesNotMatch(JSON.stringify(result.workflowReady.events), /Approved one-task plan/);
     assert.equal(result.workflowReady.workflow?.phase, "readyToShip");
+    assert.equal(result.workflowReady.workflow?.executionAuthority?.mode, "approved_plan");
     assert.equal(result.workflowReady.status, "finished");
     assert.equal(result.workflowAccepted.workflow?.phase, "accepted");
     assert.match(JSON.stringify(result.interventionReady.events), /Workflow user intervention — BUILD/);
-    assert.match(result.queuedVerification.workflow?.queuedIntervention ?? "", /Queued user follow-up after engineering loop — VERIFY/);
+    assert.equal(result.queuedVerification.workflow?.queuedIntervention, undefined);
     assert.equal(result.interventionReady.workflow?.queuedIntervention, undefined);
-    assert.match(JSON.stringify(result.interventionReady.events), /Queued user follow-up after engineering loop — VERIFY/);
+    assert.match(JSON.stringify(result.interventionReady.events), /Workflow user intervention — VERIFY/);
     assert.equal(result.firstFailedWorkflow.workflow?.phase, "failed");
     assert.equal(result.firstFailedWorkflow.workflow?.repairAttempts, 2);
     assert.equal(result.firstFailedWorkflow.workflow?.maxRepairAttempts, 1);
@@ -994,9 +997,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.continuedFailedWorkflow.workflow?.repairAttempts, 5);
     assert.equal(result.continuedFailedWorkflow.workflow?.maxRepairAttempts, 4);
     assert.equal(result.supervisedReady.workflow?.phase, "readyToShip");
-    assert.equal(result.supervisedReady.workflow?.repairAttempts, 1);
+    assert.equal(result.supervisedReady.workflow?.repairAttempts, 0);
     assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.action, "resume_with_guidance");
-  assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.problem, "The build needs to retry the documented recovery procedure.");
+    assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.problem, "The build needs to retry the documented recovery procedure.");
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_consulting/);
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_advice/);
     assert.ok(result.supervisorSibling?.name.startsWith("Supervisor ·"));
