@@ -517,10 +517,15 @@ button { color: inherit; }
 .details-heading h2 { margin: 0; font-size: 20px; font-weight: 650; }
 .details-heading > b { color: var(--text); font-size: 9px; }
 .control-deck { padding: 10px max(12px, calc((100% - 930px) / 2)) max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgba(251, 252, 248, .96); backdrop-filter: blur(18px); }
-.control-deck.workflow-monitor-mode { padding-top: 7px; }
+.control-deck.workflow-monitor-mode { max-height: calc(100dvh - 54px); overflow-y: auto; padding-top: 7px; overscroll-behavior: contain; touch-action: pan-y; }
 .workflow-monitor-mode .engineering-workflow { margin-bottom: 0; }
 .workflow-monitor-mode .workflow-copy > p { max-height: 2.9em; overflow: hidden; }
+.workflow-monitor-mode .workflow-copy > strong { max-height: 2.9em; overflow: hidden; }
 .workflow-monitor-mode .workflow-copy details { display: none; }
+.workflow-monitor-mode .workflow-copy details.workflow-report-details { display: block; }
+.workflow-report { max-height: min(260px, 34dvh); overflow: auto; padding: 8px 10px; border-top: 1px solid rgba(49, 92, 70, .12); color: var(--text); font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; overscroll-behavior: contain; touch-action: pan-y; }
+.workflow-report > :first-child { margin-top: 0; }
+.workflow-report > :last-child { margin-bottom: 0; }
 .session-details { padding: 15px 16px; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--panel); }
 .usage-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .usage-metrics span { min-width: 0; display: grid; gap: 3px; }

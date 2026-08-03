@@ -2909,6 +2909,9 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   const terminal = isTerminalWorkflowPhase(workflow.phase);
   const interrupted = workflowWasInterrupted(workflow);
   const blockerCanContinue = workflow.supervisor?.lastAdvice?.action !== "unsafe_stop";
+  const phaseSummary = workflow.checkpoint?.summary ?? workflow.objective;
+  const phaseReport = workflow.error ?? phaseSummary;
+  const hasLongPhaseReport = workflowRunsAutonomously(workflow.phase) && phaseReport.length > 600;
   const artifactLabel = workflow.phase === "awaitingSpecApproval"
     ? "SPECIFICATION"
     : workflow.phase === "awaitingPlanApproval"
@@ -2939,9 +2942,13 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
           <div><p>{workflow.supervisor.lastAdvice.summary}</p><small>BASIS</small><p>{workflow.supervisor.lastAdvice.basis}</p></div>
         </details>}
       </> : <>
-        <p>{workflow.checkpoint?.summary ?? workflow.objective}</p>
+        <p>{phaseSummary}</p>
         {workflow.phase === "awaitingPlanApproval" && <p className="workflow-autonomy-note"><b>FINAL APPROVAL</b> Approving this plan authorizes PISS to execute every listed operation unattended. Review its autonomy envelope now; the loop will not ask you to reconfirm approved work.</p>}
-        {workflow.error && <strong role="alert">{workflow.error}</strong>}
+        {hasLongPhaseReport && <details className="workflow-report-details">
+          <summary><ClipboardCheck aria-hidden="true" /> FULL PHASE REPORT<ChevronRight aria-hidden="true" /></summary>
+          <div className="workflow-report" data-keyboard-scroll tabIndex={0}><Markdown remarkPlugins={[remarkGfm]}>{phaseReport}</Markdown></div>
+        </details>}
+        {workflow.error && workflow.error !== phaseSummary && !hasLongPhaseReport && <strong role="alert">{workflow.error}</strong>}
         {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
       </>}
     </div>

@@ -536,6 +536,25 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         lastActivityAt: timestamp,
       };
     },
+    setWorkflowRepairingWithLongFindings() {
+      if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
+      const timestamp = new Date().toISOString();
+      const current = sessions.at(-1)!;
+      const summary = Array.from({ length: 45 }, (_, index) => `${index + 1}. **Blocking finding ${index + 1}:** repair the durable production invariant in \`erp/lib/example_${index + 1}.ex\` and add focused regression evidence.`).join("\n");
+      sessions[sessions.length - 1] = {
+        ...current,
+        status: "working",
+        workflow: {
+          ...current.workflow!,
+          phase: "repairing",
+          repairAttempts: 1,
+          checkpoint: { stage: "review", outcome: "failed", summary, artifact: null, toolCallId: "long-review-findings", sequence: 18, receivedAt: timestamp },
+          error: summary,
+          updatedAt: timestamp,
+        },
+        lastActivityAt: timestamp,
+      };
+    },
     setWorkflowFailure(repairAttempts = 3, maxRepairAttempts = 2) {
       if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
       const timestamp = new Date().toISOString();
@@ -1084,6 +1103,21 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   await verificationGuidance.getByRole("button", { name: /send guidance/i }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Summarize any remaining deployment risk." });
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
+
+  api.setWorkflowRepairingWithLongFindings();
+  await page.reload();
+  await expect(workflow).toContainText("Repairing");
+  await expect(workflow.getByText("FULL PHASE REPORT")).toBeVisible();
+  const guideButton = workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" });
+  await expect(guideButton).toBeVisible();
+  expect((await guideButton.boundingBox())!.y).toBeLessThan(844);
+  await workflow.getByText("FULL PHASE REPORT").click();
+  const report = workflow.locator(".workflow-report");
+  await expect(report).toBeVisible();
+  expect(await report.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await report.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await report.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect((await guideButton.boundingBox())!.y).toBeLessThan(844);
 });
 
 test("failed workflows can extend their repair budget and continue", async ({ page }) => {
