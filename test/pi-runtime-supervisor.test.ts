@@ -1732,7 +1732,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.ok(["queued", "delivered"].includes(result.queuedVerification.workflow?.guidance?.at(-1)?.status ?? ""));
     assert.equal(result.interventionReady.workflow?.guidance?.at(-1)?.status, "applied", JSON.stringify({ workflow: result.interventionReady.workflow, events: result.interventionReady.events.slice(-30) }));
     assert.equal(result.interventionReady.workflow?.queuedIntervention, undefined);
-    assert.match(JSON.stringify(result.interventionReady.events), /Workflow guidance .*VERIFY/);
+    assert.equal(result.interventionReady.workflow?.guidance?.at(-1)?.text, "Summarize deployment risk after review");
     assert.equal(result.scopeMutationApplied, true, result.scopeMutationError);
     assert.equal(result.carryForwardFailureTag, "PiCommandError");
     assert.equal(result.authoritativeScope.workflow?.guidance?.find((item) => item.id === "carry-before-scope")?.status, "queued");
