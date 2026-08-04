@@ -234,7 +234,7 @@ button { color: inherit; }
 .workspace { position: relative; grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); }
 .session-view { width: 100%; height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; overflow: hidden; }
 .session-view.workflow-focus-view { grid-template-rows: 54px minmax(108px, .24fr) minmax(0, .76fr); }
-.workflow-focus-view .control-deck { min-height: 0; height: 100%; overflow: hidden; }
+.workflow-focus-view .control-deck { min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-color: var(--line-strong) transparent; }
 .workflow-focus-view .engineering-workflow:has(details[open]) { min-width: 0; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .workflow-focus-view .workflow-copy:has(details[open]) { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .workflow-focus-view .workflow-copy details[open] { min-width: 0; min-height: 0; max-width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }

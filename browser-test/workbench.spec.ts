@@ -531,7 +531,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         lastActivityAt: timestamp,
       };
     },
-    setWorkflowBlocked(summary = "Build needs an operator-approved production procedure", supervisorConsulting = false) {
+    setWorkflowBlocked(summary = "Build needs an operator-approved production procedure", supervisorConsulting = false, problem = "The workflow needs your permission before it deploys the production revision.") {
       if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
       const timestamp = new Date().toISOString();
       const current = sessions.at(-1)!;
@@ -553,7 +553,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
             pendingGuidance: null,
             lastAdvice: supervisorConsulting ? null : {
               action: "human_authority_required" as const,
-              problem: "The workflow needs your permission before it deploys the production revision.",
+              problem,
               summary,
               guidance: null,
               basis: "The approved plan requires operator confirmation before deployment.",
@@ -1110,14 +1110,30 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   await consultingGuidance.getByRole("button", { name: /send guidance/i }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", expectedPhase: "blocked", mutationId: expect.any(String) });
 
-  api.setWorkflowBlocked();
+  const longProblem = `The workflow needs your permission before it deploys the production revision. ${Array.from({ length: 3 }, (_, index) => `Readiness blocker ${index + 1} still requires a concrete operator decision before the approved workflow can continue.`).join(" ")}`;
+  await page.setViewportSize({ width: 390, height: 600 });
+  api.setWorkflowBlocked("Build needs an operator-approved production procedure", false, longProblem);
   await page.reload();
   await expect(workflow).toContainText("The workflow needs your permission before it deploys the production revision.");
   await expect(workflow).toContainText("Provide the exact non-secret input requested, or revise scope and return to planning.");
   await expect(workflow.getByText("Build needs an operator-approved production procedure", { exact: true })).not.toBeVisible();
   await expect(workflow.getByRole("button", { name: "CONTINUE" })).toHaveCount(0);
-  await expect(workflow.getByRole("button", { name: "GIVE FEEDBACK" })).toBeEnabled();
-  await workflow.getByRole("button", { name: "GIVE FEEDBACK" }).click();
+  const feedbackButton = workflow.getByRole("button", { name: "GIVE FEEDBACK" });
+  await expect(feedbackButton).toBeEnabled();
+  const focusedDeck = page.locator(".control-deck.workflow-focus-mode");
+  const scrollLayout = await focusedDeck.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+    touchAction: getComputedStyle(element).touchAction,
+  }));
+  expect(scrollLayout.scrollHeight).toBeGreaterThan(scrollLayout.clientHeight);
+  expect(scrollLayout.overflowY).toBe("auto");
+  expect(scrollLayout.touchAction).toContain("pan-y");
+  await focusedDeck.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await focusedDeck.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(feedbackButton).toBeVisible();
+  await feedbackButton.click();
 
   const dialog = page.getByRole("dialog", { name: "Unblock Building" });
   await expect(dialog).toContainText("Do not paste credentials or secret values");
