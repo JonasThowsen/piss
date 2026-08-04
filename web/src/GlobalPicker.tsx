@@ -3,7 +3,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { ArrowDown, ArrowUp, CornerDownLeft, ExternalLink, Search, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { DialogSurface } from "./ModalSurface.tsx";
-import { remapOptionNavigationKey } from "./optionNavigation.ts";
+import { remapOptionNavigationKey, scrollOptionIntoView } from "./optionNavigation.ts";
 import { searchPickerItems, type PickerItem, type PickerMatcher } from "./picker.ts";
 
 export function GlobalPicker<Action>({
@@ -36,6 +36,7 @@ export function GlobalPicker<Action>({
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState<PickerItem<Action>>();
   const inputRef = useRef<HTMLInputElement>(null);
+  const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
   const matches = useMemo(() => searchPickerItems(items, query, matcher).slice(0, 50).map(({ item }) => item), [items, matcher, query]);
 
   return <DialogSurface
@@ -61,7 +62,11 @@ export function GlobalPicker<Action>({
                 setQuery(value);
               }
             }}
-            onItemHighlighted={setHighlighted}
+            onItemHighlighted={(item) => {
+              setHighlighted(item);
+              const index = item ? matches.indexOf(item) : -1;
+              if (index >= 0) scrollOptionIntoView(optionRefs.current[index] ?? null);
+            }}
             onValueChange={(item) => { if (item) onChoose(item.action); }}
             itemToStringLabel={(item: PickerItem<Action>) => item.label}
             inline
@@ -98,6 +103,7 @@ export function GlobalPicker<Action>({
               {matches.map((item, index) => <Combobox.Item
                 className="global-picker-option"
                 key={item.id}
+                ref={(element) => { optionRefs.current[index] = element; }}
                 value={item}
                 index={index}
               >

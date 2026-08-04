@@ -1636,6 +1636,37 @@ test("global picker fuzzily finds and opens sessions across workspaces", async (
   await expect(pickerTrigger).toBeFocused();
 });
 
+test("global picker keeps keyboard-highlighted sessions in view", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 500 });
+  await installApi(page);
+  await page.goto("/");
+
+  await page.evaluate(async () => {
+    for (let index = 0; index < 12; index += 1) {
+      await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: "erp-deadbeef", name: `Search result ${String(index).padStart(2, "0")}` }),
+      });
+    }
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Search sessions" }).click();
+  const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
+  const options = picker.getByRole("option");
+  for (let index = 0; index < 10; index += 1) await page.keyboard.press("Control+n");
+
+  await expect(options.nth(9)).toHaveCSS("background-color", "rgb(231, 240, 234)");
+  await expect.poll(() => picker.locator(".global-picker-results").evaluate((list) => list.scrollTop)).toBeGreaterThan(0);
+  const highlightedIsVisible = await options.nth(9).evaluate((option) => {
+    const itemBounds = option.getBoundingClientRect();
+    const listBounds = option.closest(".global-picker-results")!.getBoundingClientRect();
+    return itemBounds.top >= listBounds.top - 1 && itemBounds.bottom <= listBounds.bottom + 1;
+  });
+  expect(highlightedIsVisible).toBe(true);
+});
+
 test("mobile session picker fills the visible page without shifting when its height changes", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await installApi(page);

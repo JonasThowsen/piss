@@ -33,6 +33,9 @@ export function nextOptionIndex(current: number, count: number, direction: Optio
   return (current + direction + count) % count;
 }
 
-export function scrollOptionIntoView(id: string): void {
-  window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: "nearest" }));
+export function scrollOptionIntoView(option: string | HTMLElement | null): void {
+  window.requestAnimationFrame(() => {
+    const element = typeof option === "string" ? document.getElementById(option) : option;
+    element?.scrollIntoView({ block: "nearest" });
+  });
 }
