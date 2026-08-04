@@ -2725,6 +2725,11 @@ test("conversation renders coding content and remains usable at constrained heig
   await expect(page.getByText("Result 35", { exact: true })).toBeVisible();
   await expect.poll(() => page.locator(".timeline").evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(80);
   await expect(page.locator("pre code")).toContainText("const answer = 42");
+  const copyCodeBlock = page.getByRole("button", { name: "Copy code block" });
+  await expect(copyCodeBlock).toHaveCount(1);
+  await copyCodeBlock.click();
+  await expect(page.getByRole("button", { name: "Copied code block" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("const answer = 42");
   const copyAssistant = page.getByRole("button", { name: "Copy PI message" }).first();
   await copyAssistant.click();
   await expect(page.getByRole("button", { name: "Copied PI message" })).toBeVisible();

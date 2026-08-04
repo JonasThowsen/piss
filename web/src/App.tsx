@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import * as Effect from "effect/Effect";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Collapsible } from "@base-ui/react/collapsible";
@@ -10,7 +10,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Tabs } from "@base-ui/react/tabs";
 import { formatForDisplay, useHotkey } from "@tanstack/react-hotkeys";
 import { ArrowDown, ArrowRight, ArrowUp, AtSign, Bell, BellRing, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ClipboardCheck, Copy, ExternalLink, FileDiff, FileText, Folder, Gauge, Image, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Video, Workflow, X } from "lucide-react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
@@ -127,6 +127,54 @@ async function copyToClipboard(text: string): Promise<void> {
   }
   if (!copied) throw new Error("Clipboard access was denied");
 }
+
+function markdownNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(markdownNodeText).join("");
+  if (isValidElement<{ readonly children?: ReactNode }>(node)) return markdownNodeText(node.props.children);
+  return "";
+}
+
+function MarkdownCodeBlock({ children, ...props }: React.JSX.IntrinsicElements["pre"]) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const feedbackTimerRef = useRef(0);
+  const codeElement = isValidElement<{ readonly className?: string }>(children) ? children : undefined;
+  const language = codeElement?.props.className?.split(/\s+/).find((name) => name.startsWith("language-"))?.slice("language-".length);
+  // mdast-util-to-hast appends one presentational newline to every fenced block.
+  const code = markdownNodeText(children).replace(/\n$/, "");
+
+  useEffect(() => () => window.clearTimeout(feedbackTimerRef.current), []);
+
+  const copy = async () => {
+    window.clearTimeout(feedbackTimerRef.current);
+    try {
+      await copyToClipboard(code);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+    feedbackTimerRef.current = window.setTimeout(() => setCopyState("idle"), 1_800);
+  };
+
+  return <div className={`markdown-code-block ${copyState}`}>
+    <span className="markdown-code-language" aria-hidden="true">{language ?? "TEXT"}</span>
+    <button type="button" onClick={() => void copy()} aria-label={`${copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"} code block`}>
+      {copyState === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      <b>{copyState === "copied" ? "COPIED" : copyState === "failed" ? "FAILED" : "COPY"}</b>
+    </button>
+    <pre {...props}>{children}</pre>
+    <span className="sr-only" aria-live="polite">{copyState === "copied" ? "Code block copied" : copyState === "failed" ? "Could not copy code block" : ""}</span>
+  </div>;
+}
+
+const codeBlockMarkdownComponents: Components = {
+  pre: ({ node: _node, ...props }) => <MarkdownCodeBlock {...props} />,
+};
+
+const messageMarkdownComponents: Components = {
+  ...codeBlockMarkdownComponents,
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+};
 
 function imageDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -359,7 +407,7 @@ const LazyMarkdown = memo(function LazyMarkdown({ text }: { readonly text: strin
   }, [visible]);
   return <div ref={ref} className={`message-content ${visible ? "" : "markdown-placeholder"}`}>
     {visible
-      ? <Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>{text}</Markdown>
+      ? <Markdown remarkPlugins={[remarkGfm]} components={messageMarkdownComponents}>{text}</Markdown>
       : <p>{compact(text, 280)}</p>}
   </div>;
 });
@@ -3060,12 +3108,12 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         {workflow.phase === "awaitingPlanApproval" && <p className="workflow-autonomy-note"><b>FINAL APPROVAL · PLAN REVISION {workflow.dossier?.revision ?? workflow.artifactRevision ?? 0}</b> Approving this specification and plan authorizes PISS to execute every listed operation unattended. Review the autonomy envelope now; the loop will not ask you to reconfirm approved work.</p>}
         {hasLongPhaseReport && <details className="workflow-report-details">
           <summary><ClipboardCheck aria-hidden="true" /> FULL PHASE REPORT<ChevronRight aria-hidden="true" /></summary>
-          <div className="workflow-report" data-keyboard-scroll tabIndex={0}><Markdown remarkPlugins={[remarkGfm]}>{phaseReport}</Markdown></div>
+          <div className="workflow-report" data-keyboard-scroll tabIndex={0}><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{phaseReport}</Markdown></div>
         </details>}
         {workflow.error && workflow.error !== phaseSummary && !hasLongPhaseReport && <strong role="alert">{workflow.error}</strong>}
-        {workflow.specification && <details><summary><ClipboardCheck aria-hidden="true" /> COMPLETE SPECIFICATION<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.specification}</Markdown></div></details>}
-        {workflow.plan && <details><summary><ClipboardCheck aria-hidden="true" /> EXECUTABLE PLAN & AUTONOMY ENVELOPE<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.plan}</Markdown></div></details>}
-        {workflow.phase !== "awaitingPlanApproval" && workflow.checkpoint?.artifact && workflow.checkpoint.artifact !== workflow.specification && workflow.checkpoint.artifact !== workflow.plan && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+        {workflow.specification && <details><summary><ClipboardCheck aria-hidden="true" /> COMPLETE SPECIFICATION<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.specification}</Markdown></div></details>}
+        {workflow.plan && <details><summary><ClipboardCheck aria-hidden="true" /> EXECUTABLE PLAN & AUTONOMY ENVELOPE<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.plan}</Markdown></div></details>}
+        {workflow.phase !== "awaitingPlanApproval" && workflow.checkpoint?.artifact && workflow.checkpoint.artifact !== workflow.specification && workflow.checkpoint.artifact !== workflow.plan && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.checkpoint.artifact}</Markdown></div></details>}
         {dossier && <details><summary><ClipboardCheck aria-hidden="true" /> CRITERIA & EVIDENCE · {passedCriteria}/{totalCriteria}<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">{dossier.criteria.map((criterion) => { const evidence = evidenceByCriterion.get(criterion.id); const passed = passedCriterionIds.has(criterion.id) && Boolean(evidence); return <p key={criterion.id}><b>{passed ? "PASSED" : "REMAINING"} · {criterion.id}</b><span>{criterion.title}</span>{evidence && <small>{evidence.summary}{evidence.eventSequence !== undefined ? ` · event ${evidence.eventSequence}` : ""}</small>}</p>; })}</div></details>}
         {dossier && <details><summary><ClipboardCheck aria-hidden="true" /> STRUCTURED APPROVAL DOSSIER<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">
           <p><b>ORDERED DELIVERY SLICES</b><span>{dossier.slices.map((slice) => `${slice.id}: ${slice.title}${slice.dependencies.length ? ` (after ${slice.dependencies.join(", ")})` : ""}`).join(" · ")}</span></p>
