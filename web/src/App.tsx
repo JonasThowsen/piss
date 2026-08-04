@@ -388,6 +388,9 @@ export function App() {
   const [archiveTarget, setArchiveTarget] = useState<OwnedSessionSummary>();
   const [archivePending, setArchivePending] = useState(false);
   const [archiveError, setArchiveError] = useState<string>();
+  const [restartTarget, setRestartTarget] = useState<OwnedSessionSummary>();
+  const [restartPending, setRestartPending] = useState(false);
+  const [restartError, setRestartError] = useState<string>();
   const [renameSessionTarget, setRenameSessionTarget] = useState<OwnedSessionSummary>();
   const [renameWorkspaceTarget, setRenameWorkspaceTarget] = useState<Workspace>();
   const [removeWorkspaceTarget, setRemoveWorkspaceTarget] = useState<Workspace>();
@@ -480,6 +483,7 @@ export function App() {
   const workflowObjectiveRef = useRef<HTMLTextAreaElement>(null);
   const workflowRepairInputRef = useRef<HTMLInputElement>(null);
   const archiveReturnFocusRef = useRef<HTMLElement | null>(null);
+  const restartReturnFocusRef = useRef<HTMLElement | null>(null);
   const renameSessionReturnFocusRef = useRef<HTMLElement | null>(null);
   const workspaceActionReturnFocusRef = useRef<HTMLElement | null>(null);
   const followingRef = useRef(true);
@@ -690,7 +694,7 @@ export function App() {
   const globalPickerHotkeyEnabled = !globalPickerOpen
     && !creatorOpen && !workspaceCreatorOpen && !settingsOpen && !compactionDialogOpen
     && !(sessionSyncRef.current.runtimeGenerationConfirmed && selectedSession?.interactiveRequests[0]) && !(isMobile && mentionMenu)
-    && !archiveTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
+    && !archiveTarget && !restartTarget && !renameSessionTarget && !renameWorkspaceTarget && !removeWorkspaceTarget;
 
   useHotkey(HOTKEYS.openGlobalPicker, () => openGlobalPicker(), {
     enabled: Boolean(globalPickerHotkeyEnabled),
@@ -2027,6 +2031,25 @@ export function App() {
     else if (canAcceptPrompt(selectedSession.status)) void command("prompt");
   };
 
+  const restartSessionRuntime = async () => {
+    if (!restartTarget || restartPending) return;
+    const target = restartTarget;
+    setRestartPending(true);
+    setRestartError(undefined);
+    try {
+      await Effect.runPromise(sendSessionCommand({ sessionId: target.id, runtimeId: target.runtimeId, action: "stop" }));
+      const { session } = await Effect.runPromise(resumeOwnedSession(target.id, target.runtimeId));
+      if (selectedSessionIdRef.current === target.id) acceptAuthoritativeSession(session);
+      setRestartTarget(undefined);
+      await refresh(false);
+    } catch (cause) {
+      setRestartError(errorMessage(cause));
+      await refresh(false);
+    } finally {
+      setRestartPending(false);
+    }
+  };
+
   const archiveSession = async () => {
     if (!archiveTarget || archivePending) return;
     setArchivePending(true);
@@ -2196,6 +2219,11 @@ export function App() {
                           renameSessionReturnFocusRef.current = returnFocus;
                           setRenameSessionTarget(session);
                         } },
+                        ...(session.status !== "stopped" && session.status !== "crashed" && session.status !== "stopping" ? [{ label: "RESTART PI RUNTIME", onSelect: (returnFocus: HTMLElement) => {
+                          restartReturnFocusRef.current = returnFocus;
+                          setRestartError(undefined);
+                          setRestartTarget(session);
+                        } }] : []),
                         { label: "ARCHIVE", danger: true, onSelect: (returnFocus) => {
                           archiveReturnFocusRef.current = returnFocus;
                           setArchiveError(undefined);
@@ -2737,6 +2765,16 @@ export function App() {
         }}
       />}
 
+      {restartTarget && <RestartSessionDialog
+        sessionName={restartTarget.name}
+        pending={restartPending}
+        error={restartError}
+        returnFocus={restartReturnFocusRef.current}
+        fallbackFocus={sessionHeadingRef.current}
+        onClose={() => { if (!restartPending) setRestartTarget(undefined); }}
+        onConfirm={() => void restartSessionRuntime()}
+      />}
+
       {archiveTarget && <ArchiveSessionDialog
         sessionName={archiveTarget.name}
         active={archiveTarget.status !== "stopped" && archiveTarget.status !== "crashed"}
@@ -3252,6 +3290,28 @@ function RemoveWorkspaceDialog({ workspace, returnFocus, fallbackFocus, onClose,
       {error && <div className="dialog-error" role="alert">{error}</div>}
     </div>
     <footer><AlertDialog.Close className="cancel" ref={cancelRef} disabled={pending}>CANCEL</AlertDialog.Close><button className="danger" onClick={() => void remove()} disabled={blocked || pending} type="button">{pending ? "REMOVING…" : "REMOVE WORKSPACE"}</button></footer>
+  </AlertDialogSurface>;
+}
+
+function RestartSessionDialog({ sessionName, pending, error, returnFocus, fallbackFocus, onClose, onConfirm }: {
+  readonly sessionName: string;
+  readonly pending: boolean;
+  readonly error?: string;
+  readonly returnFocus: HTMLElement | null;
+  readonly fallbackFocus: HTMLElement | null;
+  readonly onClose: () => void;
+  readonly onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  return <AlertDialogSurface className="session-dialog stop-session-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} initialFocus={cancelRef} onClose={onClose}>
+    <header><div><AlertDialog.Title render={<b />}>Restart Pi runtime?</AlertDialog.Title></div><AlertDialog.Close disabled={pending} aria-label="Close"><X aria-hidden="true" /></AlertDialog.Close></header>
+    <div className="dialog-body">
+      <AlertDialog.Description render={<p />}>PISS will stop only <b>{sessionName}</b>, then start a fresh Pi process from the same saved conversation. The session, transcript, and engineering workflow remain in place.</AlertDialog.Description>
+      <p>Any response or interactive request currently in progress will be interrupted. Use this to reload Pi configuration, MCP servers, extensions, or environment changes.</p>
+      {error && <div className="dialog-error" role="alert">{error}</div>}
+    </div>
+    <footer><AlertDialog.Close className="cancel" ref={cancelRef} disabled={pending}>CANCEL</AlertDialog.Close><button className="launch" onClick={onConfirm} disabled={pending} type="button">{pending ? "RESTARTING…" : "RESTART PI RUNTIME"}</button></footer>
   </AlertDialogSurface>;
 }
 

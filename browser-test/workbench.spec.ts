@@ -1856,6 +1856,35 @@ test("session menus stay above neighboring controls and flip away from the sideb
   await expect(sessionSettings).toBeFocused();
 });
 
+test("session menu restarts one Pi runtime without replacing its session", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+
+  const created = await page.evaluate(async () => {
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Reload MCP session" }),
+    });
+    return (await response.json()).session as { id: string; runtimeId: string };
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await page.getByRole("button", { name: "Session settings for Reload MCP session" }).click();
+  await page.getByRole("menuitem", { name: "RESTART PI RUNTIME" }).click();
+
+  const dialog = page.getByRole("alertdialog", { name: "Restart Pi runtime?" });
+  await expect(dialog).toContainText("same saved conversation");
+  await expect(dialog).toContainText("session, transcript, and engineering workflow remain in place");
+  await dialog.getByRole("button", { name: "RESTART PI RUNTIME" }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => api.commands.at(-1)).toMatchObject({ sessionId: created.id, runtimeId: created.runtimeId, action: "stop" });
+  const restarted = await page.evaluate(async (sessionId) => (await fetch(`/api/sessions/${sessionId}`)).json(), created.id) as { session: { id: string; runtimeId: string; status: string } };
+  expect(restarted.session).toMatchObject({ id: created.id, runtimeId: `${created.runtimeId}-resumed`, status: "finished" });
+});
+
 test("selecting a cached session transfers only newer authoritative events before rendering", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 780 });
   const api = await installApi(page);
