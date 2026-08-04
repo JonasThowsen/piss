@@ -622,6 +622,64 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         lastActivityAt: timestamp,
       };
     },
+    setWorkflowReadyWithLongReport() {
+      if (sessions.length === 0) return;
+      const timestamp = new Date().toISOString();
+      const current = sessions.at(-1)!;
+      const criteria = Array.from({ length: 15 }, (_, index) => ({ id: `AC-${index + 1}`, title: `Verified production audit criterion ${index + 1}` }));
+      const slices = Array.from({ length: 10 }, (_, index) => ({ id: `AUD-${index}`, title: `Bounded audit slice ${index}`, criterionIds: criteria.slice(index, index + 2).map((criterion) => criterion.id), dependencies: index === 0 ? [] : [`AUD-${index - 1}`] }));
+      const report = Array.from({ length: 45 }, (_, index) => `${index + 1}. Verified bounded audit evidence and reconciled the complete production report without mutation.`).join("\n");
+      sessions[sessions.length - 1] = {
+        ...current,
+        status: "finished",
+        workflow: {
+          id: "ready-workflow-long-report",
+          phase: "readyToShip",
+          objective: "Complete the bounded production data audit",
+          repairAttempts: 2,
+          maxRepairAttempts: 3,
+          specification: `# Complete specification\n\n${report}`,
+          plan: `# Executable plan\n\n${report}`,
+          checkpoint: { stage: "review", outcome: "passed", summary: report, artifact: `# Final review\n\n${report}`, toolCallId: "review-ready", sequence: 121, receivedAt: timestamp },
+          blockedFromPhase: null,
+          executionAuthority: { mode: "approved_plan", grantedAt: timestamp, planRevision: 1, artifactDigest: "0123456789abcdef" },
+          revision: 8,
+          artifactRevision: 1,
+          dossier: {
+            revision: 1,
+            criteria,
+            slices,
+            verificationRequirements: ["Verify every audit criterion", "Preserve read-only production boundaries"],
+            operations: [],
+            recoveryRequirements: ["Retain durable evidence"],
+            exclusions: ["No production mutation"],
+            readiness: [{ id: "ready", label: "Production audit readiness", status: "passed", detail: "All bounded reads completed" }],
+            unresolved: [],
+          },
+          phaseRun: { id: "review-ready-run", phase: "reviewing", attempt: 0, planRevision: 1, runtimeId: current.runtimeId, startedAt: timestamp },
+          progress: {
+            currentSliceId: null,
+            activity: "Complete; every approved criterion passed",
+            completedSliceIds: slices.map((slice) => slice.id),
+            passedCriterionIds: criteria.map((criterion) => criterion.id),
+            evidence: criteria.map((criterion, index) => ({ criterionId: criterion.id, summary: `Durable evidence ${index + 1}`, eventSequence: index + 1 })),
+            verificationStep: "Verified the complete bounded report",
+            reviewStep: "Independent review passed",
+            retryAttempt: 1,
+            maxTransientRetries: 2,
+            condition: "complete",
+            nextAction: "Review and accept the ready-to-ship result",
+            lastCheckpointSummary: report,
+            lastActivityAt: timestamp,
+          },
+          guidance: [],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          error: null,
+        },
+        lastActivityAt: timestamp,
+      };
+    },
     setWorkflowPhaseFor(name: string, phase: NonNullable<TestSession["workflow"]>["phase"]) {
       const index = sessions.findIndex((session) => session.name === name);
       if (index < 0) return;
@@ -1157,6 +1215,41 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   await workflow.getByRole("button", { name: "RESUME WORKFLOW" }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "resume", feedback: expect.stringContaining("Resume the interrupted workflow") });
   await expect(workflow).toContainText("Building");
+});
+
+test("long ready-to-ship workflows scroll to their acceptance controls on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Long ready workflow" }),
+    });
+  });
+  api.setWorkflowReadyWithLongReport();
+  await page.reload();
+
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(workflow).toContainText("Ready to ship");
+  const focusedDeck = page.locator(".control-deck.workflow-focus-mode");
+  const acceptButton = workflow.getByRole("button", { name: "ACCEPT RESULT" });
+  const layout = await focusedDeck.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+    touchAction: getComputedStyle(element).touchAction,
+  }));
+  expect(layout.scrollHeight).toBeGreaterThan(layout.clientHeight);
+  expect(layout.overflowY).toBe("auto");
+  expect(layout.touchAction).toContain("pan-y");
+
+  await focusedDeck.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await focusedDeck.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(acceptButton).toBeVisible();
+  const footerBottom = await workflow.locator(":scope > footer").evaluate((element) => element.getBoundingClientRect().bottom);
+  expect(footerBottom).toBeLessThanOrEqual(780);
 });
 
 test("autonomous workflow phases expose Pi thinking and tool activity", async ({ page }) => {

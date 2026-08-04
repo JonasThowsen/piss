@@ -2957,7 +2957,7 @@ export function App() {
 const WORKFLOW_STAGES = ["DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
 function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase === "defining" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "blocked";
+  return phase === "defining" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "readyToShip" || phase === "blocked";
 }
 
 function workflowRunsAutonomously(phase: EngineeringWorkflow["phase"]): boolean {
