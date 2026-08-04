@@ -238,6 +238,176 @@ export const EngineeringWorkflowPhase = Schema.Literals([
 ]);
 export type EngineeringWorkflowPhase = typeof EngineeringWorkflowPhase.Type;
 
+export const EngineeringWorkflowExecutionCondition = Schema.Literals([
+  "working",
+  "waiting_internal",
+  "waiting_user",
+  "retrying",
+  "supervising",
+  "blocked",
+  "complete",
+]);
+export type EngineeringWorkflowExecutionCondition = typeof EngineeringWorkflowExecutionCondition.Type;
+
+export const EngineeringWorkflowCriterion = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+});
+export type EngineeringWorkflowCriterion = typeof EngineeringWorkflowCriterion.Type;
+
+export const EngineeringWorkflowSlice = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  criterionIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(200)),
+  dependencies: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(100)),
+});
+export type EngineeringWorkflowSlice = typeof EngineeringWorkflowSlice.Type;
+
+export const EngineeringWorkflowOperation = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  kind: Schema.Literals([
+    "workspace_read",
+    "workspace_write",
+    "command",
+    "browser_verify",
+    "git_commit",
+    "git_push",
+    "migration",
+    "deployment",
+    "production_read",
+    "production_write",
+  ]),
+  target: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  constraints: Schema.optional(Schema.Array(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  ).check(Schema.isMaxLength(100))),
+  receiptRequired: Schema.optional(Schema.Boolean),
+  idempotencyKey: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256))),
+  description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  recovery: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  evidence: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+});
+export type EngineeringWorkflowOperation = typeof EngineeringWorkflowOperation.Type;
+
+export const EngineeringWorkflowReadinessCheck = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  label: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  status: Schema.Literals(["passed", "unresolved", "outside"]),
+  detail: Schema.String.check(Schema.isMaxLength(8 * 1024)),
+});
+export type EngineeringWorkflowReadinessCheck = typeof EngineeringWorkflowReadinessCheck.Type;
+
+export const EngineeringWorkflowDossier = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(1_000_000)),
+  criteria: Schema.Array(EngineeringWorkflowCriterion).check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  slices: Schema.Array(EngineeringWorkflowSlice).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  verificationRequirements: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(100)),
+  operations: Schema.Array(EngineeringWorkflowOperation).check(Schema.isMaxLength(200)),
+  recoveryRequirements: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(100)),
+  exclusions: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(100)),
+  readiness: Schema.Array(EngineeringWorkflowReadinessCheck).check(Schema.isMaxLength(100)),
+  unresolved: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(100)),
+});
+export type EngineeringWorkflowDossier = typeof EngineeringWorkflowDossier.Type;
+
+export const EngineeringWorkflowPhaseRun = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  phase: EngineeringWorkflowPhase,
+  attempt: NonNegativeInt,
+  planRevision: NonNegativeInt,
+  runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  startedAt: Schema.String,
+});
+export type EngineeringWorkflowPhaseRun = typeof EngineeringWorkflowPhaseRun.Type;
+
+export const EngineeringWorkflowEvidence = Schema.Struct({
+  criterionId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  eventSequence: Schema.optional(NonNegativeInt),
+});
+export type EngineeringWorkflowEvidence = typeof EngineeringWorkflowEvidence.Type;
+
+export const EngineeringWorkflowProgress = Schema.Struct({
+  currentSliceId: Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  activity: Schema.String.check(Schema.isMaxLength(8 * 1024)),
+  completedSliceIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(100)),
+  passedCriterionIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(200)),
+  evidence: Schema.Array(EngineeringWorkflowEvidence).check(Schema.isMaxLength(200)),
+  verificationStep: Schema.NullOr(Schema.String.check(Schema.isMaxLength(4 * 1024))),
+  reviewStep: Schema.NullOr(Schema.String.check(Schema.isMaxLength(4 * 1024))),
+  retryAttempt: NonNegativeInt,
+  maxTransientRetries: NonNegativeInt,
+  condition: EngineeringWorkflowExecutionCondition,
+  nextAction: Schema.String.check(Schema.isMaxLength(4 * 1024)),
+  lastCheckpointSummary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(16 * 1024))),
+  lastActivityAt: Schema.String,
+});
+export type EngineeringWorkflowProgress = typeof EngineeringWorkflowProgress.Type;
+
+export const EngineeringWorkflowSupersededRevision = Schema.Struct({
+  planRevision: NonNegativeInt,
+  completedSliceIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(100)),
+  passedCriterionIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(200)),
+  evidence: Schema.Array(EngineeringWorkflowEvidence).check(Schema.isMaxLength(200)),
+  supersededAt: Schema.String,
+  reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8 * 1024)),
+});
+export type EngineeringWorkflowSupersededRevision = typeof EngineeringWorkflowSupersededRevision.Type;
+
+export const EngineeringWorkflowGuidance = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+  status: Schema.Literals(["queued", "delivered", "applied"]),
+  planRevision: NonNegativeInt,
+  submittedRuntimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  submittedAt: Schema.String,
+  deliveredAt: Schema.NullOr(Schema.String),
+  appliedAt: Schema.NullOr(Schema.String),
+});
+export type EngineeringWorkflowGuidance = typeof EngineeringWorkflowGuidance.Type;
+
+export const EngineeringWorkflowAuthorityDecision = Schema.Struct({
+  eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  operationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  phaseRunId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  planRevision: NonNegativeInt,
+  allowed: Schema.Boolean,
+  basis: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8 * 1024)),
+  decidedAt: Schema.String,
+  source: Schema.optional(Schema.Literal("piss_workflow_authority_request")),
+  correlationId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  runtimeId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  kind: Schema.optional(Schema.Literals([
+    "workspace_read",
+    "workspace_write",
+    "command",
+    "browser_verify",
+    "git_commit",
+    "git_push",
+    "migration",
+    "deployment",
+    "production_read",
+    "production_write",
+  ])),
+  target: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024))),
+  constraints: Schema.optional(Schema.Array(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  ).check(Schema.isMaxLength(100))),
+  idempotencyKey: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256))),
+});
+export type EngineeringWorkflowAuthorityDecision = typeof EngineeringWorkflowAuthorityDecision.Type;
+
+export const EngineeringWorkflowOperationReceipt = Schema.Struct({
+  operationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  idempotencyKey: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  status: Schema.Literals(["planned", "started", "completed", "reconciliation_required"]),
+  target: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  evidence: Schema.NullOr(Schema.String.check(Schema.isMaxLength(8 * 1024))),
+  updatedAt: Schema.String,
+});
+export type EngineeringWorkflowOperationReceipt = typeof EngineeringWorkflowOperationReceipt.Type;
+
 export const EngineeringWorkflowCheckpoint = Schema.Struct({
   stage: Schema.Literals(["define", "plan", "build", "verify", "review"]),
   outcome: Schema.Literals(["ready", "passed", "failed", "blocked"]),
@@ -246,10 +416,22 @@ export const EngineeringWorkflowCheckpoint = Schema.Struct({
   toolCallId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   sequence: NonNegativeInt,
   receivedAt: Schema.String,
+  eventId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  phaseRunId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  planRevision: Schema.optional(NonNegativeInt),
+  runtimeId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  dossier: Schema.optional(EngineeringWorkflowDossier),
+  appliedGuidanceIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(64))),
 });
 export type EngineeringWorkflowCheckpoint = typeof EngineeringWorkflowCheckpoint.Type;
 
 export const EngineeringWorkflowSupervisorAdvice = Schema.Struct({
+  eventId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  consultationId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  phaseRunId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  planRevision: Schema.optional(NonNegativeInt),
+  workflowRevision: Schema.optional(NonNegativeInt),
+  runtimeId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   action: Schema.Literals(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]),
   problem: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
   summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
@@ -267,12 +449,18 @@ export const EngineeringWorkflowSupervisor = Schema.Struct({
   repeatedBlockerCount: NonNegativeInt,
   pendingGuidance: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
   lastAdvice: Schema.NullOr(EngineeringWorkflowSupervisorAdvice),
+  activeConsultationId: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)))),
+  consultationPhaseRunId: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)))),
+  consultationPlanRevision: Schema.optional(NonNegativeInt),
+  consultationWorkflowRevision: Schema.optional(NonNegativeInt),
 });
 export type EngineeringWorkflowSupervisor = typeof EngineeringWorkflowSupervisor.Type;
 
 export const EngineeringWorkflowExecutionAuthority = Schema.Struct({
   mode: Schema.Literal("approved_plan"),
   grantedAt: Schema.String,
+  planRevision: Schema.optional(NonNegativeInt),
+  artifactDigest: Schema.optional(Schema.String.check(Schema.isMinLength(16), Schema.isMaxLength(128))),
 });
 export type EngineeringWorkflowExecutionAuthority = typeof EngineeringWorkflowExecutionAuthority.Type;
 
@@ -289,6 +477,19 @@ export const EngineeringWorkflow = Schema.Struct({
   queuedIntervention: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
   supervisor: Schema.optional(EngineeringWorkflowSupervisor),
   executionAuthority: Schema.optional(EngineeringWorkflowExecutionAuthority),
+  revision: Schema.optional(NonNegativeInt),
+  artifactRevision: Schema.optional(NonNegativeInt),
+  dossier: Schema.optional(EngineeringWorkflowDossier),
+  phaseRun: Schema.optional(EngineeringWorkflowPhaseRun),
+  progress: Schema.optional(EngineeringWorkflowProgress),
+  guidance: Schema.optional(Schema.Array(EngineeringWorkflowGuidance).check(Schema.isMaxLength(64))),
+  authorityDecisions: Schema.optional(Schema.Array(EngineeringWorkflowAuthorityDecision).check(Schema.isMaxLength(200))),
+  operationReceipts: Schema.optional(Schema.Array(EngineeringWorkflowOperationReceipt).check(Schema.isMaxLength(200))),
+  processedEventIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(4_096))),
+  processedMutationIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(256))),
+  reconciledTimelineSequence: Schema.optional(NonNegativeInt),
+  supersededRevisions: Schema.optional(Schema.Array(EngineeringWorkflowSupersededRevision).check(Schema.isMaxLength(32))),
+  openQuestions: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(20))),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
@@ -521,31 +722,45 @@ export const ResumeOwnedSessionInput = Schema.Struct({
 });
 export type ResumeOwnedSessionInput = typeof ResumeOwnedSessionInput.Type;
 
+const EngineeringWorkflowMutationGuard = {
+  workflowId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  mutationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  expectedRevision: NonNegativeInt,
+  expectedPhase: EngineeringWorkflowPhase,
+  expectedPhaseRunId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+};
+
 export const EngineeringWorkflowMutationInput = Schema.Union([
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    mutationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
     action: Schema.Literal("start"),
     objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
     maxRepairAttempts: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    ...EngineeringWorkflowMutationGuard,
     action: Schema.Literals(["approve", "accept", "cancel"]),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    ...EngineeringWorkflowMutationGuard,
     action: Schema.Literal("resume"),
     feedback: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024))),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    ...EngineeringWorkflowMutationGuard,
     action: Schema.Literal("continueRepairs"),
     additionalRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10)),
   }),
   Schema.Struct({
     runtimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+    ...EngineeringWorkflowMutationGuard,
     action: Schema.Literals(["revise", "intervene"]),
     feedback: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+    scopeChange: Schema.optional(Schema.Boolean),
   }),
 ]);
 export type EngineeringWorkflowMutationInput = typeof EngineeringWorkflowMutationInput.Type;

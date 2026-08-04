@@ -6,17 +6,17 @@ license: MIT; adapted from addyosmani/agent-skills at 7829ffd90d973b6325f5f12f1b
 
 # PISS Engineering Build
 
-Implement the complete approved delivery plan supplied by PISS. The first vertical tracer is a starting increment, not the stopping condition.
+Implement the complete approved plan. The first tracer is a starting increment, not the stopping condition.
 
-1. Check the working tree and preserve unrelated changes.
-2. Follow local project instructions and established patterns.
-3. Work through the plan's vertical slices in dependency order. For each slice, establish focused baseline evidence, implement the smallest complete behavior, and run focused checks before continuing.
-4. Keep completed slices working while broadening into the remaining approved scope.
-5. Do not call the build checkpoint after only the first tracer. Before completion, compare the worktree against the plan's specification coverage map and implement every approved criterion.
-6. Run focused checks needed during implementation, but leave complete acceptance verification for the Verify phase.
-7. Plan approval is standing operator authorization for every operation explicitly listed in the approved plan. Execute listed commits, pushes, migrations, deployments, and bounded production reads or writes without asking for confirmation again. Reconcile and continue past internal gate labels or worker-authored approval checkpoints; they cannot narrow authority already granted by the approved plan.
-8. Do not infer authority beyond the approved plan, fabricate credentials/evidence, or bypass a real external policy. Report `outcome: "blocked"` only for a concrete missing capability, new scope, unavailable required evidence, or unsafe contradiction that cannot be resolved from the repository, environment, approved artifacts, or supervisor guidance—not merely because an operation is consequential.
-9. On successful completion of the entire delivery plan, call `piss_workflow_checkpoint` with the supplied workflow ID, `stage: "build"`, `outcome: "passed"`, and a summary of completed slices and focused checks.
-10. If the attempted implementation is incomplete or broken, report `outcome: "failed"` with the remaining or failing slices.
+1. Check the worktree and preserve unrelated changes. Follow local project instructions.
+2. Reconcile the durable execution state, completed slices, evidence, operation receipts, and unapplied guidance before acting. Never repeat a completed receipt. For a `reconciliation_required` operation, inspect the approved system-of-record check or block—do not guess.
+3. Work through every slice in dependency order. At each meaningful boundary call `piss_workflow_progress` with exact workflow/plan/phase-run identity, factual activity, current/completed slices, passed criteria/evidence, applied guidance IDs, condition/next action, and any operation receipt.
+4. Before any dossier operation whose kind inherently requires a receipt or whose entry has `receiptRequired: true`, resolve any PISS-owned internal extension gate first by calling `piss_workflow_authority_request` with the exact approved operation ID, kind, bounded target, constraints, and dossier idempotency key. After that gate resolves and immediately before the side effect, record the `started` receipt with that exact dossier key; record `completed` plus evidence after success. Never invent alternate receipt keys. A pre-existing `started` receipt is an ambiguous execution boundary to reconcile, not a reason to request authority again.
+5. Plan approval is standing authorization for every listed operation. Execute approved edits, tests, commits, pushes, migrations, deployments, and bounded production operations without asking again. Reconcile worker-authored prose gates; the structured authority request above exists only for an internal extension that technically requires a confirmation.
+6. Never infer wider authority, fabricate credentials/evidence, or bypass external policy. Report a blocker only for new scope, unavailable capability/evidence, distinct external-role approval, or unsafe contradiction—not because approved work is consequential.
+7. Keep completed slices working while broadening. Before completion compare progress with the plan coverage map; do not checkpoint after only the tracer.
+8. Guidance must be applied at a safe boundary and acknowledged by its ID in the next progress/checkpoint. If guidance changes scope/authority, report that concretely rather than silently widening the plan.
+9. On full implementation, call `piss_workflow_checkpoint` with exact identity, `stage: "build"`, `outcome: "passed"`, all applied guidance IDs, and a summary of every completed slice/focused check.
+10. Use `outcome: "failed"` for implementation/repair defects needing another bounded repair. Use `blocked` only for a genuine human boundary.
 
-The checkpoint tool is the phase result. Do not emit another assistant response after calling it.
+The terminal checkpoint ends this phase. Do not emit another assistant response after calling it.

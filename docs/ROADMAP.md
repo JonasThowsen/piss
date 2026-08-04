@@ -18,7 +18,7 @@ The current implementation proves these end-to-end paths:
 - Web Push and the offline shell avoid caching or transmitting private session content;
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
-- an authenticated user can start a guided engineering workflow from the composer, interact through Specification and Plan approval, then grant standing authority for unattended execution through ordered Build → Verify → Review slices, bounded repairs, and independent read-only supervisor adjudication while retaining immediate guidance controls;
+- an authenticated user can conversationally refine a guided engineering workflow, grant revision-bound authority once through **Approve & Run**, and continue unattended through ordered Build → Verify → Review slices, bounded repairs, durable guidance/progress, exact structured authority checks, and independent read-only supervisor adjudication;
 - an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
@@ -30,8 +30,8 @@ These paths are covered by focused Node tests, an HTTP integration test with moc
 - The outgoing tray is device-local. Pi's native `queue_update` and JSONL transcript remain authoritative rather than duplicating queued prompt text in PISS storage.
 - Existing registered Git worktrees are supported, but browser-managed worktree creation is not.
 - Concurrent writable sessions in one checkout are warned about rather than automatically isolated.
-- The guided engineering workflow executes a complete multi-slice delivery plan in one durable worker conversation and lazily creates a durable read-only supervisor when blocked; proactive pre-plan readiness review, independently persisted per-slice checkpoints, constrained commits, pushes, and deployment remain later slices.
-- An unexpected control-plane restart blocks an autonomous workflow for inspection rather than automatically repeating possibly destructive work.
+- The guided engineering workflow persists structured slice/criterion evidence, guidance states, authority decisions, and operation receipts. Unsupported irreversible operations without an approved idempotency or system-of-record reconciliation method remain outside unattended authority.
+- An unexpected control-plane restart replays bounded workflow progress, guidance-delivery, authority, checkpoint, and receipt records across the metadata/timeline crash window, then resumes from the first incomplete safe boundary. A completed dossier-bound receipt is not repeated or evicted; an ambiguous started receipt-required operation blocks with a concrete reconciliation requirement.
 - Managed browser evidence remains intentionally short-lived and quota-bounded: recordings are silent VP8 WebM up to 60 seconds/50 MiB, with no generated poster, arbitrary JavaScript/selectors, external top-level navigation, or long-form retention policy.
 
 ## Next tracer — managed worktree sessions

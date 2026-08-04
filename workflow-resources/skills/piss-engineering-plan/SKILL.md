@@ -6,17 +6,17 @@ license: MIT; adapted from addyosmani/agent-skills at 7829ffd90d973b6325f5f12f1b
 
 # PISS Engineering Plan
 
-Plan the complete approved specification from the real repository. Do not implement yet.
+Plan the complete latest specification from the real repository. Do not implement yet.
 
-1. Re-read the approved specification supplied by PISS and inspect relevant code and tests.
-2. Treat the specification—not the first tracer—as the workflow's completion boundary.
-3. Partition all approved scope into the smallest sensible sequence of vertical delivery slices. Use the first slice to prove the riskiest end-to-end assumption, then broaden through subsequent slices while keeping the system working.
-4. Give every slice a stable ID, explicit acceptance criteria, dependencies, likely files, and exact verification commands.
-5. Include a coverage map showing where every specification acceptance criterion is delivered and verified. Do not silently omit approved scope.
-6. Treat Plan approval as the final interactive authority checkpoint before unattended execution. The approved plan grants standing authorization to perform every operation it explicitly lists, including commits, pushes, migrations, deployments, and production reads or writes. Do not insert later confirmation gates for listed operations.
-7. Put an **Autonomy envelope** near the top of the plan that plainly lists permitted side effects, environments, data boundaries, rollback/verification requirements, and operations that remain outside scope. Perform non-mutating readiness checks for every required repository, service, browser session, credential-backed capability, deployment target, and evidence source without exposing secrets. Surface every unresolved choice, missing capability, required external approver, or unavailable safety prerequisite now as one consolidated Plan blocker; do not defer a foreseeable question into Build.
-8. Keep commit, push, migration, deployment, and production mutation outside the delivery plan unless the approved specification explicitly permits them. When included, specify bounded targets and acceptance evidence precisely enough for unattended execution.
-9. Call `piss_workflow_checkpoint` with the supplied workflow ID, `stage: "plan"`, `outcome: "ready"`, a concise summary, and the complete delivery plan Markdown in `artifact`.
-10. Report `outcome: "blocked"` when the specification is too ambiguous or unsafe to cover completely.
+1. Re-read the specification and inspect relevant code/tests. Treat the specification—not the first tracer—as the completion boundary.
+2. This phase is conversational. For any unresolved product/safety choice, call `piss_workflow_draft` with the latest specification, plan, structured dossier if available, and focused questions; then ask plainly and end without a terminal checkpoint. Incorporate every feedback turn into complete replacement artifacts.
+3. Partition all scope into ordered vertical slices. Every dependency must appear earlier than its dependent slice. The first proves the riskiest end-to-end assumption; later slices complete every criterion while keeping the system working.
+4. Give each criterion, slice, operation, readiness check, and verification step a stable ID/description. Include dependencies, likely files, exact commands, and a coverage map.
+5. Treat **Approve & Run** after this phase as the one final interactive authority checkpoint. Do not add a separate spec-approval gate or later confirmations for approved operations.
+6. Put an **Autonomy envelope** near the top. Represent every permitted operation in the checkpoint `dossier.operations` with a stable operation ID, kind, bounded target, explicit constraints, description, recovery, and required evidence. Every commit, push, migration, deployment, or production write requires a stable `idempotencyKey`. Mark a generic `command` or `workspace_write` as `receiptRequired: true` and give it a stable `idempotencyKey` whenever repeating it after a crash could cause a second side effect. Every declared key must be unique. List exclusions and recovery requirements. Keep commit, push, migration, deployment, and production mutation outside unless the specification explicitly permits bounded targets.
+7. Perform non-mutating readiness checks covering the applicable repository, toolchain, browser, credentials/capabilities, targets, and evidence sources, with at least one recorded result. Give every readiness result a unique ID and record it in `dossier.readiness`. Put every unresolved choice/capability/external approval in `dossier.unresolved`; do not defer a foreseeable question into Build.
+8. Publish substantial drafts with `piss_workflow_draft` so the UI always shows the current specification and plan.
+9. Call `piss_workflow_checkpoint` with exact workflow/plan/phase-run identity, `stage: "plan"`, `outcome: "ready"`, concise summary, complete plan Markdown in `artifact`, and the complete structured `dossier`.
+10. Report `outcome: "blocked"` when unresolved readiness remains and no conversational turn can resolve it safely.
 
-The checkpoint tool is the phase result. Do not emit another assistant response after calling it.
+The terminal checkpoint ends this phase. Do not emit another assistant response after calling it.

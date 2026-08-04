@@ -92,7 +92,9 @@ function acceptServerState(
   const runtimeChanged = state.session !== undefined && state.session.runtimeId !== session.runtimeId;
   const staleCursor = cursor < state.cursor;
   const staleTimestamp = cursor === state.cursor && state.session !== undefined && Date.parse(session.lastActivityAt) < Date.parse(state.session.lastActivityAt);
-  if ((staleCursor || staleTimestamp) && state.session) {
+  const staleWorkflowRevision = state.session?.workflow?.id === session.workflow?.id
+    && (session.workflow?.revision ?? 0) < (state.session?.workflow?.revision ?? 0);
+  if ((staleCursor || staleTimestamp || staleWorkflowRevision) && state.session) {
     if (runtimeChanged) return state;
     const events = mergeSessionEvents(session.events, state.session.events);
     if (events.length === state.session.events.length) return state;

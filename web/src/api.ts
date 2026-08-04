@@ -401,7 +401,7 @@ export function mutateEngineeringWorkflow(sessionId: string, input: EngineeringW
     headers: { "Content-Type": "application/json" },
     signal: AbortSignal.timeout(5 * 60_000),
     body: JSON.stringify(input),
-  }).pipe(
+  }, { retryTransient: input.mutationId !== undefined }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(OwnedSessionDetailResponse)),
     Effect.mapError((cause) => cause instanceof ApiError
       ? cause

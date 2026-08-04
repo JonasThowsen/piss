@@ -22,7 +22,7 @@ https://piss.<tailnet>.ts.net
 - Native conversation and tool-event timelines
 - Managed loopback Chromium verification with bounded accessible interaction plus durable inline PNG and WebM evidence
 - Prompt, steer, follow-up, abort, archive, and resume controls
-- Guided engineering workflows with interactive Specification/Plan approval, standing unattended execution authority, always-available guidance, and bounded Build, Verify, Review, repair, and independent supervisor-recovery phases
+- Guided engineering workflows with conversational Define/Plan refinement, one final **Approve & Run** dossier, revision-bound unattended authority, durable guidance/progress/receipt reconciliation, and bounded Build → Verify → Review → Repair recovery
 - Runtime-generation and command-ID protection against stale or duplicate delivery
 - Model, thinking-level, context, usage, queue, and compaction controls
 - Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)

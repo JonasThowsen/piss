@@ -43,7 +43,24 @@ type TestSession = {
     checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
     blockedFromPhase: string | null;
     queuedIntervention?: string;
-    executionAuthority?: { mode: "approved_plan"; grantedAt: string };
+    executionAuthority?: { mode: "approved_plan"; grantedAt: string; planRevision?: number; artifactDigest?: string };
+    revision?: number;
+    artifactRevision?: number;
+    dossier?: {
+      revision: number;
+      criteria: Array<{ id: string; title: string }>;
+      slices: Array<{ id: string; title: string; criterionIds: string[]; dependencies: string[] }>;
+      verificationRequirements: string[];
+      operations: Array<{ id: string; kind: "workspace_read" | "workspace_write" | "command" | "browser_verify" | "git_commit" | "git_push" | "migration" | "deployment" | "production_read" | "production_write"; target: string; description: string; recovery: string; evidence: string }>;
+      recoveryRequirements: string[];
+      exclusions: string[];
+      readiness: Array<{ id: string; label: string; status: "passed" | "unresolved" | "outside"; detail: string }>;
+      unresolved: string[];
+    };
+    phaseRun?: { id: string; phase: NonNullable<TestSession["workflow"]>["phase"]; attempt: number; planRevision: number; runtimeId: string; startedAt: string };
+    progress?: { currentSliceId: string | null; activity: string; completedSliceIds: string[]; passedCriterionIds: string[]; evidence: Array<{ criterionId: string; summary: string; eventSequence?: number }>; verificationStep: string | null; reviewStep: string | null; retryAttempt: number; maxTransientRetries: number; condition: "working" | "waiting_internal" | "waiting_user" | "retrying" | "supervising" | "blocked" | "complete"; nextAction: string; lastCheckpointSummary: string | null; lastActivityAt: string };
+    guidance?: Array<{ id: string; text: string; status: "queued" | "delivered" | "applied"; planRevision: number; submittedRuntimeId: string; commandId: string; submittedAt: string; deliveredAt: string | null; appliedAt: string | null }>;
+    supersededRevisions?: Array<{ planRevision: number; completedSliceIds: string[]; passedCriterionIds: string[]; evidence: Array<{ criterionId: string; summary: string; eventSequence?: number }>; supersededAt: string; reason: string }>;
     supervisor?: {
       sessionId: string;
       status: "idle" | "consulting";
@@ -344,28 +361,46 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         const specification = `# Specification\n\n${Array.from({ length: 40 }, (_, index) => `${index + 1}. Verify a durable, accessible workflow acceptance criterion.`).join("\n")}`;
         workflow = {
           id: "browser-workflow-1",
-          phase: "awaitingSpecApproval",
+          phase: "planning",
           objective: typeof body.objective === "string" ? body.objective : "Build the workflow",
           repairAttempts: 0,
           maxRepairAttempts: typeof body.maxRepairAttempts === "number" ? body.maxRepairAttempts : 3,
           specification,
           plan: null,
-          checkpoint: { stage: "define", outcome: "ready", summary: "Specification is ready for approval", artifact: specification, toolCallId: "define-checkpoint", sequence: 1, receivedAt: timestamp },
+          checkpoint: { stage: "define", outcome: "ready", summary: "Specification ready; planning started", artifact: specification, toolCallId: "define-checkpoint", sequence: 1, receivedAt: timestamp },
           blockedFromPhase: null,
+          revision: 2,
+          artifactRevision: 1,
+          progress: { currentSliceId: null, activity: "Refining the specification into an executable plan", completedSliceIds: [], passedCriterionIds: [], evidence: [], verificationStep: null, reviewStep: null, retryAttempt: 0, maxTransientRetries: 2, condition: "working", nextAction: "Prepare the complete executable plan", lastCheckpointSummary: "Specification ready; planning started", lastActivityAt: timestamp },
+          guidance: [],
           createdAt: timestamp,
           updatedAt: timestamp,
           error: null,
         };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingSpecApproval") {
-        workflow = { ...workflow, phase: "planning", updatedAt: timestamp };
+        workflow = { ...workflow, phase: "planning", revision: (workflow.revision ?? 0) + 1, updatedAt: timestamp };
       } else if (workflow && body?.action === "approve" && workflow.phase === "awaitingPlanApproval") {
-        workflow = { ...workflow, phase: "readyToShip", executionAuthority: { mode: "approved_plan", grantedAt: timestamp }, checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
+        workflow = { ...workflow, phase: "readyToShip", revision: (workflow.revision ?? 0) + 1, executionAuthority: { mode: "approved_plan", grantedAt: timestamp, planRevision: workflow.dossier?.revision ?? 1, artifactDigest: "0123456789abcdef" }, progress: workflow.progress ? { ...workflow.progress, condition: "complete", activity: "Every slice and criterion passed", nextAction: "Review and accept the ready-to-ship result", lastActivityAt: timestamp } : workflow.progress, checkpoint: { stage: "review", outcome: "passed", summary: "Build, verification, and review passed", artifact: null, toolCallId: "review-checkpoint", sequence: 5, receivedAt: timestamp }, updatedAt: timestamp };
       } else if (workflow && body?.action === "accept" && workflow.phase === "readyToShip") {
         workflow = { ...workflow, phase: "accepted", updatedAt: timestamp };
       } else if (workflow && body?.action === "intervene") {
-        workflow = {
+        const guidanceId = typeof body.mutationId === "string" ? body.mutationId : `guidance-${workflow.guidance?.length ?? 0}`;
+        if (body.scopeChange === true && workflow.executionAuthority) {
+          const { executionAuthority: _authority, phaseRun: _phaseRun, ...replanning } = workflow;
+          workflow = {
+            ...replanning,
+            phase: "planning",
+            revision: (workflow.revision ?? 0) + 1,
+            artifactRevision: (workflow.artifactRevision ?? 0) + 1,
+            supersededRevisions: [{ planRevision: workflow.dossier?.revision ?? 0, completedSliceIds: workflow.progress?.completedSliceIds ?? [], passedCriterionIds: workflow.progress?.passedCriterionIds ?? [], evidence: workflow.progress?.evidence ?? [], supersededAt: timestamp, reason: String(body.feedback) }],
+            guidance: [...(workflow.guidance ?? []), { id: guidanceId, text: String(body.feedback), status: "applied" as const, planRevision: workflow.dossier?.revision ?? 0, submittedRuntimeId: session.runtimeId, commandId: `workflow:${workflow.id}:guidance:${guidanceId}`, submittedAt: timestamp, deliveredAt: timestamp, appliedAt: timestamp }],
+            progress: workflow.progress ? { ...workflow.progress, completedSliceIds: [], passedCriterionIds: [], evidence: [], condition: "waiting_user", activity: "Approved execution paused for a scope or authority revision", nextAction: "Revise the plan, then request a new Approve & Run", lastActivityAt: timestamp } : workflow.progress,
+            updatedAt: timestamp,
+          };
+        } else workflow = {
           ...workflow,
-          ...(session.status === "working" ? {} : { queuedIntervention: String(body.feedback ?? "Queued guidance") }),
+          revision: (workflow.revision ?? 0) + 1,
+          guidance: [...(workflow.guidance ?? []), { id: guidanceId, text: String(body.feedback ?? "Queued guidance"), status: session.status === "working" ? "delivered" as const : "queued" as const, planRevision: workflow.dossier?.revision ?? 0, submittedRuntimeId: session.runtimeId, commandId: `workflow:${workflow.id}:guidance:${guidanceId}`, submittedAt: timestamp, deliveredAt: session.status === "working" ? timestamp : null, appliedAt: null }],
           updatedAt: timestamp,
         };
       } else if (workflow && body?.action === "resume" && ((workflow.phase === "blocked" && workflow.blockedFromPhase) || (workflow.phase === "cancelled" && workflow.error?.includes("runtime stopped")))) {
@@ -380,7 +415,8 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         workflow = {
           ...workflow,
           phase: "repairing",
-          maxRepairAttempts: Math.max(workflow.maxRepairAttempts, workflow.repairAttempts) + Number(body.additionalRepairAttempts ?? 1),
+          repairAttempts: workflow.repairAttempts + 1,
+          maxRepairAttempts: workflow.maxRepairAttempts + Number(body.additionalRepairAttempts ?? 1),
           error: null,
           updatedAt: timestamp,
         };
@@ -480,7 +516,17 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
         ...sessions.at(-1)!,
         status: "finished",
         workflow: phase === "awaitingPlanApproval"
-          ? { ...workflow, phase, plan: "# Complete delivery plan\n\nImplement every approved criterion through ordered vertical slices.", checkpoint: { stage: "plan", outcome: "ready", summary: "Complete delivery plan is ready for approval", artifact: "# Complete delivery plan\n\nImplement every approved criterion through ordered vertical slices.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp }, updatedAt: timestamp }
+          ? {
+            ...workflow,
+            phase,
+            revision: (workflow.revision ?? 0) + 1,
+            artifactRevision: 2,
+            plan: "# Complete delivery plan\n\n## Autonomy envelope\n\nWorkspace edits, tests, builds, and loopback browser verification are approved. Production deployment remains outside scope.\n\n## Ordered slices\n\n1. Durable authority\n2. Exactly-once guidance\n3. Progress restoration",
+            dossier: { revision: 2, criteria: [{ id: "AC1", title: "Durable authority" }, { id: "AC2", title: "Guidance and progress" }], slices: [{ id: "S1", title: "Authority", criterionIds: ["AC1"], dependencies: [] }, { id: "S2", title: "Guidance", criterionIds: ["AC2"], dependencies: ["S1"] }, { id: "S3", title: "Restoration", criterionIds: ["AC2"], dependencies: ["S2"] }], verificationRequirements: ["Run typecheck, tests, browser tests, and build"], operations: [{ id: "workspace-write", kind: "workspace_write", target: "registered workspace", description: "Edit approved files", recovery: "Targeted rollback", evidence: "Passing checks" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Production deployment"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "Ready" }], unresolved: [] },
+            progress: { ...(workflow.progress ?? { currentSliceId: null, activity: "", completedSliceIds: [], passedCriterionIds: [], evidence: [], verificationStep: null, reviewStep: null, retryAttempt: 0, maxTransientRetries: 2, condition: "waiting_user" as const, nextAction: "", lastCheckpointSummary: null, lastActivityAt: timestamp }), condition: "waiting_user", activity: "Specification and executable plan are ready", nextAction: "Review the autonomy envelope, then Approve & Run", lastCheckpointSummary: "Complete delivery plan is ready for approval", lastActivityAt: timestamp },
+            checkpoint: { stage: "plan", outcome: "ready", summary: "Complete delivery plan is ready for approval", artifact: "# Complete delivery plan\n\nImplement every approved criterion through ordered vertical slices.", toolCallId: "plan-checkpoint", sequence: 2, receivedAt: timestamp },
+            updatedAt: timestamp,
+          }
           : { ...workflow, phase, updatedAt: timestamp },
         lastActivityAt: timestamp,
       };
@@ -496,6 +542,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           ...current.workflow!,
           phase: "blocked",
           blockedFromPhase: "building",
+          executionAuthority: current.workflow!.executionAuthority ?? { mode: "approved_plan" as const, grantedAt: timestamp, planRevision: current.workflow!.dossier?.revision ?? 1, artifactDigest: "0123456789abcdef" },
           checkpoint: { stage: "build", outcome: "blocked", summary, artifact: null, toolCallId: "blocked-build", sequence: 7, receivedAt: timestamp },
           supervisor: {
             sessionId: "supervisor-session-1",
@@ -559,6 +606,7 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       if (sessions.length === 0 || !sessions.at(-1)!.workflow) return;
       const timestamp = new Date().toISOString();
       const current = sessions.at(-1)!;
+      const summary = Array.from({ length: 45 }, (_, index) => `${index + 1}. **Blocking reliability defect ${index + 1}:** preserve the durable invariant in \`server/runtimes/example_${index + 1}.ts\` and add focused regression evidence.`).join("\n");
       sessions[sessions.length - 1] = {
         ...current,
         status: "finished",
@@ -567,9 +615,9 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
           phase: "failed",
           repairAttempts,
           maxRepairAttempts,
-          checkpoint: { stage: "review", outcome: "failed", summary: "Final review found blocking durability defects", artifact: null, toolCallId: "failed-review", sequence: 9, receivedAt: timestamp },
+          checkpoint: { stage: "review", outcome: "failed", summary, artifact: null, toolCallId: "failed-review", sequence: 9, receivedAt: timestamp },
           updatedAt: timestamp,
-          error: "Repair budget exhausted: blocking durability defects remain",
+          error: `Repair budget exhausted: ${summary}`,
         },
         lastActivityAt: timestamp,
       };
@@ -797,7 +845,7 @@ test("workflow-phase badge stays accessible and contained in desktop and mobile 
   const approvalCard = sessionCard(approvalName);
   await expect(verifyingCard.locator(".workflow-phase-badge")).toHaveText("LOOP · VERIFY");
   await expect(verifyingCard).toHaveAccessibleName(/LOOP · VERIFY/);
-  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC APPROVAL");
+  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC READY");
   await expect(sessionCard("Plain session").locator(".workflow-phase-badge")).toHaveCount(0);
   await expect(sessionCard("Terminal session").locator(".workflow-phase-badge")).toHaveCount(0);
 
@@ -805,7 +853,7 @@ test("workflow-phase badge stays accessible and contained in desktop and mobile 
   await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
   await expect(verifyingCard.locator(".workflow-phase-badge")).toBeVisible();
   await expect(verifyingCard).toHaveAccessibleName(/LOOP · VERIFY/);
-  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC APPROVAL");
+  await expect(approvalCard.locator(".workflow-phase-badge")).toHaveText("LOOP · SPEC READY");
 
   const layout = await approvalCard.evaluate((card) => {
     const rail = card.closest<HTMLElement>(".rail")!;
@@ -869,12 +917,29 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await repairBudget.fill("2");
   await expect(repairBudget).toHaveValue("2");
   await dialog.getByLabel("Objective").fill("Add a durable guided workflow with visible approval gates");
+  const startAttempts: Array<Record<string, unknown>> = [];
+  let failFirstStartResponse = true;
+  await page.route("**/api/sessions/*/workflow", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    startAttempts.push(body);
+    if (failFirstStartResponse) {
+      failFirstStartResponse = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary workflow gateway failure" }) });
+      return;
+    }
+    await route.fallback();
+  });
   await dialog.getByRole("button", { name: /start define/i }).click();
+  await expect.poll(() => startAttempts.length).toBe(2);
+  expect(startAttempts[1]).toEqual(startAttempts[0]);
+  await expect.poll(() => api.workflowMutations[0]).toMatchObject({ action: "start", mutationId: expect.any(String) });
 
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("0/2 REPAIRS");
-  await expect(workflow).toContainText("Spec approval");
-  await expect(workflow).toContainText("Specification is ready for approval");
+  await expect(workflow).toContainText("Planning");
+  await expect(workflow).toContainText("Refining the specification into an executable plan");
+  await expect(workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" })).toBeVisible();
+  await expect(workflow.getByRole("button", { name: /approve spec|continue to plan/i })).toHaveCount(0);
   await workflow.locator("summary").click();
   await expect(workflow.locator(".workflow-artifact")).toBeVisible();
   const approvalLayout = await workflow.evaluate((element) => {
@@ -918,10 +983,11 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   expect(specificationOverflow.artifactTouchAction).toContain("pan-x");
   expect(specificationOverflow.documentScrollWidth).toBeLessThanOrEqual(specificationOverflow.viewportWidth);
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
-  await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
-  await expect(workflow).toContainText("Planning");
-  await expect(workflow).toContainText("Pi is preparing the complete delivery plan");
-  await expect(workflow.locator("details")).not.toHaveAttribute("open");
+  await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
+  const planningGuidance = page.getByRole("dialog", { name: "Guide current workflow" });
+  await planningGuidance.getByRole("textbox", { name: "Guidance", exact: true }).fill("Keep the specification focused on durable authority and progress.");
+  await planningGuidance.getByRole("button", { name: /send guidance/i }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Keep the specification focused on durable authority and progress." });
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   const planningLayout = await workflow.evaluate((element) => ({ footerBottom: element.querySelector<HTMLElement>(":scope > footer")!.getBoundingClientRect().bottom, viewportHeight: window.innerHeight }));
   expect(planningLayout.viewportHeight - planningLayout.footerBottom).toBeGreaterThanOrEqual(6);
@@ -929,9 +995,16 @@ test("mobile composer starts and approves a guided engineering workflow", async 
 
   api.setWorkflowPhase("awaitingPlanApproval");
   await page.reload();
-  await expect(workflow).toContainText("Plan approval");
+  await expect(workflow).toContainText("Final approval");
   await expect(workflow).toContainText("FINAL APPROVAL");
   await expect(workflow).toContainText("execute every listed operation unattended");
+  await workflow.getByText("STRUCTURED APPROVAL DOSSIER", { exact: true }).click();
+  await expect(workflow).toContainText("ORDERED DELIVERY SLICES");
+  await expect(workflow).toContainText("WORKSPACE WRITE · workspace-write");
+  await expect(workflow).toContainText("Recovery: Targeted rollback");
+  await expect(workflow).toContainText("OUTSIDE THE ENVELOPE");
+  await expect(workflow).toContainText("PASSED · Repository: Ready");
+  await expect(workflow).toContainText("UNRESOLVED CAPABILITIES OR APPROVALS");
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE & RUN" }).click();
   await expect(workflow).toContainText("Ready to ship");
@@ -964,15 +1037,45 @@ test("a new approval gate unlocks while the preceding mutation response is still
   await starter.getByRole("button", { name: /start define/i }).click();
 
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
-  await expect(workflow).toContainText("Spec approval");
-  api.delayNextWorkflowMutation(10_000);
-  await workflow.getByRole("button", { name: "APPROVE SPEC" }).click();
-  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "approve" });
+  await expect(workflow).toContainText("Planning");
   api.setWorkflowPhase("awaitingPlanApproval");
+  await page.reload();
+  await expect(workflow).toContainText("Final approval");
+  api.delayNextWorkflowMutation(10_000);
+  await workflow.getByRole("button", { name: "APPROVE & RUN" }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "approve", expectedPhase: "awaitingPlanApproval", expectedRevision: expect.any(Number), mutationId: expect.any(String) });
 
-  await expect(workflow).toContainText("Plan approval", { timeout: 5_000 });
-  await expect(workflow.getByRole("button", { name: "APPROVE & RUN" })).toBeEnabled();
-  await expect(workflow.getByRole("button", { name: "REQUEST CHANGES" })).toBeEnabled();
+  await expect(workflow).toContainText("Ready to ship", { timeout: 5_000 });
+  await expect(workflow.getByRole("button", { name: "ACCEPT RESULT" })).toBeEnabled();
+});
+
+test("scope-changing guidance pauses approved execution and returns to planning", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const api = await installApi(page);
+  await page.goto("/");
+  await page.evaluate(async () => { await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workspaceId: "erp-deadbeef", name: "Scope revision workflow" }) }); });
+  await page.reload();
+  await page.getByRole("button", { name: "Open workflow actions" }).click();
+  await page.getByRole("menuitem", { name: /engineering loop/i }).click();
+  const starter = page.getByRole("dialog", { name: "Define, build, prove" });
+  await starter.getByLabel("Objective").fill("Deliver an approved workflow, then revise its scope");
+  await starter.getByRole("button", { name: /start define/i }).click();
+  api.setWorkflowPhase("awaitingPlanApproval");
+  await page.reload();
+  const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await workflow.getByRole("button", { name: "APPROVE & RUN" }).click();
+  api.setWorkflowPhase("building");
+  api.setStatus("working");
+  await page.reload();
+  await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
+  const guidance = page.getByRole("dialog", { name: "Guide current workflow" });
+  await guidance.getByRole("textbox", { name: "Guidance", exact: true }).fill("Add a new external integration acceptance criterion.");
+  await guidance.getByLabel("This changes approved scope or authority").check();
+  await guidance.getByRole("button", { name: /send guidance/i }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", scopeChange: true, expectedPhase: "building", mutationId: expect.any(String) });
+  await expect(workflow).toContainText("Planning");
+  await expect(workflow).toContainText("Approved execution paused for a scope or authority revision");
+  await expect(workflow.getByRole("button", { name: "APPROVE & RUN" })).toHaveCount(0);
 });
 
 test("blocked workflows collect operator guidance before resuming the phase", async ({ page }) => {
@@ -999,26 +1102,30 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("Blocked");
   await expect(workflow).toContainText("Loop supervisor is reviewing this blocker");
-  await expect(workflow.getByRole("button", { name: "GIVE FEEDBACK" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" })).toBeEnabled();
   await expect(workflow.getByRole("button", { name: "CONTINUE" })).toHaveCount(0);
+  await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
+  const consultingGuidance = page.getByRole("dialog", { name: "Guide current workflow" });
+  await consultingGuidance.getByRole("textbox", { name: "Guidance", exact: true }).fill("Preserve the approved rollback evidence while the supervisor decides.");
+  await consultingGuidance.getByRole("button", { name: /send guidance/i }).click();
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", expectedPhase: "blocked", mutationId: expect.any(String) });
 
   api.setWorkflowBlocked();
   await page.reload();
   await expect(workflow).toContainText("The workflow needs your permission before it deploys the production revision.");
-  await expect(workflow).toContainText("Would you like the workflow to continue?");
+  await expect(workflow).toContainText("Provide the exact non-secret input requested, or revise scope and return to planning.");
   await expect(workflow.getByText("Build needs an operator-approved production procedure", { exact: true })).not.toBeVisible();
-  await expect(workflow.getByRole("button", { name: "CONTINUE" })).toBeEnabled();
+  await expect(workflow.getByRole("button", { name: "CONTINUE" })).toHaveCount(0);
   await expect(workflow.getByRole("button", { name: "GIVE FEEDBACK" })).toBeEnabled();
-  await workflow.getByRole("button", { name: "CONTINUE" }).click();
-  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "resume", feedback: expect.stringContaining("operator chose to continue") });
-  await expect(workflow).toContainText("Building");
-
-  api.setWorkflowBlocked();
-  await page.reload();
   await workflow.getByRole("button", { name: "GIVE FEEDBACK" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Unblock Building" });
   await expect(dialog).toContainText("Do not paste credentials or secret values");
+  const scopeRevision = dialog.getByLabel("This requires revised scope or authority");
+  await expect(scopeRevision).toBeVisible();
+  await scopeRevision.check();
+  await expect(dialog.getByRole("button", { name: "RETURN TO PLAN" })).toBeDisabled();
+  await scopeRevision.uncheck();
   await expect(dialog.getByRole("button", { name: "RESUME WITH GUIDANCE" })).toBeDisabled();
   const guidance = "Use the approved bounded read procedure in /runbooks/bootstrap.md; backup job bootstrap-2026-08-02 completed and production superadmin authorization is recorded in change CHG-42.";
   await dialog.getByLabel("Unblock guidance").fill(guidance);
@@ -1086,20 +1193,21 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   expect(await page.locator(".timeline").evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
 
-  await workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" }).click();
-  const guidanceDialog = page.getByRole("dialog", { name: "Guide the current phase" });
-  await expect(guidanceDialog).toContainText("labeled guidance");
-  await guidanceDialog.getByLabel("Guidance").fill("Keep the activity transcript compact.");
+  await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
+  const guidanceDialog = page.getByRole("dialog", { name: "Guide current workflow" });
+  await expect(guidanceDialog).toContainText("stores this guidance durably");
+  await guidanceDialog.getByRole("textbox", { name: "Guidance", exact: true }).fill("Keep the activity transcript compact.");
   await guidanceDialog.getByRole("button", { name: /send guidance/i }).click();
-  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Keep the activity transcript compact." });
+  await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Keep the activity transcript compact.", mutationId: expect.any(String), expectedPhase: "building" });
+  await expect(workflow).toContainText("0Q · 1D · 0A");
 
   api.setWorkflowPhase("verifying");
   api.setStatus("working");
   await page.reload();
-  await workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" }).click();
-  const verificationGuidance = page.getByRole("dialog", { name: "Guide the current phase" });
-  await expect(verificationGuidance).toContainText("labeled guidance");
-  await verificationGuidance.getByLabel("Guidance").fill("Summarize any remaining deployment risk.");
+  await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
+  const verificationGuidance = page.getByRole("dialog", { name: "Guide current workflow" });
+  await expect(verificationGuidance).toContainText("delivers it exactly once");
+  await verificationGuidance.getByRole("textbox", { name: "Guidance", exact: true }).fill("Summarize any remaining deployment risk.");
   await verificationGuidance.getByRole("button", { name: /send guidance/i }).click();
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "intervene", feedback: "Summarize any remaining deployment risk." });
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
@@ -1108,7 +1216,7 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   await page.reload();
   await expect(workflow).toContainText("Repairing");
   await expect(workflow.getByText("FULL PHASE REPORT")).toBeVisible();
-  const guideButton = workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" });
+  const guideButton = workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" });
   await expect(guideButton).toBeVisible();
   expect((await guideButton.boundingBox())!.y).toBeLessThan(844);
   await workflow.getByText("FULL PHASE REPORT").click();
@@ -1146,20 +1254,31 @@ test("failed workflows can extend their repair budget and continue", async ({ pa
   await expect(workflow).toContainText("Failed");
   await expect(workflow).toContainText("Blocking findings remain");
   await expect(workflow.locator(".workflow-stage-rail li.active")).toContainText("REVIEW");
+  await expect(workflow.getByText("FULL PHASE REPORT")).toBeVisible();
+  const continueRepairs = workflow.getByRole("button", { name: "CONTINUE REPAIRS" });
+  await expect(continueRepairs).toBeVisible();
+  expect((await continueRepairs.boundingBox())!.y).toBeLessThan(844);
+  await workflow.getByText("FULL PHASE REPORT").click();
+  const failureReport = workflow.locator(".workflow-report");
+  await expect(failureReport).toBeVisible();
+  expect(await failureReport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await failureReport.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await failureReport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await workflow.getByText("FULL PHASE REPORT").click();
   await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
-  await workflow.getByRole("button", { name: "CONTINUE REPAIRS" }).click();
+  await continueRepairs.click();
 
   const continuation = page.getByRole("dialog", { name: "Continue the failed workflow" });
   await expect(continuation).toContainText("approved specification and plan stay in place");
-  await expect(continuation).toContainText("Final review found blocking durability defects");
+  await expect(continuation).toContainText("Blocking reliability defect 1");
   const additionalAttempts = continuation.getByLabel("Additional repair attempts");
   await additionalAttempts.fill("3");
   await continuation.getByRole("button", { name: /continue repairs/i }).click();
 
   await expect.poll(() => api.workflowMutations.at(-1)).toMatchObject({ action: "continueRepairs", additionalRepairAttempts: 3, runtimeId: "runtime-1-resumed" });
   await expect(workflow).toContainText("Repairing");
-  await expect(workflow).toContainText("3/6 REPAIRS");
-  await expect(workflow.getByRole("button", { name: "GUIDE CURRENT PHASE" })).toBeVisible();
+  await expect(workflow).toContainText("4/5 REPAIRS");
+  await expect(workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" })).toBeVisible();
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
 });
 

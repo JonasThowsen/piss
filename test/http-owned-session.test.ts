@@ -402,13 +402,11 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
       headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
       body: JSON.stringify({ runtimeId: created.session.runtimeId, action: "cancel" }),
     });
-    assert.equal(workflowCancelResponse.status, 200);
-    const workflowCancel = await workflowCancelResponse.json() as { session: { workflow: unknown } };
-    assert.equal(workflowCancel.session.workflow, null);
+    assert.equal(workflowCancelResponse.status, 400);
     const staleWorkflowResponse = await fetch(`${base}/api/sessions/${created.session.id}/workflow`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: origin, ...identityHeaders },
-      body: JSON.stringify({ runtimeId: "stale-runtime", action: "cancel" }),
+      body: JSON.stringify({ runtimeId: "stale-runtime", action: "cancel", workflowId: "missing-workflow", mutationId: "stale-cancel", expectedRevision: 0, expectedPhase: "cancelled" }),
     });
     assert.equal(staleWorkflowResponse.status, 409);
     assert.equal(await readFile(join(directory, "fake-pi-cwd"), "utf8"), join(directory, "created-workspace"));

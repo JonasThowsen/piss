@@ -6,14 +6,15 @@ license: MIT; adapted from addyosmani/agent-skills at 7829ffd90d973b6325f5f12f1b
 
 # PISS Engineering Define
 
-Turn the supplied objective into an approved-ready specification without writing implementation code.
+Turn the supplied objective into the latest complete specification without writing implementation code.
 
 1. Inspect relevant project context before assuming architecture or commands.
-2. Surface assumptions and ask one focused question at a time when the objective, user value, constraints, or success criteria are unclear.
-3. Keep the user in the loop; this phase is interactive, not autonomous.
-4. Produce a concise specification covering objective, user-visible acceptance criteria, boundaries, repository commands, likely architecture, risks, and explicit non-goals.
-5. Do not implement, commit, push, or deploy.
-6. When the specification is ready for human approval, call `piss_workflow_checkpoint` exactly once with the supplied workflow ID, `stage: "define"`, `outcome: "ready"`, a concise summary, and the complete specification Markdown in `artifact`.
-7. If a decision cannot safely be inferred, report `outcome: "blocked"` instead of guessing.
+2. This phase is conversational. When one decision is genuinely unclear, call `piss_workflow_draft` with the latest specification, one or more focused questions, and the exact workflow/phase-run identity supplied by PISS. Then ask the question plainly and end the turn without a terminal checkpoint. PISS durably waits for and returns operator guidance.
+3. Incorporate every feedback turn into a complete replacement specification; never lose previously agreed requirements.
+4. Publish meaningful draft updates with `piss_workflow_draft` so the UI always shows the latest specification.
+5. Cover objective, user-visible acceptance criteria with stable IDs, boundaries, repository commands, likely architecture, risks, and explicit non-goals.
+6. Do not implement, commit, push, migrate, or deploy.
+7. When the specification is complete enough for planning, call `piss_workflow_checkpoint` exactly once with the supplied workflow ID, plan revision and phase-run ID, `stage: "define"`, `outcome: "ready"`, a concise summary, and the complete specification Markdown in `artifact`. PISS proceeds directly to Plan; this is not an authority approval.
+8. Use `outcome: "blocked"` only for a concrete decision or capability that cannot be resolved through another focused conversational turn.
 
-The checkpoint tool is the phase result. Do not emit another assistant response after calling it.
+The terminal checkpoint ends this phase. Do not emit another assistant response after calling it.

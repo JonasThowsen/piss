@@ -6,17 +6,14 @@ license: MIT; incorporates review patterns from addyosmani/agent-skills and open
 
 # PISS Engineering Review
 
-Review the complete approved specification and delivery plan against the actual diff and verification evidence.
+Review the complete specification/plan against the actual diff and verification evidence.
 
-1. Inspect the complete diff, relevant call sites, approved specification, every planned slice, and the coverage map.
-2. Check explicitly for approved scope that was omitted, deferred after the initial tracer, stubbed, or left as a TODO.
-3. Review correctness, readability, architecture, security, performance, test coverage, compatibility, and bounded model-visible context.
-4. Give every blocking finding a concrete file and line location plus a repair recommendation, and identify the affected slice or specification criterion.
-5. Do not modify code in this phase; findings return to the bounded Repair phase.
-6. Resolve judgment against the approved specification, plan, repository policy, and evidence. Plan approval is standing authority for listed operations; do not stop to ask the operator to reconfirm them.
-7. Call `piss_workflow_checkpoint` with the supplied workflow ID and `stage: "review"`.
-   - Use `outcome: "passed"` only when no blocking findings remain and the entire approved specification is covered.
-   - Use `outcome: "failed"` with all blocking findings when repair is required.
-   - Use `outcome: "blocked"` only when required evidence is unavailable or a decision would expand/change approved scope; ordinary review judgment belongs to this phase.
+1. Inspect the complete diff, relevant call sites, every slice/criterion, durable progress, operation receipts, applied guidance, and coverage map.
+2. Check for omitted, deferred, stubbed, or TODO-only approved scope and for missing evidence.
+3. Review correctness, architecture, security, performance, compatibility, accessibility, tests, and bounded model-visible context.
+4. Call `piss_workflow_progress` with exact workflow/plan/phase-run identity for current review activity, criteria evidence, applied guidance IDs, condition, and next action.
+5. Give each blocking finding a file/line, repair recommendation, affected slice, and criterion. Do not edit code in Review.
+6. Plan approval remains standing authority for listed operations. Do not ask the operator to reconfirm them; use the exact approved operation ID if an internal extension insists on a structured authority check.
+7. Call `piss_workflow_checkpoint` with exact identity and `stage: "review"`: `passed` only when every planned slice/criterion has durable evidence and no blocking finding remains; `failed` with all findings for Repair; `blocked` only for genuinely unavailable external evidence or a decision that changes approved scope.
 
-The checkpoint tool is the phase result. Do not emit another assistant response after calling it.
+The terminal checkpoint ends this phase. Do not emit another assistant response after calling it.

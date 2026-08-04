@@ -11,13 +11,35 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, interruptedWorkflowRecoveryPhase, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, replayEventsFromTranscriptEntry, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, interruptedWorkflowRecoveryPhase, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, reconcileTranscriptGuidance, reconcileWorkflowAfterRestart, replayEventsFromTranscriptEntry, transcriptGuidanceIds, workflowGuidanceForDispatch, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
-import { WorkspaceId, type EngineeringWorkflow, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
+import { WorkspaceId, type EngineeringWorkflow, type EngineeringWorkflowMutationInput, type OwnedSession, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
+import { initialWorkflowProgress } from "../shared/engineeringWorkflow.ts";
 
 const decodeWorkspaceId = Schema.decodeUnknownSync(WorkspaceId);
+
+function guardedWorkflowMutation(
+  session: Pick<OwnedSession, "runtimeId" | "workflow">,
+  input:
+    | { readonly action: "approve" | "accept" | "cancel" }
+    | { readonly action: "resume"; readonly feedback?: string }
+    | { readonly action: "continueRepairs"; readonly additionalRepairAttempts: number }
+    | { readonly action: "revise" | "intervene"; readonly feedback: string; readonly scopeChange?: boolean },
+  mutationId: string,
+): EngineeringWorkflowMutationInput {
+  if (!session.workflow) throw new Error("Expected an active workflow");
+  return {
+    ...input,
+    runtimeId: session.runtimeId,
+    workflowId: session.workflow.id,
+    mutationId,
+    expectedRevision: session.workflow.revision ?? 0,
+    expectedPhase: session.workflow.phase,
+    ...(session.workflow.phaseRun ? { expectedPhaseRunId: session.workflow.phaseRun.id } : {}),
+  } as EngineeringWorkflowMutationInput;
+}
 
 async function fakePi(directory: string, lazySessionFile = false): Promise<string> {
   const path = join(directory, "fake-pi.mjs");
@@ -38,10 +60,27 @@ let currentThinking = "medium";
 let buffer = "";
 let compactAttempts = 0;
 let workflowInterventionMode = false;
+let workflowScopeChangeMode = false;
+let workflowScopeChangeAborted = false;
+let workflowGuidanceFailureMode = false;
 let workflowFailureMode = false;
 let workflowSupervisorMode = false;
+let workflowAuthorityMode = false;
+let workflowStaleCancelMode = false;
+let workflowDispatchFailureMode = false;
+let workflowDispatchFailures = 0;
+let workflowAuthorityReported = false;
+let workflowOutsideAuthorityReported = false;
 let workflowSupervisorBlockReported = false;
+let workflowCheckpointSequence = 0;
 let heldBuildArgs;
+let heldAuthorityArgs;
+let pendingAppliedGuidanceIds = [];
+let activeWorkflowArgs;
+const emitBeforeSettle = (...events) => {
+  const payload = events.map((event) => JSON.stringify(event)).join("\\n") + "\\n";
+  process.stdout.write(payload, () => process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n"));
+};
 const stageRejectedVideo = (recordingId) => {
   const path = process.env.PISS_BROWSER_ARTIFACT_STAGING_DIR + "/" + recordingId + ".webm";
   writeFileSync(path, "rejected-video-bytes");
@@ -92,6 +131,12 @@ process.stdin.on("data", (chunk) => {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "set_thinking_level", success: true }));
     }
     if (command.type === "prompt") {
+      const requestedWorkflowSkill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
+      if (workflowDispatchFailureMode && requestedWorkflowSkill === "build" && workflowDispatchFailures < 3) {
+        workflowDispatchFailures += 1;
+        console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: false, error: "simulated transient workflow dispatch failure" }));
+        continue;
+      }
       if (command.message === "/extension-notify") {
         console.log(JSON.stringify({ type: "extension_ui_request", id: "notify-1", method: "notify", message: "MCP Server Status:\\n\\n✓ test: connected", notifyType: "info" }));
         console.log(JSON.stringify({ id: command.id, type: "response", command: "prompt", success: true }));
@@ -109,23 +154,81 @@ process.stdin.on("data", (chunk) => {
           const workflowId = /Workflow ID: ([^\\n]+)/.exec(command.message)?.[1];
           const skill = /^\\/skill:piss-engineering-([^\\n]+)/.exec(command.message)?.[1];
           if (skill === "supervisor") {
-            const advice = { workflowId, action: "resume_with_guidance", problem: "The build needs to retry the documented recovery procedure.", summary: "Use the approved deterministic recovery path", guidance: "Retry with the documented bounded recovery procedure", basis: "Approved delivery plan recovery section" };
+            const advice = { workflowId, eventId: /Advice event ID: ([^\\n]+)/.exec(command.message)?.[1], consultationId: /Consultation ID: ([^\\n]+)/.exec(command.message)?.[1], phaseRunId: /Phase run ID: ([^\\n]+)/.exec(command.message)?.[1], planRevision: Number(/Plan revision: (\\d+)/.exec(command.message)?.[1] ?? 0), workflowRevision: Number(/Workflow revision: (\\d+)/.exec(command.message)?.[1] ?? 0), runtimeId: /Runtime generation: ([^\\n]+)/.exec(command.message)?.[1], action: "resume_with_guidance", problem: "The build needs to retry the documented recovery procedure.", summary: "Use the approved deterministic recovery path", guidance: "Retry with the documented bounded recovery procedure", basis: "Approved delivery plan recovery section" };
             console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-supervisor-advice", toolName: "piss_workflow_supervisor_advice", result: { content: [{ type: "text", text: "advice" }], details: advice }, isError: false }));
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-supervisor-advice-duplicate", toolName: "piss_workflow_supervisor_advice", result: { content: [{ type: "text", text: "duplicate advice" }], details: advice }, isError: false }));
             setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
             return;
           }
           const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
           if (stage === "define" && command.message.includes("Exercise workflow user interventions")) workflowInterventionMode = true;
+          if (stage === "define" && command.message.includes("Exercise scope-changing guidance")) workflowScopeChangeMode = true;
+          if (stage === "define" && command.message.includes("Exercise failed guidance delivery")) workflowGuidanceFailureMode = true;
           if (stage === "define" && command.message.includes("Exercise failed workflow continuation")) workflowFailureMode = true;
           if (stage === "define" && command.message.includes("Exercise automatic supervisor recovery")) workflowSupervisorMode = true;
+          if (stage === "define" && command.message.includes("Exercise stale cancellation")) workflowStaleCancelMode = true;
+          if (stage === "define" && command.message.includes("Exercise dispatch failure recovery")) workflowDispatchFailureMode = true;
+          if (stage === "define" && command.message.includes("Exercise structured workflow authority")) workflowAuthorityMode = true;
+          if (stage === "define" && command.message.includes("Exercise approved structured workflow authority")) {
+            workflowAuthorityMode = true;
+            workflowOutsideAuthorityReported = true;
+          }
+          const phaseRunId = /Phase run ID: ([^\\n]+)/.exec(command.message)?.[1];
+          const planRevision = Number(/Plan revision: (\\d+)/.exec(command.message)?.[1] ?? 0);
+          const runtimeId = /Runtime generation: ([^\\n]+)/.exec(command.message)?.[1];
           const supervisorBlocksBuild = workflowSupervisorMode && stage === "build" && !workflowSupervisorBlockReported;
           if (supervisorBlocksBuild) workflowSupervisorBlockReported = true;
           const outcome = stage === "define" || stage === "plan" ? "ready" : supervisorBlocksBuild ? "blocked" : workflowFailureMode && stage === "review" ? "failed" : "passed";
-          const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan" } : {}) };
+          const authorityDossier = { revision: 1, criteria: [{ id: "AC-AUTH", title: "Approved authority is applied" }], slices: [{ id: "S-AUTH", title: "Authority tracer", criterionIds: ["AC-AUTH"], dependencies: [] }], verificationRequirements: ["Inspect authority decision"], operations: [{ id: "approved-edit", kind: "workspace_write", target: "shared/", description: "Approved workspace edit", recovery: "Targeted rollback", evidence: "Authority event" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Deployment"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "ready" }], unresolved: [] };
+          const standardDossier = { revision: 1, criteria: [{ id: "AC-GENERIC", title: "Complete the workflow fixture" }], slices: [{ id: "S-GENERIC", title: "Workflow fixture", criterionIds: ["AC-GENERIC"], dependencies: [] }], verificationRequirements: ["Inspect the fixture checkpoint"], operations: [{ id: "workspace-write", kind: "workspace_write", target: "shared/", description: "Fixture workspace write", recovery: "Targeted rollback", evidence: "Fixture progress" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Production operations"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "ready" }], unresolved: [] };
+          const scopeDossier = { ...standardDossier, criteria: [{ id: "AC-PRIOR", title: "Preserve prior revision evidence" }], slices: [{ id: "S-PRIOR", title: "Prior revision tracer", criterionIds: ["AC-PRIOR"], dependencies: [] }], operations: [{ ...standardDossier.operations[0], receiptRequired: true, idempotencyKey: "scope-write-once" }] };
+          const planDossier = workflowAuthorityMode ? authorityDossier : workflowScopeChangeMode ? scopeDossier : standardDossier;
+          const appliedGuidanceIds = [...command.message.matchAll(/\\[Workflow guidance ([^ —\\]]+)(?: — [^\\]]+)?\\]/g)].map((match) => match[1]);
+          const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(phaseRunId && phaseRunId !== "legacy" ? { phaseRunId, planRevision, runtimeId } : {}), ...(appliedGuidanceIds.length > 0 ? { appliedGuidanceIds } : {}), ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan", dossier: planDossier } : {}) };
+          activeWorkflowArgs = args;
           const emitCheckpoint = () => {
-            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-" + stage, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
-            setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+            workflowCheckpointSequence += 1;
+            const checkpointArgs = pendingAppliedGuidanceIds.length > 0 ? { ...args, appliedGuidanceIds: [...new Set([...(args.appliedGuidanceIds ?? []), ...pendingAppliedGuidanceIds])] } : args;
+            pendingAppliedGuidanceIds = [];
+            const completion = stage === "build" && outcome === "passed" && !workflowAuthorityMode ? { type: "tool_execution_end", toolCallId: "workflow-build-completion-" + workflowCheckpointSequence, toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "progress" }], details: { workflowId, eventId: "build-completion-" + workflowCheckpointSequence, phaseRunId, planRevision, runtimeId, activity: "Completed the planned fixture slice", currentSliceId: null, completedSliceIds: [workflowScopeChangeMode ? "S-PRIOR" : "S-GENERIC"], passedCriterionIds: [workflowScopeChangeMode ? "AC-PRIOR" : "AC-GENERIC"], evidence: [{ criterionId: workflowScopeChangeMode ? "AC-PRIOR" : "AC-GENERIC", summary: "Fixture completion evidence" }], condition: "working", nextAction: "Verify the completed fixture" } }, isError: false } : null;
+            emitBeforeSettle(...(completion ? [completion] : []), { type: "tool_execution_end", toolCallId: "workflow-" + stage + "-" + workflowCheckpointSequence, toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: checkpointArgs }, isError: false });
           };
+          if (supervisorBlocksBuild) {
+            console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Please confirm that I may continue with the already approved recovery procedure." }], stopReason: "stop" } }));
+            setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+            return;
+          }
+          if (workflowAuthorityMode && stage === "build" && !workflowOutsideAuthorityReported) {
+            workflowOutsideAuthorityReported = true;
+            heldAuthorityArgs = args;
+            const authorityArgs = { workflowId, phaseRunId, planRevision, runtimeId, operationId: "production-deploy", kind: "deployment", target: "production", constraints: ["external approval required"], title: "Confirm production deployment", message: "Deploy outside the approved plan?" };
+            console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "workflow-outside-authority-request", toolName: "piss_workflow_authority_request", args: authorityArgs }));
+            console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-outside-authority-confirm", method: "confirm", title: "[PISS authority:workflow-outside-authority-request] " + authorityArgs.title, message: authorityArgs.message }));
+            return;
+          }
+          if (workflowAuthorityMode && stage === "build" && !workflowAuthorityReported) {
+            workflowAuthorityReported = true;
+            heldAuthorityArgs = args;
+            console.log(JSON.stringify({ type: "auto_retry_start", attempt: 1, maxAttempts: 1000000, delayMs: 10, errorMessage: "simulated transient provider failure" }));
+            console.log(JSON.stringify({ type: "auto_retry_end", success: true, attempt: 1 }));
+            const authorityArgs = { workflowId, phaseRunId, planRevision, runtimeId, operationId: "approved-edit", kind: "workspace_write", target: "shared/", constraints: [], title: "Confirm approved workspace edit", message: "Continue with the operation already listed in the approved plan?" };
+            const interleavedArgs = { ...authorityArgs, operationId: "unrelated-edit", target: "outside/", title: "Unrelated authority request" };
+            console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "workflow-authority-interleaved", toolName: "piss_workflow_authority_request", args: interleavedArgs }));
+            console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "workflow-authority-request", toolName: "piss_workflow_authority_request", args: authorityArgs }));
+            console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-authority-confirm", method: "confirm", title: "[PISS authority:workflow-authority-request] " + authorityArgs.title, message: authorityArgs.message }));
+            console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-authority-confirm", method: "confirm", title: "[PISS authority:workflow-authority-request] " + authorityArgs.title, message: authorityArgs.message }));
+            return;
+          }
+          if (workflowScopeChangeMode && !workflowScopeChangeAborted && stage === "build" && !heldBuildArgs) {
+            heldBuildArgs = args;
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-scope-started", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "progress" }], details: { workflowId, eventId: "scope-started", phaseRunId, planRevision, runtimeId, activity: "Started prior-revision operation", receipt: { operationId: "workspace-write", idempotencyKey: "scope-write-once", status: "started", target: "shared/" }, condition: "working", nextAction: "Complete the prior-revision tracer" } }, isError: false }));
+            console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-scope-progress", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "progress" }], details: { workflowId, eventId: "scope-progress", phaseRunId, planRevision, runtimeId, activity: "Completed prior-revision tracer", currentSliceId: null, completedSliceIds: ["S-PRIOR"], passedCriterionIds: ["AC-PRIOR"], evidence: [{ criterionId: "AC-PRIOR", summary: "Prior revision evidence" }], receipt: { operationId: "workspace-write", idempotencyKey: "scope-write-once", status: "completed", target: "shared/", evidence: "prior write evidence" }, condition: "working", nextAction: "Wait for scope guidance" } }, isError: false }));
+            return;
+          }
+          if (workflowGuidanceFailureMode && stage === "build" && !heldBuildArgs) {
+            heldBuildArgs = args;
+            return;
+          }
           if (workflowInterventionMode && stage === "build" && !heldBuildArgs) {
             heldBuildArgs = args;
             console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "Waiting for build guidance" } }));
@@ -133,6 +236,10 @@ process.stdin.on("data", (chunk) => {
           }
           if (workflowInterventionMode && stage === "verify") {
             setTimeout(emitCheckpoint, 250);
+            return;
+          }
+          if (workflowStaleCancelMode && stage === "build") {
+            setTimeout(emitCheckpoint, 150);
             return;
           }
           emitCheckpoint();
@@ -222,23 +329,70 @@ process.stdin.on("data", (chunk) => {
       }
     }
     if (command.type === "extension_ui_response") {
-      console.log(JSON.stringify({ type: "agent_settled" }));
+      if (command.id === "workflow-outside-authority-confirm" && command.confirmed !== true && heldAuthorityArgs) {
+        heldAuthorityArgs = undefined;
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-outside-authority-request", toolName: "piss_workflow_authority_request", result: { content: [{ type: "text", text: "not authorized" }], details: { confirmed: false } }, isError: false }));
+      } else if (command.id === "workflow-authority-confirm" && command.confirmed === true && heldAuthorityArgs) {
+        if (process.env.FAKE_PI_AUTHORITY_MARKER && process.env.FAKE_PI_METADATA) {
+          const metadata = JSON.parse(readFileSync(process.env.FAKE_PI_METADATA, "utf8"));
+          const durable = metadata.sessions?.some((session) => session.workflow?.authorityDecisions?.some((decision) => decision.eventId === "authority:workflow-authority-request" && decision.allowed === true));
+          appendFileSync(process.env.FAKE_PI_AUTHORITY_MARKER, JSON.stringify({ durable }) + "\\n");
+        }
+        const args = heldAuthorityArgs;
+        heldAuthorityArgs = undefined;
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-authority-interleaved", toolName: "piss_workflow_authority_request", result: { content: [{ type: "text", text: "interleaved request ended" }], details: { confirmed: false } }, isError: true }));
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-authority-request", toolName: "piss_workflow_authority_request", result: { content: [{ type: "text", text: "authorized" }], details: { confirmed: true } }, isError: false }));
+        emitBeforeSettle(
+          { type: "tool_execution_end", toolCallId: "workflow-authority-progress", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "progress" }], details: { workflowId: args.workflowId, eventId: "authority-progress", phaseRunId: args.phaseRunId, planRevision: args.planRevision, runtimeId: args.runtimeId, activity: "Completed approved authority tracer", currentSliceId: null, completedSliceIds: ["S-AUTH"], passedCriterionIds: ["AC-AUTH"], evidence: [{ criterionId: "AC-AUTH", summary: "Structured authority request was automatically allowed" }], condition: "working", nextAction: "Verify the approved result" } }, isError: false },
+          { type: "tool_execution_end", toolCallId: "workflow-build-authorized", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false },
+        );
+      } else if (command.id === "workflow-authority-confirm" && command.confirmed === true) {
+        continue;
+      } else console.log(JSON.stringify({ type: "agent_settled" }));
     }
     if (command.type === "steer") {
+      if (workflowGuidanceFailureMode) {
+        console.log(JSON.stringify({ id: command.id, type: "response", command: "steer", success: false, error: "simulated guidance delivery failure" }));
+        continue;
+      }
       console.log(JSON.stringify({ id: command.id, type: "response", command: "steer", success: true }));
-      if (command.message.startsWith("[Workflow user intervention")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+      if (command.message.startsWith("[Workflow guidance")) {
+  console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
+  const guidanceId = /\\[Workflow guidance ([^ —\\]]+)/.exec(command.message)?.[1];
+  if (guidanceId) {
+    pendingAppliedGuidanceIds.push(guidanceId);
+    if (activeWorkflowArgs?.workflowId) console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-guidance-applied-" + guidanceId, toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "guidance applied" }], details: { workflowId: activeWorkflowArgs.workflowId, eventId: "guidance-applied-" + guidanceId, phaseRunId: activeWorkflowArgs.phaseRunId, planRevision: activeWorkflowArgs.planRevision, runtimeId: activeWorkflowArgs.runtimeId, activity: "Applied operator guidance", appliedGuidanceIds: [guidanceId], condition: "working", nextAction: "Continue the current phase" } }, isError: false }));
+  }
+}
       if (heldBuildArgs) {
         const args = heldBuildArgs;
         heldBuildArgs = undefined;
-        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-build-guided", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: args }, isError: false }));
-        setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
+        emitBeforeSettle(
+          { type: "tool_execution_end", toolCallId: "workflow-build-guided-progress", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "progress" }], details: { workflowId: args.workflowId, eventId: "workflow-build-guided-progress", phaseRunId: args.phaseRunId, planRevision: args.planRevision, runtimeId: args.runtimeId, activity: "Completed the guided fixture slice", currentSliceId: null, completedSliceIds: ["S-GENERIC"], passedCriterionIds: ["AC-GENERIC"], evidence: [{ criterionId: "AC-GENERIC", summary: "Guided fixture evidence" }], appliedGuidanceIds: pendingAppliedGuidanceIds, condition: "working", nextAction: "Verify the guided fixture" } }, isError: false },
+          { type: "tool_execution_end", toolCallId: "workflow-build-guided", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "checkpoint" }], details: pendingAppliedGuidanceIds.length > 0 ? { ...args, appliedGuidanceIds: pendingAppliedGuidanceIds } : args }, isError: false },
+        );
+pendingAppliedGuidanceIds = [];
       }
     }
     if (command.type === "follow_up") {
       console.log(JSON.stringify({ id: command.id, type: "response", command: "follow_up", success: true }));
       if (command.message.startsWith("[Queued workflow guidance")) console.log(JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: command.message }] } }));
     }
-    if (command.type === "abort") console.log(JSON.stringify({ id: command.id, type: "response", command: "abort", success: true }));
+    if (command.type === "abort") {
+      if (String(command.id).includes(":cancel:") && activeWorkflowArgs?.workflowId) {
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "late-cancel-progress", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "late" }], details: { workflowId: activeWorkflowArgs.workflowId, eventId: "late-after-cancel", phaseRunId: activeWorkflowArgs.phaseRunId, planRevision: activeWorkflowArgs.planRevision, runtimeId: activeWorkflowArgs.runtimeId, activity: "Late progress must be ignored", condition: "working" } }, isError: false }));
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "late-cancel-checkpoint", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "late" }], details: { ...activeWorkflowArgs, outcome: "passed", summary: "Late checkpoint must be ignored" } }, isError: false }));
+      }
+      if (String(command.id).includes(":scope-change:") && heldBuildArgs) {
+        const args = heldBuildArgs;
+        heldBuildArgs = undefined;
+        workflowScopeChangeAborted = true;
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "late-scope-progress", toolName: "piss_workflow_progress", result: { content: [{ type: "text", text: "late" }], details: { workflowId: args.workflowId, eventId: "late-after-scope", phaseRunId: args.phaseRunId, planRevision: args.planRevision, runtimeId: args.runtimeId, activity: "Late old-revision progress must be ignored", completedSliceIds: ["S-LATE"], passedCriterionIds: ["AC-LATE"], evidence: [{ criterionId: "AC-LATE", summary: "Must not survive scope change" }], condition: "working" } }, isError: false }));
+        console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "late-scope-checkpoint", toolName: "piss_workflow_checkpoint", result: { content: [{ type: "text", text: "late" }], details: { ...args, eventId: "late-scope-checkpoint", outcome: "passed", summary: "Late old-revision checkpoint must be ignored" } }, isError: false }));
+      }
+      console.log(JSON.stringify({ id: command.id, type: "response", command: "abort", success: true }));
+      if (String(command.id).includes(":scope-change:")) setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 10);
+    }
   }
 });
 `,
@@ -309,6 +463,198 @@ test("blocked phase guidance is included when the workflow resumes", () => {
   assert.match(prompt, /CHG-42/);
   assert.match(prompt, /standing execution authority/i);
   assert.match(prompt, /Do not stop to request confirmation again/i);
+});
+
+test("draft and supervisor events require exact run and consultation identity", () => {
+  const defining: EngineeringWorkflow = {
+    id: "workflow-identity",
+    phase: "defining",
+    objective: "Enforce event identity",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: null,
+    plan: null,
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 2,
+    artifactRevision: 0,
+    phaseRun: { id: "define-run", phase: "defining", attempt: 0, planRevision: 0, runtimeId: "runtime-current", startedAt: "2026-01-01T00:00:00.000Z" },
+    progress: initialWorkflowProgress("2026-01-01T00:00:00.000Z"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    error: null,
+  };
+  const missingIdentity = reconcilePersistedWorkflow(defining, [{ sequence: 1, type: "tool_execution_end", timestamp: "2026-01-01T00:01:00.000Z", data: { type: "tool_execution_end", toolCallId: "draft-missing", toolName: "piss_workflow_draft", result: { details: { workflowId: defining.id, eventId: "draft-missing", stage: "define", summary: "Must not apply", specification: "# Stale" } } } }]);
+  assert.equal(missingIdentity.specification, null);
+  const exactIdentity = reconcilePersistedWorkflow(defining, [{ sequence: 2, type: "tool_execution_end", timestamp: "2026-01-01T00:02:00.000Z", data: { type: "tool_execution_end", toolCallId: "draft-exact", toolName: "piss_workflow_draft", result: { details: { workflowId: defining.id, eventId: "draft-exact", phaseRunId: "define-run", planRevision: 0, runtimeId: "runtime-current", stage: "define", summary: "Current draft", specification: "# Current" } } } }]);
+  assert.equal(exactIdentity.specification, "# Current");
+
+  const blocked: EngineeringWorkflow = {
+    ...defining,
+    phase: "blocked",
+    specification: "# Specification",
+    plan: "# Plan",
+    blockedFromPhase: "building",
+    revision: 7,
+    artifactRevision: 1,
+    phaseRun: { id: "build-run", phase: "building", attempt: 0, planRevision: 1, runtimeId: "runtime-current", startedAt: "2026-01-01T00:00:00.000Z" },
+    supervisor: { sessionId: "supervisor-session", status: "consulting", consultations: 2, blockerFingerprint: "blocker", repeatedBlockerCount: 1, pendingGuidance: null, lastAdvice: null, activeConsultationId: "consult-current", consultationPhaseRunId: "build-run", consultationPlanRevision: 1, consultationWorkflowRevision: 7 },
+  };
+  const advice = { workflowId: blocked.id, eventId: "advice-current", consultationId: "consult-current", phaseRunId: "build-run", planRevision: 1, workflowRevision: 7, runtimeId: "runtime-current", action: "resume_with_guidance", problem: "Recoverable gate", summary: "Resume", guidance: "Continue", basis: "Approved plan", automaticRecovery: true };
+  const staleAdvice = reconcilePersistedWorkflow(blocked, [{ sequence: 3, type: "workflow_supervisor_advice", timestamp: "2026-01-01T00:03:00.000Z", data: { ...advice, consultationId: "consult-old" } }]);
+  assert.equal(staleAdvice.phase, "blocked");
+  const applied = reconcilePersistedWorkflow(blocked, [
+    { sequence: 4, type: "workflow_supervisor_advice", timestamp: "2026-01-01T00:04:00.000Z", data: advice },
+    { sequence: 5, type: "workflow_supervisor_advice", timestamp: "2026-01-01T00:05:00.000Z", data: advice },
+  ]);
+  assert.equal(applied.phase, "building");
+  assert.equal(applied.processedEventIds?.filter((id) => id === "advice-current").length, 1);
+});
+
+test("timeline reconciliation is idempotent for long phase-run event ledgers", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const events = Array.from({ length: 300 }, (_, index) => {
+    const eventId = `progress-${index + 1}`;
+    return {
+      sequence: index + 1,
+      type: "workflow_progress_recorded",
+      timestamp: at,
+      data: { workflowId: "workflow-long-run", event: { eventId, phaseRunId: "build-long", planRevision: 0, runtimeId: "runtime-current", activity: `Progress ${index + 1}`, receivedAt: at } },
+    } satisfies OwnedSessionEvent;
+  });
+  const workflow: EngineeringWorkflow = {
+    id: "workflow-long-run",
+    phase: "building",
+    objective: "Reconcile a long phase",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: "# Plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 300,
+    artifactRevision: 0,
+    phaseRun: { id: "build-long", phase: "building", attempt: 0, planRevision: 0, runtimeId: "runtime-current", startedAt: at },
+    progress: { ...initialWorkflowProgress(at), activity: "Progress 300" },
+    processedEventIds: events.map((event) => String((event.data as { event: { eventId: string } }).event.eventId)),
+    createdAt: at,
+    updatedAt: at,
+    error: null,
+  };
+  const once = reconcilePersistedWorkflow(workflow, events);
+  const twice = reconcilePersistedWorkflow(once, events);
+  assert.equal(once.reconciledTimelineSequence, 300);
+  assert.deepEqual(twice, once);
+});
+
+test("guidance restart reconciliation requires transcript evidence rather than a write-ahead reservation", () => {
+  const current: EngineeringWorkflow = {
+    id: "workflow-guidance-ack-window",
+    phase: "building",
+    objective: "Reconcile guidance",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Spec",
+    plan: "# Plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 2,
+    artifactRevision: 1,
+    guidance: [{ id: "guide-ack", text: "Apply once", status: "queued", planRevision: 1, submittedRuntimeId: "runtime-old", commandId: "guide-command-ack", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: null, appliedAt: null }],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    error: null,
+  };
+  const beforeWrite = reconcileTranscriptGuidance(current, [], "2026-01-01T00:01:00.000Z");
+  assert.equal(beforeWrite.guidance?.[0]?.status, "queued");
+  assert.match(workflowGuidanceForDispatch(beforeWrite) ?? "", /Apply once/);
+
+  const entries = [{ type: "message", message: { role: "user", content: [{ type: "text", text: "[Workflow guidance guide-ack — BUILDING]\n\nApply once" }] } }];
+  assert.deepEqual([...transcriptGuidanceIds(current, entries)], ["guide-ack"]);
+  const acknowledged = reconcileTranscriptGuidance(current, entries, "2026-01-01T00:02:00.000Z");
+  assert.equal(acknowledged.guidance?.[0]?.status, "delivered");
+  assert.doesNotMatch(workflowGuidanceForDispatch(acknowledged) ?? "", /Apply once/);
+  assert.match(workflowGuidanceForDispatch(acknowledged) ?? "", /do not apply twice/i);
+});
+
+test("delivered but unapplied guidance is included at a restart boundary without resetting delivery", () => {
+  const workflow: EngineeringWorkflow = {
+    id: "workflow-delivered-guidance",
+    phase: "building",
+    objective: "Resume safely",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: "# Plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 4,
+    artifactRevision: 1,
+    guidance: [{ id: "guide-delivered", text: "Keep this instruction", status: "delivered", planRevision: 1, submittedRuntimeId: "runtime-old", commandId: "guide-command", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: "2026-01-01T00:01:00.000Z", appliedAt: null }],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    error: null,
+  };
+  const guidance = workflowGuidanceForDispatch(workflow);
+  assert.match(guidance ?? "", /guide-delivered/);
+  assert.doesNotMatch(guidance ?? "", /Keep this instruction/);
+  assert.equal(workflow.guidance?.[0]?.status, "delivered");
+});
+
+test("restart reconciliation preserves completed receipts and blocks ambiguous destructive operations", () => {
+  const base: EngineeringWorkflow = {
+    id: "workflow-receipts",
+    phase: "building",
+    objective: "Deploy safely",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: "# Plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 4,
+    artifactRevision: 1,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    error: null,
+    dossier: { revision: 1, criteria: [{ id: "AC1", title: "Deploy safely" }, { id: "AC2", title: "Verify deployment" }], slices: [{ id: "S1", title: "Deploy", criterionIds: ["AC1"], dependencies: [] }, { id: "S2", title: "Verify", criterionIds: ["AC2"], dependencies: ["S1"] }], verificationRequirements: ["Verify deployment"], operations: [{ id: "deploy", kind: "deployment", target: "staging", constraints: ["idempotency key required"], idempotencyKey: "deploy-1", description: "Deploy", recovery: "Rollback", evidence: "Deployment record" }], recoveryRequirements: ["Rollback on failure"], exclusions: [], readiness: [{ id: "runtime", label: "Runtime", status: "passed", detail: "Ready" }], unresolved: [] },
+    phaseRun: { id: "run-build", phase: "building", attempt: 0, planRevision: 1, runtimeId: "runtime-old", startedAt: "2026-01-01T00:00:00.000Z" },
+    progress: { ...initialWorkflowProgress("2026-01-01T00:00:00.000Z"), currentSliceId: "S1" },
+    guidance: [{ id: "guide-restart", text: "Keep evidence", status: "queued", planRevision: 1, submittedRuntimeId: "runtime-old", commandId: "guide-restart-command", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: null, appliedAt: null }],
+    operationReceipts: [],
+  };
+  const recovered = reconcilePersistedWorkflow(base, [
+    { sequence: 0, type: "workflow_progress_recorded", timestamp: "2026-01-01T00:00:30.000Z", data: { workflowId: base.id, event: { eventId: "old-child-progress", phaseRunId: "run-build", planRevision: 1, runtimeId: "runtime-replaced", activity: "Stale old-child output", completedSliceIds: ["S2"], receivedAt: "2026-01-01T00:00:30.000Z" } } },
+    { sequence: 1, type: "workflow_guidance_delivery", timestamp: "2026-01-01T00:01:00.000Z", data: { workflowId: base.id, event: { eventId: "guidance-delivered:guide-restart-command", guidanceId: "guide-restart", commandId: "guide-restart-command", planRevision: 1, deliveredAt: "2026-01-01T00:01:00.000Z" } } },
+    { sequence: 2, type: "tool_execution_end", timestamp: "2026-01-01T00:02:00.000Z", data: { type: "tool_execution_end", toolCallId: "durable-progress-started", toolName: "piss_workflow_progress", result: { details: { workflowId: base.id, eventId: "durable-progress-started", phaseRunId: "run-build", planRevision: 1, runtimeId: "runtime-old", activity: "Deployment started", receipt: { operationId: "deploy", idempotencyKey: "deploy-1", status: "started", target: "staging" } } } } },
+    { sequence: 3, type: "tool_execution_end", timestamp: "2026-01-01T00:03:00.000Z", data: { type: "tool_execution_end", toolCallId: "durable-progress", toolName: "piss_workflow_progress", result: { details: { workflowId: base.id, eventId: "durable-progress", phaseRunId: "run-build", planRevision: 1, runtimeId: "runtime-old", activity: "Deployment completed", currentSliceId: "S2", completedSliceIds: ["S1"], passedCriterionIds: ["AC1"], evidence: [{ criterionId: "AC1", summary: "Deployment record verified" }], appliedGuidanceIds: ["guide-restart"], receipt: { operationId: "deploy", idempotencyKey: "deploy-1", status: "completed", target: "staging", evidence: "record-1" } } } } },
+    { sequence: 4, type: "workflow_authority_decision", timestamp: "2026-01-01T00:04:00.000Z", data: { workflowId: base.id, eventId: "authority-recovered", operationId: "deploy", phaseRunId: "run-build", planRevision: 1, allowed: true, basis: "Exact envelope match", decidedAt: "2026-01-01T00:04:00.000Z" } },
+  ]);
+  assert.equal(recovered.processedEventIds?.includes("old-child-progress"), false);
+  assert.equal(recovered.guidance?.[0]?.status, "applied");
+  assert.deepEqual(recovered.progress?.completedSliceIds, ["S1"]);
+  assert.equal(recovered.progress?.evidence[0]?.summary, "Deployment record verified");
+  assert.equal(recovered.operationReceipts?.[0]?.status, "completed");
+  assert.equal(recovered.authorityDecisions?.[0]?.allowed, true);
+  const completed = reconcileWorkflowAfterRestart(recovered, "2026-01-02T00:00:00.000Z");
+  assert.equal(completed.phase, "building");
+  assert.equal(completed.operationReceipts?.[0]?.status, "completed");
+  assert.equal(completed.progress?.currentSliceId, "S2");
+  assert.match(completed.progress?.nextAction ?? "", /slice S2.*criterion AC2/i);
+  const started = reconcileWorkflowAfterRestart({ ...base, operationReceipts: [{ operationId: "deploy", idempotencyKey: "deploy-1", status: "started", target: "staging", evidence: null, updatedAt: "2026-01-01T00:00:00.000Z" }] }, "2026-01-02T00:00:00.000Z");
+  assert.equal(started.phase, "blocked");
+  assert.equal(started.operationReceipts?.[0]?.status, "reconciliation_required");
+  assert.match(started.error ?? "", /deploy-1/);
+
+  const commitOperation = { id: "commit", kind: "git_commit" as const, target: "repository", idempotencyKey: "commit-once", description: "Commit", recovery: "Revert", evidence: "Commit ID" };
+  const commitStarted = reconcileWorkflowAfterRestart({ ...base, dossier: { ...base.dossier!, operations: [commitOperation] }, operationReceipts: [{ operationId: "commit", idempotencyKey: "commit-once", status: "started", target: "repository", evidence: null, updatedAt: "2026-01-01T00:00:00.000Z" }] }, "2026-01-02T00:00:00.000Z");
+  assert.equal(commitStarted.phase, "blocked");
+  assert.equal(commitStarted.operationReceipts?.[0]?.status, "reconciliation_required");
+
+  const genericOperation = { id: "external-command", kind: "command" as const, target: "approved system", receiptRequired: true, idempotencyKey: "command-once", description: "Mutate", recovery: "Restore", evidence: "System record" };
+  const genericStarted = reconcileWorkflowAfterRestart({ ...base, dossier: { ...base.dossier!, operations: [genericOperation] }, operationReceipts: [{ operationId: "external-command", idempotencyKey: "command-once", status: "started", target: "approved system", evidence: null, updatedAt: "2026-01-01T00:00:00.000Z" }] }, "2026-01-02T00:00:00.000Z");
+  assert.equal(genericStarted.phase, "blocked");
+  assert.equal(genericStarted.operationReceipts?.[0]?.status, "reconciliation_required");
 });
 
 test("interrupted workflows recover from their preserved checkpoint", () => {
@@ -564,7 +910,7 @@ test("reconciles a checkpoint from Pi's persisted tool result shape", () => {
 
   const reconciled = reconcilePersistedWorkflow(workflow, [event]);
 
-  assert.equal(reconciled.phase, "awaitingSpecApproval");
+  assert.equal(reconciled.phase, "planning");
   assert.equal(reconciled.specification, "# Specification");
   assert.equal(reconciled.checkpoint?.sequence, 7);
   assert.equal(reconciled.updatedAt, event.timestamp);
@@ -578,11 +924,16 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
   const previousCommandsFile = process.env.FAKE_PI_COMMANDS;
   const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
   const previousStagedVideoPaths = process.env.FAKE_PI_STAGED_VIDEO_PATHS;
+  const previousAuthorityMarker = process.env.FAKE_PI_AUTHORITY_MARKER;
+  const previousMetadata = process.env.FAKE_PI_METADATA;
   const stagedVideoPaths = join(directory, "staged-video-paths.txt");
+  const authorityMarker = join(directory, "authority-response.jsonl");
   process.env.FAKE_PI_ARGS = argsFile;
   process.env.FAKE_PI_COMMANDS = commandsFile;
   process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-test.jsonl");
   process.env.FAKE_PI_STAGED_VIDEO_PATHS = stagedVideoPaths;
+  process.env.FAKE_PI_AUTHORITY_MARKER = authorityMarker;
+  process.env.FAKE_PI_METADATA = join(directory, "owned-sessions.json");
 
   try {
     const piCommand = await fakePi(directory, true);
@@ -683,51 +1034,50 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           );
           const compactionFailed = yield* supervisor.get(created.id);
           const autoCompaction = yield* supervisor.setAutoCompaction({ sessionId: created.id, runtimeId: created.runtimeId }, false);
-          yield* supervisor.mutateWorkflow(
+          const startMutation = { runtimeId: created.runtimeId, action: "start" as const, objective: "Implement one workflow tracer", maxRepairAttempts: 2, mutationId: "start-workflow-once" };
+          const firstWorkflowStart = yield* supervisor.mutateWorkflow(
             { sessionId: created.id, runtimeId: created.runtimeId },
-            { runtimeId: created.runtimeId, action: "start", objective: "Implement one workflow tracer", maxRepairAttempts: 2 },
+            startMutation,
           );
-          let workflowSpec = yield* supervisor.get(created.id);
-          for (let attempt = 0; attempt < 100 && workflowSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
-            yield* Effect.sleep("10 millis");
-            workflowSpec = yield* supervisor.get(created.id);
-          }
-          yield* supervisor.mutateWorkflow(
+          const duplicateWorkflowStart = yield* supervisor.mutateWorkflow(
             { sessionId: created.id, runtimeId: created.runtimeId },
-            { runtimeId: created.runtimeId, action: "approve" },
+            startMutation,
           );
+          assert.equal(duplicateWorkflowStart.workflow?.id, firstWorkflowStart.workflow?.id);
+          assert.equal(duplicateWorkflowStart.workflow?.processedMutationIds?.filter((id) => id === startMutation.mutationId).length, 1);
           let workflowPlan = yield* supervisor.get(created.id);
           for (let attempt = 0; attempt < 100 && workflowPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
             yield* Effect.sleep("10 millis");
             workflowPlan = yield* supervisor.get(created.id);
           }
+          const workflowSpec = workflowPlan;
           yield* supervisor.mutateWorkflow(
             { sessionId: created.id, runtimeId: created.runtimeId },
-            { runtimeId: created.runtimeId, action: "approve" },
+            guardedWorkflowMutation(workflowPlan, { action: "approve" }, "approve-workflow-once"),
           );
           let workflowReady = yield* supervisor.get(created.id);
           for (let attempt = 0; attempt < 300 && (workflowReady.workflow?.phase !== "readyToShip" || workflowReady.status !== "finished"); attempt += 1) {
             yield* Effect.sleep("10 millis");
             workflowReady = yield* supervisor.get(created.id);
           }
+          const acceptMutation = { runtimeId: created.runtimeId, action: "accept" as const, workflowId: workflowReady.workflow!.id, mutationId: "accept-workflow-once", expectedRevision: workflowReady.workflow!.revision ?? 0, expectedPhase: "readyToShip" as const, ...(workflowReady.workflow!.phaseRun ? { expectedPhaseRunId: workflowReady.workflow!.phaseRun.id } : {}) };
           const workflowAccepted = yield* supervisor.mutateWorkflow(
             { sessionId: created.id, runtimeId: created.runtimeId },
-            { runtimeId: created.runtimeId, action: "accept" },
+            acceptMutation,
           );
+          const duplicateWorkflowAccepted = yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            acceptMutation,
+          );
+          const staleWorkflowMutation = yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            { ...acceptMutation, mutationId: "stale-accept", expectedRevision: Math.max(0, acceptMutation.expectedRevision - 1) },
+          ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
 
           const interventionSession = yield* supervisor.create({ workspaceId, name: "Workflow intervention" });
           yield* supervisor.mutateWorkflow(
             { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
-            { runtimeId: interventionSession.runtimeId, action: "start", objective: "Exercise workflow user interventions", maxRepairAttempts: 2 },
-          );
-          let interventionSpec = yield* supervisor.get(interventionSession.id);
-          for (let attempt = 0; attempt < 100 && interventionSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
-            yield* Effect.sleep("10 millis");
-            interventionSpec = yield* supervisor.get(interventionSession.id);
-          }
-          yield* supervisor.mutateWorkflow(
-            { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
-            { runtimeId: interventionSession.runtimeId, action: "approve" },
+            { runtimeId: interventionSession.runtimeId, mutationId: "start-intervention", action: "start", objective: "Exercise workflow user interventions", maxRepairAttempts: 2 },
           );
           let interventionPlan = yield* supervisor.get(interventionSession.id);
           for (let attempt = 0; attempt < 100 && interventionPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
@@ -736,7 +1086,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.mutateWorkflow(
             { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
-            { runtimeId: interventionSession.runtimeId, action: "approve" },
+            guardedWorkflowMutation(interventionPlan, { action: "approve" }, "approve-intervention"),
           );
           let interventionBuild = yield* supervisor.get(interventionSession.id);
           for (let attempt = 0; attempt < 100 && interventionBuild.workflow?.phase !== "building"; attempt += 1) {
@@ -745,7 +1095,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.mutateWorkflow(
             { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
-            { runtimeId: interventionSession.runtimeId, action: "intervene", feedback: "Keep the implementation slice narrow" },
+            guardedWorkflowMutation(interventionBuild, { action: "intervene", feedback: "Keep the implementation slice narrow" }, "guide-intervention-build"),
           );
           let interventionVerify = yield* supervisor.get(interventionSession.id);
           for (let attempt = 0; attempt < 100 && interventionVerify.workflow?.phase !== "verifying"; attempt += 1) {
@@ -754,7 +1104,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           const queuedVerification = yield* supervisor.mutateWorkflow(
             { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
-            { runtimeId: interventionSession.runtimeId, action: "intervene", feedback: "Summarize deployment risk after review" },
+            guardedWorkflowMutation(interventionVerify, { action: "intervene", feedback: "Summarize deployment risk after review" }, "guide-intervention-verify"),
           );
           let interventionReady = yield* supervisor.get(interventionSession.id);
           for (let attempt = 0; attempt < 300 && (interventionReady.workflow?.phase !== "readyToShip" || interventionReady.workflow.queuedIntervention || interventionReady.status !== "finished"); attempt += 1) {
@@ -763,19 +1113,77 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.stop({ sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId });
 
+          const scopeSession = yield* supervisor.create({ workspaceId, name: "Scope-changing workflow guidance" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
+            { runtimeId: scopeSession.runtimeId, mutationId: "start-scope-change", action: "start", objective: "Exercise scope-changing guidance", maxRepairAttempts: 2 },
+          );
+          let scopePlan = yield* supervisor.get(scopeSession.id);
+          for (let attempt = 0; attempt < 100 && (scopePlan.workflow?.phase !== "awaitingPlanApproval" || scopePlan.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            scopePlan = yield* supervisor.get(scopeSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
+            guardedWorkflowMutation(scopePlan, { action: "approve" }, "approve-scope-change"),
+          );
+          let scopeBuild = yield* supervisor.get(scopeSession.id);
+          for (let attempt = 0; attempt < 100 && (scopeBuild.workflow?.phase !== "building" || !scopeBuild.workflow.progress?.completedSliceIds.includes("S-PRIOR")); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            scopeBuild = yield* supervisor.get(scopeSession.id);
+          }
+          const authoritativeScope = yield* supervisor.get(scopeSession.id);
+          let scopeMutationError = "";
+          const scopeMutationApplied = yield* supervisor.mutateWorkflow(
+            { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
+            { runtimeId: scopeSession.runtimeId, action: "intervene", feedback: "Add a newly discovered authority constraint", scopeChange: true, workflowId: authoritativeScope.workflow!.id, mutationId: "scope-change-once", expectedRevision: authoritativeScope.workflow!.revision ?? 0, expectedPhase: "building", expectedPhaseRunId: authoritativeScope.workflow!.phaseRun?.id },
+          ).pipe(Effect.as(true), Effect.catch((error) => Effect.sync(() => { scopeMutationError = `${error._tag}: ${error.message}`; return false; })));
+          let replannedScope = yield* supervisor.get(scopeSession.id);
+          for (let attempt = 0; attempt < 200 && (replannedScope.workflow?.phase !== "awaitingPlanApproval" || replannedScope.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            replannedScope = yield* supervisor.get(scopeSession.id);
+          }
+          assert.equal(replannedScope.workflow?.phase, "awaitingPlanApproval", JSON.stringify(replannedScope.workflow));
+          const reapprovedScope = yield* supervisor.mutateWorkflow(
+            { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
+            { runtimeId: scopeSession.runtimeId, action: "approve", workflowId: replannedScope.workflow!.id, mutationId: "scope-reapprove-once", expectedRevision: replannedScope.workflow!.revision ?? 0, expectedPhase: "awaitingPlanApproval", expectedPhaseRunId: replannedScope.workflow!.phaseRun?.id },
+          );
+          yield* supervisor.stop({ sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId });
+
+          const guidanceFailureSession = yield* supervisor.create({ workspaceId, name: "Failed workflow guidance delivery" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
+            { runtimeId: guidanceFailureSession.runtimeId, mutationId: "start-guidance-failure", action: "start", objective: "Exercise failed guidance delivery", maxRepairAttempts: 2 },
+          );
+          let guidanceFailurePlan = yield* supervisor.get(guidanceFailureSession.id);
+          for (let attempt = 0; attempt < 100 && (guidanceFailurePlan.workflow?.phase !== "awaitingPlanApproval" || guidanceFailurePlan.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            guidanceFailurePlan = yield* supervisor.get(guidanceFailureSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
+            guardedWorkflowMutation(guidanceFailurePlan, { action: "approve" }, "approve-guidance-failure"),
+          );
+          let guidanceFailureBuild = yield* supervisor.get(guidanceFailureSession.id);
+          for (let attempt = 0; attempt < 100 && guidanceFailureBuild.workflow?.phase !== "building"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            guidanceFailureBuild = yield* supervisor.get(guidanceFailureSession.id);
+          }
+          const guidanceFailureTag = yield* supervisor.mutateWorkflow(
+            { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
+            guardedWorkflowMutation(guidanceFailureBuild, { action: "intervene", feedback: "Retain this guidance for deterministic retry" }, "guide-failure"),
+          ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
+          const guidanceFailureQueued = yield* supervisor.get(guidanceFailureSession.id);
+          const guidanceFailureCancelled = yield* supervisor.mutateWorkflow(
+            { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
+            { runtimeId: guidanceFailureSession.runtimeId, action: "cancel", workflowId: guidanceFailureQueued.workflow!.id, mutationId: "cancel-guidance-failure", expectedRevision: guidanceFailureQueued.workflow!.revision ?? 0, expectedPhase: "building", expectedPhaseRunId: guidanceFailureQueued.workflow!.phaseRun?.id },
+          );
+          yield* supervisor.stop({ sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId });
+
           const failedWorkflowSession = yield* supervisor.create({ workspaceId, name: "Failed workflow continuation" });
           yield* supervisor.mutateWorkflow(
             { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
-            { runtimeId: failedWorkflowSession.runtimeId, action: "start", objective: "Exercise failed workflow continuation", maxRepairAttempts: 1 },
-          );
-          let failedWorkflowSpec = yield* supervisor.get(failedWorkflowSession.id);
-          for (let attempt = 0; attempt < 100 && failedWorkflowSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
-            yield* Effect.sleep("10 millis");
-            failedWorkflowSpec = yield* supervisor.get(failedWorkflowSession.id);
-          }
-          yield* supervisor.mutateWorkflow(
-            { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
-            { runtimeId: failedWorkflowSession.runtimeId, action: "approve" },
+            { runtimeId: failedWorkflowSession.runtimeId, mutationId: "start-failed-workflow", action: "start", objective: "Exercise failed workflow continuation", maxRepairAttempts: 1 },
           );
           let failedWorkflowPlan = yield* supervisor.get(failedWorkflowSession.id);
           for (let attempt = 0; attempt < 100 && failedWorkflowPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
@@ -784,7 +1192,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.mutateWorkflow(
             { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
-            { runtimeId: failedWorkflowSession.runtimeId, action: "approve" },
+            guardedWorkflowMutation(failedWorkflowPlan, { action: "approve" }, "approve-failed-workflow"),
           );
           let firstFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
           for (let attempt = 0; attempt < 300 && firstFailedWorkflow.workflow?.phase !== "failed"; attempt += 1) {
@@ -793,7 +1201,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.mutateWorkflow(
             { sessionId: failedWorkflowSession.id, runtimeId: failedWorkflowSession.runtimeId },
-            { runtimeId: failedWorkflowSession.runtimeId, action: "continueRepairs", additionalRepairAttempts: 2 },
+            guardedWorkflowMutation(firstFailedWorkflow, { action: "continueRepairs", additionalRepairAttempts: 2 }, "extend-failed-workflow"),
           );
           let continuedFailedWorkflow = yield* supervisor.get(failedWorkflowSession.id);
           for (let attempt = 0; attempt < 300 && (continuedFailedWorkflow.workflow?.phase !== "failed" || continuedFailedWorkflow.workflow.repairAttempts <= firstFailedWorkflow.workflow!.repairAttempts); attempt += 1) {
@@ -805,16 +1213,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           const supervisedSession = yield* supervisor.create({ workspaceId, name: "Automatically supervised workflow" });
           yield* supervisor.mutateWorkflow(
             { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
-            { runtimeId: supervisedSession.runtimeId, action: "start", objective: "Exercise automatic supervisor recovery", maxRepairAttempts: 2 },
-          );
-          let supervisedSpec = yield* supervisor.get(supervisedSession.id);
-          for (let attempt = 0; attempt < 100 && supervisedSpec.workflow?.phase !== "awaitingSpecApproval"; attempt += 1) {
-            yield* Effect.sleep("10 millis");
-            supervisedSpec = yield* supervisor.get(supervisedSession.id);
-          }
-          yield* supervisor.mutateWorkflow(
-            { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
-            { runtimeId: supervisedSession.runtimeId, action: "approve" },
+            { runtimeId: supervisedSession.runtimeId, mutationId: "start-supervised", action: "start", objective: "Exercise automatic supervisor recovery", maxRepairAttempts: 2 },
           );
           let supervisedPlan = yield* supervisor.get(supervisedSession.id);
           for (let attempt = 0; attempt < 100 && supervisedPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
@@ -823,7 +1222,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           }
           yield* supervisor.mutateWorkflow(
             { sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId },
-            { runtimeId: supervisedSession.runtimeId, action: "approve" },
+            guardedWorkflowMutation(supervisedPlan, { action: "approve" }, "approve-supervised"),
           );
           let supervisedReady = yield* supervisor.get(supervisedSession.id);
           for (let attempt = 0; attempt < 500 && supervisedReady.workflow?.phase !== "readyToShip"; attempt += 1) {
@@ -835,6 +1234,119 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             : undefined;
           yield* supervisor.stop({ sessionId: supervisedSession.id, runtimeId: supervisedSession.runtimeId });
           if (supervisorSibling) yield* supervisor.stop({ sessionId: supervisorSibling.id, runtimeId: supervisorSibling.runtimeId });
+
+          const staleCancelSession = yield* supervisor.create({ workspaceId, name: "Stale cancellation stays isolated" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: staleCancelSession.id, runtimeId: staleCancelSession.runtimeId },
+            { runtimeId: staleCancelSession.runtimeId, action: "start", objective: "Exercise stale cancellation", maxRepairAttempts: 2, mutationId: "start-stale-cancel" },
+          );
+          let staleCancelPlan = yield* supervisor.get(staleCancelSession.id);
+          for (let attempt = 0; attempt < 100 && (staleCancelPlan.workflow?.phase !== "awaitingPlanApproval" || staleCancelPlan.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            staleCancelPlan = yield* supervisor.get(staleCancelSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: staleCancelSession.id, runtimeId: staleCancelSession.runtimeId },
+            guardedWorkflowMutation(staleCancelPlan, { action: "approve" }, "approve-stale-cancel"),
+          );
+          let staleCancelBuild = yield* supervisor.get(staleCancelSession.id);
+          for (let attempt = 0; attempt < 100 && staleCancelBuild.workflow?.phase !== "building"; attempt += 1) {
+            yield* Effect.sleep("5 millis");
+            staleCancelBuild = yield* supervisor.get(staleCancelSession.id);
+          }
+          const staleCancelTag = yield* supervisor.mutateWorkflow(
+            { sessionId: staleCancelSession.id, runtimeId: staleCancelSession.runtimeId },
+            { runtimeId: staleCancelSession.runtimeId, action: "cancel", workflowId: staleCancelBuild.workflow!.id, mutationId: "stale-cancel", expectedRevision: Math.max(0, (staleCancelBuild.workflow!.revision ?? 1) - 1), expectedPhase: "building", expectedPhaseRunId: staleCancelBuild.workflow!.phaseRun?.id },
+          ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
+          let staleCancelReady = yield* supervisor.get(staleCancelSession.id);
+          for (let attempt = 0; attempt < 400 && staleCancelReady.workflow?.phase !== "readyToShip"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            staleCancelReady = yield* supervisor.get(staleCancelSession.id);
+          }
+          assert.equal(staleCancelTag, "PiCommandError");
+          assert.equal(staleCancelReady.workflow?.phase, "readyToShip", JSON.stringify({ workflow: staleCancelReady.workflow, events: staleCancelReady.events.slice(-20) }));
+          yield* supervisor.stop({ sessionId: staleCancelSession.id, runtimeId: staleCancelSession.runtimeId });
+
+          const dispatchRecoverySession = yield* supervisor.create({ workspaceId, name: "Dispatch failure recovery" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: dispatchRecoverySession.id, runtimeId: dispatchRecoverySession.runtimeId },
+            { runtimeId: dispatchRecoverySession.runtimeId, action: "start", objective: "Exercise dispatch failure recovery", maxRepairAttempts: 2, mutationId: "start-dispatch-recovery" },
+          );
+          let dispatchRecoveryPlan = yield* supervisor.get(dispatchRecoverySession.id);
+          for (let attempt = 0; attempt < 100 && (dispatchRecoveryPlan.workflow?.phase !== "awaitingPlanApproval" || dispatchRecoveryPlan.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            dispatchRecoveryPlan = yield* supervisor.get(dispatchRecoverySession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: dispatchRecoverySession.id, runtimeId: dispatchRecoverySession.runtimeId },
+            guardedWorkflowMutation(dispatchRecoveryPlan, { action: "approve" }, "approve-dispatch-recovery"),
+          );
+          let dispatchRecoveryReady = yield* supervisor.get(dispatchRecoverySession.id);
+          for (let attempt = 0; attempt < 500 && dispatchRecoveryReady.workflow?.phase !== "readyToShip"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            dispatchRecoveryReady = yield* supervisor.get(dispatchRecoverySession.id);
+          }
+          assert.equal(dispatchRecoveryReady.workflow?.phase, "readyToShip");
+          assert.equal(dispatchRecoveryReady.workflow?.repairAttempts, 0);
+          assert.equal(dispatchRecoveryReady.workflow?.progress?.retryAttempt, 2);
+          assert.match(JSON.stringify(dispatchRecoveryReady.events), /Retrying a transient workflow dispatch failure/);
+          assert.match(JSON.stringify(dispatchRecoveryReady.events), /workflow_supervisor_advice/);
+          const dispatchSupervisor = dispatchRecoveryReady.workflow?.supervisor
+            ? yield* supervisor.get(dispatchRecoveryReady.workflow.supervisor.sessionId)
+            : undefined;
+          yield* supervisor.stop({ sessionId: dispatchRecoverySession.id, runtimeId: dispatchRecoverySession.runtimeId });
+          if (dispatchSupervisor) yield* supervisor.stop({ sessionId: dispatchSupervisor.id, runtimeId: dispatchSupervisor.runtimeId });
+
+          const authoritySession = yield* supervisor.create({ workspaceId, name: "Structured workflow authority" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
+            { runtimeId: authoritySession.runtimeId, mutationId: "start-authority-outside", action: "start", objective: "Exercise structured workflow authority", maxRepairAttempts: 2 },
+          );
+          let authorityPlan = yield* supervisor.get(authoritySession.id);
+          for (let attempt = 0; attempt < 200 && authorityPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            authorityPlan = yield* supervisor.get(authoritySession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
+            guardedWorkflowMutation(authorityPlan, { action: "approve" }, "approve-authority-outside"),
+          );
+          let authorityOutside = yield* supervisor.get(authoritySession.id);
+          for (let attempt = 0; attempt < 200 && authorityOutside.interactiveRequests[0]?.id !== "workflow-outside-authority-confirm"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            authorityOutside = yield* supervisor.get(authoritySession.id);
+          }
+          const authorityAfterRejection = yield* supervisor.respondInteractive(
+            { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
+            { requestId: "workflow-outside-authority-confirm", confirmed: false },
+          );
+          yield* supervisor.mutateWorkflow(
+            { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
+            guardedWorkflowMutation(authorityAfterRejection, { action: "cancel" }, "cancel-outside-authority"),
+          );
+          yield* supervisor.stop({ sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId });
+          yield* supervisor.remove({ sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId });
+
+          const authorityApprovedSession = yield* supervisor.create({ workspaceId, name: "Approved structured workflow authority" });
+          yield* supervisor.mutateWorkflow(
+            { sessionId: authorityApprovedSession.id, runtimeId: authorityApprovedSession.runtimeId },
+            { runtimeId: authorityApprovedSession.runtimeId, mutationId: "start-authority-approved", action: "start", objective: "Exercise approved structured workflow authority", maxRepairAttempts: 2 },
+          );
+          let authorityApprovedPlan = yield* supervisor.get(authorityApprovedSession.id);
+          for (let attempt = 0; attempt < 200 && authorityApprovedPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            authorityApprovedPlan = yield* supervisor.get(authorityApprovedSession.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: authorityApprovedSession.id, runtimeId: authorityApprovedSession.runtimeId },
+            guardedWorkflowMutation(authorityApprovedPlan, { action: "approve" }, "approve-authority-approved"),
+          );
+          let authorityReady = yield* supervisor.get(authorityApprovedSession.id);
+          for (let attempt = 0; attempt < 400 && authorityReady.workflow?.phase !== "readyToShip"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            authorityReady = yield* supervisor.get(authorityApprovedSession.id);
+          }
+          yield* supervisor.stop({ sessionId: authorityApprovedSession.id, runtimeId: authorityApprovedSession.runtimeId });
 
           const staleResult = yield* supervisor.abort({ sessionId: created.id, runtimeId: "stale-runtime" }).pipe(
             Effect.as("unexpected-success"),
@@ -892,8 +1404,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           );
           yield* supervisor.stop({ sessionId: created.id, runtimeId: created.runtimeId });
           const stopped = yield* supervisor.get(created.id);
+          const existingActiveRuntimes = (yield* supervisor.list).filter((session) => session.status !== "stopped" && session.status !== "crashed").length;
           const capacitySessions = yield* Effect.forEach(
-            Array.from({ length: 50 }, (_, index) => index),
+            Array.from({ length: Math.max(0, 50 - existingActiveRuntimes) }, (_, index) => index),
             (index) => supervisor.create({ workspaceId, name: `Capacity ${index + 1}` }),
           );
           const activeLimitResult = yield* supervisor.create({ workspaceId, name: "Over capacity" }).pipe(
@@ -929,7 +1442,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, queuedVerification, interventionReady, firstFailedWorkflow, continuedFailedWorkflow, supervisedReady, supervisorSibling, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, duplicateWorkflowAccepted, staleWorkflowMutation, queuedVerification, interventionReady, scopeMutationApplied, scopeMutationError, authoritativeScope, replannedScope, reapprovedScope, guidanceFailureTag, guidanceFailureQueued, guidanceFailureCancelled, firstFailedWorkflow, continuedFailedWorkflow, supervisedReady, supervisorSibling, authorityOutside, authorityReady, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -986,23 +1499,61 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.workflowReady.workflow?.executionAuthority?.mode, "approved_plan");
     assert.equal(result.workflowReady.status, "finished");
     assert.equal(result.workflowAccepted.workflow?.phase, "accepted");
-    assert.match(JSON.stringify(result.interventionReady.events), /Workflow user intervention — BUILD/);
-    assert.equal(result.queuedVerification.workflow?.queuedIntervention, undefined);
+    assert.equal(result.duplicateWorkflowAccepted.workflow?.revision, result.workflowAccepted.workflow?.revision);
+    assert.deepEqual(result.duplicateWorkflowAccepted.workflow?.processedMutationIds, ["start-workflow-once", "approve-workflow-once", "accept-workflow-once"]);
+    assert.equal(result.staleWorkflowMutation, "PiCommandError");
+    assert.match(JSON.stringify(result.interventionReady.events), /Workflow guidance .*BUILD/);
+    assert.ok(["queued", "delivered"].includes(result.queuedVerification.workflow?.guidance?.at(-1)?.status ?? ""));
+    assert.equal(result.interventionReady.workflow?.guidance?.at(-1)?.status, "applied", JSON.stringify({ workflow: result.interventionReady.workflow, events: result.interventionReady.events.slice(-30) }));
     assert.equal(result.interventionReady.workflow?.queuedIntervention, undefined);
-    assert.match(JSON.stringify(result.interventionReady.events), /Workflow user intervention — VERIFY/);
+    assert.match(JSON.stringify(result.interventionReady.events), /Workflow guidance .*VERIFY/);
+    assert.equal(result.scopeMutationApplied, true, result.scopeMutationError);
+    assert.equal(result.replannedScope.workflow?.phase, "awaitingPlanApproval");
+    assert.equal(result.replannedScope.workflow?.executionAuthority, undefined);
+    assert.ok((result.replannedScope.workflow?.artifactRevision ?? 0) > (result.authoritativeScope.workflow?.executionAuthority?.planRevision ?? 0));
+    assert.equal(result.reapprovedScope.workflow?.executionAuthority?.planRevision, result.replannedScope.workflow?.artifactRevision);
+    assert.ok((result.reapprovedScope.workflow?.executionAuthority?.planRevision ?? 0) > (result.authoritativeScope.workflow?.executionAuthority?.planRevision ?? 0));
+    assert.equal(result.replannedScope.workflow?.processedEventIds?.includes("late-after-scope"), false);
+    assert.equal(result.replannedScope.workflow?.processedEventIds?.includes("late-scope-checkpoint"), false);
+    assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.completedSliceIds, ["S-PRIOR"]);
+    assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.passedCriterionIds, ["AC-PRIOR"]);
+    assert.equal(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.evidence[0]?.summary, "Prior revision evidence");
+    assert.equal(result.replannedScope.workflow?.processedMutationIds?.includes("scope-change-once"), true);
+    assert.equal(result.guidanceFailureTag, "PiCommandError");
+    assert.equal(result.guidanceFailureQueued.workflow?.guidance?.at(-1)?.status, "queued");
+    assert.equal(result.guidanceFailureCancelled.workflow?.phase, "cancelled");
+    assert.equal(result.guidanceFailureCancelled.workflow?.guidance?.at(-1)?.status, "queued");
+    assert.doesNotMatch(result.guidanceFailureCancelled.workflow?.progress?.activity ?? "", /Late progress/);
+    assert.notEqual(result.guidanceFailureCancelled.workflow?.checkpoint?.summary, "Late checkpoint must be ignored");
     assert.equal(result.firstFailedWorkflow.workflow?.phase, "failed");
-    assert.equal(result.firstFailedWorkflow.workflow?.repairAttempts, 2);
+    assert.equal(result.firstFailedWorkflow.workflow?.repairAttempts, 1);
     assert.equal(result.firstFailedWorkflow.workflow?.maxRepairAttempts, 1);
-    assert.equal(result.continuedFailedWorkflow.workflow?.phase, "failed");
-    assert.equal(result.continuedFailedWorkflow.workflow?.repairAttempts, 5);
-    assert.equal(result.continuedFailedWorkflow.workflow?.maxRepairAttempts, 4);
+    assert.equal(result.continuedFailedWorkflow.workflow?.phase, "failed", JSON.stringify(result.continuedFailedWorkflow.workflow));
+    assert.equal(result.continuedFailedWorkflow.workflow?.repairAttempts, 3);
+    assert.equal(result.continuedFailedWorkflow.workflow?.maxRepairAttempts, 3);
     assert.equal(result.supervisedReady.workflow?.phase, "readyToShip");
     assert.equal(result.supervisedReady.workflow?.repairAttempts, 0);
     assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.action, "resume_with_guidance");
     assert.equal(result.supervisedReady.workflow?.supervisor?.lastAdvice?.problem, "The build needs to retry the documented recovery procedure.");
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_consulting/);
     assert.match(JSON.stringify(result.supervisedReady.events), /workflow_supervisor_advice/);
+    assert.equal(result.supervisedReady.events.filter((event) => event.type === "workflow_supervisor_advice").length, 1);
+    assert.equal(result.supervisedReady.workflow?.processedEventIds?.some((id) => id.startsWith("supervisor-advice:")), false);
     assert.ok(result.supervisorSibling?.name.startsWith("Supervisor ·"));
+    assert.equal(result.authorityOutside.interactiveRequests[0]?.title, "Confirm production deployment");
+    assert.equal(result.authorityOutside.workflow?.authorityDecisions?.at(-1)?.allowed, false);
+    assert.equal(result.authorityOutside.workflow?.authorityDecisions?.at(-1)?.operationId, "production-deploy");
+    assert.equal(result.authorityReady.workflow?.phase, "readyToShip", JSON.stringify(result.authorityReady.workflow));
+    assert.equal(result.authorityReady.workflow?.authorityDecisions?.at(-1)?.operationId, "approved-edit");
+    assert.equal(result.authorityReady.workflow?.authorityDecisions?.at(-1)?.allowed, true);
+    assert.equal(result.authorityReady.workflow?.authorityDecisions?.at(-1)?.source, "piss_workflow_authority_request");
+    assert.equal(result.authorityReady.workflow?.authorityDecisions?.at(-1)?.correlationId, "workflow-authority-request");
+    assert.equal(result.authorityReady.workflow?.authorityDecisions?.filter((decision) => decision.operationId === "approved-edit").length, 1);
+    assert.equal(result.authorityReady.workflow?.repairAttempts, 0);
+    assert.equal(result.authorityReady.workflow?.progress?.maxTransientRetries, 2);
+    assert.match(JSON.stringify(result.authorityReady.events), /auto_retry_start/);
+    assert.deepEqual(result.authorityReady.interactiveRequests, []);
+    assert.match(JSON.stringify(result.authorityReady.events), /workflow_authority_decision/);
     assert.doesNotMatch(JSON.stringify({ models: result.models, events: result.configuredModel.events }), /super-secret|credential@example/);
     assert.equal(result.staleResult, "StaleRuntimeGenerationError");
     assert.equal(result.interactiveBlocked.status, "blocked");
@@ -1027,6 +1578,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.empty.events.length, 0);
     assert.equal(result.configurationWhileWorking, "PiCommandError");
     assert.ok(result.prompted.events.some((event) => event.type === "message_update"));
+    const authorityResponses = (await readFile(authorityMarker, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { durable: boolean });
+    assert.deepEqual(authorityResponses, [{ durable: true }], "the approved response is released only after its authority decision is durable");
     const persisted = JSON.parse(await readFile(join(directory, "owned-sessions.json"), "utf8")) as { sessions: Array<{ id: string; sessionFileIdentity: unknown }> };
     assert.ok(persisted.sessions.find((session) => session.id === result.current.id)?.sessionFileIdentity, "lazy Pi transcript identity is captured after the run settles");
     const wireCommands = (await readFile(commandsFile, "utf8")).trim().split("\n");
@@ -1054,6 +1607,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
     if (previousStagedVideoPaths === undefined) delete process.env.FAKE_PI_STAGED_VIDEO_PATHS;
     else process.env.FAKE_PI_STAGED_VIDEO_PATHS = previousStagedVideoPaths;
+    if (previousAuthorityMarker === undefined) delete process.env.FAKE_PI_AUTHORITY_MARKER;
+    else process.env.FAKE_PI_AUTHORITY_MARKER = previousAuthorityMarker;
+    if (previousMetadata === undefined) delete process.env.FAKE_PI_METADATA;
+    else process.env.FAKE_PI_METADATA = previousMetadata;
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1307,6 +1864,99 @@ test("recreates an unmaterialized idle runtime under the same session after rest
   } finally {
     if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
     else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
+    else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restarts an active workflow from durable progress and completed receipts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piss-workflow-restart-"));
+  const argsFile = join(directory, "args.jsonl");
+  const commandsFile = join(directory, "commands.txt");
+  const previousArgsFile = process.env.FAKE_PI_ARGS;
+  const previousCommandsFile = process.env.FAKE_PI_COMMANDS;
+  const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
+  process.env.FAKE_PI_ARGS = argsFile;
+  process.env.FAKE_PI_COMMANDS = commandsFile;
+  process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-workflow-restart.jsonl");
+
+  try {
+    const piCommand = await fakePi(directory);
+    const workspaceRoot = join(directory, "workspace");
+    await mkdir(workspaceRoot);
+    const workspaceId = decodeWorkspaceId("piss-workflow-restart-deadbeef");
+    const workspace: Workspace = { id: workspaceId, name: "Workflow restart test", root: workspaceRoot, trustProjectResources: false, createdAt: new Date().toISOString(), sessionCount: 0, activeSessionCount: 0 };
+    const config: AppConfigShape = { host: "127.0.0.1", port: 4318, stateDir: join(directory, "state"), publicDir: directory, piCommand, piSessionRoots: [directory], browserAuth: { devBypass: true, allowedUsers: new Set(), devAllowedOrigins: new Set() }, workspaceSeeds: [], workspaceDiscoveryRoots: [] };
+
+    const beforeRestart = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      const session = yield* supervisor.create({ workspaceId, name: "Workflow survives restart" });
+      yield* supervisor.mutateWorkflow({ sessionId: session.id, runtimeId: session.runtimeId }, { runtimeId: session.runtimeId, mutationId: "start-restart-workflow", action: "start", objective: "Exercise scope-changing guidance and Exercise failed guidance delivery", maxRepairAttempts: 2 });
+      let plan = yield* supervisor.get(session.id);
+      for (let attempt = 0; attempt < 200 && (plan.workflow?.phase !== "awaitingPlanApproval" || plan.status !== "finished"); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        plan = yield* supervisor.get(session.id);
+      }
+      yield* supervisor.mutateWorkflow({ sessionId: session.id, runtimeId: session.runtimeId }, guardedWorkflowMutation(plan, { action: "approve" }, "approve-restart-workflow"));
+      let building = yield* supervisor.get(session.id);
+      for (let attempt = 0; attempt < 200 && !building.workflow?.operationReceipts?.some((receipt) => receipt.idempotencyKey === "scope-write-once" && receipt.status === "completed"); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        building = yield* supervisor.get(session.id);
+      }
+      assert.equal(building.workflow?.phase, "building");
+      assert.deepEqual(building.workflow?.progress?.completedSliceIds, ["S-PRIOR"]);
+      const deliveryFailure = yield* supervisor.mutateWorkflow(
+        { sessionId: session.id, runtimeId: session.runtimeId },
+        guardedWorkflowMutation(building, { action: "intervene", feedback: "Retry this guidance after restart" }, "guide-restart-workflow"),
+      ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
+      assert.equal(deliveryFailure, "PiCommandError");
+      const queued = yield* supervisor.get(session.id);
+      assert.equal(queued.workflow?.guidance?.at(-1)?.status, "queued");
+      return queued;
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    const metadataPath = join(config.stateDir, "owned-sessions.json");
+    const staleMetadata = JSON.parse(await readFile(metadataPath, "utf8")) as { sessions: Array<{ workflow?: EngineeringWorkflow }> };
+    const persistedWorkflow = staleMetadata.sessions[0]?.workflow;
+    if (!persistedWorkflow?.progress) throw new Error("Expected persisted workflow progress fixture");
+    staleMetadata.sessions[0]!.workflow = {
+      ...persistedWorkflow,
+      progress: { ...persistedWorkflow.progress, currentSliceId: "S-PRIOR", activity: "Metadata write lagged durable timeline", completedSliceIds: [], passedCriterionIds: [], evidence: [] },
+      operationReceipts: [],
+      processedEventIds: (persistedWorkflow.processedEventIds ?? []).filter((id) => id !== "scope-started" && id !== "scope-progress"),
+    };
+    await writeFile(metadataPath, JSON.stringify(staleMetadata), { mode: 0o600 });
+
+    const afterRestart = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      let session = (yield* supervisor.list)[0]!;
+      for (let attempt = 0; attempt < 400 && session.workflow?.phase !== "readyToShip"; attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        session = yield* supervisor.get(session.id);
+      }
+      const staleWorkflowMutation = yield* supervisor.mutateWorkflow(
+        { sessionId: session.id, runtimeId: beforeRestart.runtimeId },
+        guardedWorkflowMutation(beforeRestart, { action: "intervene", feedback: "Old child must not mutate replacement workflow" }, "stale-guide-after-restart"),
+      ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
+      yield* supervisor.stop({ sessionId: session.id, runtimeId: session.runtimeId });
+      return { session, staleWorkflowMutation };
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    assert.equal(afterRestart.session.id, beforeRestart.id);
+    assert.notEqual(afterRestart.session.runtimeId, beforeRestart.runtimeId);
+    assert.equal(afterRestart.staleWorkflowMutation, "StaleRuntimeGenerationError");
+    assert.deepEqual(afterRestart.session.workflow?.progress?.completedSliceIds, ["S-PRIOR"]);
+    assert.equal(afterRestart.session.workflow?.operationReceipts?.find((receipt) => receipt.idempotencyKey === "scope-write-once")?.status, "completed");
+    assert.equal(afterRestart.session.workflow?.guidance?.at(-1)?.status, "applied");
+    assert.equal(afterRestart.session.workflow?.processedEventIds?.includes("scope-progress"), false);
+    const commands = (await readFile(commandsFile, "utf8")).trim().split("\n");
+    assert.ok(commands.filter((command) => command === "prompt").length >= 3);
+  } finally {
+    if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
+    else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousCommandsFile === undefined) delete process.env.FAKE_PI_COMMANDS;
+    else process.env.FAKE_PI_COMMANDS = previousCommandsFile;
     if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
     await rm(directory, { recursive: true, force: true });

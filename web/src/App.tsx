@@ -15,6 +15,13 @@ import remarkGfm from "remark-gfm";
 import type { AvailableModel, DirectoryCandidate, EngineeringWorkflow, EngineeringWorkflowMutationInput, FileMention, ImageInput, ImageMediaType, InteractiveRequest, OwnedSession, OwnedSessionCommandAction, OwnedSessionSummary, PiSlashCommand, ReviewFile, ReviewSnapshot, ThinkingLevel, Workspace } from "../../shared/domain.ts";
 import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritableRuntime } from "../../shared/sessionState.ts";
 import { isTerminalWorkflowPhase, workflowBadgePhaseLabel, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
+
+type WorkflowMutationRequest =
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "start"; readonly objective: string; readonly maxRepairAttempts?: number }
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "approve" | "accept" | "cancel" }
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "resume"; readonly feedback?: string }
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "continueRepairs"; readonly additionalRepairAttempts: number }
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "revise" | "intervene"; readonly feedback: string; readonly scopeChange?: boolean };
 import { acknowledgeOwnedSession, archiveOwnedSession, compactSession, createOwnedSession, createWorkspace, deleteWorkspace, loadAvailableModels, loadReview, loadSession, loadSessions, loadSessionUsage, loadSlashCommands, loadTimelinePage, loadToolOutput, loadWorkspaces, mutateEngineeringWorkflow, renameOwnedSession, renameWorkspace, respondToInteractiveRequest, resumeOwnedSession, searchDirectories, searchFileMentions, sendSessionCommand, setSessionAutoCompaction, setSessionModel, setSessionThinkingLevel, subscribeSession } from "./api.ts";
 import { draftStorageKey, pruneDrafts, readDraft, removeDraft, writeDraft } from "./drafts.ts";
 import { activeFileMention, applyFileMention, type ActiveFileMention } from "./mentions.ts";
@@ -373,6 +380,7 @@ export function App() {
   const [workflowDialog, setWorkflowDialog] = useState<"start" | "revise" | "resume" | "intervene" | "continueRepairs">();
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [workflowFeedback, setWorkflowFeedback] = useState("");
+  const [workflowScopeChange, setWorkflowScopeChange] = useState(false);
   const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
   const [workflowAdditionalRepairs, setWorkflowAdditionalRepairs] = useState("2");
   const [workflowMutationPending, setWorkflowMutationPending] = useState<{ readonly token: number; readonly sessionId: string; readonly phase: EngineeringWorkflow["phase"] | null }>();
@@ -443,6 +451,7 @@ export function App() {
   const mentionSearchInputRef = useRef<HTMLInputElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionReturnCursorRef = useRef<number | undefined>(undefined);
+  const slashReturnCursorRef = useRef<number | undefined>(undefined);
   const mentionSearchTimerRef = useRef(0);
   const copyFeedbackTimerRef = useRef(0);
   const mentionSearchGenerationRef = useRef(0);
@@ -696,6 +705,14 @@ export function App() {
     composerTextareaRef.current?.focus();
     composerTextareaRef.current?.setSelectionRange(cursor, cursor);
   }, [mentionMenu]);
+
+  useLayoutEffect(() => {
+    const cursor = slashReturnCursorRef.current;
+    if (slashCommandMenu || cursor === undefined) return;
+    slashReturnCursorRef.current = undefined;
+    composerTextareaRef.current?.focus();
+    composerTextareaRef.current?.setSelectionRange(cursor, cursor);
+  }, [slashCommandMenu]);
 
   useEffect(() => {
     pruneDrafts();
@@ -1262,11 +1279,8 @@ export function App() {
   const dismissSlashCommandMenu = () => {
     const cursor = slashCommandMenu?.active.end ?? commandText.length;
     dismissedSlashCommandRef.current = { text: commandText, cursor };
+    slashReturnCursorRef.current = cursor;
     setSlashCommandMenu(undefined);
-    window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(cursor, cursor);
-    });
   };
 
   const removeSlashCommandTrigger = () => {
@@ -1274,11 +1288,8 @@ export function App() {
     const text = commandText.slice(slashCommandMenu.active.end);
     dismissedSlashCommandRef.current = undefined;
     setCommandText(text);
+    slashReturnCursorRef.current = 0;
     setSlashCommandMenu(undefined);
-    window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(0, 0);
-    });
   };
 
   const updateSlashCommandQuery = (query: string) => {
@@ -1291,16 +1302,14 @@ export function App() {
 
   const chooseSlashCommand = (item: SlashCommandItem) => {
     if (!slashCommandMenu) return;
-    const applied = applySlashCommand(commandText, slashCommandMenu.active, item.name);
+    const textarea = composerTextareaRef.current;
+    const liveText = textarea?.value ?? commandText;
+    const liveActive = activeSlashCommand(liveText, textarea?.selectionStart ?? slashCommandMenu.active.end);
+    if (!liveActive) return;
+    const applied = applySlashCommand(liveText, liveActive, item.name);
     setCommandText(applied.text);
+    slashReturnCursorRef.current = applied.cursor;
     setSlashCommandMenu(undefined);
-    window.requestAnimationFrame(() => {
-      setCommandText((current) => current === `/${item.name}` ? `${current} ` : current);
-      window.requestAnimationFrame(() => {
-        composerTextareaRef.current?.focus();
-        composerTextareaRef.current?.setSelectionRange(applied.cursor, applied.cursor);
-      });
-    });
   };
 
   const updateMentionQuery = (query: string) => {
@@ -1340,14 +1349,15 @@ export function App() {
   const removeActiveMention = () => {
     if (!mentionMenu) return;
     const { start, end } = mentionMenu.active;
-    const next = `${commandText.slice(0, start)}${commandText.slice(end)}`;
+    const liveText = composerTextareaRef.current?.value ?? commandText;
+    if (!liveText.slice(start, end).startsWith("@")) {
+      dismissMentionMenu();
+      return;
+    }
+    const next = `${liveText.slice(0, start)}${liveText.slice(end)}`;
     setCommandText(next);
     mentionReturnCursorRef.current = start;
     dismissMentionMenu();
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(start, start);
-    }));
   };
 
   const closeMentionPicker = () => {
@@ -1358,15 +1368,14 @@ export function App() {
   const chooseMention = (item: FileMention) => {
     const currentMentionMenu = mentionMenuRef.current?.mentions.length ? mentionMenuRef.current : mentionOptionsRef.current ?? lastMentionMenuRef.current;
     if (!currentMentionMenu) return;
-    const applied = applyFileMention(commandText, currentMentionMenu.active, item.path);
+    const liveText = composerTextareaRef.current?.value ?? commandText;
+    if (!liveText.slice(currentMentionMenu.active.start, currentMentionMenu.active.end).startsWith("@")) return;
+    const applied = applyFileMention(liveText, currentMentionMenu.active, item.path);
     setCommandText(applied.text);
+    mentionReturnCursorRef.current = applied.cursor;
     setMentionMenu(undefined);
     completedMentionRef.current = applied;
     suppressMentionSelectionRef.current = true;
-    window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
-      composerTextareaRef.current?.setSelectionRange(applied.cursor, applied.cursor);
-    });
   };
 
   const insertMentionTrigger = () => {
@@ -1793,19 +1802,30 @@ export function App() {
     }
   };
 
-  const runWorkflowMutation = async (input: EngineeringWorkflowMutationInput) => {
+  const runWorkflowMutation = async (input: WorkflowMutationRequest) => {
     const session = selectedSessionRef.current;
     if (!session) return;
     const phase = session.workflow?.phase ?? null;
     if (workflowMutationPending?.sessionId === session.id && workflowMutationPending.phase === phase) return;
     const targetId = session.id;
+    const mutationId = input.mutationId ?? crypto.randomUUID();
+    const guardedInput = session.workflow && input.action !== "start"
+      ? {
+        ...input,
+        workflowId: session.workflow.id,
+        mutationId,
+        expectedRevision: session.workflow.revision ?? 0,
+        expectedPhase: session.workflow.phase,
+        ...(session.workflow.phaseRun ? { expectedPhaseRunId: session.workflow.phaseRun.id } : {}),
+      } as EngineeringWorkflowMutationInput
+      : { ...input, mutationId } as EngineeringWorkflowMutationInput;
     const token = ++workflowMutationSequenceRef.current;
     workflowMutationTokensRef.current.set(targetId, token);
     setWorkflowMutationPending({ token, sessionId: targetId, phase });
     setBusy(true);
     setOperationError(undefined);
     try {
-      const result = await Effect.runPromise(mutateEngineeringWorkflow(session.id, input));
+      const result = await Effect.runPromise(mutateEngineeringWorkflow(session.id, guardedInput));
       if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(result.session);
       setWorkflowDialog(undefined);
       setWorkflowFeedback("");
@@ -1863,7 +1883,9 @@ export function App() {
     const session = selectedSessionRef.current;
     const feedback = workflowFeedback.trim();
     if (!session || session.workflow?.phase !== "blocked" || !feedback || busy) return;
-    void runWorkflowMutation({ runtimeId: session.runtimeId, action: "resume", feedback });
+    void runWorkflowMutation(workflowScopeChange
+      ? { runtimeId: session.runtimeId, action: "intervene", feedback, scopeChange: true }
+      : { runtimeId: session.runtimeId, action: "resume", feedback });
   };
 
   const continueWorkflow = () => {
@@ -1885,7 +1907,7 @@ export function App() {
     const session = selectedSessionRef.current;
     const feedback = workflowFeedback.trim();
     if (!session || !feedback || busy) return;
-    void runWorkflowMutation({ runtimeId: session.runtimeId, action: "intervene", feedback });
+    void runWorkflowMutation({ runtimeId: session.runtimeId, action: "intervene", feedback, ...(workflowScopeChange ? { scopeChange: true } : {}) });
   };
 
   const continueFailedWorkflow = async (additionalRepairAttempts: number) => {
@@ -1899,10 +1921,17 @@ export function App() {
         ? (await Effect.runPromise(resumeOwnedSession(session.id, session.runtimeId))).session
         : session;
       if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(activeSession);
+      const workflow = activeSession.workflow;
+      if (!workflow) throw new Error("The session has no engineering workflow");
       const result = await Effect.runPromise(mutateEngineeringWorkflow(activeSession.id, {
         runtimeId: activeSession.runtimeId,
         action: "continueRepairs",
         additionalRepairAttempts,
+        workflowId: workflow.id,
+        mutationId: crypto.randomUUID(),
+        expectedRevision: workflow.revision ?? 0,
+        expectedPhase: workflow.phase,
+        ...(workflow.phaseRun ? { expectedPhaseRunId: workflow.phaseRun.id } : {}),
       }));
       if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(result.session);
       setWorkflowDialog(undefined);
@@ -1936,12 +1965,14 @@ export function App() {
   const openWorkflowResume = (returnFocus: HTMLElement) => {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowFeedback("");
+    setWorkflowScopeChange(false);
     setWorkflowDialog("resume");
   };
 
   const openWorkflowIntervention = (returnFocus: HTMLElement) => {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowFeedback("");
+    setWorkflowScopeChange(false);
     setWorkflowDialog("intervene");
   };
 
@@ -2350,7 +2381,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : selectedSession.workflow && workflowRunsAutonomously(selectedSession.workflow.phase) ? " workflow-monitor-mode" : ""}`}>
+          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : selectedSession.workflow && (workflowRunsAutonomously(selectedSession.workflow.phase) || selectedSession.workflow.phase === "failed") ? " workflow-monitor-mode" : ""}`}>
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -2766,9 +2797,10 @@ export function App() {
         <div className="dialog-body workflow-dialog-body">
           <p className="workflow-intervention-note">Explain what changed or provide the authorization, approved procedure, decision, or non-sensitive evidence Pi requested. Do not paste credentials or secret values.</p>
           <label>Unblock guidance<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={7} placeholder="Provide the missing decision or approved procedure, and identify where Pi can verify it…" /></label>
+          {selectedSession.workflow.executionAuthority ? <label className="workflow-scope-change"><input type="checkbox" checked={workflowScopeChange} onChange={(event) => setWorkflowScopeChange(event.target.checked)} /> <span><b>This requires revised scope or authority</b><small>Preserve prior evidence, return to planning, and require a new Approve & Run.</small></span></label> : null}
           {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
         </div>
-        <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "RESUMING…" : <>RESUME WITH GUIDANCE <ArrowRight aria-hidden="true" /></>}</button></footer>
+        <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : workflowScopeChange ? <>RETURN TO PLAN <ArrowRight aria-hidden="true" /></> : <>RESUME WITH GUIDANCE <ArrowRight aria-hidden="true" /></>}</button></footer>
       </DialogSurface>}
 
       {workflowDialog === "intervene" && selectedSession?.workflow && <DialogSurface
@@ -2781,10 +2813,11 @@ export function App() {
         render={<form onSubmit={submitWorkflowIntervention} />}
       >
         <>
-          <header><div><span>USER GUIDANCE</span><Dialog.Title render={<b />}>Guide the current phase</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close intervention"><X aria-hidden="true" /></Dialog.Close></header>
+          <header><div><span>USER GUIDANCE</span><Dialog.Title render={<b />}>Guide current workflow</Dialog.Title></div><Dialog.Close disabled={busy} aria-label="Close guidance"><X aria-hidden="true" /></Dialog.Close></header>
           <div className="dialog-body workflow-dialog-body">
-            <p className="workflow-intervention-note">Pi receives this as labeled guidance without leaving the approved autonomous workflow. If the phase is between agent runs, PISS delivers it with the next run.</p>
+            <p className="workflow-intervention-note">PISS stores this guidance durably and delivers it exactly once at the next safe agent boundary. Scope-changing guidance returns the workflow to planning instead of silently widening approval.</p>
             <label>Guidance<textarea ref={workflowObjectiveRef} value={workflowFeedback} onChange={(event) => setWorkflowFeedback(event.target.value)} maxLength={64 * 1024} rows={6} placeholder="What should Pi adjust or keep in mind?" /></label>
+            {selectedSession.workflow.executionAuthority ? <label className="workflow-scope-change"><input type="checkbox" checked={workflowScopeChange} onChange={(event) => setWorkflowScopeChange(event.target.checked)} /> <span><b>This changes approved scope or authority</b><small>Pause execution, preserve prior evidence, and return to planning for a new Approve & Run.</small></span></label> : null}
             {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
           </div>
           <footer><Dialog.Close className="cancel" disabled={busy}>CANCEL</Dialog.Close><button className="launch workflow-launch" disabled={busy || !workflowFeedback.trim()} type="submit">{busy ? "SENDING…" : <>SEND GUIDANCE <ArrowRight aria-hidden="true" /></>}</button></footer>
@@ -2838,7 +2871,7 @@ export function App() {
 const WORKFLOW_STAGES = ["DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
 function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "blocked";
+  return phase === "defining" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "blocked";
 }
 
 function workflowRunsAutonomously(phase: EngineeringWorkflow["phase"]): boolean {
@@ -2908,10 +2941,26 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   const approval = workflow.phase === "awaitingSpecApproval" || workflow.phase === "awaitingPlanApproval";
   const terminal = isTerminalWorkflowPhase(workflow.phase);
   const interrupted = workflowWasInterrupted(workflow);
-  const blockerCanContinue = workflow.supervisor?.lastAdvice?.action !== "unsafe_stop";
+  const blockerCanContinue = workflow.supervisor?.lastAdvice?.action !== "unsafe_stop"
+    && workflow.supervisor?.lastAdvice?.action !== "human_authority_required";
   const phaseSummary = workflow.checkpoint?.summary ?? workflow.objective;
   const phaseReport = workflow.error ?? phaseSummary;
-  const hasLongPhaseReport = workflowRunsAutonomously(workflow.phase) && phaseReport.length > 600;
+  const dossier = workflow.dossier;
+  const progress = workflow.progress;
+  const totalSlices = dossier?.slices.length ?? 0;
+  const totalCriteria = dossier?.criteria.length ?? 0;
+  const guidance = workflow.guidance ?? [];
+  const dossierSliceIds = new Set(dossier?.slices.map((item) => item.id) ?? []);
+  const dossierCriterionIds = new Set(dossier?.criteria.map((item) => item.id) ?? []);
+  const completedSlices = progress?.completedSliceIds.filter((id) => dossierSliceIds.has(id)).length ?? 0;
+  const passedCriterionIds = new Set(progress?.passedCriterionIds.filter((id) => dossierCriterionIds.has(id)) ?? []);
+  const evidenceByCriterion = new Map((progress?.evidence ?? []).filter((item) => dossierCriterionIds.has(item.criterionId)).map((item) => [item.criterionId, item]));
+  const passedCriteria = [...passedCriterionIds].filter((id) => evidenceByCriterion.has(id)).length;
+  const remainingCriteria = dossier?.criteria.filter((item) => !passedCriterionIds.has(item.id) || !evidenceByCriterion.has(item.id)) ?? [];
+  const queuedGuidance = guidance.filter((item) => item.status === "queued").length;
+  const deliveredGuidance = guidance.filter((item) => item.status === "delivered").length;
+  const appliedGuidance = guidance.filter((item) => item.status === "applied").length;
+  const hasLongPhaseReport = (workflowRunsAutonomously(workflow.phase) || workflow.phase === "failed") && phaseReport.length > 600;
   const artifactLabel = workflow.phase === "awaitingSpecApproval"
     ? "SPECIFICATION"
     : workflow.phase === "awaitingPlanApproval"
@@ -2930,12 +2979,39 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
     <ol className="workflow-stage-rail" aria-label="Workflow progress">
       {WORKFLOW_STAGES.map((stage, index) => <li className={index < activeStage ? "complete" : index === activeStage ? "active" : "pending"} key={stage}><i>{index < activeStage ? <Check aria-hidden="true" /> : index + 1}</i><span>{stage}</span></li>)}
     </ol>
+    {progress && <section className="workflow-progress-summary" aria-label="Durable workflow progress">
+      <div className="workflow-current-activity"><small>{progress.condition.replaceAll("_", " ").toUpperCase()}</small><b>{progress.activity}</b><span>{progress.nextAction}</span></div>
+      <dl>
+        <div><dt>SLICES</dt><dd>{completedSlices}/{totalSlices || "—"}</dd></div>
+        <div><dt>CRITERIA</dt><dd>{passedCriteria}/{totalCriteria || "—"}</dd></div>
+        <div><dt>REPAIR</dt><dd>{workflow.repairAttempts}/{workflow.maxRepairAttempts}</dd></div>
+        <div><dt>GUIDANCE</dt><dd>{queuedGuidance}Q · {deliveredGuidance}D · {appliedGuidance}A</dd></div>
+      </dl>
+      {(progress.currentSliceId || progress.verificationStep || progress.reviewStep) && <p><b>{progress.currentSliceId ? `Slice ${progress.currentSliceId}` : workflowPhaseLabel(workflow.phase)}</b><span>{progress.verificationStep ?? progress.reviewStep ?? "In progress"}</span></p>}
+      <div className="workflow-run-meta">
+        <span><small>PHASE RUN</small><code title={workflow.phaseRun?.id ?? "No active phase run"}>{workflow.phaseRun?.id ?? "—"}</code></span>
+        <span><small>ATTEMPT</small><b>{workflow.phaseRun?.attempt ?? 0}</b></span>
+        <span><small>TRANSIENT RETRY</small><b>{progress.retryAttempt}/{progress.maxTransientRetries}</b></span>
+        <span><small>REMAINING</small><b>{remainingCriteria.length} criteria · {Math.max(0, workflow.maxRepairAttempts - workflow.repairAttempts)} repairs</b></span>
+      </div>
+      <time dateTime={progress.lastActivityAt}>Updated {relativeTime(progress.lastActivityAt)} ago</time>
+    </section>}
+    {workflow.openQuestions?.length ? <section className="workflow-open-questions" aria-label="Open planning questions">
+      <small>INPUT NEEDED</small>
+      <ul>{workflow.openQuestions.map((question) => <li key={question}>{question}</li>)}</ul>
+    </section> : null}
     <div className="workflow-copy">
       {workflow.phase === "blocked" || interrupted ? <>
         <div className="workflow-blocker" role="alert">
           <small>WHAT’S STOPPING IT</small>
           <p>{workflowBlockerProblem(workflow)}</p>
-          <b>{interrupted ? "Resume the workflow from its preserved state?" : blockerCanContinue ? "Would you like the workflow to continue?" : "Give feedback if the approved scope or safety constraints should be reconsidered."}</b>
+          <b>{interrupted
+            ? "Resume the workflow from its preserved state?"
+            : blockerCanContinue
+              ? "Would you like the workflow to continue?"
+              : workflow.supervisor?.lastAdvice?.action === "human_authority_required"
+                ? "Provide the exact non-secret input requested, or revise scope and return to planning."
+                : "Give feedback if the approved scope or safety constraints should be reconsidered."}</b>
         </div>
         {workflow.supervisor?.lastAdvice && <details className="workflow-blocker-details">
           <summary><ClipboardCheck aria-hidden="true" /> TECHNICAL DETAILS<ChevronRight aria-hidden="true" /></summary>
@@ -2943,23 +3019,38 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         </details>}
       </> : <>
         <p>{phaseSummary}</p>
-        {workflow.phase === "awaitingPlanApproval" && <p className="workflow-autonomy-note"><b>FINAL APPROVAL</b> Approving this plan authorizes PISS to execute every listed operation unattended. Review its autonomy envelope now; the loop will not ask you to reconfirm approved work.</p>}
+        {workflow.phase === "awaitingPlanApproval" && <p className="workflow-autonomy-note"><b>FINAL APPROVAL · PLAN REVISION {workflow.dossier?.revision ?? workflow.artifactRevision ?? 0}</b> Approving this specification and plan authorizes PISS to execute every listed operation unattended. Review the autonomy envelope now; the loop will not ask you to reconfirm approved work.</p>}
         {hasLongPhaseReport && <details className="workflow-report-details">
           <summary><ClipboardCheck aria-hidden="true" /> FULL PHASE REPORT<ChevronRight aria-hidden="true" /></summary>
           <div className="workflow-report" data-keyboard-scroll tabIndex={0}><Markdown remarkPlugins={[remarkGfm]}>{phaseReport}</Markdown></div>
         </details>}
         {workflow.error && workflow.error !== phaseSummary && !hasLongPhaseReport && <strong role="alert">{workflow.error}</strong>}
-        {workflow.checkpoint?.artifact && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+        {workflow.specification && <details><summary><ClipboardCheck aria-hidden="true" /> COMPLETE SPECIFICATION<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.specification}</Markdown></div></details>}
+        {workflow.plan && <details><summary><ClipboardCheck aria-hidden="true" /> EXECUTABLE PLAN & AUTONOMY ENVELOPE<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.plan}</Markdown></div></details>}
+        {workflow.phase !== "awaitingPlanApproval" && workflow.checkpoint?.artifact && workflow.checkpoint.artifact !== workflow.specification && workflow.checkpoint.artifact !== workflow.plan && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]}>{workflow.checkpoint.artifact}</Markdown></div></details>}
+        {dossier && <details><summary><ClipboardCheck aria-hidden="true" /> CRITERIA & EVIDENCE · {passedCriteria}/{totalCriteria}<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">{dossier.criteria.map((criterion) => { const evidence = evidenceByCriterion.get(criterion.id); const passed = passedCriterionIds.has(criterion.id) && Boolean(evidence); return <p key={criterion.id}><b>{passed ? "PASSED" : "REMAINING"} · {criterion.id}</b><span>{criterion.title}</span>{evidence && <small>{evidence.summary}{evidence.eventSequence !== undefined ? ` · event ${evidence.eventSequence}` : ""}</small>}</p>; })}</div></details>}
+        {dossier && <details><summary><ClipboardCheck aria-hidden="true" /> STRUCTURED APPROVAL DOSSIER<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">
+          <p><b>ORDERED DELIVERY SLICES</b><span>{dossier.slices.map((slice) => `${slice.id}: ${slice.title}${slice.dependencies.length ? ` (after ${slice.dependencies.join(", ")})` : ""}`).join(" · ")}</span></p>
+          <p><b>VERIFICATION & REVIEW</b><span>{dossier.verificationRequirements.join(" · ") || "None recorded"}</span></p>
+          {dossier.operations.map((operation) => <p key={operation.id}><b>{operation.kind.replaceAll("_", " ").toUpperCase()} · {operation.id}</b><span>{operation.target}{operation.constraints?.length ? ` · ${operation.constraints.join(" · ")}` : ""}</span><small>{operation.idempotencyKey ? `Receipt required · Idempotency key: ${operation.idempotencyKey} · ` : ""}Recovery: {operation.recovery} · Evidence: {operation.evidence}</small></p>)}
+          <p><b>RECOVERY REQUIREMENTS</b><span>{dossier.recoveryRequirements.join(" · ") || "None recorded"}</span></p>
+          <p><b>OUTSIDE THE ENVELOPE</b><span>{dossier.exclusions.join(" · ") || "None recorded"}</span></p>
+          <p><b>READINESS</b><span>{dossier.readiness.map((item) => `${item.status.toUpperCase()} · ${item.label}: ${item.detail}`).join(" · ") || "No separate readiness checks recorded"}</span></p>
+          <p><b>UNRESOLVED CAPABILITIES OR APPROVALS</b><span>{dossier.unresolved.join(" · ") || "None"}</span></p>
+        </div></details>}
+        {guidance.length > 0 && <details><summary><MessageSquare aria-hidden="true" /> GUIDANCE LOG · {guidance.length}<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">{guidance.map((item) => <p key={item.id}><b>{item.status.toUpperCase()} · {item.id}</b><span>{item.text}</span><small>Plan {item.planRevision} · command {item.commandId}</small></p>)}</div></details>}
+        {(workflow.operationReceipts?.length ?? 0) > 0 && <details><summary><ClipboardCheck aria-hidden="true" /> OPERATION RECEIPTS · {workflow.operationReceipts?.length}<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">{workflow.operationReceipts?.map((receipt) => <p key={receipt.idempotencyKey}><b>{receipt.status.replaceAll("_", " ").toUpperCase()} · {receipt.operationId}</b><span>{receipt.target}</span><small>Idempotency key {receipt.idempotencyKey}{receipt.evidence ? ` · ${receipt.evidence}` : ""}</small></p>)}</div></details>}
+        {workflow.authorityDecisions && workflow.authorityDecisions.length > 0 && <details><summary><ClipboardCheck aria-hidden="true" /> AUTHORITY DECISIONS · {workflow.authorityDecisions.length}<ChevronRight aria-hidden="true" /></summary><div className="workflow-authority-log">{workflow.authorityDecisions.map((decision) => <p key={decision.eventId}><b>{decision.allowed ? "ALLOWED" : "BLOCKED"} · {decision.operationId}</b><span>{decision.basis}</span>{decision.correlationId && <small>Source {decision.source ?? "workflow authority"} · correlation {decision.correlationId}{decision.runtimeId ? ` · runtime ${decision.runtimeId}` : ""}{decision.idempotencyKey ? ` · idempotency ${decision.idempotencyKey}` : ""}</small>}</p>)}</div></details>}
       </>}
     </div>
     <footer>
       {approval && <>
         <button className="workflow-revise" disabled={pending} type="button" onClick={(event) => onRevise(event.currentTarget)}>REQUEST CHANGES</button>
-        <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "APPROVE SPEC" : "APPROVE & RUN"}</button>
+        <button className="workflow-approve" disabled={pending} type="button" onClick={onApprove}><Check aria-hidden="true" />{workflow.phase === "awaitingSpecApproval" ? "CONTINUE TO PLAN" : "APPROVE & RUN"}</button>
       </>}
       {workflow.phase === "blocked" && workflow.supervisor?.status === "consulting" && <>
         <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />Loop supervisor is reviewing this blocker</span>
-        <button className="workflow-intervene" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onResume(event.currentTarget)}><MessageSquare aria-hidden="true" />GIVE FEEDBACK</button>
+        <button className="workflow-intervene" disabled={pending || !workflow.blockedFromPhase} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />GUIDE CURRENT WORKFLOW</button>
       </>}
       {interrupted && <button className="workflow-approve" disabled={pending} type="button" onClick={onContinue}><RefreshCw aria-hidden="true" />RESUME WORKFLOW</button>}
       {workflow.phase === "blocked" && workflow.supervisor?.status !== "consulting" && <>
@@ -2974,11 +3065,10 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
       {workflow.phase === "failed" && <>
         <span className="workflow-failed-next">Blocking findings remain · extend the repair budget to continue.</span>
         <button className="workflow-revise" disabled={pending} type="button" onClick={onReviewChanges}><FileDiff aria-hidden="true" />REVIEW CHANGES</button>
-        <button className="workflow-continue" disabled={pending || Boolean(workflow.queuedIntervention)} type="button" onClick={(event) => onContinueRepairs(event.currentTarget)}><RefreshCw aria-hidden="true" />{workflow.queuedIntervention ? "DELIVERING FOLLOW-UP…" : "CONTINUE REPAIRS"}</button>
+        <button className="workflow-continue" disabled={pending} type="button" onClick={(event) => onContinueRepairs(event.currentTarget)}><RefreshCw aria-hidden="true" />CONTINUE REPAIRS</button>
       </>}
       {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
-      {(workflow.phase === "building" || workflow.phase === "repairing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />GUIDE CURRENT PHASE</button>}
-      {(workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{workflow.queuedIntervention ? "GUIDANCE QUEUED" : "GUIDE CURRENT PHASE"}</button>}
+      {(workflow.phase === "defining" || workflow.phase === "planning" || workflow.phase === "building" || workflow.phase === "repairing" || workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{queuedGuidance > 0 ? `${queuedGuidance} GUIDANCE QUEUED` : "GUIDE CURRENT WORKFLOW"}</button>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
   </section>;

@@ -11,13 +11,21 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
-import { SessionArtifact as SessionArtifactSchema } from "../../shared/domain.ts";
+import {
+  EngineeringWorkflowAuthorityDecision as EngineeringWorkflowAuthorityDecisionSchema,
+  EngineeringWorkflowDossier as EngineeringWorkflowDossierSchema,
+  EngineeringWorkflowOperationReceipt as EngineeringWorkflowOperationReceiptSchema,
+  SessionArtifact as SessionArtifactSchema,
+} from "../../shared/domain.ts";
 import type {
   AvailableModel,
   CreateOwnedSessionInput,
   EngineeringWorkflow,
   EngineeringWorkflowCheckpoint,
+  EngineeringWorkflowDossier,
   EngineeringWorkflowMutationInput,
+  EngineeringWorkflowOperation,
+  EngineeringWorkflowOperationReceipt,
   EngineeringWorkflowPhase,
   EngineeringWorkflowSupervisorAdvice,
   ImportOwnedSessionInput,
@@ -37,7 +45,30 @@ import type {
   WorkspaceId,
 } from "../../shared/domain.ts";
 import { canAcceptPrompt, canConfigureSession, transitionAttentionState } from "../../shared/sessionState.ts";
-import { applyWorkflowCheckpoint, isAutonomousWorkflowPhase, isTerminalWorkflowPhase } from "../../shared/engineeringWorkflow.ts";
+import {
+  appendBoundedWorkflowGuidance,
+  applyWorkflowCheckpoint,
+  applyWorkflowProgress,
+  cancelEngineeringWorkflow,
+  canAutomaticallyAuthorize,
+  expectedCheckpointStage,
+  initialWorkflowProgress,
+  isAutonomousWorkflowPhase,
+  isTerminalWorkflowPhase,
+  recordAuthorityDecision,
+  recordWorkflowGuidanceDelivery,
+  workflowCanRecordEvent,
+  workflowEventMatchesCurrentRun,
+  workflowFirstIncomplete,
+  workflowHasActiveCurrentPhaseRun,
+  workflowOperationRequiresReceipt,
+  workflowPlanRevision,
+  workflowRevision,
+  workflowDossierValidationError,
+  WORKFLOW_TRANSIENT_RETRY_LIMIT,
+  type WorkflowGuidanceDeliveryEvent,
+  type WorkflowProgressEvent,
+} from "../../shared/engineeringWorkflow.ts";
 import { AppConfig } from "../config.ts";
 import { PushNotifications } from "../notifications/PushNotifications.ts";
 import { FileMentionSearch, FileMentionSearchError } from "../files/FileMentionSearch.ts";
@@ -105,6 +136,37 @@ interface PendingCommand {
   readonly timer: NodeJS.Timeout;
 }
 
+type WorkflowCancelIntent = {
+  readonly key: string;
+  readonly workflowId: string;
+  readonly workflowRevision: number;
+  readonly phase: EngineeringWorkflowPhase;
+  readonly phaseRunId?: string;
+};
+
+type PendingWorkflowAuthorityRequest = {
+  readonly toolCallId: string;
+  readonly expectedRequestTitle: string;
+  readonly displayTitle: string;
+  readonly workflowId: string;
+  readonly phaseRunId: string;
+  readonly planRevision: number;
+  readonly runtimeId: string;
+  readonly operationId: string;
+  readonly kind: EngineeringWorkflowOperation["kind"];
+  readonly target: string;
+  readonly constraints: ReadonlyArray<string>;
+  readonly idempotencyKey?: string;
+};
+
+type ResolvedWorkflowAuthorityRequest = {
+  readonly expectedRequestTitle: string;
+  readonly displayTitle: string;
+  readonly confirmed: boolean;
+  readonly durable: boolean;
+  readonly waitingRequestIds: string[];
+};
+
 interface MutableOwnedSession {
   snapshot: OwnedSession;
   child: ChildProcessWithoutNullStreams | null;
@@ -117,6 +179,10 @@ interface MutableOwnedSession {
   finalResponseRecoveryAttempted: boolean;
   quarantined: boolean;
   workflowDispatchPending: boolean;
+  workflowEventTail: Promise<void>;
+  workflowCancelRequested: WorkflowCancelIntent | null;
+  readonly pendingWorkflowAuthority: Map<string, PendingWorkflowAuthorityRequest>;
+  readonly resolvedWorkflowAuthority: Map<string, ResolvedWorkflowAuthorityRequest>;
   termination?: Promise<void>;
   readonly pending: Map<string, PendingCommand>;
   readonly mutationLock: Semaphore.Semaphore;
@@ -124,6 +190,19 @@ interface MutableOwnedSession {
   sessionFileIdentity: { readonly device: bigint; readonly inode: bigint } | null;
   readonly acceptedCommandIds: Set<string>;
   readonly interactiveTimers: Map<string, NodeJS.Timeout>;
+}
+
+function workflowCancelIntentKey(input: EngineeringWorkflowMutationInput): string {
+  return input.mutationId;
+}
+
+function workflowCancelIntentMatches(session: MutableOwnedSession, workflow = session.snapshot.workflow): boolean {
+  const intent = session.workflowCancelRequested;
+  return Boolean(intent && workflow
+    && intent.workflowId === workflow.id
+    && intent.workflowRevision === workflowRevision(workflow)
+    && intent.phase === workflow.phase
+    && intent.phaseRunId === workflow.phaseRun?.id);
 }
 
 export interface RuntimeTarget {
@@ -645,6 +724,12 @@ function workflowSupervisorAdviceFromRpc(message: RpcMessage, receivedAt = now()
   const args = argsValue as Record<string, unknown>;
   const actions = new Set(["resume_with_guidance", "retry_transient", "enter_repair", "human_authority_required", "unsafe_stop"]);
   if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
+  if (typeof args.eventId !== "string" || !args.eventId || args.eventId.length > 128) return;
+  if (typeof args.consultationId !== "string" || !args.consultationId || args.consultationId.length > 128) return;
+  if (typeof args.phaseRunId !== "string" || !args.phaseRunId || args.phaseRunId.length > 128) return;
+  if (!Number.isSafeInteger(args.planRevision) || Number(args.planRevision) < 0) return;
+  if (!Number.isSafeInteger(args.workflowRevision) || Number(args.workflowRevision) < 0) return;
+  if (typeof args.runtimeId !== "string" || !args.runtimeId || args.runtimeId.length > 128) return;
   if (typeof args.action !== "string" || !actions.has(args.action)) return;
   if (args.problem !== undefined && (typeof args.problem !== "string" || !args.problem || args.problem.length > 512)) return;
   if (typeof args.summary !== "string" || !args.summary || args.summary.length > 16 * 1024) return;
@@ -653,6 +738,12 @@ function workflowSupervisorAdviceFromRpc(message: RpcMessage, receivedAt = now()
   return {
     workflowId: args.workflowId,
     advice: {
+      eventId: args.eventId,
+      consultationId: args.consultationId,
+      phaseRunId: args.phaseRunId,
+      planRevision: Number(args.planRevision),
+      workflowRevision: Number(args.workflowRevision),
+      runtimeId: args.runtimeId,
       action: args.action as EngineeringWorkflowSupervisorAdvice["action"],
       ...(typeof args.problem === "string" ? { problem: args.problem } : {}),
       summary: args.summary,
@@ -685,6 +776,16 @@ function workflowCheckpointFromRpc(
   if (typeof args.outcome !== "string" || !outcomes.has(args.outcome)) return;
   if (typeof args.summary !== "string" || !args.summary || args.summary.length > 16 * 1024) return;
   if (args.artifact !== undefined && (typeof args.artifact !== "string" || args.artifact.length > 64 * 1024)) return;
+  if (args.eventId !== undefined && (typeof args.eventId !== "string" || !args.eventId || args.eventId.length > 128)) return;
+  if (args.phaseRunId !== undefined && (typeof args.phaseRunId !== "string" || !args.phaseRunId || args.phaseRunId.length > 128)) return;
+  if (args.planRevision !== undefined && (!Number.isSafeInteger(args.planRevision) || Number(args.planRevision) < 0)) return;
+  if (args.runtimeId !== undefined && (typeof args.runtimeId !== "string" || !args.runtimeId || args.runtimeId.length > 128)) return;
+  if (args.appliedGuidanceIds !== undefined && (!Array.isArray(args.appliedGuidanceIds) || args.appliedGuidanceIds.length > 64 || args.appliedGuidanceIds.some((id) => typeof id !== "string" || !id || id.length > 128))) return;
+  let dossier: EngineeringWorkflowDossier | undefined;
+  if (args.dossier !== undefined) {
+    try { dossier = Schema.decodeUnknownSync(EngineeringWorkflowDossierSchema)(args.dossier); }
+    catch { return; }
+  }
   return {
     workflowId: args.workflowId,
     checkpoint: {
@@ -695,7 +796,266 @@ function workflowCheckpointFromRpc(
       toolCallId: message.toolCallId,
       sequence,
       receivedAt,
+      eventId: typeof args.eventId === "string" ? args.eventId : `checkpoint:${message.toolCallId}`,
+      ...(typeof args.phaseRunId === "string" ? { phaseRunId: args.phaseRunId } : {}),
+      ...(typeof args.planRevision === "number" ? { planRevision: args.planRevision } : {}),
+      ...(typeof args.runtimeId === "string" ? { runtimeId: args.runtimeId } : {}),
+      ...(dossier ? { dossier } : {}),
+      ...(Array.isArray(args.appliedGuidanceIds) ? { appliedGuidanceIds: args.appliedGuidanceIds as string[] } : {}),
     },
+  };
+}
+
+function workflowProgressFromRpc(
+  message: RpcMessage,
+  sequence: number,
+  _runtimeId: string,
+  receivedAt = now(),
+): { readonly workflowId: string; readonly event: WorkflowProgressEvent } | undefined {
+  if (message.type !== "tool_execution_end" || message.toolName !== "piss_workflow_progress" || message.isError === true) return;
+  const details = rpcResultDetails(message);
+  if (!details || typeof details.workflowId !== "string" || !details.workflowId || details.workflowId.length > 128) return;
+  if (typeof details.activity !== "string" || !details.activity || details.activity.length > 8 * 1024) return;
+  const eventId = typeof details.eventId === "string" && details.eventId.length <= 128
+    ? details.eventId
+    : typeof message.toolCallId === "string" ? `progress:${message.toolCallId}` : undefined;
+  if (!eventId) return;
+  const stringIds = (value: unknown, maximum: number): string[] | undefined => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > maximum || value.some((item) => typeof item !== "string" || !item || item.length > 128)) return;
+    return value as string[];
+  };
+  const completedSliceIds = stringIds(details.completedSliceIds, 100);
+  const passedCriterionIds = stringIds(details.passedCriterionIds, 200);
+  const appliedGuidanceIds = stringIds(details.appliedGuidanceIds, 64);
+  if (details.completedSliceIds !== undefined && !completedSliceIds || details.passedCriterionIds !== undefined && !passedCriterionIds || details.appliedGuidanceIds !== undefined && !appliedGuidanceIds) return;
+  if (details.runtimeId !== undefined && (typeof details.runtimeId !== "string" || !details.runtimeId || details.runtimeId.length > 128)) return;
+  let receipt: EngineeringWorkflowOperationReceipt | undefined;
+  if (details.receipt !== undefined) {
+    const raw = typeof details.receipt === "object" && details.receipt !== null && !Array.isArray(details.receipt)
+      ? details.receipt as Record<string, unknown>
+      : undefined;
+    if (!raw) return;
+    try { receipt = Schema.decodeUnknownSync(EngineeringWorkflowOperationReceiptSchema)({ ...raw, evidence: typeof raw.evidence === "string" ? raw.evidence : null, updatedAt: receivedAt }); }
+    catch { return; }
+  }
+  const evidence = Array.isArray(details.evidence)
+    ? details.evidence.flatMap((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+      const item = value as Record<string, unknown>;
+      return typeof item.criterionId === "string" && item.criterionId && item.criterionId.length <= 128
+        && typeof item.summary === "string" && item.summary && item.summary.length <= 4 * 1024
+        ? [{ criterionId: item.criterionId, summary: item.summary, eventSequence: sequence }]
+        : [];
+    })
+    : undefined;
+  if (Array.isArray(details.evidence) && evidence?.length !== details.evidence.length) return;
+  const conditions = new Set(["working", "waiting_internal", "waiting_user", "retrying", "supervising", "blocked", "complete"]);
+  return {
+    workflowId: details.workflowId,
+    event: {
+      eventId,
+      ...(typeof details.phaseRunId === "string" ? { phaseRunId: details.phaseRunId } : {}),
+      ...(typeof details.planRevision === "number" && Number.isSafeInteger(details.planRevision) && details.planRevision >= 0 ? { planRevision: details.planRevision } : {}),
+      ...(typeof details.runtimeId === "string" ? { runtimeId: details.runtimeId } : {}),
+      activity: details.activity,
+      ...(details.currentSliceId === null || typeof details.currentSliceId === "string" ? { currentSliceId: details.currentSliceId } : {}),
+      ...(completedSliceIds ? { completedSliceIds } : {}),
+      ...(passedCriterionIds ? { passedCriterionIds } : {}),
+      ...(evidence ? { evidence } : {}),
+      ...(details.verificationStep === null || typeof details.verificationStep === "string" ? { verificationStep: details.verificationStep } : {}),
+      ...(details.reviewStep === null || typeof details.reviewStep === "string" ? { reviewStep: details.reviewStep } : {}),
+      ...(typeof details.condition === "string" && conditions.has(details.condition) ? { condition: details.condition as WorkflowProgressEvent["condition"] } : {}),
+      ...(typeof details.nextAction === "string" ? { nextAction: details.nextAction } : {}),
+      ...(typeof details.retryAttempt === "number" && Number.isSafeInteger(details.retryAttempt) && details.retryAttempt >= 0 ? { retryAttempt: details.retryAttempt } : {}),
+      ...(typeof details.maxTransientRetries === "number" && Number.isSafeInteger(details.maxTransientRetries) && details.maxTransientRetries >= 0 ? { maxTransientRetries: details.maxTransientRetries } : {}),
+      ...(appliedGuidanceIds ? { appliedGuidanceIds } : {}),
+      ...(receipt ? { receipt } : {}),
+      receivedAt,
+    },
+  };
+}
+
+function workflowDraftFromRpc(message: RpcMessage, receivedAt = now()): {
+  readonly workflowId: string;
+  readonly eventId: string;
+  readonly phaseRunId?: string;
+  readonly planRevision?: number;
+  readonly runtimeId?: string;
+  readonly stage: "define" | "plan";
+  readonly summary: string;
+  readonly specification?: string;
+  readonly plan?: string;
+  readonly questions: ReadonlyArray<string>;
+  readonly dossier?: EngineeringWorkflowDossier;
+  readonly receivedAt: string;
+} | undefined {
+  if (message.type !== "tool_execution_end" || message.toolName !== "piss_workflow_draft" || message.isError === true) return;
+  const details = rpcResultDetails(message);
+  if (!details || typeof details.workflowId !== "string" || !details.workflowId || details.workflowId.length > 128) return;
+  if (details.stage !== "define" && details.stage !== "plan") return;
+  if (typeof details.summary !== "string" || !details.summary || details.summary.length > 16 * 1024) return;
+  if (details.specification !== undefined && (typeof details.specification !== "string" || details.specification.length > 64 * 1024)) return;
+  if (details.plan !== undefined && (typeof details.plan !== "string" || details.plan.length > 64 * 1024)) return;
+  if (details.questions !== undefined && (!Array.isArray(details.questions) || details.questions.length > 20 || details.questions.some((item) => typeof item !== "string" || !item || item.length > 4 * 1024))) return;
+  let dossier: EngineeringWorkflowDossier | undefined;
+  if (details.dossier !== undefined) {
+    try { dossier = Schema.decodeUnknownSync(EngineeringWorkflowDossierSchema)(details.dossier); }
+    catch { return; }
+  }
+  return {
+    workflowId: details.workflowId,
+    eventId: typeof details.eventId === "string" && details.eventId.length <= 128 ? details.eventId : `draft:${String(message.toolCallId ?? "unknown")}`,
+    ...(typeof details.phaseRunId === "string" ? { phaseRunId: details.phaseRunId } : {}),
+    ...(typeof details.planRevision === "number" && Number.isSafeInteger(details.planRevision) && details.planRevision >= 0 ? { planRevision: details.planRevision } : {}),
+    ...(typeof details.runtimeId === "string" ? { runtimeId: details.runtimeId } : {}),
+    stage: details.stage,
+    summary: details.summary,
+    ...(typeof details.specification === "string" ? { specification: details.specification } : {}),
+    ...(typeof details.plan === "string" ? { plan: details.plan } : {}),
+    questions: Array.isArray(details.questions) ? details.questions as string[] : [],
+    ...(dossier ? { dossier } : {}),
+    receivedAt,
+  };
+}
+
+type ReportedWorkflowDraft = NonNullable<ReturnType<typeof workflowDraftFromRpc>>;
+
+function applyWorkflowDraftReport(workflow: EngineeringWorkflow, reportedDraft: ReportedWorkflowDraft): EngineeringWorkflow {
+  if (workflow.id !== reportedDraft.workflowId || workflow.processedEventIds?.includes(reportedDraft.eventId)) return workflow;
+  if (!workflowCanRecordEvent(workflow, reportedDraft.eventId)) return workflow;
+  if (!workflowEventMatchesCurrentRun(workflow, reportedDraft)) return workflow;
+  if (workflow.phase !== "defining" && workflow.phase !== "planning") return workflow;
+  const expectedStage = workflow.phase === "defining" ? "define" : "plan";
+  if (reportedDraft.stage !== expectedStage) return workflow;
+  const allocatedRevision = workflow.phase === "planning"
+    ? Math.max(1, workflow.phaseRun?.planRevision ?? workflowPlanRevision(workflow))
+    : workflow.phaseRun?.planRevision ?? workflowPlanRevision(workflow);
+  const reportedDossier = reportedDraft.dossier ?? workflow.dossier;
+  const dossier = workflow.phase === "planning" && reportedDossier
+    ? { ...reportedDossier, revision: allocatedRevision }
+    : reportedDossier;
+  const condition = reportedDraft.questions.length > 0 ? "waiting_user" as const : "working" as const;
+  const progress = workflow.progress ?? initialWorkflowProgress(reportedDraft.receivedAt, condition, dossier);
+  return {
+    ...workflow,
+    specification: reportedDraft.specification ?? workflow.specification,
+    plan: reportedDraft.plan ?? workflow.plan,
+    dossier,
+    artifactRevision: workflow.phase === "planning" ? allocatedRevision : workflow.artifactRevision,
+    revision: workflowRevision(workflow) + 1,
+    processedEventIds: [...(workflow.processedEventIds ?? []), reportedDraft.eventId],
+    openQuestions: [...reportedDraft.questions],
+    progress: {
+      ...progress,
+      activity: reportedDraft.summary,
+      condition,
+      nextAction: reportedDraft.questions.length > 0 ? "Answer the focused planning question" : "Continue refining the workflow artifacts",
+      lastActivityAt: reportedDraft.receivedAt,
+    },
+    updatedAt: reportedDraft.receivedAt,
+  };
+}
+
+function workflowAuthorityRequestTitle(toolCallId: string, title: string): string {
+  return `[PISS authority:${toolCallId}] ${title}`;
+}
+
+function workflowAuthorityCorrelationId(title: string): string | undefined {
+  const match = /^\[PISS authority:([^\]]+)\] /u.exec(title);
+  const correlationId = match?.[1];
+  return correlationId && correlationId.length <= 128 ? correlationId : undefined;
+}
+
+function workflowAuthorityRequestFromRpc(message: RpcMessage): PendingWorkflowAuthorityRequest | undefined {
+  if (message.type !== "tool_execution_start" || message.toolName !== "piss_workflow_authority_request" || typeof message.toolCallId !== "string") return;
+  if (typeof message.args !== "object" || message.args === null || Array.isArray(message.args)) return;
+  const args = message.args as Record<string, unknown>;
+  if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
+  if (typeof args.phaseRunId !== "string" || !args.phaseRunId || args.phaseRunId.length > 128) return;
+  if (!Number.isSafeInteger(args.planRevision) || Number(args.planRevision) < 0) return;
+  if (typeof args.runtimeId !== "string" || !args.runtimeId || args.runtimeId.length > 128) return;
+  if (typeof args.operationId !== "string" || !args.operationId || args.operationId.length > 128) return;
+  const kinds = new Set(["workspace_read", "workspace_write", "command", "browser_verify", "git_commit", "git_push", "migration", "deployment", "production_read", "production_write"]);
+  if (typeof args.kind !== "string" || !kinds.has(args.kind)) return;
+  if (typeof args.target !== "string" || !args.target || args.target.length > 16 * 1024) return;
+  if (!Array.isArray(args.constraints) || args.constraints.length > 100 || args.constraints.some((item) => typeof item !== "string" || !item || item.length > 4 * 1024)) return;
+  if (args.idempotencyKey !== undefined && (typeof args.idempotencyKey !== "string" || !args.idempotencyKey || args.idempotencyKey.length > 256)) return;
+  if (typeof args.title !== "string" || !args.title || args.title.length > 4 * 1024) return;
+  return { toolCallId: message.toolCallId, expectedRequestTitle: workflowAuthorityRequestTitle(message.toolCallId, args.title), displayTitle: args.title, workflowId: args.workflowId, phaseRunId: args.phaseRunId, planRevision: Number(args.planRevision), runtimeId: args.runtimeId, operationId: args.operationId, kind: args.kind as EngineeringWorkflowOperation["kind"], target: args.target, constraints: args.constraints as string[], ...(typeof args.idempotencyKey === "string" ? { idempotencyKey: args.idempotencyKey } : {}) };
+}
+
+export function reconcileWorkflowAfterRestart(workflow: EngineeringWorkflow, updatedAt = now()): EngineeringWorkflow {
+  if (!isAutonomousWorkflowPhase(workflow.phase)) return workflow;
+  const ambiguousReceipt = workflow.operationReceipts?.find((receipt) => receipt.status === "started"
+    && workflowOperationRequiresReceipt(workflow.dossier?.operations.find((operation) => operation.id === receipt.operationId)));
+  if (!ambiguousReceipt) {
+    const boundary = workflowFirstIncomplete(workflow);
+    const boundaryLabel = boundary
+      ? [boundary.sliceId ? `slice ${boundary.sliceId}` : null, boundary.criterionId ? `criterion ${boundary.criterionId}` : null].filter(Boolean).join(", ")
+      : "the current phase checkpoint";
+    return {
+      ...workflow,
+      revision: workflowRevision(workflow) + 1,
+      progress: workflow.progress ? {
+        ...workflow.progress,
+        currentSliceId: boundary?.sliceId ?? workflow.progress.currentSliceId,
+        condition: "waiting_internal",
+        activity: `Reconciled durable workflow state after restart; next safe boundary is ${boundaryLabel}`,
+        nextAction: `Resume ${boundaryLabel} without repeating completed operation receipts`,
+        lastActivityAt: updatedAt,
+      } : workflow.progress,
+      updatedAt,
+    };
+  }
+  return {
+    ...workflow,
+    phase: "blocked",
+    blockedFromPhase: workflow.phase,
+    operationReceipts: workflow.operationReceipts?.map((receipt) => receipt.idempotencyKey === ambiguousReceipt.idempotencyKey ? { ...receipt, status: "reconciliation_required" as const, updatedAt } : receipt),
+    revision: workflowRevision(workflow) + 1,
+    progress: workflow.progress ? { ...workflow.progress, condition: "blocked", activity: `Operation ${ambiguousReceipt.operationId} requires reconciliation after restart`, nextAction: "Confirm the external system-of-record result before retrying", lastActivityAt: updatedAt } : workflow.progress,
+    updatedAt,
+    error: `The runtime restarted after ${ambiguousReceipt.operationId} began but before completion evidence was recorded. Reconcile idempotency key ${ambiguousReceipt.idempotencyKey} before continuing.`,
+  };
+}
+
+function reconcileSupervisorAdvice(
+  workflow: EngineeringWorkflow,
+  reported: ReportedSupervisorAdvice,
+  automaticRecovery: boolean,
+): EngineeringWorkflow {
+  const supervisor = workflow.supervisor;
+  const advice = reported.advice;
+  if (workflow.id !== reported.workflowId || workflow.phase !== "blocked" || !workflow.blockedFromPhase || supervisor?.status !== "consulting") return workflow;
+  if (!advice.eventId || !advice.consultationId || !advice.phaseRunId || advice.planRevision === undefined || advice.workflowRevision === undefined || !advice.runtimeId) return workflow;
+  if (!workflowCanRecordEvent(workflow, advice.eventId)) return workflow;
+  if (workflow.processedEventIds?.includes(advice.eventId)
+    || advice.consultationId !== supervisor.activeConsultationId
+    || advice.phaseRunId !== supervisor.consultationPhaseRunId
+    || advice.planRevision !== supervisor.consultationPlanRevision
+    || advice.workflowRevision !== supervisor.consultationWorkflowRevision
+    || advice.runtimeId !== workflow.phaseRun?.runtimeId) return workflow;
+  const consumesRepair = advice.action === "enter_repair";
+  const repairAttempts = consumesRepair ? workflow.repairAttempts + 1 : workflow.repairAttempts;
+  const canRecover = automaticRecovery && (!consumesRepair || repairAttempts <= workflow.maxRepairAttempts);
+  const guidance = advice.guidance?.trim() || advice.summary;
+  const updatedSupervisor = {
+    ...supervisor,
+    status: "idle" as const,
+    pendingGuidance: canRecover ? `[Loop supervisor — ${advice.action.toUpperCase()}]\n\n${guidance}\n\nBasis: ${advice.basis}` : null,
+    lastAdvice: advice,
+    activeConsultationId: null,
+    consultationPhaseRunId: null,
+  };
+  return {
+    ...workflow,
+    ...(canRecover ? { phase: advice.action === "enter_repair" ? "repairing" as const : workflow.blockedFromPhase, blockedFromPhase: null, repairAttempts } : {}),
+    supervisor: updatedSupervisor,
+    revision: workflowRevision(workflow) + 1,
+    processedEventIds: [...(workflow.processedEventIds ?? []), advice.eventId],
+    updatedAt: advice.receivedAt,
+    error: canRecover ? null : advice.summary,
   };
 }
 
@@ -704,14 +1064,88 @@ export function reconcilePersistedWorkflow(
   events: ReadonlyArray<OwnedSessionEvent>,
 ): EngineeringWorkflow {
   let reconciled = workflow;
-  for (const event of events) {
-    if (event.sequence <= (reconciled.checkpoint?.sequence ?? 0) || isTerminalWorkflowPhase(reconciled.phase)) continue;
+  const previousSequence = workflow.reconciledTimelineSequence ?? -1;
+  const pendingEvents = events.filter((event) => event.sequence > previousSequence).sort((left, right) => left.sequence - right.sequence);
+  for (const event of pendingEvents) {
     if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) continue;
-    const reported = workflowCheckpointFromRpc(event.data as RpcMessage, event.sequence, event.timestamp);
-    if (!reported || reported.workflowId !== reconciled.id) continue;
-    reconciled = applyWorkflowCheckpoint(reconciled, reported.checkpoint);
+    const data = event.data as Record<string, unknown>;
+
+    if (event.type === "workflow_progress_recorded" && data.workflowId === reconciled.id) {
+      const value = data.event;
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const normalized = value as Record<string, unknown>;
+        const reported = workflowProgressFromRpc({ type: "tool_execution_end", toolCallId: String(normalized.eventId ?? event.id ?? event.sequence), toolName: "piss_workflow_progress", result: { details: { workflowId: data.workflowId, ...normalized } } }, event.sequence, typeof normalized.runtimeId === "string" ? normalized.runtimeId : reconciled.phaseRun?.runtimeId ?? "legacy", typeof normalized.receivedAt === "string" ? normalized.receivedAt : event.timestamp);
+        if (reported) reconciled = applyWorkflowProgress(reconciled, reported.event);
+      }
+      continue;
+    }
+
+    if (event.type === "workflow_draft_recorded" && data.workflowId === reconciled.id) {
+      const value = data.report;
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const reported = workflowDraftFromRpc({ type: "tool_execution_end", toolCallId: String(event.id ?? event.sequence), toolName: "piss_workflow_draft", result: { details: { workflowId: data.workflowId, ...(value as Record<string, unknown>) } } }, event.timestamp);
+        if (reported) reconciled = applyWorkflowDraftReport(reconciled, reported);
+      }
+      continue;
+    }
+
+    if (event.type === "workflow_checkpoint_recorded" && data.workflowId === reconciled.id) {
+      const value = data.checkpoint;
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const normalized = value as Record<string, unknown>;
+        const { artifact, ...checkpointDetails } = normalized;
+        const reported = workflowCheckpointFromRpc({ type: "tool_execution_end", toolCallId: String(normalized.toolCallId ?? event.id ?? event.sequence), toolName: "piss_workflow_checkpoint", result: { details: { workflowId: data.workflowId, ...checkpointDetails, ...(typeof artifact === "string" ? { artifact } : {}) } } }, event.sequence, typeof normalized.receivedAt === "string" ? normalized.receivedAt : event.timestamp);
+        if (reported) reconciled = applyWorkflowCheckpoint(reconciled, reported.checkpoint);
+      }
+      continue;
+    }
+
+    if (event.type === "workflow_guidance_delivery" && data.workflowId === reconciled.id) {
+      const delivery = data.event;
+      if (typeof delivery === "object" && delivery !== null && !Array.isArray(delivery)) {
+        const value = delivery as Record<string, unknown>;
+        if (typeof value.eventId === "string" && typeof value.guidanceId === "string" && typeof value.commandId === "string"
+          && typeof value.planRevision === "number" && Number.isSafeInteger(value.planRevision) && typeof value.deliveredAt === "string") {
+          reconciled = recordWorkflowGuidanceDelivery(reconciled, value as WorkflowGuidanceDeliveryEvent);
+        }
+      }
+      continue;
+    }
+
+    if (event.type === "workflow_supervisor_advice" && data.workflowId === reconciled.id) {
+      const reported = workflowSupervisorAdviceFromRpc({ type: "tool_execution_end", toolCallId: String(event.id ?? event.sequence), toolName: "piss_workflow_supervisor_advice", result: { details: data } }, event.timestamp);
+      if (reported) reconciled = reconcileSupervisorAdvice(reconciled, reported, data.automaticRecovery === true);
+      continue;
+    }
+
+    if (event.type === "workflow_authority_decision" && data.workflowId === reconciled.id) {
+      try {
+        const decision = Schema.decodeUnknownSync(EngineeringWorkflowAuthorityDecisionSchema)(data);
+        if (decision.planRevision === workflowPlanRevision(reconciled) && decision.phaseRunId === reconciled.phaseRun?.id) {
+          reconciled = recordAuthorityDecision(reconciled, decision);
+        }
+      } catch { /* malformed durable authority events remain visible in the raw timeline only */ }
+      continue;
+    }
+
+    const message = data as RpcMessage;
+    const reportedDraft = workflowDraftFromRpc(message, event.timestamp);
+    if (reportedDraft) {
+      reconciled = applyWorkflowDraftReport(reconciled, reportedDraft);
+      continue;
+    }
+    const reportedProgress = workflowProgressFromRpc(message, event.sequence, reconciled.phaseRun?.runtimeId ?? "legacy", event.timestamp);
+    if (reportedProgress?.workflowId === reconciled.id) {
+      reconciled = applyWorkflowProgress(reconciled, reportedProgress.event);
+      continue;
+    }
+    const reportedCheckpoint = workflowCheckpointFromRpc(message, event.sequence, event.timestamp);
+    if (reportedCheckpoint?.workflowId === reconciled.id) reconciled = applyWorkflowCheckpoint(reconciled, reportedCheckpoint.checkpoint);
   }
-  return reconciled;
+  const reconciledTimelineSequence = pendingEvents.at(-1)?.sequence;
+  return reconciledTimelineSequence === undefined
+    ? reconciled
+    : { ...reconciled, reconciledTimelineSequence };
 }
 
 async function detectBranch(workspaceFd: number): Promise<string | null> {
@@ -756,6 +1190,53 @@ export function processArguments(workspace: Workspace, name: string, workflowRes
   ];
 }
 
+export function workflowGuidanceForDispatch(workflow: EngineeringWorkflow): string | undefined {
+  const queued = (workflow.guidance ?? []).filter((item) => item.status === "queued");
+  const delivered = (workflow.guidance ?? []).filter((item) => item.status === "delivered");
+  const durable = queued.map((item) => `[Workflow guidance ${item.id} — QUEUED]\n${item.text}`).join("\n\n---\n\n");
+  const acknowledged = delivered.length > 0 ? `Previously delivered guidance IDs (do not apply twice; acknowledge from transcript evidence): ${delivered.map((item) => item.id).join(", ")}` : "";
+  return [durable, acknowledged, workflow.queuedIntervention?.trim()].filter(Boolean).join("\n\n---\n\n") || undefined;
+}
+
+export function transcriptGuidanceIds(
+  workflow: EngineeringWorkflow,
+  entries: ReadonlyArray<unknown>,
+): ReadonlySet<string> {
+  const queuedIds = new Set((workflow.guidance ?? []).filter((item) => item.status === "queued").map((item) => item.id));
+  const observed = new Set<string>();
+  if (queuedIds.size === 0) return observed;
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry) || (entry as Record<string, unknown>).type !== "message") continue;
+    const message = (entry as Record<string, unknown>).message;
+    if (typeof message !== "object" || message === null || Array.isArray(message) || (message as Record<string, unknown>).role !== "user") continue;
+    const text = textFromContent(message);
+    for (const id of queuedIds) {
+      if (text.includes(`[Workflow guidance ${id} —`)) observed.add(id);
+    }
+  }
+  return observed;
+}
+
+export function reconcileTranscriptGuidance(
+  workflow: EngineeringWorkflow,
+  entries: ReadonlyArray<unknown>,
+  deliveredAt: string,
+): EngineeringWorkflow {
+  const observed = transcriptGuidanceIds(workflow, entries);
+  let reconciled = workflow;
+  for (const item of workflow.guidance ?? []) {
+    if (item.status !== "queued" || !observed.has(item.id)) continue;
+    reconciled = recordWorkflowGuidanceDelivery(reconciled, {
+      eventId: `guidance-delivered:${item.commandId}`,
+      guidanceId: item.id,
+      commandId: item.commandId,
+      planRevision: item.planRevision,
+      deliveredAt,
+    });
+  }
+  return reconciled;
+}
+
 function workflowInterventionMessage(phase: EngineeringWorkflowPhase, feedback: string, queued: boolean): string {
   const label = queued ? "Queued workflow guidance for the next agent run" : "Workflow user intervention";
   return `[${label} — ${phase.toUpperCase()}]\n\n${feedback}`;
@@ -780,33 +1261,53 @@ export function interruptedWorkflowRecoveryPhase(workflow: EngineeringWorkflow):
 }
 
 export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: string): string {
-  const contract = `Workflow ID: ${workflow.id}\nYou must finish this phase by calling piss_workflow_checkpoint with this exact workflow ID.`;
+  const phaseRun = workflow.phaseRun;
+  const contract = `Workflow ID: ${workflow.id}\nWorkflow revision: ${workflowRevision(workflow)}\nPlan revision: ${workflowPlanRevision(workflow)}\nPhase run ID: ${phaseRun?.id ?? "legacy"}\nRuntime generation: ${phaseRun?.runtimeId ?? "legacy"}\nEvery progress event and the terminal checkpoint must repeat the workflow ID, plan revision, phase run ID, and runtime generation exactly. You must finish this phase by calling piss_workflow_checkpoint with this exact workflow ID.`;
   const authority = `\n\nStanding execution authority:\nThe operator's approval of the complete delivery plan authorizes unattended execution of every operation explicitly listed in that plan, including listed commits, pushes, migrations, deployments, and bounded production reads or writes. Do not stop to request confirmation again for approved work. Do not extend scope, invent credentials or evidence, or bypass a real external policy.`;
   const guidance = feedback ? `\n\nOperator guidance for this phase:\n${feedback}` : "";
+  const progress = workflow.progress;
+  const boundary = workflowFirstIncomplete(workflow);
+  const execution = `\n\nDurable execution state:\nCurrent slice: ${progress?.currentSliceId ?? "not selected"}\nCompleted slices: ${progress?.completedSliceIds.join(", ") || "none"}\nPassed criteria: ${progress?.passedCriterionIds.join(", ") || "none"}\nFirst incomplete slice: ${boundary?.sliceId ?? "none"}\nFirst incomplete criterion: ${boundary?.criterionId ?? "none"}\nOperation receipts: ${(workflow.operationReceipts ?? []).map((item) => `${item.operationId}:${item.status}:${item.idempotencyKey}`).join(", ") || "none"}\nUnapplied guidance IDs: ${(workflow.guidance ?? []).filter((item) => item.status !== "applied").map((item) => item.id).join(", ") || "none"}\nResume from that exact safe boundary. Never repeat a completed operation receipt; reconcile any started destructive operation before proceeding.`;
   switch (workflow.phase) {
     case "defining":
       return `/skill:piss-engineering-define\n${contract}\n\nObjective:\n${workflow.objective}${guidance}`;
     case "planning":
       return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}${guidance}`;
     case "building":
-      return `/skill:piss-engineering-build\n${contract}${authority}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}${guidance}`;
+      return `/skill:piss-engineering-build\n${contract}${authority}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}${execution}${guidance}`;
     case "repairing":
-      return `/skill:piss-engineering-build\n${contract}${authority}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}${guidance}`;
+      return `/skill:piss-engineering-build\n${contract}${authority}\n\nRepair attempt ${workflow.repairAttempts} of ${workflow.maxRepairAttempts}.\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nFailure or review findings to repair:\n${workflow.checkpoint?.summary ?? workflow.error ?? "Inspect the latest failed evidence."}${execution}${guidance}`;
     case "verifying":
-      return `/skill:piss-engineering-verify\n${contract}${authority}\n\nApproved specification (verify every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}${guidance}`;
+      return `/skill:piss-engineering-verify\n${contract}${authority}\n\nApproved specification (verify every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nBuild result:\n${workflow.checkpoint?.summary ?? "Implementation checkpoint accepted."}${execution}${guidance}`;
     case "reviewing":
-      return `/skill:piss-engineering-review\n${contract}${authority}\n\nApproved specification (review every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}${guidance}`;
+      return `/skill:piss-engineering-review\n${contract}${authority}\n\nApproved specification (review every criterion):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}\n\nVerification result:\n${workflow.checkpoint?.summary ?? "Verification checkpoint accepted."}${execution}${guidance}`;
     default:
       throw new Error(`Workflow phase ${workflow.phase} cannot start an agent run`);
   }
 }
 
-function workflowSupervisorPrompt(workflow: EngineeringWorkflow): string {
+function latestAssistantEvidence(events: ReadonlyArray<OwnedSessionEvent>): string {
+  for (const event of [...events].reverse()) {
+    if (event.type !== "message_end" || typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) continue;
+    const message = (event.data as Record<string, unknown>).message;
+    if (typeof message !== "object" || message === null || Array.isArray(message) || (message as Record<string, unknown>).role !== "assistant") continue;
+    return boundedText(textFromContent(message) || "[assistant response contained no text]", 16 * 1024);
+  }
+  return "[no recent assistant prose]";
+}
+
+function workflowSupervisorPrompt(workflow: EngineeringWorkflow, recentAssistant = "[not supplied]"): string {
   const supervisor = workflow.supervisor;
   const checkpoint = workflow.checkpoint;
   return `/skill:piss-engineering-supervisor
 Workflow ID: ${workflow.id}
-You must finish by calling piss_workflow_supervisor_advice with this exact workflow ID.
+Consultation ID: ${supervisor?.activeConsultationId ?? "missing"}
+Workflow revision: ${supervisor?.consultationWorkflowRevision ?? workflowRevision(workflow)}
+Plan revision: ${supervisor?.consultationPlanRevision ?? workflowPlanRevision(workflow)}
+Phase run ID: ${supervisor?.consultationPhaseRunId ?? workflow.phaseRun?.id ?? "legacy"}
+Runtime generation: ${workflow.phaseRun?.runtimeId ?? "legacy"}
+Advice event ID: supervisor-advice:${supervisor?.activeConsultationId ?? "missing"}
+You must finish by calling piss_workflow_supervisor_advice with every identity above exactly.
 
 Blocked phase: ${workflow.blockedFromPhase ?? "unknown"}
 Consultation: ${supervisor?.consultations ?? 0}
@@ -820,6 +1321,9 @@ ${workflow.plan ?? "[missing plan]"}
 
 Blocked checkpoint:
 ${checkpoint ? `${checkpoint.stage}/${checkpoint.outcome}: ${checkpoint.summary}` : workflow.error ?? "[missing checkpoint]"}
+
+Most recent worker response:
+${recentAssistant}
 
 Previous supervisor advice:
 ${supervisor?.lastAdvice ? `${supervisor.lastAdvice.action}: ${supervisor.lastAdvice.summary}\nBasis: ${supervisor.lastAdvice.basis}` : "[none]"}
@@ -1018,7 +1522,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       return yield* Effect.fail(lastError ?? new SessionResumeError({ sessionId, message: "Pi did not create its session transcript" }));
     });
 
-    const persist = (): Effect.Effect<void, SessionStorageError> => Effect.tryPromise({
+    const persist = (publish = true): Effect.Effect<void, SessionStorageError> => Effect.tryPromise({
       try: () => {
         const snapshot = persistedRecords();
         const next = persistenceTail.then(() => persistOwnedSessions(storagePath, snapshot));
@@ -1027,6 +1531,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       },
       catch: (cause) => new SessionStorageError({ message: "Could not persist owned-session metadata", cause }),
     }).pipe(Effect.tap(() => Effect.sync(() => {
+      if (!publish) return;
       for (const session of sessions.values()) publishSession(session);
     })));
 
@@ -1090,11 +1595,12 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         catch: (cause) => new SessionStorageError({ message: `Could not load persisted timeline for session ${record.id}`, cause }),
       });
       const reconciledWorkflow = record.workflow ? reconcilePersistedWorkflow(record.workflow, timeline.events) : null;
-      if (reconciledWorkflow?.checkpoint?.sequence !== record.workflow?.checkpoint?.sequence) reconciledPersistedWorkflow = true;
+      if (record.workflow && reconciledWorkflow !== record.workflow) reconciledPersistedWorkflow = true;
       const mutationLock = yield* Semaphore.make(1);
       const interrupted = record.status !== "stopped" && record.status !== "crashed";
       const interruptedRequestCount = record.interactiveRequests?.length ?? 0;
       const status: OwnedSessionStatus = workspaceChanged || record.status === "crashed" ? "crashed" : "stopped";
+      const restartWorkflow = reconciledWorkflow ? reconcileWorkflowAfterRestart(reconciledWorkflow) : null;
       sessions.set(record.id, {
         child: null,
         eventBytes: timeline.events.reduce((total, event) => total + eventBytes(event), 0),
@@ -1106,6 +1612,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         finalResponseRecoveryAttempted: false,
         quarantined: status === "crashed",
         workflowDispatchPending: false,
+        workflowEventTail: Promise.resolve(),
+        workflowCancelRequested: null,
+        pendingWorkflowAuthority: new Map(),
+        resolvedWorkflowAuthority: new Map(),
         pending: new Map(),
         mutationLock,
         workspaceIdentity: expectedWorkspace,
@@ -1130,15 +1640,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           autoCompactionEnabled: record.autoCompactionEnabled ?? null,
           pendingMessageCount: record.pendingMessageCount ?? 0,
           compaction: record.compaction ?? idleCompaction(),
-          workflow: reconciledWorkflow && isAutonomousWorkflowPhase(reconciledWorkflow.phase)
-            ? {
-                ...reconciledWorkflow,
-                phase: "blocked",
-                blockedFromPhase: reconciledWorkflow.phase,
-                updatedAt: now(),
-                error: "The control plane restarted during autonomous workflow execution; review the workspace before resuming",
-              }
-            : reconciledWorkflow,
+          workflow: restartWorkflow,
           createdAt: record.createdAt,
           lastActivityAt: record.lastActivityAt,
           events: [...timeline.events],
@@ -1372,7 +1874,142 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     const queueInteractiveRequest = (session: MutableOwnedSession, message: RpcMessage): void => {
       const blockingMethod = message.method === "select" || message.method === "confirm" || message.method === "input" || message.method === "editor";
       if (!blockingMethod) return;
-      const request = interactiveRequest(message);
+      let request = interactiveRequest(message);
+      const workflow = session.snapshot.workflow;
+      const correlationId = request?.method === "confirm" ? workflowAuthorityCorrelationId(request.title) : undefined;
+      const authority = correlationId ? session.pendingWorkflowAuthority.get(correlationId) : undefined;
+      const correlatedAuthority = request?.method === "confirm" && authority && request.title === authority.expectedRequestTitle ? authority : undefined;
+      const resolvedAuthority = correlationId ? session.resolvedWorkflowAuthority.get(correlationId) : undefined;
+      if (request && resolvedAuthority && request.title === resolvedAuthority.expectedRequestTitle) {
+        request = { ...request, title: resolvedAuthority.displayTitle };
+        if (!resolvedAuthority.durable) {
+          resolvedAuthority.waitingRequestIds.push(request.id);
+          return;
+        }
+        void writeInteractiveResponse(session, { id: request.id, confirmed: resolvedAuthority.confirmed }).catch(
+          (cause) => crash(session, "Could not replay resolved workflow authority", cause),
+        );
+        return;
+      }
+      if (request && correlatedAuthority) request = { ...request, title: correlatedAuthority.displayTitle };
+      const priorAllowedDecision = correlatedAuthority && workflow?.authorityDecisions?.find((decision) => decision.allowed
+        && decision.source === "piss_workflow_authority_request"
+        && decision.phaseRunId === correlatedAuthority.phaseRunId
+        && decision.planRevision === correlatedAuthority.planRevision
+        && decision.runtimeId === correlatedAuthority.runtimeId
+        && decision.operationId === correlatedAuthority.operationId
+        && decision.kind === correlatedAuthority.kind
+        && decision.target === correlatedAuthority.target
+        && JSON.stringify(decision.constraints ?? []) === JSON.stringify(correlatedAuthority.constraints)
+        && decision.idempotencyKey === correlatedAuthority.idempotencyKey);
+      if (request && request.method === "confirm" && workflow && correlatedAuthority && priorAllowedDecision && canAutomaticallyAuthorize(workflow, correlatedAuthority)) {
+        session.pendingWorkflowAuthority.delete(correlatedAuthority.toolCallId);
+        session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, {
+          expectedRequestTitle: correlatedAuthority.expectedRequestTitle,
+          displayTitle: correlatedAuthority.displayTitle,
+          confirmed: true,
+          durable: false,
+          waitingRequestIds: [request.id],
+        });
+        while (session.resolvedWorkflowAuthority.size > 200) {
+          const oldest = session.resolvedWorkflowAuthority.keys().next().value;
+          if (typeof oldest !== "string") break;
+          session.resolvedWorkflowAuthority.delete(oldest);
+        }
+        void Effect.runPromise(persist()).then(async () => {
+          const resolved = session.resolvedWorkflowAuthority.get(correlatedAuthority.toolCallId);
+          if (!resolved) return;
+          session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, { ...resolved, durable: true, waitingRequestIds: [] });
+          const latest = session.snapshot.workflow;
+          const stillAllowed = latest?.id === workflow.id
+            && !workflowCancelIntentMatches(session, latest)
+            && canAutomaticallyAuthorize(latest, correlatedAuthority);
+          for (const requestId of new Set(resolved.waitingRequestIds)) {
+            await writeInteractiveResponse(session, stillAllowed ? { id: requestId, confirmed: true } : { id: requestId, cancelled: true });
+          }
+        }).catch((cause) => crash(session, "Could not replay durable approved workflow authority", cause));
+        return;
+      }
+      if (request && request.method === "confirm" && workflow && correlatedAuthority
+        && workflowCanRecordEvent(workflow, `authority:${correlatedAuthority.toolCallId}`)
+        && canAutomaticallyAuthorize(workflow, correlatedAuthority)) {
+        session.pendingWorkflowAuthority.delete(correlatedAuthority.toolCallId);
+        session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, {
+          expectedRequestTitle: correlatedAuthority.expectedRequestTitle,
+          displayTitle: correlatedAuthority.displayTitle,
+          confirmed: true,
+          durable: false,
+          waitingRequestIds: [request.id],
+        });
+        while (session.resolvedWorkflowAuthority.size > 200) {
+          const oldest = session.resolvedWorkflowAuthority.keys().next().value;
+          if (typeof oldest !== "string") break;
+          session.resolvedWorkflowAuthority.delete(oldest);
+        }
+        const decidedAt = now();
+        const decision = {
+          eventId: `authority:${correlatedAuthority.toolCallId}`,
+          operationId: correlatedAuthority.operationId,
+          phaseRunId: correlatedAuthority.phaseRunId,
+          planRevision: correlatedAuthority.planRevision,
+          allowed: true,
+          basis: `Operation ${correlatedAuthority.operationId} exactly matches approved plan revision ${correlatedAuthority.planRevision}`,
+          decidedAt,
+          source: "piss_workflow_authority_request" as const,
+          correlationId: correlatedAuthority.toolCallId,
+          runtimeId: correlatedAuthority.runtimeId,
+          kind: correlatedAuthority.kind,
+          target: correlatedAuthority.target,
+          constraints: correlatedAuthority.constraints,
+          ...(correlatedAuthority.idempotencyKey ? { idempotencyKey: correlatedAuthority.idempotencyKey } : {}),
+        };
+        session.snapshot = {
+          ...session.snapshot,
+          workflow: recordAuthorityDecision(workflow, decision),
+          lastActivityAt: decidedAt,
+        };
+        appendEvent(session, "workflow_authority_decision", { workflowId: workflow.id, ...decision }, true);
+        void Effect.runPromise(persist()).then(async () => {
+          const resolved = session.resolvedWorkflowAuthority.get(correlatedAuthority.toolCallId);
+          if (!resolved) return;
+          session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, { ...resolved, durable: true, waitingRequestIds: [] });
+          const latest = session.snapshot.workflow;
+          const stillAllowed = latest?.id === workflow.id
+            && !workflowCancelIntentMatches(session, latest)
+            && canAutomaticallyAuthorize(latest, correlatedAuthority)
+            && latest.authorityDecisions?.some((item) => item.eventId === decision.eventId && item.allowed) === true;
+          for (const requestId of new Set(resolved.waitingRequestIds)) {
+            await writeInteractiveResponse(session, stillAllowed ? { id: requestId, confirmed: true } : { id: requestId, cancelled: true });
+          }
+        }).catch((cause) => crash(session, "Could not durably apply approved workflow authority", cause));
+        return;
+      }
+      if (request && request.method === "confirm" && workflow && correlatedAuthority) {
+        session.pendingWorkflowAuthority.delete(correlatedAuthority.toolCallId);
+        const decidedAt = now();
+        const decision = {
+          eventId: `authority:${correlatedAuthority.toolCallId}`,
+          operationId: correlatedAuthority.operationId,
+          phaseRunId: correlatedAuthority.phaseRunId,
+          planRevision: correlatedAuthority.planRevision,
+          allowed: false,
+          basis: `Operation ${correlatedAuthority.operationId} did not exactly match the approved autonomy envelope`,
+          decidedAt,
+          source: "piss_workflow_authority_request" as const,
+          correlationId: correlatedAuthority.toolCallId,
+          runtimeId: correlatedAuthority.runtimeId,
+          kind: correlatedAuthority.kind,
+          target: correlatedAuthority.target,
+          constraints: correlatedAuthority.constraints,
+          ...(correlatedAuthority.idempotencyKey ? { idempotencyKey: correlatedAuthority.idempotencyKey } : {}),
+        };
+        session.snapshot = {
+          ...session.snapshot,
+          workflow: recordAuthorityDecision(workflow, decision),
+          lastActivityAt: decidedAt,
+        };
+        appendEvent(session, "workflow_authority_decision", { workflowId: workflow.id, ...decision }, true);
+      }
       const duplicate = request && session.snapshot.interactiveRequests.some((candidate) => candidate.id === request.id);
       if (!request || duplicate || session.snapshot.interactiveRequests.length >= 8) {
         session.snapshot = {
@@ -1428,8 +2065,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
     };
 
-    const handleLine = (session: MutableOwnedSession, line: string): boolean => {
-      if (session.quarantined) return false;
+    const handleLine = (session: MutableOwnedSession, line: string, runtimeGeneration = session.snapshot.runtimeId): boolean => {
+      if (session.quarantined || session.snapshot.runtimeId !== runtimeGeneration) return false;
       let message: unknown;
       try {
         message = JSON.parse(line);
@@ -1445,11 +2082,59 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
       finishPending(session, message);
       if (message.type === "response") return true;
+      const processEvent = (): boolean => {
+      if (session.quarantined || session.snapshot.runtimeId !== runtimeGeneration) return false;
+      const authorityRequest = workflowAuthorityRequestFromRpc(message);
+      if (authorityRequest) session.pendingWorkflowAuthority.set(authorityRequest.toolCallId, authorityRequest);
       if (message.type === "extension_ui_request") queueInteractiveRequest(session, message);
+      if (message.type === "tool_execution_end" && typeof message.toolCallId === "string") session.pendingWorkflowAuthority.delete(message.toolCallId);
       if (message.type === "queue_update") {
         const steering = Array.isArray(message.steering) ? message.steering.length : 0;
         const followUp = Array.isArray(message.followUp) ? message.followUp.length : 0;
         session.snapshot = { ...session.snapshot, pendingMessageCount: Math.min(steering + followUp, 10_000), lastActivityAt: now() };
+      }
+      if (message.type === "auto_retry_start") {
+        const workflow = session.snapshot.workflow;
+        const attempt = nonNegativeInteger(message.attempt) ?? 1;
+        const reportedMaximum = nonNegativeInteger(message.maxAttempts) ?? WORKFLOW_TRANSIENT_RETRY_LIMIT;
+        const maximum = Math.min(reportedMaximum, 100);
+        if (workflow && isAutonomousWorkflowPhase(workflow.phase)) {
+          const receivedAt = now();
+          const event: WorkflowProgressEvent = {
+            eventId: `auto-retry:${workflow.phaseRun?.id ?? session.sequence}:${attempt}`,
+            ...(workflow.phaseRun ? { phaseRunId: workflow.phaseRun.id, planRevision: workflow.phaseRun.planRevision, runtimeId: runtimeGeneration } : {}),
+            activity: `Retrying a transient provider or infrastructure failure (${attempt} of ${maximum})`,
+            condition: "retrying",
+            nextAction: "Wait for the bounded automatic retry",
+            retryAttempt: attempt,
+            maxTransientRetries: WORKFLOW_TRANSIENT_RETRY_LIMIT,
+            receivedAt,
+          };
+          const updated = applyWorkflowProgress(workflow, event);
+          session.snapshot = { ...session.snapshot, workflow: updated, lastActivityAt: receivedAt };
+          appendEvent(session, "workflow_progress_recorded", { workflowId: workflow.id, event }, true);
+          void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist workflow retry progress", cause));
+        }
+      }
+      if (message.type === "auto_retry_end") {
+        const workflow = session.snapshot.workflow;
+        if (workflow && isAutonomousWorkflowPhase(workflow.phase)) {
+          const receivedAt = now();
+          const success = message.success === true;
+          const event: WorkflowProgressEvent = {
+            eventId: `auto-retry-end:${workflow.phaseRun?.id ?? session.sequence}:${String(message.attempt ?? 0)}`,
+            ...(workflow.phaseRun ? { phaseRunId: workflow.phaseRun.id, planRevision: workflow.phaseRun.planRevision, runtimeId: runtimeGeneration } : {}),
+            activity: success ? "Transient failure recovered automatically" : "Automatic transient retry budget was exhausted",
+            condition: success ? "working" : "waiting_internal",
+            nextAction: success ? "Continue the current phase" : "Ask the read-only supervisor to adjudicate recovery",
+            retryAttempt: nonNegativeInteger(message.attempt) ?? workflow.progress?.retryAttempt ?? 0,
+            receivedAt,
+          };
+          const updated = applyWorkflowProgress(workflow, event);
+          session.snapshot = { ...session.snapshot, workflow: updated, lastActivityAt: receivedAt };
+          appendEvent(session, "workflow_progress_recorded", { workflowId: workflow.id, event }, true);
+          void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist workflow retry result", cause));
+        }
       }
       if (message.type === "compaction_start") {
         session.snapshot = {
@@ -1499,20 +2184,43 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         }
       }
       const reportedAdvice = workflowSupervisorAdviceFromRpc(message);
+      const reportedProgress = workflowProgressFromRpc(message, session.sequence + 1, runtimeGeneration);
+      if (reportedProgress && !workflowCancelIntentMatches(session) && session.snapshot.workflow?.id === reportedProgress.workflowId) {
+        const workflow = applyWorkflowProgress(session.snapshot.workflow, reportedProgress.event);
+        if (workflow !== session.snapshot.workflow) {
+          session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
+          appendEvent(session, "workflow_progress_recorded", { workflowId: workflow.id, event: reportedProgress.event }, true);
+          void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow progress", cause));
+        }
+      }
+      const reportedDraft = workflowDraftFromRpc(message);
+      if (reportedDraft && session.snapshot.workflow?.id === reportedDraft.workflowId) {
+        const workflow = applyWorkflowDraftReport(session.snapshot.workflow, reportedDraft);
+        if (workflow !== session.snapshot.workflow) {
+          session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
+          appendEvent(session, "workflow_draft_recorded", { workflowId: workflow.id, report: reportedDraft }, true);
+          void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow draft", cause));
+        }
+      }
       let supervisorConsultationRequested = false;
       const reportedCheckpoint = workflowCheckpointFromRpc(message, session.sequence + 1);
-      if (reportedCheckpoint && session.snapshot.workflow?.id === reportedCheckpoint.workflowId && !isTerminalWorkflowPhase(session.snapshot.workflow.phase)) {
-        const previousPhase = session.snapshot.workflow.phase;
-        const workflow = applyWorkflowCheckpoint(session.snapshot.workflow, reportedCheckpoint.checkpoint);
-        if (reportedCheckpoint.checkpoint.outcome === "blocked"
-          && (reportedCheckpoint.checkpoint.stage === "build" || reportedCheckpoint.checkpoint.stage === "verify" || reportedCheckpoint.checkpoint.stage === "review")
+      if (reportedCheckpoint && !workflowCancelIntentMatches(session) && session.snapshot.workflow?.id === reportedCheckpoint.workflowId && !isTerminalWorkflowPhase(session.snapshot.workflow.phase)) {
+        const previousWorkflow = session.snapshot.workflow;
+        const previousPhase = previousWorkflow.phase;
+        const checkpoint = reportedCheckpoint.checkpoint;
+        const workflow = applyWorkflowCheckpoint(previousWorkflow, checkpoint);
+        if (workflow !== previousWorkflow && checkpoint.outcome === "blocked"
+          && (checkpoint.stage === "build" || checkpoint.stage === "verify" || checkpoint.stage === "review")
           && workflow.phase === "blocked") {
           supervisorConsultationRequested = true;
         }
         const queuedIntervention = workflow.phase === "readyToShip" || workflow.phase === "failed" ? workflow.queuedIntervention : undefined;
-        session.workflowDispatchPending = workflow.phase !== previousPhase && isAutonomousWorkflowPhase(workflow.phase);
-        session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
-        void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow checkpoint", cause));
+        if (workflow !== previousWorkflow) session.workflowDispatchPending = workflow.phase !== previousPhase && (isAutonomousWorkflowPhase(workflow.phase) || workflow.phase === "planning");
+        if (workflow !== previousWorkflow) {
+          session.snapshot = { ...session.snapshot, workflow, lastActivityAt: workflow.updatedAt };
+          appendEvent(session, "workflow_checkpoint_recorded", { workflowId: workflow.id, checkpoint }, true);
+          void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist engineering workflow checkpoint", cause));
+        }
         if (queuedIntervention) {
           void Effect.runPromise(request(session, {
             id: `workflow:${workflow.id}:queued-intervention:${randomUUID()}`,
@@ -1550,6 +2258,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         && session.snapshot.status === "working"
         && session.snapshot.error === null
         && !session.finalResponseRecoveryAttempted
+        && !session.snapshot.workflow
         && !reportedCheckpoint
         && runEndedAfterToolsWithoutFinalResponse(session.snapshot.events)) {
         session.finalResponseRecoveryAttempted = true;
@@ -1564,6 +2273,30 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           void beginTermination(session);
         });
         return true;
+      }
+      if (message.type === "agent_settled" && !reportedCheckpoint && !session.workflowDispatchPending) {
+        const current = session.snapshot.workflow;
+        const stage = current && isAutonomousWorkflowPhase(current.phase) ? expectedCheckpointStage(current.phase) : undefined;
+        if (current && stage) {
+          const receivedAt = now();
+          const checkpoint: EngineeringWorkflowCheckpoint = {
+            stage,
+            outcome: "blocked",
+            summary: "The worker settled without completing its required phase checkpoint. The supervisor is determining whether this is an approved internal gate, a transient failure, or a genuine human blocker.",
+            artifact: null,
+            toolCallId: `settled-without-checkpoint:${session.sequence + 1}`,
+            sequence: session.sequence + 1,
+            receivedAt,
+            eventId: `settled-without-checkpoint:${current.phaseRun?.id ?? session.sequence + 1}`,
+            ...(current.phaseRun ? { phaseRunId: current.phaseRun.id, planRevision: current.phaseRun.planRevision, runtimeId: runtimeGeneration } : {}),
+          };
+          const workflow = applyWorkflowCheckpoint(current, checkpoint);
+          if (workflow !== current) {
+            session.snapshot = { ...session.snapshot, workflow, lastActivityAt: receivedAt };
+            supervisorConsultationRequested = true;
+            void Effect.runPromise(persist()).catch((cause) => console.error("Could not persist internally waiting workflow", cause));
+          }
+        }
       }
       let artifactHandoff = browserArtifactHandoffFromRpc(message);
       const recordingLifecycle = browserRecordingLifecycleFromRpc(message);
@@ -1600,6 +2333,23 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
       if (message.type === "agent_settled" && session.workflowDispatchPending) continueWorkflowAfterSettle(session);
       return true;
+      };
+      const workflowToolNames = new Set(["piss_workflow_checkpoint", "piss_workflow_progress", "piss_workflow_draft", "piss_workflow_authority_request", "piss_workflow_supervisor_advice"]);
+      const serializedWorkflowEvent = Boolean(session.snapshot.workflow) && (
+        message.type === "agent_settled"
+        || message.type === "auto_retry_start"
+        || message.type === "auto_retry_end"
+        || typeof message.toolName === "string" && workflowToolNames.has(message.toolName)
+        || message.type === "extension_ui_request" && (message.method === "select" || message.method === "confirm" || message.method === "input" || message.method === "editor")
+      );
+      if (!serializedWorkflowEvent) return processEvent();
+      session.workflowEventTail = session.workflowEventTail.then(async () => {
+        await Effect.runPromise(session.mutationLock.withPermit(Effect.sync(processEvent)));
+      }).catch((cause) => {
+        crash(session, "Could not apply serialized Pi RPC event", cause);
+        void beginTermination(session);
+      });
+      return true;
     };
 
     const attach = (session: MutableOwnedSession): void => {
@@ -1610,7 +2360,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       child.stdout.on("data", (chunk: Buffer) => {
         try {
           for (const line of framer.push(chunk)) {
-            if (!handleLine(session, line)) break;
+            if (!handleLine(session, line, runtimeId)) break;
           }
         } catch (cause) {
           crash(session, cause instanceof Error ? cause.message : "Pi RPC framing failed", cause);
@@ -1621,7 +2371,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         if (session.quarantined) return;
         try {
           for (const line of framer.end()) {
-            if (!handleLine(session, line)) break;
+            if (!handleLine(session, line, runtimeId)) break;
           }
         } catch (cause) {
           crash(session, cause instanceof Error ? cause.message : "Pi RPC framing failed", cause);
@@ -1726,23 +2476,64 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         return yield* Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message: "This workflow phase cannot start an agent run" }));
       }
       const commandType = queueBehindActiveRun && session.snapshot.status === "working" ? "follow_up" as const : "prompt" as const;
-      const queuedGuidance = workflow.queuedIntervention;
-      const phaseGuidance = [feedback?.trim(), queuedGuidance?.trim()].filter(Boolean).join("\n\n---\n\n") || undefined;
+      const unappliedGuidance = (workflow.guidance ?? []).filter((item) => item.status !== "applied");
+      const queuedGuidance = unappliedGuidance.filter((item) => item.status === "queued");
+      const legacyGuidance = workflow.queuedIntervention;
+      const phaseGuidance = [feedback?.trim(), workflowGuidanceForDispatch(workflow)].filter(Boolean).join("\n\n---\n\n") || undefined;
+      const startedAt = now();
+      const phaseRun = {
+        id: randomUUID(),
+        phase: workflow.phase,
+        attempt: workflow.phase === "repairing" ? workflow.repairAttempts : 0,
+        planRevision: workflowPlanRevision(workflow),
+        runtimeId: session.snapshot.runtimeId,
+        startedAt,
+      };
+      const progress = workflow.progress ?? initialWorkflowProgress(startedAt, "working", workflow.dossier);
+      const runningWorkflow = {
+        ...workflow,
+        phaseRun,
+        processedEventIds: [],
+        revision: workflowRevision(workflow) + 1,
+        progress: {
+          ...progress,
+          condition: "working" as const,
+          activity: workflow.phase === "defining" ? "Refining the specification" : workflow.phase === "planning" ? "Preparing the executable plan" : progress.activity,
+          nextAction: `Complete the ${workflow.phase} phase checkpoint`,
+          lastActivityAt: startedAt,
+        },
+        updatedAt: startedAt,
+      };
       session.workflowDispatchPending = false;
       session.finalResponseRecoveryAttempted = false;
       session.snapshot = {
         ...session.snapshot,
         status: "working",
-        workflow: queuedGuidance ? { ...workflow, queuedIntervention: undefined, updatedAt: now() } : workflow,
+        workflow: runningWorkflow,
         error: null,
-        lastActivityAt: now(),
+        lastActivityAt: startedAt,
       };
       yield* persist();
       yield* request(session, {
-        id: `workflow:${workflow.id}:${workflow.phase}:${randomUUID()}`,
+        id: `workflow:${workflow.id}:phase:${phaseRun.id}`,
         type: commandType,
-        message: workflowPhasePrompt(workflow, phaseGuidance),
+        message: workflowPhasePrompt(runningWorkflow, phaseGuidance),
       });
+      for (const item of queuedGuidance) session.acceptedCommandIds.add(item.commandId);
+      if (queuedGuidance.length > 0 || legacyGuidance) {
+        const deliveredAt = now();
+        const current = session.snapshot.workflow;
+        if (current?.id === workflow.id) {
+          let deliveredWorkflow: EngineeringWorkflow = { ...current, queuedIntervention: undefined };
+          for (const item of queuedGuidance) {
+            const delivery: WorkflowGuidanceDeliveryEvent = { eventId: `guidance-delivered:${item.commandId}`, guidanceId: item.id, commandId: item.commandId, planRevision: item.planRevision, deliveredAt };
+            deliveredWorkflow = recordWorkflowGuidanceDelivery(deliveredWorkflow, delivery);
+            appendEvent(session, "workflow_guidance_delivery", { workflowId: workflow.id, event: delivery }, true);
+          }
+          session.snapshot = { ...session.snapshot, workflow: deliveredWorkflow, lastActivityAt: deliveredAt };
+          yield* persist();
+        }
+      }
     });
 
     const consultWorkflowSupervisor = (worker: MutableOwnedSession): Effect.Effect<void, PiCommandError | SessionStorageError> => Effect.gen(function* () {
@@ -1789,6 +2580,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         : 1;
       const canConsult = repeatedBlockerCount <= MAX_SUPERVISOR_REPEATS_PER_BLOCKER;
       const updatedAt = now();
+      const consultationId = canConsult ? randomUUID() : null;
+      const consultationWorkflowRevision = workflowRevision(workflow) + 1;
       const updatedSupervisor = {
         ...supervisorState,
         status: canConsult ? "consulting" as const : "idle" as const,
@@ -1796,6 +2589,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         blockerFingerprint,
         repeatedBlockerCount,
         pendingGuidance: null,
+        activeConsultationId: consultationId,
+        consultationPhaseRunId: canConsult ? workflow.phaseRun?.id ?? null : null,
+        consultationPlanRevision: workflowPlanRevision(workflow),
+        consultationWorkflowRevision,
         ...(!canConsult ? {
           lastAdvice: {
             action: "human_authority_required" as const,
@@ -1810,6 +2607,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       const updatedWorkflow = {
         ...workflow,
         supervisor: updatedSupervisor,
+        revision: consultationWorkflowRevision,
         updatedAt,
         error: canConsult ? workflow.error : `Supervisor escalation required: ${workflow.error ?? workflow.checkpoint.summary}`,
       };
@@ -1828,9 +2626,87 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       yield* request(supervisorSession, {
         id: `workflow-supervisor:${workflow.id}:${updatedSupervisor.consultations}:${randomUUID()}`,
         type: supervisorSession.snapshot.status === "working" ? "follow_up" : "prompt",
-        message: workflowSupervisorPrompt(updatedWorkflow),
+        message: workflowSupervisorPrompt(updatedWorkflow, latestAssistantEvidence(worker.snapshot.events)),
       });
     });
+
+    const dispatchWorkflowPhaseWithRecovery = (
+      session: MutableOwnedSession,
+      feedback?: string,
+      queueBehindActiveRun = false,
+    ): Effect.Effect<void, PiCommandError | SessionStorageError> => {
+      let dispatchRetries = 0;
+      const dispatchAttempt = (): Effect.Effect<void, PiCommandError | SessionStorageError> => dispatchWorkflowPhase(session, feedback, queueBehindActiveRun).pipe(
+        Effect.tap(() => {
+          const workflow = session.snapshot.workflow;
+          if (!workflow?.phaseRun || dispatchRetries === 0) return Effect.void;
+          const receivedAt = now();
+          const event: WorkflowProgressEvent = {
+            eventId: `dispatch-retry-recovered:${workflow.phaseRun.id}`,
+            phaseRunId: workflow.phaseRun.id,
+            planRevision: workflow.phaseRun.planRevision,
+            runtimeId: workflow.phaseRun.runtimeId,
+            activity: "Transient workflow dispatch failure recovered automatically",
+            condition: "working",
+            nextAction: `Complete the ${workflow.phase} phase checkpoint`,
+            retryAttempt: dispatchRetries,
+            maxTransientRetries: WORKFLOW_TRANSIENT_RETRY_LIMIT,
+            receivedAt,
+          };
+          const updated = applyWorkflowProgress(workflow, event);
+          session.snapshot = { ...session.snapshot, workflow: updated, lastActivityAt: receivedAt };
+          appendEvent(session, "workflow_progress_recorded", { workflowId: workflow.id, event }, true);
+          return persist();
+        }),
+        Effect.catch((cause) => {
+          if (!(cause instanceof PiCommandError)) return Effect.fail(cause);
+          const workflow = session.snapshot.workflow;
+          if (!workflow || isTerminalWorkflowPhase(workflow.phase) || workflowCancelIntentMatches(session, workflow)) return Effect.void;
+          const maximum = WORKFLOW_TRANSIENT_RETRY_LIMIT;
+          if (dispatchRetries < maximum) {
+            const receivedAt = now();
+            dispatchRetries += 1;
+            const retryAttempt = dispatchRetries;
+            const event: WorkflowProgressEvent = {
+              eventId: `dispatch-retry:${workflow.phaseRun?.id ?? session.sequence}:${retryAttempt}`,
+              ...(workflow.phaseRun ? { phaseRunId: workflow.phaseRun.id, planRevision: workflow.phaseRun.planRevision, runtimeId: workflow.phaseRun.runtimeId } : {}),
+              activity: `Retrying a transient workflow dispatch failure (${retryAttempt} of ${maximum})`,
+              condition: "retrying",
+              nextAction: "Retry the phase request without consuming repair budget",
+              retryAttempt,
+              maxTransientRetries: maximum,
+              receivedAt,
+            };
+            const updated = applyWorkflowProgress(workflow, event);
+            session.snapshot = { ...session.snapshot, workflow: updated, lastActivityAt: receivedAt };
+            appendEvent(session, "workflow_progress_recorded", { workflowId: workflow.id, event }, true);
+            return persist().pipe(Effect.andThen(dispatchAttempt()));
+          }
+          const stage = expectedCheckpointStage(workflow.phase);
+          if (!stage || !workflow.phaseRun) return Effect.fail(cause);
+          const receivedAt = now();
+          const checkpoint: EngineeringWorkflowCheckpoint = {
+            stage,
+            outcome: "blocked",
+            summary: `PISS could not dispatch the ${workflow.phase} worker after ${maximum} bounded retries. The read-only supervisor is determining whether local recovery can continue or human input is required.`,
+            artifact: null,
+            toolCallId: `dispatch-failure:${workflow.phaseRun.id}`,
+            sequence: session.sequence + 1,
+            receivedAt,
+            eventId: `dispatch-failure:${workflow.phaseRun.id}`,
+            phaseRunId: workflow.phaseRun.id,
+            planRevision: workflow.phaseRun.planRevision,
+            runtimeId: workflow.phaseRun.runtimeId,
+          };
+          const blocked = applyWorkflowCheckpoint(workflow, checkpoint);
+          session.workflowDispatchPending = false;
+          session.snapshot = { ...session.snapshot, status: "finished", workflow: blocked, lastActivityAt: receivedAt };
+          appendEvent(session, "workflow_checkpoint_recorded", { workflowId: workflow.id, checkpoint }, true);
+          return persist().pipe(Effect.andThen(consultWorkflowSupervisor(session)));
+        }),
+      );
+      return dispatchAttempt();
+    };
 
     const applyWorkflowSupervisorAdvice = (
       supervisorSession: MutableOwnedSession,
@@ -1846,6 +2722,14 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         const supervisorState = workflow?.supervisor;
         if (!workflow || workflow.phase !== "blocked" || !workflow.blockedFromPhase || supervisorState?.status !== "consulting") return;
         const advice = reported.advice;
+        if (!advice.eventId || !advice.consultationId || !advice.phaseRunId || advice.planRevision === undefined || advice.workflowRevision === undefined || !advice.runtimeId) return;
+        if (!workflowCanRecordEvent(workflow, advice.eventId)) return;
+        if (workflow.processedEventIds?.includes(advice.eventId)
+          || advice.consultationId !== supervisorState.activeConsultationId
+          || advice.phaseRunId !== supervisorState.consultationPhaseRunId
+          || advice.planRevision !== supervisorState.consultationPlanRevision
+          || advice.workflowRevision !== supervisorState.consultationWorkflowRevision
+          || advice.runtimeId !== workflow.phaseRun?.runtimeId) return;
         const automatic = advice.action === "resume_with_guidance" || advice.action === "retry_transient" || advice.action === "enter_repair";
         const consumesRepairBudget = advice.action === "enter_repair";
         const guidance = advice.guidance?.trim() || advice.summary;
@@ -1860,6 +2744,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           status: "idle" as const,
           pendingGuidance: canRecover ? `[Loop supervisor — ${advice.action.toUpperCase()}]\n\n${guidance}\n\nBasis: ${advice.basis}` : null,
           lastAdvice: advice,
+          activeConsultationId: null,
+          consultationPhaseRunId: null,
         };
         worker.snapshot = {
           ...worker.snapshot,
@@ -1871,12 +2757,16 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               repairAttempts: nextRepairAttempts,
               blockedFromPhase: null,
               supervisor: nextSupervisor,
+              revision: workflowRevision(workflow) + 1,
+              processedEventIds: [...(workflow.processedEventIds ?? []), advice.eventId],
               updatedAt,
               error: null,
             }
             : {
               ...workflow,
               supervisor: nextSupervisor,
+              revision: workflowRevision(workflow) + 1,
+              processedEventIds: [...(workflow.processedEventIds ?? []), advice.eventId],
               updatedAt,
               error: automatic
                 ? `Supervisor could not recover this blocker: ${advice.summary}`
@@ -1892,7 +2782,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         }, true);
         yield* persist();
         if (!canRecover) return;
-        if (worker.snapshot.status === "working") {
+        const workerAlreadySettled = worker.snapshot.events.at(-1)?.type === "agent_settled";
+        if (worker.snapshot.status === "working" && !workerAlreadySettled) {
           worker.workflowDispatchPending = true;
           return;
         }
@@ -1906,7 +2797,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             },
           };
         }
-        yield* dispatchWorkflowPhase(worker, pendingGuidance);
+        yield* dispatchWorkflowPhaseWithRecovery(worker, pendingGuidance);
       }));
     });
 
@@ -1930,25 +2821,6 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       );
     };
 
-    const blockWorkflow = (session: MutableOwnedSession, cause: unknown): Effect.Effect<void, SessionStorageError> => {
-      const workflow = session.snapshot.workflow;
-      if (!workflow || isTerminalWorkflowPhase(workflow.phase)) return Effect.void;
-      const message = cause instanceof Error ? cause.message : "Workflow phase dispatch failed";
-      session.workflowDispatchPending = false;
-      session.snapshot = {
-        ...session.snapshot,
-        status: "finished",
-        workflow: {
-          ...workflow,
-          phase: "blocked",
-          blockedFromPhase: workflow.phase,
-          updatedAt: now(),
-          error: message,
-        },
-      };
-      return persist();
-    };
-
     continueWorkflowAfterSettle = (session) => {
       if (!session.workflowDispatchPending) return;
       session.workflowDispatchPending = false;
@@ -1962,8 +2834,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           },
         };
       }
-      void Effect.runPromise(session.mutationLock.withPermit(dispatchWorkflowPhase(session, pendingGuidance))).catch((cause) => {
-        void Effect.runPromise(blockWorkflow(session, cause)).catch((persistCause) => console.error("Could not block failed engineering workflow", persistCause));
+      void Effect.runPromise(session.mutationLock.withPermit(dispatchWorkflowPhaseWithRecovery(session, pendingGuidance))).catch((cause) => {
+        console.error("Could not recover failed engineering workflow dispatch", cause);
       });
     };
 
@@ -1980,45 +2852,51 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       return Effect.succeed(session);
     };
 
-    yield* Effect.addFinalizer(() =>
-      Effect.forEach(
-        sessions.values(),
-        (session) => {
-          const statusBeforeShutdown = session.snapshot.status;
-          const wasActive = !TERMINAL_STATUSES.has(statusBeforeShutdown);
-          if (wasActive) {
-            session.resumeAfterRestart = true;
-            session.resumeRunAfterRestart = statusBeforeShutdown === "working";
-            session.snapshot = { ...session.snapshot, status: "stopping", lastActivityAt: now() };
-          }
-          const interruptedRequests = session.snapshot.interactiveRequests.length;
-          for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
-          session.interactiveTimers.clear();
-          session.snapshot = { ...session.snapshot, interactiveRequests: [] };
-          failPending(session, "PISS is shutting down");
-          return terminate(session).pipe(
-            Effect.tap(() => Effect.sync(() => {
-              if (wasActive) {
-                session.snapshot = {
-                  ...session.snapshot,
-                  status: "stopped",
-                  pid: null,
-                  lastActivityAt: now(),
-                  error: interruptedRequests > 0
-                    ? `${interruptedRequests} pending interactive request${interruptedRequests === 1 ? " was" : "s were"} cancelled when the control plane stopped`
-                    : "The control plane stopped this runtime; the Pi transcript is preserved and can be resumed",
-                };
-                session.child = null;
-              }
-            })),
-          );
-        },
+    yield* Effect.addFinalizer(() => Effect.gen(function* () {
+      const shutdownSessions = [...sessions.values()].map((session) => {
+        const statusBeforeShutdown = session.snapshot.status;
+        const wasActive = !TERMINAL_STATUSES.has(statusBeforeShutdown);
+        if (wasActive) {
+          session.resumeAfterRestart = true;
+          session.resumeRunAfterRestart = statusBeforeShutdown === "working";
+          session.snapshot = { ...session.snapshot, status: "stopping", lastActivityAt: now() };
+        }
+        const interruptedRequests = session.snapshot.interactiveRequests.length;
+        for (const timer of session.interactiveTimers.values()) clearTimeout(timer);
+        session.interactiveTimers.clear();
+        session.snapshot = { ...session.snapshot, interactiveRequests: [] };
+        failPending(session, "PISS is shutting down");
+        return { session, wasActive, interruptedRequests };
+      });
+
+      // Persist restart intent before waiting on child processes. If a runtime
+      // or browser child wedges shutdown, the next generation can still
+      // automatically recover every runtime that was active.
+      yield* persist(false);
+      yield* Effect.forEach(
+        shutdownSessions,
+        ({ session, wasActive, interruptedRequests }) => terminate(session).pipe(
+          Effect.tap(() => Effect.sync(() => {
+            if (wasActive) {
+              session.snapshot = {
+                ...session.snapshot,
+                status: "stopped",
+                pid: null,
+                lastActivityAt: now(),
+                error: interruptedRequests > 0
+                  ? `${interruptedRequests} pending interactive request${interruptedRequests === 1 ? " was" : "s were"} cancelled when the control plane stopped`
+                  : "The control plane stopped this runtime; the Pi transcript is preserved and can be resumed",
+              };
+              session.child = null;
+            }
+          })),
+        ),
         { concurrency: "unbounded", discard: true },
-      ).pipe(
-        Effect.andThen(persist()),
-        Effect.catch((cause) => Effect.sync(() => console.error("Could not persist owned sessions during shutdown", cause))),
-      ),
-    );
+      );
+      yield* persist(false);
+    }).pipe(
+      Effect.catch((cause) => Effect.sync(() => console.error("Could not persist owned sessions during shutdown", cause))),
+    ));
 
     const createSession = (input: CreateOwnedSessionInput, supervisor = false) =>
       creationLock.withPermit(Effect.gen(function* () {
@@ -2076,6 +2954,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           finalResponseRecoveryAttempted: false,
           quarantined: false,
           workflowDispatchPending: false,
+          workflowEventTail: Promise.resolve(),
+          workflowCancelRequested: null,
+          pendingWorkflowAuthority: new Map(),
+          resolvedWorkflowAuthority: new Map(),
           pending: new Map(),
           mutationLock,
           workspaceIdentity: { device: rootStat.dev, inode: rootStat.ino },
@@ -2193,6 +3075,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         finalResponseRecoveryAttempted: false,
         quarantined: false,
         workflowDispatchPending: false,
+        workflowEventTail: Promise.resolve(),
+        workflowCancelRequested: null,
+        pendingWorkflowAuthority: new Map(),
+        resolvedWorkflowAuthority: new Map(),
         pending: new Map(),
         mutationLock,
         workspaceIdentity: { device: workspaceState.rootStat.dev, inode: workspaceState.rootStat.ino },
@@ -2321,14 +3207,34 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi resumed a different transcript than requested" }));
           }
           session.sessionFileIdentity = yield* inspectSessionFile(session.snapshot.id, sessionFile!, workspace.root, piSessionId!, session.sessionFileIdentity);
-          if (shouldReplayTranscript) {
+          const guidanceNeedsReconciliation = Boolean(session.snapshot.workflow?.guidance?.some((item) => item.status === "queued"));
+          if (shouldReplayTranscript || guidanceNeedsReconciliation) {
             const entriesResponse = yield* request(session, { id: `${session.snapshot.id}:resume-entries`, type: "get_entries" });
             const entries = stateData(entriesResponse)?.entries;
             if (!Array.isArray(entries)) {
               return yield* Effect.fail(new SessionResumeError({ sessionId: session.snapshot.id, message: "Pi did not return resumable transcript entries" }));
             }
-            for (const entry of entries.slice(-250)) {
-              for (const replayed of replayEventsFromTranscriptEntry(entry)) appendEvent(session, replayed.type, replayed.data);
+            if (shouldReplayTranscript) {
+              for (const entry of entries.slice(-250)) {
+                for (const replayed of replayEventsFromTranscriptEntry(entry)) appendEvent(session, replayed.type, replayed.data);
+              }
+            }
+            const workflowBeforeGuidance = session.snapshot.workflow;
+            if (workflowBeforeGuidance && guidanceNeedsReconciliation) {
+              const deliveredAt = now();
+              const observedIds = transcriptGuidanceIds(workflowBeforeGuidance, entries);
+              const workflowAfterGuidance = reconcileTranscriptGuidance(workflowBeforeGuidance, entries, deliveredAt);
+              if (workflowAfterGuidance !== workflowBeforeGuidance) {
+                for (const item of workflowBeforeGuidance.guidance ?? []) {
+                  if (item.status !== "queued" || !observedIds.has(item.id)) continue;
+                  session.acceptedCommandIds.add(item.commandId);
+                  appendEvent(session, "workflow_guidance_delivery", {
+                    workflowId: workflowBeforeGuidance.id,
+                    event: { eventId: `guidance-delivered:${item.commandId}`, guidanceId: item.id, commandId: item.commandId, planRevision: item.planRevision, deliveredAt },
+                  }, true);
+                }
+                session.snapshot = { ...session.snapshot, workflow: workflowAfterGuidance, lastActivityAt: deliveredAt };
+              }
             }
           }
         } else {
@@ -2355,13 +3261,21 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         };
         yield* persist();
         if (resumeInterruptedRun && data?.isStreaming !== true) {
-          // TODO(tracer): Replace transcript-aware continuation with detached
-          // per-session workers when exact in-flight tool survival is required.
-          yield* request(session, {
-            id: `${session.snapshot.id}:continue-after-restart:${session.snapshot.runtimeId}`,
-            type: "prompt",
-            message: INTERRUPTED_RUN_CONTINUATION,
-          });
+          const workflow = session.snapshot.workflow;
+          if (workflow && isAutonomousWorkflowPhase(workflow.phase)) {
+            yield* dispatchWorkflowPhaseWithRecovery(
+              session,
+              "The control plane restarted. Reconcile durable progress and operation receipts, then resume from the first incomplete approved criterion. Do not repeat completed side effects.",
+            );
+          } else {
+            // Exact in-flight OS process continuity is deliberately outside the
+            // workflow contract; transcript-aware recovery resumes at a safe boundary.
+            yield* request(session, {
+              id: `${session.snapshot.id}:continue-after-restart:${session.snapshot.runtimeId}`,
+              type: "prompt",
+              message: INTERRUPTED_RUN_CONTINUATION,
+            });
+          }
         }
         return cloneSession(session.snapshot);
       }).pipe(
@@ -2518,15 +3432,54 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       );
 
     const mutateWorkflow: PiRuntimeSupervisorShape["mutateWorkflow"] = (target, input) => resolveTarget(target).pipe(
+      Effect.tap((session) => Effect.sync(() => {
+        if (input.action !== "cancel") return;
+        const current = session.snapshot.workflow;
+        if (!current || isTerminalWorkflowPhase(current.phase)) return;
+        if (input.workflowId && input.workflowId !== current.id) return;
+        if (input.expectedRevision !== undefined && input.expectedRevision !== workflowRevision(current)) return;
+        if (input.expectedPhase && input.expectedPhase !== current.phase) return;
+        if (input.expectedPhaseRunId && input.expectedPhaseRunId !== current.phaseRun?.id) return;
+        session.workflowCancelRequested = {
+          key: workflowCancelIntentKey(input),
+          workflowId: current.id,
+          workflowRevision: workflowRevision(current),
+          phase: current.phase,
+          ...(current.phaseRun ? { phaseRunId: current.phaseRun.id } : {}),
+        };
+      })),
       Effect.flatMap((session) => session.mutationLock.withPermit(Effect.gen(function* () {
         const current = session.snapshot.workflow;
-        const unavailable = (message: string) => Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message }));
+        const cancelIntentKey = input.action === "cancel" ? workflowCancelIntentKey(input) : undefined;
+        const clearCancelIntent = () => {
+          if (cancelIntentKey && session.workflowCancelRequested?.key === cancelIntentKey) session.workflowCancelRequested = null;
+        };
+        const unavailable = (message: string) => {
+          clearCancelIntent();
+          return Effect.fail(new PiCommandError({ sessionId: session.snapshot.id, message }));
+        };
+        const mutationProcessed = (workflow: EngineeringWorkflow) => Boolean(input.mutationId && workflow.processedMutationIds?.includes(input.mutationId));
+        const withProcessedMutation = <T extends EngineeringWorkflow>(workflow: T): T => input.mutationId
+          ? { ...workflow, processedMutationIds: [...new Set([...(workflow.processedMutationIds ?? []), input.mutationId])].slice(-256) }
+          : workflow;
+        if (current) {
+          if (mutationProcessed(current)) {
+            clearCancelIntent();
+            return cloneSession(session.snapshot);
+          }
+          if (input.action !== "start") {
+            if (input.workflowId !== current.id) return yield* unavailable("This workflow mutation targets a stale workflow");
+            if (input.expectedRevision !== workflowRevision(current)) return yield* unavailable(`This workflow mutation targets stale workflow revision ${input.expectedRevision}; current revision is ${workflowRevision(current)}`);
+            if (input.expectedPhase !== current.phase) return yield* unavailable("This workflow mutation targets a stale workflow phase");
+            if (input.expectedPhaseRunId !== current.phaseRun?.id) return yield* unavailable("This workflow mutation targets a stale phase run");
+          }
+        }
         if (input.action === "accept") {
           if (!current || current.phase !== "readyToShip") return yield* unavailable("Only a workflow ready to ship can be accepted");
           const updatedAt = now();
           session.snapshot = {
             ...session.snapshot,
-            workflow: { ...current, phase: "accepted", blockedFromPhase: null, updatedAt, error: null },
+            workflow: withProcessedMutation({ ...current, phase: "accepted", blockedFromPhase: null, revision: workflowRevision(current) + 1, updatedAt, error: null }),
             lastActivityAt: updatedAt,
           };
           yield* persist();
@@ -2539,9 +3492,12 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           const updatedAt = now();
           session.snapshot = {
             ...session.snapshot,
-            workflow: { ...current, phase: "cancelled", blockedFromPhase: null, updatedAt, error: null },
+            workflow: withProcessedMutation(cancelEngineeringWorkflow(current, updatedAt)),
             lastActivityAt: updatedAt,
           };
+          yield* persist();
+          yield* request(session, { id: `workflow:${current.id}:cancel:${input.mutationId ?? randomUUID()}`, type: "abort" }).pipe(Effect.catch(() => Effect.void));
+          session.snapshot = { ...session.snapshot, status: "finished", lastActivityAt: now() };
           yield* persist();
           yield* stopWorkflowSupervisor(current);
           return cloneSession(session.snapshot);
@@ -2550,6 +3506,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           if (!canAcceptPrompt(session.snapshot.status)) return yield* unavailable("Start an engineering workflow only while Pi is idle");
           if (current && !isTerminalWorkflowPhase(current.phase)) return yield* unavailable("This session already has an active engineering workflow");
           const createdAt = now();
+          session.workflowCancelRequested = null;
           const workflow: EngineeringWorkflow = {
             id: randomUUID(),
             phase: "defining",
@@ -2560,89 +3517,194 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             plan: null,
             checkpoint: null,
             blockedFromPhase: null,
+            revision: 0,
+            artifactRevision: 0,
+            progress: initialWorkflowProgress(createdAt),
+            guidance: [],
+            authorityDecisions: [],
+            operationReceipts: [],
+            processedEventIds: [],
+            processedMutationIds: input.mutationId ? [input.mutationId] : [],
+            supersededRevisions: [],
+            openQuestions: [],
             createdAt,
             updatedAt: createdAt,
             error: null,
           };
           session.snapshot = { ...session.snapshot, workflow, lastActivityAt: createdAt };
           yield* persist();
-          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          yield* dispatchWorkflowPhaseWithRecovery(session);
           return cloneSession(session.snapshot);
         }
         if (!current) return yield* unavailable("This session has no engineering workflow");
         if (input.action === "continueRepairs") {
           if (current.phase !== "failed") return yield* unavailable("Only a failed workflow can continue with more repairs");
-          if (current.queuedIntervention) return yield* unavailable("Wait for the queued workflow follow-up to be delivered");
-          const maxRepairAttempts = Math.min(
-            100,
-            Math.max(current.maxRepairAttempts, current.repairAttempts) + input.additionalRepairAttempts,
-          );
-          if (maxRepairAttempts <= current.repairAttempts) return yield* unavailable("This workflow has reached the maximum cumulative repair budget");
+          const maxRepairAttempts = Math.min(100, current.maxRepairAttempts + input.additionalRepairAttempts);
+          const repairAttempts = current.repairAttempts + 1;
+          if (maxRepairAttempts < repairAttempts) return yield* unavailable("This workflow has reached the maximum cumulative repair budget");
           const updatedAt = now();
           session.snapshot = {
             ...session.snapshot,
-            workflow: {
+            workflow: withProcessedMutation({
               ...current,
               phase: "repairing",
+              repairAttempts,
               maxRepairAttempts,
+              revision: workflowRevision(current) + 1,
               blockedFromPhase: null,
+              progress: current.progress ? { ...current.progress, condition: "working", activity: `Starting repair attempt ${repairAttempts} of ${maxRepairAttempts}`, nextAction: "Repair all remaining blocking findings", lastActivityAt: updatedAt } : current.progress,
               updatedAt,
               error: null,
-            },
+            }),
             lastActivityAt: updatedAt,
           };
           yield* persist();
-          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          yield* dispatchWorkflowPhaseWithRecovery(session);
           return cloneSession(session.snapshot);
         }
         if (input.action === "approve") {
           const approvesExecution = current.phase === "awaitingPlanApproval";
           const phase: EngineeringWorkflowPhase = current.phase === "awaitingSpecApproval"
             ? "planning"
-            : current.phase === "awaitingPlanApproval"
+            : approvesExecution
               ? "building"
               : current.phase;
-          if (phase === current.phase) return yield* unavailable("This workflow is not waiting for approval");
+          if (phase === current.phase) return yield* unavailable("This workflow is not waiting for final approval");
+          if (approvesExecution && (current.revision !== undefined || current.artifactRevision !== undefined)) {
+            const dossierError = workflowDossierValidationError(current.dossier);
+            if (dossierError) return yield* unavailable(dossierError);
+            if (current.dossier!.unresolved.length > 0 || current.dossier!.readiness.some((item) => item.status === "unresolved")) {
+              return yield* unavailable("Resolve every plan readiness requirement before final approval");
+            }
+          }
           const updatedAt = now();
+          const artifactDigest = createHash("sha256")
+            .update(`${current.specification ?? ""}\n---PLAN---\n${current.plan ?? ""}\n---DOSSIER---\n${JSON.stringify(current.dossier ?? null)}`)
+            .digest("hex");
+          const progress = current.progress ?? initialWorkflowProgress(updatedAt, "working", current.dossier);
           session.snapshot = {
             ...session.snapshot,
-            workflow: {
+            workflow: withProcessedMutation({
               ...current,
               phase,
               checkpoint: current.checkpoint,
-              ...(approvesExecution ? { executionAuthority: { mode: "approved_plan" as const, grantedAt: updatedAt } } : {}),
+              revision: workflowRevision(current) + 1,
+              progress: { ...progress, condition: "working", activity: approvesExecution ? "Final plan approved; starting autonomous execution" : "Continuing to planning", nextAction: approvesExecution ? "Execute the first incomplete delivery slice" : "Prepare the complete delivery plan", lastActivityAt: updatedAt },
+              ...(approvesExecution ? { executionAuthority: { mode: "approved_plan" as const, grantedAt: updatedAt, planRevision: workflowPlanRevision(current), artifactDigest } } : {}),
               updatedAt,
               error: null,
-            },
+            }),
             lastActivityAt: updatedAt,
           };
           yield* persist();
-          yield* dispatchWorkflowPhase(session).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          if (session.snapshot.status === "working") {
+            session.workflowDispatchPending = true;
+          } else {
+            yield* dispatchWorkflowPhaseWithRecovery(session);
+          }
           return cloneSession(session.snapshot);
         }
         if (input.action === "intervene") {
           const feedback = input.feedback.trim();
-          if (!isAutonomousWorkflowPhase(current.phase)) return yield* unavailable("User intervention is unavailable in this workflow phase");
-          if (session.snapshot.status === "working") {
-            yield* request(session, {
-              id: `workflow:${current.id}:intervention:${randomUUID()}`,
-              type: "steer",
-              message: workflowInterventionMessage(current.phase, feedback, false),
+          const acceptsGuidance = isAutonomousWorkflowPhase(current.phase)
+            || current.phase === "defining"
+            || current.phase === "planning"
+            || current.phase === "blocked" && Boolean(current.blockedFromPhase);
+          if (!acceptsGuidance) return yield* unavailable("Guidance is unavailable in this workflow phase");
+          const submittedAt = now();
+          const guidanceId = input.mutationId ?? randomUUID();
+          const commandId = `workflow:${current.id}:guidance:${guidanceId}`;
+          if (input.scopeChange === true && current.executionAuthority) {
+            const previousProgress = current.progress;
+            const superseded = {
+              planRevision: workflowPlanRevision(current),
+              completedSliceIds: previousProgress?.completedSliceIds ?? [],
+              passedCriterionIds: previousProgress?.passedCriterionIds ?? [],
+              evidence: previousProgress?.evidence ?? [],
+              supersededAt: submittedAt,
+              reason: feedback,
+            };
+            const scopeGuidance = {
+              id: guidanceId,
+              text: feedback,
+              status: "applied" as const,
+              planRevision: workflowPlanRevision(current),
+              submittedRuntimeId: session.snapshot.runtimeId,
+              commandId,
+              submittedAt,
+              deliveredAt: submittedAt,
+              appliedAt: submittedAt,
+            };
+            const nextGuidance = appendBoundedWorkflowGuidance(current.guidance, scopeGuidance);
+            if (!nextGuidance) return yield* unavailable("This workflow has reached the 64-item durable guidance limit");
+            const { executionAuthority: _authority, phaseRun: _phaseRun, ...unapproved } = current;
+            const progress = initialWorkflowProgress(submittedAt, "waiting_user", current.dossier);
+            const replanning = withProcessedMutation({
+              ...unapproved,
+              phase: "planning" as const,
+              blockedFromPhase: null,
+              revision: workflowRevision(current) + 1,
+              artifactRevision: workflowPlanRevision(current) + 1,
+              guidance: nextGuidance,
+              supersededRevisions: [...(current.supersededRevisions ?? []), superseded].slice(-32),
+              progress: { ...progress, activity: "Approved execution paused for a scope or authority revision", nextAction: "Revise the specification and complete plan, then request a new Approve & Run", lastCheckpointSummary: current.checkpoint?.summary ?? null },
+              openQuestions: [],
+              updatedAt: submittedAt,
+              error: null,
             });
+            session.snapshot = { ...session.snapshot, workflow: replanning, lastActivityAt: submittedAt };
+            yield* persist();
+            yield* stopWorkflowSupervisor(current);
+            if (session.snapshot.status === "working") {
+              session.workflowDispatchPending = true;
+              yield* request(session, { id: `workflow:${current.id}:scope-change:${guidanceId}`, type: "abort" }).pipe(Effect.catch(() => Effect.void));
+            } else {
+              yield* dispatchWorkflowPhaseWithRecovery(session, feedback);
+            }
             return cloneSession(session.snapshot);
           }
-          const intervention = workflowInterventionMessage(current.phase, feedback, true);
-          const queuedIntervention = current.queuedIntervention
-            ? `${current.queuedIntervention}\n\n---\n\n${intervention}`
-            : intervention;
-          if (queuedIntervention.length > 64 * 1024) return yield* unavailable("Queued workflow guidance exceeds 64 KiB");
-          const updatedAt = now();
-          session.snapshot = {
-            ...session.snapshot,
-            workflow: { ...current, queuedIntervention, updatedAt },
-            lastActivityAt: updatedAt,
+          const guidance = {
+            id: guidanceId,
+            text: feedback,
+            status: "queued" as const,
+            planRevision: workflowPlanRevision(current),
+            submittedRuntimeId: session.snapshot.runtimeId,
+            commandId,
+            submittedAt,
+            deliveredAt: null,
+            appliedAt: null,
           };
+          const nextGuidance = appendBoundedWorkflowGuidance(current.guidance, guidance);
+          if (!nextGuidance) return yield* unavailable("This workflow has reached the 64-item durable guidance limit");
+          const withGuidance = withProcessedMutation({
+            ...current,
+            revision: workflowRevision(current) + 1,
+            guidance: nextGuidance,
+            progress: current.progress ? { ...current.progress, nextAction: "Apply queued operator guidance at the next safe boundary", lastActivityAt: submittedAt } : current.progress,
+            updatedAt: submittedAt,
+          });
+          session.snapshot = { ...session.snapshot, workflow: withGuidance, lastActivityAt: submittedAt };
           yield* persist();
+          if (session.snapshot.status === "working" && current.phase !== "blocked" && workflowHasActiveCurrentPhaseRun(current)) {
+            yield* request(session, {
+              id: commandId,
+              type: "steer",
+              message: `[Workflow guidance ${guidanceId} — ${current.phase.toUpperCase()}]\n\n${feedback}\n\nAcknowledge application by including this guidance ID in your next piss_workflow_progress or checkpoint call.`,
+            });
+            session.acceptedCommandIds.add(commandId);
+            const deliveredAt = now();
+            const latest = session.snapshot.workflow;
+            if (latest?.id === current.id) {
+              const delivery: WorkflowGuidanceDeliveryEvent = { eventId: `guidance-delivered:${commandId}`, guidanceId, commandId, planRevision: guidance.planRevision, deliveredAt };
+              const deliveredWorkflow = recordWorkflowGuidanceDelivery(latest, delivery);
+              session.snapshot = { ...session.snapshot, workflow: deliveredWorkflow, lastActivityAt: deliveredAt };
+              appendEvent(session, "workflow_guidance_delivery", { workflowId: latest.id, event: delivery }, true);
+              yield* persist();
+            }
+          } else if (current.phase !== "blocked" && !session.workflowDispatchPending
+            && (isAutonomousWorkflowPhase(current.phase) || current.phase === "defining" || current.phase === "planning")) {
+            yield* dispatchWorkflowPhaseWithRecovery(session);
+          }
           return cloneSession(session.snapshot);
         }
         if (input.action === "revise") {
@@ -2653,13 +3715,16 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               : current.phase;
           if (phase === current.phase) return yield* unavailable("Only a specification or plan awaiting approval can be revised");
           const updatedAt = now();
-          session.snapshot = { ...session.snapshot, workflow: { ...current, phase, updatedAt, error: null }, lastActivityAt: updatedAt };
+          session.snapshot = { ...session.snapshot, workflow: withProcessedMutation({ ...current, phase, revision: workflowRevision(current) + 1, artifactRevision: (current.artifactRevision ?? 0) + 1, updatedAt, error: null }), lastActivityAt: updatedAt };
           yield* persist();
-          yield* dispatchWorkflowPhase(session, input.feedback.trim()).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+          yield* dispatchWorkflowPhaseWithRecovery(session, input.feedback.trim());
           return cloneSession(session.snapshot);
         }
         if (input.action === "resume") {
           const interruptedCancellation = current.phase === "cancelled" && current.error?.includes("runtime stopped");
+          if (!interruptedCancellation && current.supervisor?.lastAdvice?.action === "human_authority_required" && !input.feedback?.trim()) {
+            return yield* unavailable("Provide the exact non-secret human input before resuming this workflow");
+          }
           const recoveryPhase = interruptedCancellation ? interruptedWorkflowRecoveryPhase(current) : current.blockedFromPhase;
           if ((current.phase !== "blocked" && !interruptedCancellation) || !recoveryPhase) return yield* unavailable("This workflow is not resumable");
           if (!isAutonomousWorkflowPhase(recoveryPhase)
@@ -2671,18 +3736,19 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             return yield* unavailable("This workflow must be revised or cancelled");
           }
           const updatedAt = now();
-          const workflow = {
+          const workflow = withProcessedMutation({
             ...current,
             phase: recoveryPhase,
             blockedFromPhase: null,
+            revision: workflowRevision(current) + 1,
             ...(current.supervisor ? { supervisor: { ...current.supervisor, status: "idle" as const, pendingGuidance: null } } : {}),
             updatedAt,
             error: null,
-          };
+          });
           session.snapshot = { ...session.snapshot, workflow, lastActivityAt: updatedAt };
           yield* persist();
           if (isAutonomousWorkflowPhase(recoveryPhase) || recoveryPhase === "defining" || recoveryPhase === "planning") {
-            yield* dispatchWorkflowPhase(session, input.feedback?.trim(), interruptedCancellation).pipe(Effect.tapError((cause) => blockWorkflow(session, cause)));
+            yield* dispatchWorkflowPhaseWithRecovery(session, input.feedback?.trim(), interruptedCancellation);
           }
           return cloneSession(session.snapshot);
         }

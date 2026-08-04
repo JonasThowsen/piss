@@ -20,6 +20,7 @@ const ReviewLive = WorkspaceReviewLive.pipe(Layer.provideMerge(DirectoryLive));
 const ApplicationLive = Layer.mergeAll(RuntimeLive, ReviewLive, NotificationLive);
 
 const abortController = new AbortController();
+const UPDATE_SHUTDOWN_TIMEOUT_MS = 15_000;
 let updateRequested = false;
 let beginUpdateActivation = () => {};
 
@@ -42,6 +43,11 @@ const program = Effect.scoped(Effect.gen(function* () {
     void Effect.runPromise(supervisor.awaitUpdateSafe, { signal: abortController.signal }).then(
       () => {
         console.log("PISS sessions are quiescent; activating the staged update");
+        const watchdog = setTimeout(() => {
+          console.error("PISS update shutdown exceeded its grace period; forcing control-plane exit");
+          process.exit(0);
+        }, UPDATE_SHUTDOWN_TIMEOUT_MS);
+        watchdog.unref();
         stop();
       },
       (cause) => {

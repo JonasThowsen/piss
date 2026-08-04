@@ -178,6 +178,16 @@ export function eventTimeline(events: ReadonlyArray<OwnedSessionEvent>): Readonl
     if (event.type === "browser_artifact_failed" && typeof data?.message === "string") {
       items.push({ _tag: "notice", key: `browser-artifact-failed-${event.sequence}`, sequence: event.sequence, text: data.message, tone: "error" });
     }
+    if (event.type === "workflow_authority_decision" && typeof data?.operationId === "string") {
+      items.push({
+        _tag: "status",
+        key: `workflow-authority-${event.sequence}`,
+        sequence: event.sequence,
+        label: data.allowed === true ? "Approved plan authority applied" : "Operation outside approved authority",
+        detail: typeof data.basis === "string" ? data.basis : `Operation ${data.operationId}`,
+        tone: data.allowed === true ? "success" : "error",
+      });
+    }
     if (event.type === "workflow_supervisor_consulting") {
       activeSupervisor = items.length;
       items.push({
