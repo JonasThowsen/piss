@@ -327,6 +327,8 @@ export const EngineeringWorkflowEvidence = Schema.Struct({
 });
 export type EngineeringWorkflowEvidence = typeof EngineeringWorkflowEvidence.Type;
 
+export const WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH = 4 * 1024;
+
 export const EngineeringWorkflowProgress = Schema.Struct({
   currentSliceId: Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   activity: Schema.String.check(Schema.isMaxLength(8 * 1024)),
@@ -338,11 +340,14 @@ export const EngineeringWorkflowProgress = Schema.Struct({
   retryAttempt: NonNegativeInt,
   maxTransientRetries: NonNegativeInt,
   condition: EngineeringWorkflowExecutionCondition,
-  nextAction: Schema.String.check(Schema.isMaxLength(4 * 1024)),
+  nextAction: Schema.String.check(Schema.isMaxLength(WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH)),
   lastCheckpointSummary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(16 * 1024))),
   lastActivityAt: Schema.String,
 });
 export type EngineeringWorkflowProgress = typeof EngineeringWorkflowProgress.Type;
+
+export const WORKFLOW_SUPERSEDED_REVISION_CAPACITY = 32;
+export const WORKFLOW_MUTATION_RECEIPT_CAPACITY = 256;
 
 export const EngineeringWorkflowSupersededRevision = Schema.Struct({
   planRevision: NonNegativeInt,
@@ -359,6 +364,7 @@ export const EngineeringWorkflowGuidance = Schema.Struct({
   text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
   status: Schema.Literals(["queued", "delivered", "applied"]),
   planRevision: NonNegativeInt,
+  applicationPlanRevision: Schema.optional(NonNegativeInt),
   submittedRuntimeId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   commandId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   submittedAt: Schema.String,
@@ -486,9 +492,10 @@ export const EngineeringWorkflow = Schema.Struct({
   authorityDecisions: Schema.optional(Schema.Array(EngineeringWorkflowAuthorityDecision).check(Schema.isMaxLength(200))),
   operationReceipts: Schema.optional(Schema.Array(EngineeringWorkflowOperationReceipt).check(Schema.isMaxLength(200))),
   processedEventIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(4_096))),
-  processedMutationIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(256))),
+  processedMutationIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(WORKFLOW_MUTATION_RECEIPT_CAPACITY))),
+  cancellationMutationId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   reconciledTimelineSequence: Schema.optional(NonNegativeInt),
-  supersededRevisions: Schema.optional(Schema.Array(EngineeringWorkflowSupersededRevision).check(Schema.isMaxLength(32))),
+  supersededRevisions: Schema.optional(Schema.Array(EngineeringWorkflowSupersededRevision).check(Schema.isMaxLength(WORKFLOW_SUPERSEDED_REVISION_CAPACITY))),
   openQuestions: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(20))),
   createdAt: Schema.String,
   updatedAt: Schema.String,

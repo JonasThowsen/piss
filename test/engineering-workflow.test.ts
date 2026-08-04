@@ -1,23 +1,31 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import * as Schema from "effect/Schema";
+import { EngineeringWorkflow as EngineeringWorkflowSchema, WORKFLOW_MUTATION_RECEIPT_CAPACITY, WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH, WORKFLOW_SUPERSEDED_REVISION_CAPACITY } from "../shared/domain.ts";
 import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint, EngineeringWorkflowDossier, EngineeringWorkflowPhase } from "../shared/domain.ts";
 import {
+  appendBoundedSupersededRevision,
   appendBoundedWorkflowGuidance,
   applyWorkflowCheckpoint,
   applyWorkflowProgress,
   cancelEngineeringWorkflow,
+  cancelEngineeringWorkflowWithReceipt,
   canAutomaticallyAuthorize,
   fallbackWorkflowDossier,
   initialWorkflowProgress,
   isAutonomousWorkflowPhase,
   recordAuthorityDecision,
   recordWorkflowGuidanceDelivery,
+  reconcileWorkflowApprovalGuidance,
   workflowBadgePhaseLabel,
+  workflowCanRecordMutation,
+  workflowCompletionError,
   workflowFirstIncomplete,
   workflowHasActiveCurrentPhaseRun,
   workflowHasCompleteEvidence,
   workflowNeedsApproval,
+  workflowUnappliedGuidanceIdsForCurrentPhase,
 } from "../shared/engineeringWorkflow.ts";
 
 const startedAt = "2026-04-15T10:00:00.000Z";
@@ -303,6 +311,219 @@ test("checkpoints cannot skip guidance delivery and capacity never evicts unreso
   assert.equal(withApplied[0]?.id, "queued-0");
 });
 
+test("replacement Plan requires exact guidance acknowledgement before approval", () => {
+  const plan = dossier();
+  const planning = workflow("planning", {
+    specification: "# Revised specification",
+    plan: "# Prior plan",
+    dossier: plan,
+    artifactRevision: 3,
+    phaseRun: { id: "run-planning-3", phase: "planning", attempt: 0, planRevision: 3, runtimeId: "runtime-1", startedAt },
+    progress: initialWorkflowProgress(startedAt, "working", plan),
+    guidance: [{ id: "scope-current", text: "Add the new scope constraint", status: "delivered", planRevision: 3, submittedRuntimeId: "runtime-1", commandId: "scope-current-command", submittedAt: startedAt, deliveredAt: startedAt, appliedAt: null }],
+    processedEventIds: [],
+  });
+  const ready = checkpoint("plan", "ready", "# Replacement plan", { dossier: plan, phaseRunId: "run-planning-3", planRevision: 3, runtimeId: "runtime-1" });
+
+  const omitted = applyWorkflowCheckpoint(planning, ready);
+  assert.equal(omitted.phase, "blocked");
+  assert.equal(omitted.guidance?.[0]?.status, "delivered");
+  assert.match(omitted.error ?? "", /scope-current/);
+
+  const acknowledged = applyWorkflowCheckpoint(planning, { ...ready, eventId: "plan-with-scope-guidance", toolCallId: "plan-with-scope-guidance", appliedGuidanceIds: ["scope-current"] });
+  assert.equal(acknowledged.phase, "awaitingPlanApproval");
+  assert.equal(acknowledged.guidance?.[0]?.status, "applied");
+});
+
+test("persisted approval gates return to Plan for current, explicit carry, and legacy guidance", () => {
+  const plan = dossier();
+  const approval = workflow("awaitingPlanApproval", {
+    specification: "# Revised specification",
+    plan: "# Persisted replacement plan",
+    dossier: plan,
+    artifactRevision: 3,
+    executionAuthority: { mode: "approved_plan", grantedAt: startedAt, planRevision: 3, artifactDigest: "stale-digest" },
+    progress: initialWorkflowProgress(startedAt, "waiting_user", plan),
+    guidance: [
+      { id: "current-scope", text: "Current scope", status: "delivered", planRevision: 3, submittedRuntimeId: "runtime-old", commandId: "current-command", submittedAt: startedAt, deliveredAt: startedAt, appliedAt: null },
+      { id: "explicit-carry", text: "Explicit carry", status: "delivered", planRevision: 2, applicationPlanRevision: 3, submittedRuntimeId: "runtime-old", commandId: "explicit-command", submittedAt: startedAt, deliveredAt: startedAt, appliedAt: null },
+      { id: "legacy-carry", text: "Legacy carry", status: "delivered", planRevision: 1, submittedRuntimeId: "runtime-old", commandId: "legacy-command", submittedAt: startedAt, deliveredAt: startedAt, appliedAt: null },
+    ],
+  });
+
+  assert.deepEqual(workflowUnappliedGuidanceIdsForCurrentPhase(approval), ["current-scope", "explicit-carry", "legacy-carry"]);
+  const reconciled = reconcileWorkflowApprovalGuidance(approval, "2026-04-15T10:05:00.000Z");
+  assert.equal(reconciled.phase, "planning");
+  assert.equal(reconciled.executionAuthority, undefined);
+  assert.equal(reconciled.phaseRun, undefined);
+  assert.equal(reconciled.artifactRevision, 3);
+  assert.match(reconciled.progress?.nextAction ?? "", /current-scope, explicit-carry, legacy-carry/);
+
+  const planning = {
+    ...reconciled,
+    phaseRun: { id: "run-recovered-plan", phase: "planning" as const, attempt: 0, planRevision: 3, runtimeId: "runtime-new", startedAt },
+    processedEventIds: [],
+  };
+  const acknowledged = applyWorkflowCheckpoint(planning, checkpoint("plan", "ready", "# Corrected replacement plan", {
+    dossier: plan,
+    phaseRunId: "run-recovered-plan",
+    planRevision: 3,
+    runtimeId: "runtime-new",
+    appliedGuidanceIds: ["current-scope", "explicit-carry", "legacy-carry"],
+  }));
+  assert.equal(acknowledged.phase, "awaitingPlanApproval");
+  assert.deepEqual(acknowledged.guidance?.map((item) => item.status), ["applied", "applied", "applied"]);
+  assert.deepEqual(workflowUnappliedGuidanceIdsForCurrentPhase({ ...acknowledged, phase: "building" }), []);
+});
+
+test("maximum guidance IDs reconcile to schema-bounded progress and still require exact acknowledgement", () => {
+  const plan = dossier();
+  const guidance = Array.from({ length: 64 }, (_, index) => {
+    const prefix = `max-${String(index).padStart(2, "0")}-`;
+    const id = `${prefix}${"x".repeat(128 - prefix.length)}`;
+    assert.equal(id.length, 128);
+    return {
+      id,
+      text: `Maximum guidance ${index}`,
+      status: "delivered" as const,
+      planRevision: 3,
+      submittedRuntimeId: "runtime-old",
+      commandId: `max-command-${index}`,
+      submittedAt: startedAt,
+      deliveredAt: startedAt,
+      appliedAt: null,
+    };
+  });
+  const approval = workflow("awaitingPlanApproval", {
+    specification: "# Revised specification",
+    plan: "# Persisted maximum plan",
+    dossier: plan,
+    artifactRevision: 3,
+    executionAuthority: { mode: "approved_plan", grantedAt: startedAt, planRevision: 3, artifactDigest: "stale-maximum-digest" },
+    progress: initialWorkflowProgress(startedAt, "waiting_user", plan),
+    guidance,
+  });
+
+  const reconciled = reconcileWorkflowApprovalGuidance(approval, "2026-04-15T10:06:00.000Z");
+  assert.equal(reconciled.phase, "planning");
+  assert.equal(reconciled.guidance?.length, 64);
+  assert.ok((reconciled.progress?.nextAction.length ?? Infinity) <= WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH);
+  assert.match(reconciled.progress?.nextAction ?? "", /64 guidance items/);
+  assert.match(reconciled.progress?.nextAction ?? "", /\+56 more/);
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(EngineeringWorkflowSchema)(reconciled));
+
+  const planning = {
+    ...reconciled,
+    phaseRun: { id: "run-maximum-plan", phase: "planning" as const, attempt: 0, planRevision: 3, runtimeId: "runtime-new", startedAt },
+    processedEventIds: [],
+  };
+  const ready = checkpoint("plan", "ready", "# Corrected maximum plan", {
+    dossier: plan,
+    phaseRunId: "run-maximum-plan",
+    planRevision: 3,
+    runtimeId: "runtime-new",
+  });
+  const omitted = applyWorkflowCheckpoint(planning, ready);
+  assert.equal(omitted.phase, "blocked");
+  assert.equal(omitted.guidance?.filter((item) => item.status !== "applied").length, 64);
+
+  const acknowledged = applyWorkflowCheckpoint(planning, {
+    ...ready,
+    eventId: "maximum-plan-acknowledged",
+    toolCallId: "maximum-plan-acknowledged",
+    appliedGuidanceIds: guidance.map((item) => item.id),
+  });
+  assert.equal(acknowledged.phase, "awaitingPlanApproval");
+  assert.equal(acknowledged.guidance?.filter((item) => item.status === "applied").length, 64);
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(EngineeringWorkflowSchema)(acknowledged));
+});
+
+test("replacement Plan alone can consume immutable prior-revision carry-forward guidance", () => {
+  const plan = dossier();
+  let planning = workflow("planning", {
+    specification: "# Revised specification",
+    plan: "# Prior plan",
+    dossier: plan,
+    artifactRevision: 3,
+    phaseRun: { id: "run-carry-forward", phase: "planning", attempt: 0, planRevision: 3, runtimeId: "runtime-1", startedAt },
+    progress: initialWorkflowProgress(startedAt, "working", plan),
+    guidance: [
+      { id: "prior-queued", text: "Preserve queued guidance", status: "queued", planRevision: 2, applicationPlanRevision: 3, submittedRuntimeId: "runtime-1", commandId: "prior-queued-command", submittedAt: startedAt, deliveredAt: null, appliedAt: null },
+      { id: "scope-current", text: "Apply the scope revision", status: "queued", planRevision: 3, submittedRuntimeId: "runtime-1", commandId: "scope-current-command", submittedAt: startedAt, deliveredAt: null, appliedAt: null },
+    ],
+    processedEventIds: [],
+  });
+  planning = recordWorkflowGuidanceDelivery(planning, { eventId: "deliver-prior-queued", guidanceId: "prior-queued", commandId: "prior-queued-command", planRevision: 2, deliveredAt: startedAt });
+  planning = recordWorkflowGuidanceDelivery(planning, { eventId: "deliver-current-scope", guidanceId: "scope-current", commandId: "scope-current-command", planRevision: 3, deliveredAt: startedAt });
+
+  const applied = applyWorkflowCheckpoint(planning, checkpoint("plan", "ready", "# Carried replacement plan", {
+    dossier: plan,
+    phaseRunId: "run-carry-forward",
+    planRevision: 3,
+    runtimeId: "runtime-1",
+    appliedGuidanceIds: ["prior-queued", "scope-current"],
+  }));
+  assert.equal(applied.phase, "awaitingPlanApproval");
+  assert.deepEqual(applied.guidance?.map((item) => item.status), ["applied", "applied"]);
+  assert.equal(applied.guidance?.[0]?.planRevision, 2, "the immutable submission revision is retained");
+  assert.equal(applied.guidance?.[0]?.applicationPlanRevision, 3);
+
+  const staleAutonomous = running("building", {
+    artifactRevision: 3,
+    executionAuthority: { mode: "approved_plan", grantedAt: startedAt, planRevision: 3, artifactDigest: "0123456789abcdef" },
+    phaseRun: { id: "run-building-3", phase: "building", attempt: 0, planRevision: 3, runtimeId: "runtime-1", startedAt },
+    guidance: [{ ...planning.guidance![0]!, status: "delivered", appliedAt: null }],
+  });
+  const staleAcknowledgement = applyWorkflowProgress(staleAutonomous, {
+    eventId: "stale-carry-forward-ack",
+    phaseRunId: "run-building-3",
+    planRevision: 3,
+    runtimeId: "runtime-1",
+    activity: "Must not apply stale carry-forward guidance",
+    appliedGuidanceIds: ["prior-queued"],
+    receivedAt: startedAt,
+  });
+  assert.strictEqual(staleAcknowledgement, staleAutonomous);
+});
+
+test("full mutation receipt capacity preserves immediate idempotent cancellation", () => {
+  const atCapacity = running("building", {
+    processedMutationIds: Array.from({ length: WORKFLOW_MUTATION_RECEIPT_CAPACITY }, (_, index) => `mutation-${index}`),
+  });
+  assert.equal(workflowCanRecordMutation(atCapacity), false);
+  assert.equal(workflowCanRecordMutation(atCapacity, true), true);
+  const cancelled = cancelEngineeringWorkflowWithReceipt(atCapacity, "cancel-at-capacity", "2026-04-15T10:10:00.000Z");
+  assert.equal(cancelled.phase, "cancelled");
+  assert.equal(cancelled.cancellationMutationId, "cancel-at-capacity");
+  assert.equal(cancelled.processedMutationIds?.length, WORKFLOW_MUTATION_RECEIPT_CAPACITY);
+  assert.strictEqual(cancelEngineeringWorkflowWithReceipt(cancelled, "cancel-at-capacity", "2026-04-15T10:11:00.000Z"), cancelled);
+  assert.strictEqual(applyWorkflowProgress(cancelled, { eventId: "late-after-capacity-cancel", phaseRunId: "run-building", planRevision: 2, runtimeId: "runtime-1", activity: "late", receivedAt: startedAt }), cancelled);
+  assert.strictEqual(applyWorkflowCheckpoint(cancelled, checkpoint("build", "passed", null, { phaseRunId: "run-building", planRevision: 2, runtimeId: "runtime-1" })), cancelled);
+});
+
+test("superseded evidence capacity fails closed without evicting the oldest revision", () => {
+  const revisions = Array.from({ length: WORKFLOW_SUPERSEDED_REVISION_CAPACITY }, (_, index) => ({
+    planRevision: index + 1,
+    completedSliceIds: [`slice-${index + 1}`],
+    passedCriterionIds: [`criterion-${index + 1}`],
+    evidence: [{ criterionId: `criterion-${index + 1}`, summary: `evidence-${index + 1}` }],
+    supersededAt: startedAt,
+    reason: `scope-${index + 1}`,
+  }));
+  const additional = {
+    planRevision: WORKFLOW_SUPERSEDED_REVISION_CAPACITY + 1,
+    completedSliceIds: ["slice-overflow"],
+    passedCriterionIds: ["criterion-overflow"],
+    evidence: [{ criterionId: "criterion-overflow", summary: "must not replace retained evidence" }],
+    supersededAt: startedAt,
+    reason: "overflow",
+  };
+
+  assert.equal(appendBoundedSupersededRevision(revisions, additional), null);
+  assert.equal(revisions.length, WORKFLOW_SUPERSEDED_REVISION_CAPACITY);
+  assert.equal(revisions[0]?.evidence[0]?.summary, "evidence-1");
+});
+
 test("stale phase-run progress and checkpoints cannot mutate a replacement run", () => {
   const current = running();
   const staleProgress = applyWorkflowProgress(current, {
@@ -525,11 +746,13 @@ test("unresolved destructive receipts block successful checkpoints", () => {
   assert.equal(ready.phase, "readyToShip");
 });
 
-test("ready to ship requires evidence for every structured slice and criterion", () => {
-  let current = running("reviewing", { phaseRun: { id: "run-reviewing", phase: "reviewing", attempt: 0, planRevision: 2, runtimeId: "runtime-1", startedAt } });
+test("ready to ship requires evidence for every structured slice and criterion without consuming repair budget", () => {
+  let current = running("reviewing", { repairAttempts: 20, maxRepairAttempts: 30, phaseRun: { id: "run-reviewing", phase: "reviewing", attempt: 0, planRevision: 2, runtimeId: "runtime-1", startedAt } });
   const premature = applyWorkflowCheckpoint(current, checkpoint("review", "passed", null, { phaseRunId: "run-reviewing", planRevision: 2, runtimeId: "runtime-1" }));
-  assert.equal(premature.phase, "repairing");
-  assert.match(premature.error ?? "", /evidence/i);
+  assert.equal(premature.phase, "blocked");
+  assert.equal(premature.blockedFromPhase, "reviewing");
+  assert.equal(premature.repairAttempts, 20);
+  assert.match(premature.error ?? "", /Missing completed slices: S1, S2/);
 
   current = applyWorkflowProgress(current, {
     eventId: "complete-evidence",
@@ -543,10 +766,56 @@ test("ready to ship requires evidence for every structured slice and criterion",
     condition: "working",
     receivedAt: "2026-04-15T11:05:00.000Z",
   });
+  assert.equal(workflowCompletionError(current), null);
   assert.equal(workflowHasCompleteEvidence(current), true);
   const passed = applyWorkflowCheckpoint(current, checkpoint("review", "passed", null, { phaseRunId: "run-reviewing", planRevision: 2, runtimeId: "runtime-1" }));
   assert.equal(passed.phase, "readyToShip");
+  assert.equal(passed.repairAttempts, 20);
   assert.equal(passed.progress?.condition, "complete");
+  const replay = applyWorkflowCheckpoint(passed, checkpoint("review", "passed", null, { phaseRunId: "run-reviewing", planRevision: 2, runtimeId: "runtime-1" }));
+  assert.strictEqual(replay, passed);
+});
+
+test("a complete maximum-budget Review transitions once to ready to ship without another Repair", () => {
+  const criteria = Array.from({ length: 10 }, (_, index) => ({ id: `AC${index + 1}`, title: `Criterion ${index + 1}` }));
+  const slices = Array.from({ length: 8 }, (_, index) => ({
+    id: `LPA-${String(index + 1).padStart(2, "0")}`,
+    title: `Slice ${index + 1}`,
+    criterionIds: index === 7 ? ["AC8", "AC9", "AC10"] : [`AC${index + 1}`],
+    dependencies: index === 0 ? [] : [`LPA-${String(index).padStart(2, "0")}`],
+  }));
+  const plan: EngineeringWorkflowDossier = {
+    revision: 0,
+    criteria,
+    slices,
+    verificationRequirements: ["Run the canonical suite"],
+    operations: [{ id: "verify", kind: "command", target: "canonical local checks", description: "Verify completion", recovery: "Retain output", evidence: "Passing checks" }],
+    recoveryRequirements: ["Do not repeat completed work"],
+    exclusions: ["Production operations"],
+    readiness: [{ id: "ready", label: "Environment ready", status: "passed", detail: "Checked" }],
+    unresolved: [],
+  };
+  const reviewing = running("reviewing", {
+    dossier: plan,
+    artifactRevision: 0,
+    repairAttempts: 21,
+    maxRepairAttempts: 30,
+    phaseRun: { id: "review-final", phase: "reviewing", attempt: 0, planRevision: 0, runtimeId: "runtime-final", startedAt },
+    progress: {
+      ...initialWorkflowProgress(startedAt, "working", plan),
+      currentSliceId: null,
+      completedSliceIds: slices.map((slice) => slice.id),
+      passedCriterionIds: criteria.map((criterion) => criterion.id),
+      evidence: criteria.map((criterion) => ({ criterionId: criterion.id, summary: `${criterion.id} evidence` })),
+    },
+  });
+  const finalReview = checkpoint("review", "passed", null, { eventId: "review-final-passed", phaseRunId: "review-final", planRevision: 0, runtimeId: "runtime-final" });
+  const ready = applyWorkflowCheckpoint(reviewing, finalReview);
+  assert.equal(workflowCompletionError(reviewing), null);
+  assert.equal(ready.phase, "readyToShip");
+  assert.equal(ready.repairAttempts, 21);
+  assert.equal(ready.progress?.condition, "complete");
+  assert.strictEqual(applyWorkflowCheckpoint(ready, finalReview), ready);
 });
 
 test("repair budget counts repair runs and never exceeds the grant", () => {
@@ -610,13 +879,16 @@ test("legacy plans retain compatibility without fabricated structured completion
 
 test("workflow skills encode conversational planning, structured progress, and standing authority", async () => {
   const resource = (name: string) => readFile(new URL(`../workflow-resources/skills/piss-engineering-${name}/SKILL.md`, import.meta.url), "utf8");
-  const [define, plan, build, verify, review] = await Promise.all([resource("define"), resource("plan"), resource("build"), resource("verify"), resource("review")]);
+  const [define, plan, build, verify, review, protocol] = await Promise.all([resource("define"), resource("plan"), resource("build"), resource("verify"), resource("review"), readFile(new URL("../workflow-resources/piss-workflow.ts", import.meta.url), "utf8")]);
   assert.match(define, /piss_workflow_draft/i);
   assert.match(plan, /specification—not the first tracer—as the completion boundary/i);
   assert.match(plan, /one final interactive authority checkpoint/i);
   assert.match(plan, /dossier\.operations/i);
   assert.match(plan, /non-mutating readiness checks/i);
   assert.match(plan, /every commit, push, migration, deployment, or production write requires a stable `idempotencyKey`/i);
+  assert.match(plan, /queued or transcript-backed carry-forward guidance/i);
+  assert.match(plan, /Never request \*\*Approve & Run\*\* while applicable guidance remains unacknowledged/i);
+  assert.match(protocol, /Plan must report all applicable current\/carry-forward IDs before requesting Approve & Run/i);
   assert.match(plan, /receiptRequired: true/i);
   assert.match(build, /do not checkpoint after only the tracer/i);
   assert.match(build, /piss_workflow_progress/i);

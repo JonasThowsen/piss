@@ -8,7 +8,9 @@ import type {
   EngineeringWorkflowOperationReceipt,
   EngineeringWorkflowPhase,
   EngineeringWorkflowProgress,
+  EngineeringWorkflowSupersededRevision,
 } from "./domain.ts";
+import { WORKFLOW_MUTATION_RECEIPT_CAPACITY, WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH, WORKFLOW_SUPERSEDED_REVISION_CAPACITY } from "./domain.ts";
 
 export const ENGINEERING_WORKFLOW_PACK_VERSION = "engineering-v9";
 
@@ -235,13 +237,69 @@ function nextRevision(workflow: EngineeringWorkflow): number {
   return workflowRevision(workflow) + 1;
 }
 
+export function workflowGuidanceAppliesToCurrentPhase(
+  workflow: EngineeringWorkflow,
+  item: EngineeringWorkflowGuidance,
+): boolean {
+  const planRevision = workflowPlanRevision(workflow);
+  const atPlanBoundary = workflow.phase === "planning" || workflow.phase === "awaitingPlanApproval";
+  return item.planRevision === planRevision
+    || atPlanBoundary && (
+      item.applicationPlanRevision === planRevision
+      || item.applicationPlanRevision === undefined && item.planRevision < planRevision
+    );
+}
+
+export function workflowUnappliedGuidanceIdsForCurrentPhase(workflow: EngineeringWorkflow): ReadonlyArray<string> {
+  return (workflow.guidance ?? [])
+    .filter((item) => item.status !== "applied" && workflowGuidanceAppliesToCurrentPhase(workflow, item))
+    .map((item) => item.id);
+}
+
+function boundedGuidanceIdSummary(ids: ReadonlyArray<string>): string {
+  const previewLimit = 8;
+  const preview = ids.slice(0, previewLimit).join(", ");
+  const remaining = ids.length - Math.min(ids.length, previewLimit);
+  const summary = `${ids.length} guidance item${ids.length === 1 ? "" : "s"}${preview ? ` (${preview}${remaining > 0 ? `, +${remaining} more` : ""})` : ""}`;
+  // IDs are schema-bounded, so the preview is already well below this limit.
+  // Keep the slice as a final invariant if those upstream bounds ever change.
+  return summary.slice(0, WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH / 2);
+}
+
+export function reconcileWorkflowApprovalGuidance(
+  workflow: EngineeringWorkflow,
+  updatedAt: string,
+): EngineeringWorkflow {
+  if (workflow.phase !== "awaitingPlanApproval") return workflow;
+  const unappliedIds = workflowUnappliedGuidanceIdsForCurrentPhase(workflow);
+  if (unappliedIds.length === 0) return workflow;
+  const guidanceSummary = boundedGuidanceIdSummary(unappliedIds);
+  const { executionAuthority: _authority, phaseRun: _phaseRun, ...unapproved } = workflow;
+  const progress = workflow.progress ?? initialWorkflowProgress(updatedAt, "waiting_internal", workflow.dossier);
+  return {
+    ...unapproved,
+    phase: "planning",
+    blockedFromPhase: null,
+    revision: nextRevision(workflow),
+    progress: {
+      ...progress,
+      condition: "waiting_internal",
+      activity: "Final approval paused until persisted guidance is incorporated into the plan",
+      nextAction: `Apply all ${guidanceSummary} in a replacement Plan checkpoint before Approve & Run; exact IDs remain in the guidance log`,
+      lastActivityAt: updatedAt,
+    },
+    updatedAt,
+    error: `Final approval requires Plan acknowledgement of ${guidanceSummary}`,
+  };
+}
+
 function applicableGuidanceIds(workflow: EngineeringWorkflow, ids: ReadonlyArray<string> | undefined): boolean {
   if (!ids?.length) return true;
   const guidanceById = new Map((workflow.guidance ?? []).map((item) => [item.id, item]));
   return ids.every((id) => {
     const item = guidanceById.get(id);
     return item !== undefined
-      && item.planRevision === workflowPlanRevision(workflow)
+      && workflowGuidanceAppliesToCurrentPhase(workflow, item)
       && (item.status === "delivered" || item.status === "applied");
   });
 }
@@ -260,6 +318,14 @@ export function appendBoundedWorkflowGuidance(
 ): ReadonlyArray<EngineeringWorkflowGuidance> | null {
   const existing = [...(guidance ?? [])];
   return existing.length < 64 ? [...existing, item] : null;
+}
+
+export function appendBoundedSupersededRevision(
+  revisions: ReadonlyArray<EngineeringWorkflowSupersededRevision> | undefined,
+  item: EngineeringWorkflowSupersededRevision,
+): ReadonlyArray<EngineeringWorkflowSupersededRevision> | null {
+  const existing = [...(revisions ?? [])];
+  return existing.length < WORKFLOW_SUPERSEDED_REVISION_CAPACITY ? [...existing, item] : null;
 }
 
 function withCheckpointProgress(
@@ -300,16 +366,40 @@ function unresolvedDestructiveReceipt(workflow: EngineeringWorkflow): Engineerin
   });
 }
 
-export function workflowHasCompleteEvidence(workflow: EngineeringWorkflow): boolean {
+function boundedMissingIds(label: string, ids: ReadonlyArray<string>): string {
+  const shown = ids.slice(0, 8).join(", ");
+  const remaining = ids.length - Math.min(ids.length, 8);
+  return `${label}: ${shown}${remaining > 0 ? ` (+${remaining} more)` : ""}`;
+}
+
+export function workflowCompletionError(workflow: EngineeringWorkflow): string | null {
   const dossier = workflow.dossier;
-  if (!dossier) return workflow.revision === undefined && workflow.artifactRevision === undefined;
-  if (workflowDossierValidationError(dossier)) return false;
+  if (!dossier) {
+    return workflow.revision === undefined && workflow.artifactRevision === undefined
+      ? null
+      : "The structured autonomy dossier is missing";
+  }
+  const dossierError = workflowDossierValidationError(dossier);
+  if (dossierError) return `The persisted autonomy dossier is invalid: ${dossierError}`;
+  const unresolvedReceipt = unresolvedDestructiveReceipt(workflow);
+  if (unresolvedReceipt) {
+    return `Operation ${unresolvedReceipt.operationId} has unresolved ${unresolvedReceipt.status} receipt ${unresolvedReceipt.idempotencyKey}`;
+  }
   const progress = workflow.progress;
-  if (!progress || unresolvedDestructiveReceipt(workflow)) return false;
+  if (!progress) return "Structured workflow progress is missing";
   const completed = new Set(progress.completedSliceIds);
   const passed = new Set(progress.passedCriterionIds);
-  return dossier.slices.every((slice) => completed.has(slice.id))
-    && dossier.criteria.every((criterion) => passed.has(criterion.id) && progress.evidence.some((item) => item.criterionId === criterion.id));
+  const evidenced = new Set(progress.evidence.map((item) => item.criterionId));
+  const missingSlices = dossier.slices.filter((slice) => !completed.has(slice.id)).map((slice) => slice.id);
+  if (missingSlices.length > 0) return boundedMissingIds("Missing completed slices", missingSlices);
+  const missingPassedCriteria = dossier.criteria.filter((criterion) => !passed.has(criterion.id)).map((criterion) => criterion.id);
+  if (missingPassedCriteria.length > 0) return boundedMissingIds("Missing passed criteria", missingPassedCriteria);
+  const missingEvidence = dossier.criteria.filter((criterion) => !evidenced.has(criterion.id)).map((criterion) => criterion.id);
+  return missingEvidence.length > 0 ? boundedMissingIds("Missing criterion evidence", missingEvidence) : null;
+}
+
+export function workflowHasCompleteEvidence(workflow: EngineeringWorkflow): boolean {
+  return workflowCompletionError(workflow) === null;
 }
 
 export function applyWorkflowCheckpoint(
@@ -384,7 +474,15 @@ export function applyWorkflowCheckpoint(
     const dossierError = workflowDossierValidationError(dossier);
     const structuredWorkflow = workflow.revision !== undefined || workflow.artifactRevision !== undefined;
     const unresolved = Boolean(dossier && (dossier.unresolved.length > 0 || dossier.readiness.some((item) => item.status === "unresolved")));
-    const planningError = structuredWorkflow ? dossierError ?? (unresolved ? "The plan has unresolved readiness requirements" : null) : unresolved ? "The plan has unresolved readiness requirements" : null;
+    const reportedGuidanceIds = new Set(checkpoint.appliedGuidanceIds ?? []);
+    const missingGuidanceIds = workflowUnappliedGuidanceIdsForCurrentPhase(workflow)
+      .filter((id) => !reportedGuidanceIds.has(id));
+    const guidanceError = missingGuidanceIds.length > 0
+      ? `The replacement plan did not acknowledge applicable guidance: ${missingGuidanceIds.join(", ")}`
+      : null;
+    const planningError = structuredWorkflow
+      ? dossierError ?? (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError
+      : (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError;
     return {
       ...workflow,
       ...common,
@@ -442,26 +540,18 @@ export function applyWorkflowCheckpoint(
     };
   }
 
-  if (checkpoint.stage === "review" && !workflowHasCompleteEvidence(workflow)) {
-    const missing = "Review reported success before every planned slice and acceptance criterion had durable evidence";
-    if (workflow.repairAttempts >= workflow.maxRepairAttempts) {
+  if (checkpoint.stage === "review") {
+    const completionError = workflowCompletionError(workflow);
+    if (completionError) {
       return {
         ...workflow,
         ...common,
-        phase: "failed",
-        progress: withCheckpointProgress(workflow, checkpoint, "blocked", "Extend the repair budget to complete missing evidence"),
-        error: `Repair budget exhausted: ${missing}`,
+        phase: "blocked",
+        blockedFromPhase: "reviewing",
+        progress: withCheckpointProgress(workflow, checkpoint, "waiting_internal", "Reconcile the exact completion invariant before deciding whether implementation repair is required"),
+        error: `Review reported success but the control plane rejected completion. ${completionError}`,
       };
     }
-    const repairAttempts = workflow.repairAttempts + 1;
-    return {
-      ...workflow,
-      ...common,
-      phase: "repairing",
-      repairAttempts,
-      progress: withCheckpointProgress(workflow, checkpoint, "working", "Repair the missing plan or evidence coverage"),
-      error: missing,
-    };
   }
 
   const phase: EngineeringWorkflowPhase = checkpoint.stage === "build"
@@ -606,6 +696,27 @@ export function cancelEngineeringWorkflow(workflow: EngineeringWorkflow, cancell
     } : workflow.progress,
     updatedAt: cancelledAt,
     error: null,
+  };
+}
+
+export function workflowCanRecordMutation(workflow: EngineeringWorkflow, cancellation = false): boolean {
+  return cancellation || (workflow.processedMutationIds?.length ?? 0) < WORKFLOW_MUTATION_RECEIPT_CAPACITY;
+}
+
+export function cancelEngineeringWorkflowWithReceipt(
+  workflow: EngineeringWorkflow,
+  mutationId: string,
+  cancelledAt: string,
+): EngineeringWorkflow {
+  if (workflow.cancellationMutationId === mutationId || isTerminalWorkflowPhase(workflow.phase)) return workflow;
+  const cancelled = cancelEngineeringWorkflow(workflow, cancelledAt);
+  const receipts = workflow.processedMutationIds ?? [];
+  return {
+    ...cancelled,
+    cancellationMutationId: mutationId,
+    processedMutationIds: receipts.includes(mutationId) || receipts.length >= WORKFLOW_MUTATION_RECEIPT_CAPACITY
+      ? receipts
+      : [...receipts, mutationId],
   };
 }
 

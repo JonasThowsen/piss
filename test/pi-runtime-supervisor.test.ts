@@ -16,7 +16,7 @@ import { PushNotifications } from "../server/notifications/PushNotifications.ts"
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
 import { WorkspaceId, type EngineeringWorkflow, type EngineeringWorkflowMutationInput, type OwnedSession, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
-import { initialWorkflowProgress } from "../shared/engineeringWorkflow.ts";
+import { applyWorkflowCheckpoint, initialWorkflowProgress } from "../shared/engineeringWorkflow.ts";
 
 const decodeWorkspaceId = Schema.decodeUnknownSync(WorkspaceId);
 
@@ -183,7 +183,10 @@ process.stdin.on("data", (chunk) => {
           const standardDossier = { revision: 1, criteria: [{ id: "AC-GENERIC", title: "Complete the workflow fixture" }], slices: [{ id: "S-GENERIC", title: "Workflow fixture", criterionIds: ["AC-GENERIC"], dependencies: [] }], verificationRequirements: ["Inspect the fixture checkpoint"], operations: [{ id: "workspace-write", kind: "workspace_write", target: "shared/", description: "Fixture workspace write", recovery: "Targeted rollback", evidence: "Fixture progress" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Production operations"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "ready" }], unresolved: [] };
           const scopeDossier = { ...standardDossier, criteria: [{ id: "AC-PRIOR", title: "Preserve prior revision evidence" }], slices: [{ id: "S-PRIOR", title: "Prior revision tracer", criterionIds: ["AC-PRIOR"], dependencies: [] }], operations: [{ ...standardDossier.operations[0], receiptRequired: true, idempotencyKey: "scope-write-once" }] };
           const planDossier = workflowAuthorityMode ? authorityDossier : workflowScopeChangeMode ? scopeDossier : standardDossier;
-          const appliedGuidanceIds = [...command.message.matchAll(/\\[Workflow guidance ([^ —\\]]+)(?: — [^\\]]+)?\\]/g)].map((match) => match[1]);
+          const queuedGuidanceIds = [...command.message.matchAll(/\\[Workflow guidance ([^ —\\]]+)(?: — [^\\]]+)?\\]/g)].map((match) => match[1]);
+          const deliveredGuidanceIds = /Previously delivered guidance IDs \\(do not apply twice; acknowledge from transcript evidence\\): ([^\\n]+)/.exec(command.message)?.[1]
+            ?.split(",").map((id) => id.trim()).filter(Boolean) ?? [];
+          const appliedGuidanceIds = [...new Set([...queuedGuidanceIds, ...deliveredGuidanceIds])];
           const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(phaseRunId && phaseRunId !== "legacy" ? { phaseRunId, planRevision, runtimeId } : {}), ...(appliedGuidanceIds.length > 0 ? { appliedGuidanceIds } : {}), ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan", dossier: planDossier } : {}) };
           activeWorkflowArgs = args;
           const emitCheckpoint = () => {
@@ -465,6 +468,41 @@ test("blocked phase guidance is included when the workflow resumes", () => {
   assert.match(prompt, /Do not stop to request confirmation again/i);
 });
 
+test("repair prompts expose the control-plane finding instead of a passing Review summary", () => {
+  const at = "2026-08-02T20:00:00.000Z";
+  const workflow: EngineeringWorkflow = {
+    id: "workflow-review-guard",
+    phase: "repairing",
+    objective: "Finish once",
+    repairAttempts: 21,
+    maxRepairAttempts: 30,
+    specification: "# Approved specification",
+    plan: "# Approved delivery plan",
+    checkpoint: {
+      stage: "review",
+      outcome: "passed",
+      summary: "Review passes with no findings",
+      artifact: null,
+      toolCallId: "review-pass",
+      sequence: 114,
+      receivedAt: at,
+      eventId: "review-pass",
+      phaseRunId: "review-run",
+      planRevision: 0,
+      runtimeId: "runtime-current",
+    },
+    blockedFromPhase: null,
+    error: "Review reported success but the control plane rejected completion. Missing criterion evidence: AC7",
+    createdAt: at,
+    updatedAt: at,
+  };
+
+  const prompt = workflowPhasePrompt(workflow);
+  const findings = prompt.slice(prompt.indexOf("Failure or review findings to repair:"));
+  assert.match(findings, /Missing criterion evidence: AC7/);
+  assert.doesNotMatch(findings, /Failure or review findings to repair:\s*Review passes with no findings/);
+});
+
 test("draft and supervisor events require exact run and consultation identity", () => {
   const defining: EngineeringWorkflow = {
     id: "workflow-identity",
@@ -509,6 +547,84 @@ test("draft and supervisor events require exact run and consultation identity", 
   ]);
   assert.equal(applied.phase, "building");
   assert.equal(applied.processedEventIds?.filter((id) => id === "advice-current").length, 1);
+});
+
+test("capacity-bound blocked checkpoints retain one exact supervisor recovery decision", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const building: EngineeringWorkflow = {
+    id: "workflow-capacity-supervisor",
+    phase: "building",
+    objective: "Recover at capacity",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: "# Plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 4_095,
+    artifactRevision: 1,
+    phaseRun: { id: "build-capacity", phase: "building", attempt: 0, planRevision: 1, runtimeId: "runtime-current", startedAt: at },
+    progress: initialWorkflowProgress(at),
+    processedEventIds: Array.from({ length: 4_095 }, (_, index) => `progress-${index}`),
+    createdAt: at,
+    updatedAt: at,
+    error: null,
+  };
+  const blocked = applyWorkflowCheckpoint(building, {
+    stage: "build",
+    outcome: "blocked",
+    summary: "Needs bounded supervisor recovery",
+    artifact: null,
+    toolCallId: "capacity-blocked",
+    sequence: 4_096,
+    receivedAt: at,
+    eventId: "capacity-blocked",
+    phaseRunId: "build-capacity",
+    planRevision: 1,
+    runtimeId: "runtime-current",
+  });
+  assert.equal(blocked.processedEventIds?.length, 4_096);
+  const consultationRevision = (blocked.revision ?? 0) + 1;
+  const consulting: EngineeringWorkflow = {
+    ...blocked,
+    revision: consultationRevision,
+    supervisor: {
+      sessionId: "supervisor-capacity",
+      status: "consulting",
+      consultations: 1,
+      blockerFingerprint: "capacity-blocker",
+      repeatedBlockerCount: 1,
+      pendingGuidance: null,
+      lastAdvice: null,
+      activeConsultationId: "consult-capacity",
+      consultationPhaseRunId: "build-capacity",
+      consultationPlanRevision: 1,
+      consultationWorkflowRevision: consultationRevision,
+    },
+  };
+  const advice = {
+    workflowId: consulting.id,
+    eventId: "advice-at-capacity",
+    consultationId: "consult-capacity",
+    phaseRunId: "build-capacity",
+    planRevision: 1,
+    workflowRevision: consultationRevision,
+    runtimeId: "runtime-current",
+    action: "resume_with_guidance",
+    problem: "Recoverable capacity boundary",
+    summary: "Resume from the approved boundary",
+    guidance: "Continue without repeating completed work",
+    basis: "Approved recovery plan",
+    automaticRecovery: true,
+  };
+  const recovered = reconcilePersistedWorkflow(consulting, [
+    { sequence: 4_097, type: "workflow_supervisor_advice", timestamp: at, data: advice },
+    { sequence: 4_098, type: "workflow_supervisor_advice", timestamp: at, data: advice },
+  ]);
+  assert.equal(recovered.phase, "building");
+  assert.equal(recovered.supervisor?.lastAdvice?.eventId, "advice-at-capacity");
+  assert.equal(recovered.processedEventIds?.length, 4_096, "the separate consultation receipt does not evict phase-run event IDs");
+  assert.equal(recovered.revision, consultationRevision + 1, "duplicate advice applies exactly once");
 });
 
 test("timeline reconciliation is idempotent for long phase-run event ledgers", () => {
@@ -599,6 +715,39 @@ test("delivered but unapplied guidance is included at a restart boundary without
   assert.match(guidance ?? "", /guide-delivered/);
   assert.doesNotMatch(guidance ?? "", /Keep this instruction/);
   assert.equal(workflow.guidance?.[0]?.status, "delivered");
+});
+
+test("replacement planning dispatches carry-forward guidance without leaking stale IDs into Build", () => {
+  const base: EngineeringWorkflow = {
+    id: "workflow-carried-guidance",
+    phase: "planning",
+    objective: "Replan safely",
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: "# Prior plan",
+    checkpoint: null,
+    blockedFromPhase: null,
+    revision: 5,
+    artifactRevision: 2,
+    guidance: [
+      { id: "carried-delivered", text: "Already present in the transcript", status: "delivered", planRevision: 1, applicationPlanRevision: 2, submittedRuntimeId: "runtime-old", commandId: "carried-delivered-command", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: "2026-01-01T00:01:00.000Z", appliedAt: null },
+      { id: "carried-queued", text: "Retry this delivery in replacement Plan", status: "queued", planRevision: 1, applicationPlanRevision: 2, submittedRuntimeId: "runtime-old", commandId: "carried-queued-command", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: null, appliedAt: null },
+      { id: "legacy-unbound", text: "Legacy carry-forward transcript text", status: "delivered", planRevision: 1, submittedRuntimeId: "runtime-old", commandId: "legacy-command", submittedAt: "2026-01-01T00:00:00.000Z", deliveredAt: "2026-01-01T00:01:00.000Z", appliedAt: null },
+    ],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    error: null,
+  };
+  const planningGuidance = workflowGuidanceForDispatch(base) ?? "";
+  assert.match(planningGuidance, /carried-delivered/);
+  assert.doesNotMatch(planningGuidance, /Already present in the transcript/);
+  assert.match(planningGuidance, /Retry this delivery in replacement Plan/);
+  assert.match(planningGuidance, /legacy-unbound/);
+  assert.doesNotMatch(planningGuidance, /Legacy carry-forward transcript text/);
+
+  const buildingGuidance = workflowGuidanceForDispatch({ ...base, phase: "building" });
+  assert.equal(buildingGuidance, undefined);
 });
 
 test("restart reconciliation preserves completed receipts and blocks ambiguous destructive operations", () => {
@@ -1074,6 +1223,31 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             { ...acceptMutation, mutationId: "stale-accept", expectedRevision: Math.max(0, acceptMutation.expectedRevision - 1) },
           ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
 
+          const secondStartMutation = { runtimeId: created.runtimeId, action: "start" as const, objective: "Implement a second workflow tracer", maxRepairAttempts: 2, mutationId: "start-second-workflow-once" };
+          yield* supervisor.mutateWorkflow({ sessionId: created.id, runtimeId: created.runtimeId }, secondStartMutation);
+          let secondWorkflowPlan = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 100 && secondWorkflowPlan.workflow?.phase !== "awaitingPlanApproval"; attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            secondWorkflowPlan = yield* supervisor.get(created.id);
+          }
+          yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            guardedWorkflowMutation(secondWorkflowPlan, { action: "approve" }, "approve-second-workflow-once"),
+          );
+          let secondWorkflowReady = yield* supervisor.get(created.id);
+          for (let attempt = 0; attempt < 300 && (secondWorkflowReady.workflow?.phase !== "readyToShip" || secondWorkflowReady.status !== "finished"); attempt += 1) {
+            yield* Effect.sleep("10 millis");
+            secondWorkflowReady = yield* supervisor.get(created.id);
+          }
+          const secondWorkflowAccepted = yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            guardedWorkflowMutation(secondWorkflowReady, { action: "accept" }, "accept-second-workflow-once"),
+          );
+          const replayedFirstWorkflowStart = yield* supervisor.mutateWorkflow(
+            { sessionId: created.id, runtimeId: created.runtimeId },
+            startMutation,
+          );
+
           const interventionSession = yield* supervisor.create({ workspaceId, name: "Workflow intervention" });
           yield* supervisor.mutateWorkflow(
             { sessionId: interventionSession.id, runtimeId: interventionSession.runtimeId },
@@ -1116,7 +1290,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           const scopeSession = yield* supervisor.create({ workspaceId, name: "Scope-changing workflow guidance" });
           yield* supervisor.mutateWorkflow(
             { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
-            { runtimeId: scopeSession.runtimeId, mutationId: "start-scope-change", action: "start", objective: "Exercise scope-changing guidance", maxRepairAttempts: 2 },
+            { runtimeId: scopeSession.runtimeId, mutationId: "start-scope-change", action: "start", objective: "Exercise scope-changing guidance and Exercise failed guidance delivery", maxRepairAttempts: 2 },
           );
           let scopePlan = yield* supervisor.get(scopeSession.id);
           for (let attempt = 0; attempt < 100 && (scopePlan.workflow?.phase !== "awaitingPlanApproval" || scopePlan.status !== "finished"); attempt += 1) {
@@ -1132,6 +1306,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             yield* Effect.sleep("10 millis");
             scopeBuild = yield* supervisor.get(scopeSession.id);
           }
+          const carryForwardFailureTag = yield* supervisor.mutateWorkflow(
+            { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
+            guardedWorkflowMutation(scopeBuild, { action: "intervene", feedback: "Carry this failed-delivery guidance into replacement planning" }, "carry-before-scope"),
+          ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
           const authoritativeScope = yield* supervisor.get(scopeSession.id);
           let scopeMutationError = "";
           const scopeMutationApplied = yield* supervisor.mutateWorkflow(
@@ -1174,9 +1352,14 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             guardedWorkflowMutation(guidanceFailureBuild, { action: "intervene", feedback: "Retain this guidance for deterministic retry" }, "guide-failure"),
           ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
           const guidanceFailureQueued = yield* supervisor.get(guidanceFailureSession.id);
+          const guidanceFailureCancelMutation = { runtimeId: guidanceFailureSession.runtimeId, action: "cancel" as const, workflowId: guidanceFailureQueued.workflow!.id, mutationId: "cancel-guidance-failure", expectedRevision: guidanceFailureQueued.workflow!.revision ?? 0, expectedPhase: "building" as const, expectedPhaseRunId: guidanceFailureQueued.workflow!.phaseRun?.id };
           const guidanceFailureCancelled = yield* supervisor.mutateWorkflow(
             { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
-            { runtimeId: guidanceFailureSession.runtimeId, action: "cancel", workflowId: guidanceFailureQueued.workflow!.id, mutationId: "cancel-guidance-failure", expectedRevision: guidanceFailureQueued.workflow!.revision ?? 0, expectedPhase: "building", expectedPhaseRunId: guidanceFailureQueued.workflow!.phaseRun?.id },
+            guidanceFailureCancelMutation,
+          );
+          const duplicateGuidanceFailureCancelled = yield* supervisor.mutateWorkflow(
+            { sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId },
+            guidanceFailureCancelMutation,
           );
           yield* supervisor.stop({ sessionId: guidanceFailureSession.id, runtimeId: guidanceFailureSession.runtimeId });
 
@@ -1442,7 +1625,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             prompted = yield* supervisor.get(empty.id);
           }
           yield* supervisor.stop({ sessionId: empty.id, runtimeId: empty.runtimeId });
-          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, duplicateWorkflowAccepted, staleWorkflowMutation, queuedVerification, interventionReady, scopeMutationApplied, scopeMutationError, authoritativeScope, replannedScope, reapprovedScope, guidanceFailureTag, guidanceFailureQueued, guidanceFailureCancelled, firstFailedWorkflow, continuedFailedWorkflow, supervisedReady, supervisorSibling, authorityOutside, authorityReady, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
+          return { current, recoveredOverflow, recoveredFinalResponse, notified, malformedArtifact, malformedVideo, unmatchedVideo, hangingResult, afterHangingAbort, models, slashCommands, mentions, configuredThinking, configuredModel, withUsage, compacted, compactionFailureTag, compactionFailed, autoCompaction, workflowSpec, workflowPlan, workflowReady, workflowAccepted, duplicateWorkflowAccepted, staleWorkflowMutation, secondWorkflowAccepted, replayedFirstWorkflowStart, queuedVerification, interventionReady, scopeMutationApplied, scopeMutationError, carryForwardFailureTag, authoritativeScope, replannedScope, reapprovedScope, guidanceFailureTag, guidanceFailureQueued, guidanceFailureCancelled, duplicateGuidanceFailureCancelled, firstFailedWorkflow, continuedFailedWorkflow, supervisedReady, supervisorSibling, authorityOutside, authorityReady, staleResult, interactiveBlocked, interactiveFinished, interactiveTimedOut, staleInteractive, archived, activeRemovalResult, archivedLookup, concurrentRemovalResults, removedLookup, stopped, activeLimitResult, concurrentSessions, empty, configurationWhileWorking, prompted };
         }).pipe(Effect.provide(live)),
       ),
     );
@@ -1496,18 +1679,26 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(JSON.stringify(result.workflowReady.events), /Approved complete delivery plan/);
     assert.doesNotMatch(JSON.stringify(result.workflowReady.events), /Approved one-task plan/);
     assert.equal(result.workflowReady.workflow?.phase, "readyToShip");
+    assert.equal(result.workflowReady.workflow?.repairAttempts, 0, "a successful Review does not dispatch or count a no-op Repair");
+    assert.equal(result.workflowReady.events.filter((event) => event.type === "message_end" && JSON.stringify(event.data).includes("Repair attempt")).length, 0);
     assert.equal(result.workflowReady.workflow?.executionAuthority?.mode, "approved_plan");
     assert.equal(result.workflowReady.status, "finished");
     assert.equal(result.workflowAccepted.workflow?.phase, "accepted");
     assert.equal(result.duplicateWorkflowAccepted.workflow?.revision, result.workflowAccepted.workflow?.revision);
     assert.deepEqual(result.duplicateWorkflowAccepted.workflow?.processedMutationIds, ["start-workflow-once", "approve-workflow-once", "accept-workflow-once"]);
     assert.equal(result.staleWorkflowMutation, "PiCommandError");
+    assert.equal(result.replayedFirstWorkflowStart.workflow?.id, result.secondWorkflowAccepted.workflow?.id);
+    assert.equal(result.replayedFirstWorkflowStart.workflow?.phase, "accepted");
+    assert.equal(result.replayedFirstWorkflowStart.workflow?.objective, "Implement a second workflow tracer");
+    assert.equal(result.replayedFirstWorkflowStart.workflow?.revision, result.secondWorkflowAccepted.workflow?.revision);
     assert.match(JSON.stringify(result.interventionReady.events), /Workflow guidance .*BUILD/);
     assert.ok(["queued", "delivered"].includes(result.queuedVerification.workflow?.guidance?.at(-1)?.status ?? ""));
     assert.equal(result.interventionReady.workflow?.guidance?.at(-1)?.status, "applied", JSON.stringify({ workflow: result.interventionReady.workflow, events: result.interventionReady.events.slice(-30) }));
     assert.equal(result.interventionReady.workflow?.queuedIntervention, undefined);
     assert.match(JSON.stringify(result.interventionReady.events), /Workflow guidance .*VERIFY/);
     assert.equal(result.scopeMutationApplied, true, result.scopeMutationError);
+    assert.equal(result.carryForwardFailureTag, "PiCommandError");
+    assert.equal(result.authoritativeScope.workflow?.guidance?.find((item) => item.id === "carry-before-scope")?.status, "queued");
     assert.equal(result.replannedScope.workflow?.phase, "awaitingPlanApproval");
     assert.equal(result.replannedScope.workflow?.executionAuthority, undefined);
     assert.ok((result.replannedScope.workflow?.artifactRevision ?? 0) > (result.authoritativeScope.workflow?.executionAuthority?.planRevision ?? 0));
@@ -1515,6 +1706,15 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.ok((result.reapprovedScope.workflow?.executionAuthority?.planRevision ?? 0) > (result.authoritativeScope.workflow?.executionAuthority?.planRevision ?? 0));
     assert.equal(result.replannedScope.workflow?.processedEventIds?.includes("late-after-scope"), false);
     assert.equal(result.replannedScope.workflow?.processedEventIds?.includes("late-scope-checkpoint"), false);
+    assert.match(JSON.stringify(result.replannedScope.events), /Add a newly discovered authority constraint/);
+    assert.match(JSON.stringify(result.replannedScope.events), /Carry this failed-delivery guidance into replacement planning/);
+    assert.equal(result.replannedScope.events.filter((event) => event.type === "workflow_guidance_delivery" && JSON.stringify(event.data).includes("scope-change-once")).length, 1);
+    assert.equal(result.replannedScope.events.filter((event) => event.type === "workflow_guidance_delivery" && JSON.stringify(event.data).includes("carry-before-scope")).length, 1);
+    assert.equal(result.replannedScope.workflow?.guidance?.find((item) => item.id === "scope-change-once")?.status, "applied");
+    assert.equal(result.replannedScope.workflow?.guidance?.find((item) => item.id === "carry-before-scope")?.status, "applied");
+    assert.equal(result.replannedScope.workflow?.guidance?.find((item) => item.id === "carry-before-scope")?.planRevision, result.authoritativeScope.workflow?.artifactRevision);
+    assert.equal(result.replannedScope.workflow?.guidance?.find((item) => item.id === "carry-before-scope")?.applicationPlanRevision, result.replannedScope.workflow?.artifactRevision);
+    assert.equal(result.replannedScope.workflow?.guidance?.find((item) => item.id === "scope-change-once")?.planRevision, result.replannedScope.workflow?.artifactRevision);
     assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.completedSliceIds, ["S-PRIOR"]);
     assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.passedCriterionIds, ["AC-PRIOR"]);
     assert.equal(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.evidence[0]?.summary, "Prior revision evidence");
@@ -1522,6 +1722,8 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.guidanceFailureTag, "PiCommandError");
     assert.equal(result.guidanceFailureQueued.workflow?.guidance?.at(-1)?.status, "queued");
     assert.equal(result.guidanceFailureCancelled.workflow?.phase, "cancelled");
+    assert.equal(result.guidanceFailureCancelled.workflow?.cancellationMutationId, "cancel-guidance-failure");
+    assert.equal(result.duplicateGuidanceFailureCancelled.workflow?.revision, result.guidanceFailureCancelled.workflow?.revision);
     assert.equal(result.guidanceFailureCancelled.workflow?.guidance?.at(-1)?.status, "queued");
     assert.doesNotMatch(result.guidanceFailureCancelled.workflow?.progress?.activity ?? "", /Late progress/);
     assert.notEqual(result.guidanceFailureCancelled.workflow?.checkpoint?.summary, "Late checkpoint must be ignored");
@@ -1864,6 +2066,103 @@ test("recreates an unmaterialized idle runtime under the same session after rest
   } finally {
     if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
     else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
+    else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart reconciles persisted approval guidance before granting authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piss-approval-guidance-restart-"));
+  const argsFile = join(directory, "args.jsonl");
+  const commandsFile = join(directory, "commands.txt");
+  const previousArgsFile = process.env.FAKE_PI_ARGS;
+  const previousCommandsFile = process.env.FAKE_PI_COMMANDS;
+  const previousSessionFile = process.env.FAKE_PI_SESSION_FILE;
+  process.env.FAKE_PI_ARGS = argsFile;
+  process.env.FAKE_PI_COMMANDS = commandsFile;
+  process.env.FAKE_PI_SESSION_FILE = join(directory, "pi-approval-guidance-restart.jsonl");
+
+  try {
+    const piCommand = await fakePi(directory);
+    const workspaceRoot = join(directory, "workspace");
+    await mkdir(workspaceRoot);
+    const workspaceId = decodeWorkspaceId("piss-approval-guidance-restart-deadbeef");
+    const workspace: Workspace = { id: workspaceId, name: "Approval guidance restart test", root: workspaceRoot, trustProjectResources: false, createdAt: new Date().toISOString(), sessionCount: 0, activeSessionCount: 0 };
+    const config: AppConfigShape = { host: "127.0.0.1", port: 4318, stateDir: join(directory, "state"), publicDir: directory, piCommand, piSessionRoots: [directory], browserAuth: { devBypass: true, allowedUsers: new Set(), devAllowedOrigins: new Set() }, workspaceSeeds: [], workspaceDiscoveryRoots: [] };
+
+    const beforeRestart = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      const session = yield* supervisor.create({ workspaceId, name: "Persisted approval guidance" });
+      yield* supervisor.mutateWorkflow(
+        { sessionId: session.id, runtimeId: session.runtimeId },
+        { runtimeId: session.runtimeId, mutationId: "start-persisted-approval-guidance", action: "start", objective: "Exercise persisted approval guidance", maxRepairAttempts: 2 },
+      );
+      let approval = yield* supervisor.get(session.id);
+      for (let attempt = 0; attempt < 300 && (approval.workflow?.phase !== "awaitingPlanApproval" || approval.status !== "finished"); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        approval = yield* supervisor.get(session.id);
+      }
+      assert.equal(approval.workflow?.phase, "awaitingPlanApproval");
+      return approval;
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    const metadataPath = join(config.stateDir, "owned-sessions.json");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as { sessions: Array<{ workflow?: EngineeringWorkflow; resumeAfterRestart?: boolean; resumeRunAfterRestart?: boolean }> };
+    const persisted = metadata.sessions[0]?.workflow;
+    if (!persisted) throw new Error("Expected persisted approval workflow");
+    const revision = persisted.artifactRevision ?? persisted.dossier?.revision ?? 1;
+    const priorRevision = Math.max(0, revision - 1);
+    const { executionAuthority: _authority, phaseRun: _phaseRun, ...unapproved } = persisted;
+    metadata.sessions[0]!.workflow = {
+      ...unapproved,
+      phase: "awaitingPlanApproval",
+      guidance: [
+        { id: "persisted-current", text: "Apply current persisted scope", status: "delivered", planRevision: revision, submittedRuntimeId: beforeRestart.runtimeId, commandId: "persisted-current-command", submittedAt: persisted.updatedAt, deliveredAt: persisted.updatedAt, appliedAt: null },
+        { id: "persisted-explicit", text: "Apply explicit carried scope", status: "delivered", planRevision: priorRevision, applicationPlanRevision: revision, submittedRuntimeId: beforeRestart.runtimeId, commandId: "persisted-explicit-command", submittedAt: persisted.updatedAt, deliveredAt: persisted.updatedAt, appliedAt: null },
+        { id: "persisted-legacy", text: "Apply legacy carried scope", status: "delivered", planRevision: priorRevision, submittedRuntimeId: beforeRestart.runtimeId, commandId: "persisted-legacy-command", submittedAt: persisted.updatedAt, deliveredAt: persisted.updatedAt, appliedAt: null },
+      ],
+    };
+    metadata.sessions[0]!.resumeAfterRestart = false;
+    metadata.sessions[0]!.resumeRunAfterRestart = false;
+    await writeFile(metadataPath, JSON.stringify(metadata), { mode: 0o600 });
+
+    const afterRestart = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const supervisor = yield* PiRuntimeSupervisor;
+      let approval = (yield* supervisor.list)[0]!;
+      for (let attempt = 0; attempt < 500 && (approval.workflow?.phase !== "awaitingPlanApproval" || approval.status !== "finished" || approval.workflow.guidance?.some((item) => item.status !== "applied")); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        approval = yield* supervisor.get(approval.id);
+      }
+      assert.notEqual(approval.runtimeId, beforeRestart.runtimeId);
+      assert.equal(approval.workflow?.phase, "awaitingPlanApproval");
+      assert.equal(approval.workflow?.executionAuthority, undefined);
+      assert.deepEqual(approval.workflow?.guidance?.map((item) => item.status), ["applied", "applied", "applied"]);
+      const approved = yield* supervisor.mutateWorkflow(
+        { sessionId: approval.id, runtimeId: approval.runtimeId },
+        guardedWorkflowMutation(approval, { action: "approve" }, "approve-reconciled-guidance"),
+      );
+      assert.ok(approved.workflow?.executionAuthority);
+      assert.notEqual(approved.workflow?.phase, "planning");
+      let completed = approved;
+      for (let attempt = 0; attempt < 400 && (completed.workflow?.phase !== "readyToShip" || completed.status !== "finished"); attempt += 1) {
+        yield* Effect.sleep("10 millis");
+        completed = yield* supervisor.get(approval.id);
+      }
+      assert.equal(completed.workflow?.phase, "readyToShip");
+      return { approval, approved, completed };
+    }).pipe(Effect.provide(runtimeLayer(config, workspace)))));
+
+    assert.equal(afterRestart.approval.workflow?.processedMutationIds?.includes("approve-reconciled-guidance"), false);
+    assert.equal(afterRestart.approved.workflow?.processedMutationIds?.includes("approve-reconciled-guidance"), true);
+    assert.equal(afterRestart.completed.workflow?.executionAuthority?.planRevision, revision);
+    const commands = (await readFile(commandsFile, "utf8")).trim().split("\n");
+    assert.ok(commands.filter((command) => command === "prompt").length >= 3, "Define, initial Plan, and recovered Plan were dispatched");
+  } finally {
+    if (previousArgsFile === undefined) delete process.env.FAKE_PI_ARGS;
+    else process.env.FAKE_PI_ARGS = previousArgsFile;
+    if (previousCommandsFile === undefined) delete process.env.FAKE_PI_COMMANDS;
+    else process.env.FAKE_PI_COMMANDS = previousCommandsFile;
     if (previousSessionFile === undefined) delete process.env.FAKE_PI_SESSION_FILE;
     else process.env.FAKE_PI_SESSION_FILE = previousSessionFile;
     await rm(directory, { recursive: true, force: true });

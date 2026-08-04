@@ -56,7 +56,7 @@ const checkpoint = Type.Object({
   summary: Type.String({ minLength: 1, maxLength: 16 * 1024, description: "Concise evidence-based phase result" }),
   artifact: Type.Optional(Type.String({ maxLength: 64 * 1024, description: "Latest specification or complete plan Markdown" })),
   dossier: Type.Optional(dossier),
-  appliedGuidanceIds: Type.Optional(Type.Array(boundedId(), { maxItems: 64 })),
+  appliedGuidanceIds: Type.Optional(Type.Array(boundedId(), { maxItems: 64, description: "Every delivered guidance ID applied by this phase. Plan must report all applicable current/carry-forward IDs before requesting Approve & Run." })),
 });
 
 const progress = Type.Object({
@@ -75,7 +75,7 @@ const progress = Type.Object({
   nextAction: Type.Optional(boundedText()),
   retryAttempt: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
   maxTransientRetries: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
-  appliedGuidanceIds: Type.Optional(Type.Array(boundedId(), { maxItems: 64 })),
+  appliedGuidanceIds: Type.Optional(Type.Array(boundedId(), { maxItems: 64, description: "Delivered guidance IDs actually applied at this progress boundary" })),
   receipt: Type.Optional(Type.Object({
     operationId: boundedId(),
     idempotencyKey: Type.String({ minLength: 1, maxLength: 256 }),

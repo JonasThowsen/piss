@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as Schema from "effect/Schema";
-import { loadOwnedSessions, persistOwnedSessions, type PersistedOwnedSession } from "../server/runtimes/OwnedSessionStore.ts";
+import { loadOwnedSessions, MAX_PROCESSED_WORKFLOW_START_MUTATION_IDS, persistOwnedSessions, type PersistedOwnedSession } from "../server/runtimes/OwnedSessionStore.ts";
 import { WorkspaceId } from "../shared/domain.ts";
 
 const workspaceId = Schema.decodeUnknownSync(WorkspaceId)("store-test-deadbeef");
@@ -29,6 +29,7 @@ function record(): PersistedOwnedSession {
     error: null,
     interactiveRequests: [],
     acceptedCommandIds: ["command-1"],
+    processedWorkflowStartMutationIds: ["workflow-start-1"],
   };
 }
 
@@ -41,6 +42,25 @@ test("persists versioned owned-session metadata atomically", async () => {
     assert.equal(encoded.version, 1);
     assert.deepEqual(await loadOwnedSessions(path), [record()]);
     assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects workflow-start receipt overflow rather than evicting replay protection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piss-owned-store-start-receipts-"));
+  const path = join(directory, "owned-sessions.json");
+  try {
+    const atCapacity = {
+      ...record(),
+      processedWorkflowStartMutationIds: Array.from({ length: MAX_PROCESSED_WORKFLOW_START_MUTATION_IDS }, (_, index) => `start-${index}`),
+    };
+    await persistOwnedSessions(path, [atCapacity]);
+    assert.equal((await loadOwnedSessions(path))[0]?.processedWorkflowStartMutationIds?.[0], "start-0");
+    await assert.rejects(persistOwnedSessions(path, [{
+      ...atCapacity,
+      processedWorkflowStartMutationIds: [...atCapacity.processedWorkflowStartMutationIds, "start-overflow"],
+    }]), /processedWorkflowStartMutationIds|length|256/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

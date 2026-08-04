@@ -8,6 +8,7 @@ import { AvailableModel, CompactionState, EngineeringWorkflow, InteractiveReques
 const MAX_STORAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_PERSISTED_SESSIONS = 100;
 const MAX_ACCEPTED_COMMAND_IDS = 128;
+export const MAX_PROCESSED_WORKFLOW_START_MUTATION_IDS = 256;
 
 const Identity = Schema.Struct({
   device: Schema.String.check(Schema.isPattern(/^\d+$/)),
@@ -41,6 +42,9 @@ export const PersistedOwnedSession = Schema.Struct({
   acceptedCommandIds: Schema.Array(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   ).check(Schema.isMaxLength(MAX_ACCEPTED_COMMAND_IDS)),
+  processedWorkflowStartMutationIds: Schema.optional(Schema.Array(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  ).check(Schema.isMaxLength(MAX_PROCESSED_WORKFLOW_START_MUTATION_IDS))),
 });
 export type PersistedOwnedSession = typeof PersistedOwnedSession.Type;
 
