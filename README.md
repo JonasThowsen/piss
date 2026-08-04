@@ -109,7 +109,56 @@ For unattended enrollment, use a secret file readable by the desktop user:
 services.piss.tailscale.authKeyFile = "/run/secrets/piss-tailscale-auth-key";
 ```
 
-### 4. Install the PWA
+### 4. Supply API keys from sops-nix
+
+PISS can load systemd environment files provisioned outside the Nix store. For a
+single encrypted file that can hold any number of keys, encrypt a dotenv file as
+a binary SOPS payload and let sops-nix expose its decrypted contents:
+
+```nix
+{ config, inputs, ... }:
+{
+  imports = [ inputs.sops-nix.nixosModules.sops ];
+
+  sops.secrets.piss-api-keys = {
+    sopsFile = ./secrets/piss-api-keys.env.json;
+    format = "binary";
+    owner = "you";
+    mode = "0400";
+  };
+
+  services.piss.environmentFiles = [
+    config.sops.secrets.piss-api-keys.path
+  ];
+}
+```
+
+The decrypted file uses systemd `EnvironmentFile` syntax:
+
+```dotenv
+SIRKUSAGIO_API_KEY=replace-with-the-real-value
+ANOTHER_API_KEY=replace-with-the-real-value
+```
+
+Only the SOPS-encrypted payload belongs in Git. Never put secret values directly
+in Nix expressions. Module-controlled PISS variables override conflicting names
+from an environment file. All configured values are inherited by PISS and every
+Pi runtime, so only use keys intended for every trusted PISS workspace.
+
+MCP servers can refer to a key without storing its value in MCP configuration:
+
+```json
+{
+  "auth": "bearer",
+  "bearerTokenEnv": "SIRKUSAGIO_API_KEY"
+}
+```
+
+Restart PISS after adding or rotating values so systemd reloads the file. A
+session-scoped **Restart Pi Runtime** is enough only when PISS itself has already
+loaded the current environment.
+
+### 5. Install the PWA
 
 Open the HTTPS URL and choose **Install app** or **Add to Home Screen**. The service worker caches only fixed application-shell assets; private API and session data are never cached.
 

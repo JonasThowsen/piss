@@ -19,6 +19,7 @@ let
       inherit (cfg)
         port
         piCommand
+        environmentFiles
         allowedUsers
         workspaceDiscoveryRoots
         workspaces
@@ -152,6 +153,17 @@ in
       description = "Absolute Pi CLI path recommended for the systemd user service.";
     };
 
+    environmentFiles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "/run/secrets/piss-api-keys.env" ];
+      description = ''
+        Absolute systemd EnvironmentFile paths containing secrets such as API
+        keys. Values are inherited by PISS and every Pi runtime; use files
+        provisioned by a secret manager rather than Nix store paths.
+      '';
+    };
+
     allowedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -242,6 +254,10 @@ in
         assertion = lib.all (root: lib.hasPrefix "/" root) cfg.workspaceDiscoveryRoots;
         message = "Every services.piss.workspaceDiscoveryRoots entry must be absolute";
       }
+      {
+        assertion = lib.all (path: lib.hasPrefix "/" path) cfg.environmentFiles;
+        message = "Every services.piss.environmentFiles entry must be absolute";
+      }
     ];
 
     environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
@@ -287,6 +303,7 @@ in
         );
       };
       serviceConfig = {
+        EnvironmentFile = cfg.environmentFiles;
         ExecStart = lib.getExe cfg.package;
         # A quiescent update exits cleanly after SIGUSR2; always restart so the
         # user manager launches the newly staged ExecStart generation.

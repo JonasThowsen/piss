@@ -209,6 +209,34 @@
         };
       });
 
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          moduleEvaluation = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              {
+                services.piss = {
+                  enable = true;
+                  allowedUsers = [ "owner@example.com" ];
+                  environmentFiles = [ "/run/secrets/piss-api-keys.env" ];
+                };
+              }
+            ];
+          };
+        in
+        {
+          nixos-module =
+            assert
+              moduleEvaluation.config.systemd.user.services.piss.serviceConfig.EnvironmentFile == [
+                "/run/secrets/piss-api-keys.env"
+              ];
+            pkgs.runCommand "piss-nixos-module-check" { } "touch $out";
+        }
+      );
+
       devShells = forAllSystems (
         system:
         let

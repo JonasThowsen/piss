@@ -27,6 +27,7 @@ PISS refuses non-loopback binds and refuses the development bypass when `NODE_EN
 
 - Tailscale state is stored under `~/.local/state/piss/tailscale` and must never be copied into the repository.
 - Use a secret manager for `services.piss.tailscale.authKeyFile`; never put an auth key in Nix source.
+- `services.piss.environmentFiles` may load API keys from secret-manager-provisioned files outside the Nix store. Their values are inherited by the control plane and every Pi runtime, and are therefore available to commands in every configured trusted workspace. Never use this option to expose a key that should be scoped to only one workspace or session.
 - PISS ownership metadata, workspace registrations, VAPID keys, and push subscriptions are stored under `~/.local/state/piss` with restrictive permissions.
 - Pi JSONL transcripts remain in Pi's session storage and may contain prompts, model output, tool results, and paths.
 - Text drafts are stored in browser local storage for up to 30 days. Do not use an untrusted browser profile.
