@@ -160,7 +160,7 @@ process.stdin.on("data", (chunk) => {
             setTimeout(() => console.log(JSON.stringify({ type: "agent_settled" })), 25);
             return;
           }
-          const stage = skill === "define" ? "define" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
+          const stage = skill === "define" ? "define" : skill === "research" ? "research" : skill === "plan" ? "plan" : skill === "build" ? "build" : skill === "verify" ? "verify" : "review";
           if (stage === "define" && command.message.includes("Exercise workflow user interventions")) workflowInterventionMode = true;
           if (stage === "define" && command.message.includes("Exercise scope-changing guidance")) workflowScopeChangeMode = true;
           if (stage === "define" && command.message.includes("Exercise failed guidance delivery")) workflowGuidanceFailureMode = true;
@@ -178,7 +178,7 @@ process.stdin.on("data", (chunk) => {
           const runtimeId = /Runtime generation: ([^\\n]+)/.exec(command.message)?.[1];
           const supervisorBlocksBuild = workflowSupervisorMode && stage === "build" && !workflowSupervisorBlockReported;
           if (supervisorBlocksBuild) workflowSupervisorBlockReported = true;
-          const outcome = stage === "define" || stage === "plan" ? "ready" : supervisorBlocksBuild ? "blocked" : workflowFailureMode && stage === "review" ? "failed" : "passed";
+          const outcome = stage === "define" || stage === "research" || stage === "plan" ? "ready" : supervisorBlocksBuild ? "blocked" : workflowFailureMode && stage === "review" ? "failed" : "passed";
           const authorityDossier = { revision: 1, criteria: [{ id: "AC-AUTH", title: "Approved authority is applied" }], slices: [{ id: "S-AUTH", title: "Authority tracer", criterionIds: ["AC-AUTH"], dependencies: [] }], verificationRequirements: ["Inspect authority decision"], operations: [{ id: "approved-edit", kind: "workspace_write", target: "shared/", description: "Approved workspace edit", recovery: "Targeted rollback", evidence: "Authority event" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Deployment"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "ready" }], unresolved: [] };
           const standardDossier = { revision: 1, criteria: [{ id: "AC-GENERIC", title: "Complete the workflow fixture" }], slices: [{ id: "S-GENERIC", title: "Workflow fixture", criterionIds: ["AC-GENERIC"], dependencies: [] }], verificationRequirements: ["Inspect the fixture checkpoint"], operations: [{ id: "workspace-write", kind: "workspace_write", target: "shared/", description: "Fixture workspace write", recovery: "Targeted rollback", evidence: "Fixture progress" }], recoveryRequirements: ["Preserve unrelated work"], exclusions: ["Production operations"], readiness: [{ id: "repo", label: "Repository", status: "passed", detail: "ready" }], unresolved: [] };
           const scopeDossier = { ...standardDossier, criteria: [{ id: "AC-PRIOR", title: "Preserve prior revision evidence" }], slices: [{ id: "S-PRIOR", title: "Prior revision tracer", criterionIds: ["AC-PRIOR"], dependencies: [] }], operations: [{ ...standardDossier.operations[0], receiptRequired: true, idempotencyKey: "scope-write-once" }] };
@@ -187,7 +187,10 @@ process.stdin.on("data", (chunk) => {
           const deliveredGuidanceIds = /Previously delivered guidance IDs \\(do not apply twice; acknowledge from transcript evidence\\): ([^\\n]+)/.exec(command.message)?.[1]
             ?.split(",").map((id) => id.trim()).filter(Boolean) ?? [];
           const appliedGuidanceIds = [...new Set([...queuedGuidanceIds, ...deliveredGuidanceIds])];
-          const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(phaseRunId && phaseRunId !== "legacy" ? { phaseRunId, planRevision, runtimeId } : {}), ...(appliedGuidanceIds.length > 0 ? { appliedGuidanceIds } : {}), ...(stage === "define" ? { artifact: "# Approved specification" } : stage === "plan" ? { artifact: "# Complete delivery plan", dossier: planDossier } : {}) };
+          const researchQuestions = [{ id: "RQ-LOCAL", prompt: "How does the current workspace implement the affected workflow boundary?", required: true }];
+          const researchPolicy = /External research policy: (local_only|targeted_external|required_external)/.exec(command.message)?.[1] ?? "local_only";
+          const researchBrief = { policy: researchPolicy, questions: [{ id: "RQ-LOCAL", prompt: researchQuestions[0].prompt, status: "answered", summary: "The local workflow boundary is implemented in shared engineering workflow state.", sourceIds: ["SRC-LOCAL"] }], sources: [{ id: "SRC-LOCAL", kind: "workspace", title: "Engineering workflow state", url: "workspace://shared/engineeringWorkflow.ts", accessedAt: "2026-01-01T00:00:00.000Z" }], findings: [{ id: "F-LOCAL", questionIds: ["RQ-LOCAL"], sourceIds: ["SRC-LOCAL"], confidence: "verified", decision: "adapt", summary: "Extend the existing control-plane state machine rather than adding a parallel workflow." }], summary: "Local architecture research completed.", completedAt: "2026-01-01T00:00:00.000Z" };
+          const args = { workflowId, stage, outcome, summary: supervisorBlocksBuild ? "Recoverable build blocker" : stage + " checkpoint", ...(phaseRunId && phaseRunId !== "legacy" ? { phaseRunId, planRevision, runtimeId } : {}), ...(appliedGuidanceIds.length > 0 ? { appliedGuidanceIds } : {}), ...(stage === "define" ? { artifact: "# Approved specification", researchQuestions } : stage === "research" ? { artifact: "# Research brief", researchBrief } : stage === "plan" ? { artifact: "# Complete delivery plan", dossier: planDossier, appliedResearchFindingIds: ["F-LOCAL"] } : {}) };
           activeWorkflowArgs = args;
           const emitCheckpoint = () => {
             workflowCheckpointSequence += 1;
@@ -549,6 +552,36 @@ test("draft and supervisor events require exact run and consultation identity", 
   assert.equal(applied.processedEventIds?.filter((id) => id === "advice-current").length, 1);
 });
 
+test("research blockers cannot be routed into implementation Repair", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const blocked: EngineeringWorkflow = {
+    id: "workflow-research-blocked",
+    phase: "blocked",
+    objective: "Research prior art",
+    researchPolicy: "required_external",
+    researchQuestions: [{ id: "RQ1", prompt: "What does prior art establish?", required: true }],
+    repairAttempts: 0,
+    maxRepairAttempts: 2,
+    specification: "# Specification",
+    plan: null,
+    checkpoint: { stage: "research", outcome: "blocked", summary: "External capability unavailable", artifact: null, toolCallId: "research-blocked", sequence: 1, receivedAt: at, eventId: "research-blocked", phaseRunId: "research-run", planRevision: 1, runtimeId: "runtime-current" },
+    blockedFromPhase: "researching",
+    revision: 4,
+    artifactRevision: 1,
+    phaseRun: { id: "research-run", phase: "researching", attempt: 0, planRevision: 1, runtimeId: "runtime-current", startedAt: at },
+    progress: initialWorkflowProgress(at, "blocked"),
+    supervisor: { sessionId: "supervisor-research", status: "consulting", consultations: 1, blockerFingerprint: "research", repeatedBlockerCount: 1, pendingGuidance: null, lastAdvice: null, activeConsultationId: "consult-research", consultationPhaseRunId: "research-run", consultationPlanRevision: 1, consultationWorkflowRevision: 4 },
+    createdAt: at,
+    updatedAt: at,
+    error: "External capability unavailable",
+  };
+  const advice = { workflowId: blocked.id, eventId: "advice-research-repair", consultationId: "consult-research", phaseRunId: "research-run", planRevision: 1, workflowRevision: 4, runtimeId: "runtime-current", action: "enter_repair", problem: "Research is unavailable", summary: "Do not enter Repair", guidance: "Configure research", basis: "Missing capability", automaticRecovery: true };
+  const result = reconcilePersistedWorkflow(blocked, [{ sequence: 2, type: "workflow_supervisor_advice", timestamp: at, data: advice }]);
+  assert.equal(result.phase, "blocked");
+  assert.equal(result.repairAttempts, 0);
+  assert.equal(result.supervisor?.lastAdvice?.action, "enter_repair");
+});
+
 test("capacity-bound blocked checkpoints retain one exact supervisor recovery decision", () => {
   const at = "2026-01-01T00:00:00.000Z";
   const building: EngineeringWorkflow = {
@@ -848,6 +881,7 @@ test("loads PISS browser resources without trusting project-local resources", ()
   const args = processArguments(workspace, "Browser session", "/opt/piss/workflow-resources");
   assert.ok(args.includes("/opt/piss/workflow-resources/piss-browser.ts"));
   assert.ok(args.includes("/opt/piss/workflow-resources/skills/piss-ui-verification"));
+  assert.ok(args.includes("/opt/piss/workflow-resources/skills/piss-engineering-research"));
   assert.ok(args.includes("--no-approve"));
   assert.ok(!args.includes("--approve"));
   assert.equal(args[args.indexOf("--exclude-tools") + 1], "piss_workflow_supervisor_advice");
@@ -1183,7 +1217,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           );
           const compactionFailed = yield* supervisor.get(created.id);
           const autoCompaction = yield* supervisor.setAutoCompaction({ sessionId: created.id, runtimeId: created.runtimeId }, false);
-          const startMutation = { runtimeId: created.runtimeId, action: "start" as const, objective: "Implement one workflow tracer", maxRepairAttempts: 2, mutationId: "start-workflow-once" };
+          const startMutation = { runtimeId: created.runtimeId, action: "start" as const, objective: "Implement one workflow tracer", researchPolicy: "targeted_external" as const, maxRepairAttempts: 2, mutationId: "start-workflow-once" };
           const firstWorkflowStart = yield* supervisor.mutateWorkflow(
             { sessionId: created.id, runtimeId: created.runtimeId },
             startMutation,
@@ -1675,6 +1709,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(result.compactionFailed.compaction.error ?? "", /simulated compaction failure/);
     assert.equal(result.autoCompaction.autoCompactionEnabled, false);
     assert.equal(result.workflowSpec.workflow?.specification, "# Approved specification");
+    assert.equal(result.workflowPlan.workflow?.researchPolicy, "targeted_external");
+    assert.equal(result.workflowPlan.workflow?.researchBrief?.findings[0]?.id, "F-LOCAL");
+    assert.deepEqual(result.workflowPlan.workflow?.appliedResearchFindingIds, ["F-LOCAL"]);
     assert.equal(result.workflowPlan.workflow?.plan, "# Complete delivery plan");
     assert.match(JSON.stringify(result.workflowReady.events), /Approved complete delivery plan/);
     assert.doesNotMatch(JSON.stringify(result.workflowReady.events), /Approved one-task plan/);
@@ -2248,6 +2285,8 @@ test("restarts an active workflow from durable progress and completed receipts",
     assert.deepEqual(afterRestart.session.workflow?.progress?.completedSliceIds, ["S-PRIOR"]);
     assert.equal(afterRestart.session.workflow?.operationReceipts?.find((receipt) => receipt.idempotencyKey === "scope-write-once")?.status, "completed");
     assert.equal(afterRestart.session.workflow?.guidance?.at(-1)?.status, "applied");
+    assert.equal(afterRestart.session.workflow?.researchBrief?.findings[0]?.id, "F-LOCAL");
+    assert.deepEqual(afterRestart.session.workflow?.appliedResearchFindingIds, ["F-LOCAL"]);
     assert.equal(afterRestart.session.workflow?.processedEventIds?.includes("scope-progress"), false);
     const commands = (await readFile(commandsFile, "utf8")).trim().split("\n");
     assert.ok(commands.filter((command) => command === "prompt").length >= 3);

@@ -15,6 +15,8 @@ import {
   EngineeringWorkflowAuthorityDecision as EngineeringWorkflowAuthorityDecisionSchema,
   EngineeringWorkflowDossier as EngineeringWorkflowDossierSchema,
   EngineeringWorkflowOperationReceipt as EngineeringWorkflowOperationReceiptSchema,
+  EngineeringWorkflowResearchBrief as EngineeringWorkflowResearchBriefSchema,
+  EngineeringWorkflowResearchQuestion as EngineeringWorkflowResearchQuestionSchema,
   SessionArtifact as SessionArtifactSchema,
 } from "../../shared/domain.ts";
 import type {
@@ -27,6 +29,8 @@ import type {
   EngineeringWorkflowOperation,
   EngineeringWorkflowOperationReceipt,
   EngineeringWorkflowPhase,
+  EngineeringWorkflowResearchBrief,
+  EngineeringWorkflowResearchQuestion,
   EngineeringWorkflowSupervisorAdvice,
   ImportOwnedSessionInput,
   FileMention,
@@ -785,7 +789,7 @@ function workflowCheckpointFromRpc(
     : result?.details;
   if (typeof argsValue !== "object" || argsValue === null || Array.isArray(argsValue)) return;
   const args = argsValue as Record<string, unknown>;
-  const stages = new Set(["define", "plan", "build", "verify", "review"]);
+  const stages = new Set(["define", "research", "plan", "build", "verify", "review"]);
   const outcomes = new Set(["ready", "passed", "failed", "blocked"]);
   if (typeof args.workflowId !== "string" || !args.workflowId || args.workflowId.length > 128) return;
   if (typeof args.stage !== "string" || !stages.has(args.stage)) return;
@@ -797,6 +801,18 @@ function workflowCheckpointFromRpc(
   if (args.planRevision !== undefined && (!Number.isSafeInteger(args.planRevision) || Number(args.planRevision) < 0)) return;
   if (args.runtimeId !== undefined && (typeof args.runtimeId !== "string" || !args.runtimeId || args.runtimeId.length > 128)) return;
   if (args.appliedGuidanceIds !== undefined && (!Array.isArray(args.appliedGuidanceIds) || args.appliedGuidanceIds.length > 64 || args.appliedGuidanceIds.some((id) => typeof id !== "string" || !id || id.length > 128))) return;
+  if (args.appliedResearchFindingIds !== undefined && (!Array.isArray(args.appliedResearchFindingIds) || args.appliedResearchFindingIds.length > 50 || args.appliedResearchFindingIds.some((id) => typeof id !== "string" || !id || id.length > 128))) return;
+  let researchQuestions: ReadonlyArray<EngineeringWorkflowResearchQuestion> | undefined;
+  if (args.researchQuestions !== undefined) {
+    if (!Array.isArray(args.researchQuestions) || args.researchQuestions.length > 20) return;
+    try { researchQuestions = args.researchQuestions.map((question) => Schema.decodeUnknownSync(EngineeringWorkflowResearchQuestionSchema)(question)); }
+    catch { return; }
+  }
+  let researchBrief: EngineeringWorkflowResearchBrief | undefined;
+  if (args.researchBrief !== undefined) {
+    try { researchBrief = Schema.decodeUnknownSync(EngineeringWorkflowResearchBriefSchema)(args.researchBrief); }
+    catch { return; }
+  }
   let dossier: EngineeringWorkflowDossier | undefined;
   if (args.dossier !== undefined) {
     try { dossier = Schema.decodeUnknownSync(EngineeringWorkflowDossierSchema)(args.dossier); }
@@ -817,6 +833,9 @@ function workflowCheckpointFromRpc(
       ...(typeof args.planRevision === "number" ? { planRevision: args.planRevision } : {}),
       ...(typeof args.runtimeId === "string" ? { runtimeId: args.runtimeId } : {}),
       ...(dossier ? { dossier } : {}),
+      ...(researchQuestions ? { researchQuestions } : {}),
+      ...(researchBrief ? { researchBrief: { ...researchBrief, completedAt: receivedAt, sources: researchBrief.sources.map((source) => ({ ...source, accessedAt: receivedAt })) } } : {}),
+      ...(Array.isArray(args.appliedResearchFindingIds) ? { appliedResearchFindingIds: args.appliedResearchFindingIds as string[] } : {}),
       ...(Array.isArray(args.appliedGuidanceIds) ? { appliedGuidanceIds: args.appliedGuidanceIds as string[] } : {}),
     },
   };
@@ -1052,8 +1071,9 @@ function reconcileSupervisorAdvice(
     || advice.workflowRevision !== supervisor.consultationWorkflowRevision
     || advice.runtimeId !== workflow.phaseRun?.runtimeId) return workflow;
   const consumesRepair = advice.action === "enter_repair";
+  const repairEligible = workflow.blockedFromPhase === "building" || workflow.blockedFromPhase === "verifying" || workflow.blockedFromPhase === "reviewing" || workflow.blockedFromPhase === "repairing";
   const repairAttempts = consumesRepair ? workflow.repairAttempts + 1 : workflow.repairAttempts;
-  const canRecover = automaticRecovery && (!consumesRepair || repairAttempts <= workflow.maxRepairAttempts);
+  const canRecover = automaticRecovery && (!consumesRepair || repairEligible && repairAttempts <= workflow.maxRepairAttempts);
   const guidance = advice.guidance?.trim() || advice.summary;
   const updatedSupervisor = {
     ...supervisor,
@@ -1186,7 +1206,7 @@ export function processArguments(workspace: Workspace, name: string, workflowRes
     join(workflowResourceDir, "piss-browser.ts"),
     "--skill",
     join(workflowResourceDir, "skills", "piss-ui-verification"),
-    ...["define", "plan", "build", "verify", "review", "supervisor"].flatMap((phase) => [
+    ...["define", "research", "plan", "build", "verify", "review", "supervisor"].flatMap((phase) => [
       "--skill",
       join(workflowResourceDir, "skills", `piss-engineering-${phase}`),
     ]),
@@ -1262,7 +1282,11 @@ export function interruptedWorkflowRecoveryPhase(workflow: EngineeringWorkflow):
   if (workflow.blockedFromPhase && !isTerminalWorkflowPhase(workflow.blockedFromPhase) && workflow.blockedFromPhase !== "blocked") {
     return workflow.blockedFromPhase;
   }
-  if (!workflow.plan) return workflow.specification ? "planning" : "defining";
+  if (!workflow.plan) {
+    if (!workflow.specification) return "defining";
+    if (workflow.researchPolicy && !workflow.researchBrief) return "researching";
+    return "planning";
+  }
   const checkpoint = workflow.checkpoint;
   if (!checkpoint) return "building";
   if (checkpoint.outcome === "blocked") {
@@ -1287,8 +1311,10 @@ export function workflowPhasePrompt(workflow: EngineeringWorkflow, feedback?: st
   switch (workflow.phase) {
     case "defining":
       return `/skill:piss-engineering-define\n${contract}\n\nObjective:\n${workflow.objective}${guidance}`;
+    case "researching":
+      return `/skill:piss-engineering-research\n${contract}\n\nExternal research policy: ${workflow.researchPolicy ?? "local_only"}\nExternal queries may disclose technical details to configured providers. Never include secrets, customer data, local paths, or private repository names in an external query.\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nResearch questions (preserve IDs and wording exactly):\n${JSON.stringify(workflow.researchQuestions ?? [], null, 2)}${guidance}`;
     case "planning":
-      return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}${guidance}`;
+      return `/skill:piss-engineering-plan\n${contract}\n\nApproved specification:\n${workflow.specification ?? "[missing specification]"}\n\nValidated research brief (apply every adopt/adapt finding and report its ID):\n${workflow.researchBrief ? JSON.stringify(workflow.researchBrief, null, 2) : "[legacy workflow: no research brief]"}${guidance}`;
     case "building":
       return `/skill:piss-engineering-build\n${contract}${authority}\n\nApproved specification (the workflow completion boundary):\n${workflow.specification ?? "[missing specification]"}\n\nApproved complete delivery plan:\n${workflow.plan ?? "[missing plan]"}${execution}${guidance}`;
     case "repairing":
@@ -2527,7 +2553,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
         progress: {
           ...progress,
           condition: "working" as const,
-          activity: workflow.phase === "defining" ? "Refining the specification" : workflow.phase === "planning" ? "Preparing the executable plan" : progress.activity,
+          activity: workflow.phase === "defining" ? "Refining the specification" : workflow.phase === "researching" ? "Investigating the defined research questions" : workflow.phase === "planning" ? "Preparing the executable plan" : progress.activity,
           nextAction: `Complete the ${workflow.phase} phase checkpoint`,
           lastActivityAt: startedAt,
         },
@@ -2760,10 +2786,11 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           || advice.runtimeId !== workflow.phaseRun?.runtimeId) return;
         const automatic = advice.action === "resume_with_guidance" || advice.action === "retry_transient" || advice.action === "enter_repair";
         const consumesRepairBudget = advice.action === "enter_repair";
+        const repairEligible = workflow.blockedFromPhase === "building" || workflow.blockedFromPhase === "verifying" || workflow.blockedFromPhase === "reviewing" || workflow.blockedFromPhase === "repairing";
         const guidance = advice.guidance?.trim() || advice.summary;
         const nextRepairAttempts = consumesRepairBudget ? workflow.repairAttempts + 1 : workflow.repairAttempts;
         const canRecover = automatic
-          && (!consumesRepairBudget || nextRepairAttempts <= workflow.maxRepairAttempts)
+          && (!consumesRepairBudget || repairEligible && nextRepairAttempts <= workflow.maxRepairAttempts)
           && !TERMINAL_STATUSES.has(worker.snapshot.status);
         const updatedAt = now();
         const nextPhase: EngineeringWorkflowPhase = advice.action === "enter_repair" ? "repairing" : workflow.blockedFromPhase;
@@ -3557,6 +3584,8 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             id: randomUUID(),
             phase: "defining",
             objective: input.objective.trim(),
+            researchPolicy: input.researchPolicy ?? "local_only",
+            researchQuestions: [],
             repairAttempts: 0,
             maxRepairAttempts: input.maxRepairAttempts ?? 3,
             specification: null,
@@ -3707,6 +3736,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             if (!nextGuidance) return yield* unavailable("This workflow has reached the 64-item durable guidance limit");
             const { executionAuthority: _authority, phaseRun: _phaseRun, ...unapproved } = current;
             const progress = initialWorkflowProgress(submittedAt, "waiting_internal", current.dossier);
+            // TODO(tracer): Route scope-changing guidance through Define → Research once specification revisions own a replacement research-question set; this narrow slice leaves the existing replacement-Plan authority path unchanged.
             const replanning = withProcessedMutation({
               ...unapproved,
               phase: "planning" as const,

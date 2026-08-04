@@ -237,6 +237,8 @@ button { color: inherit; }
 .workflow-focus-view .control-deck { min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-color: var(--line-strong) transparent; }
 .workflow-focus-view .engineering-workflow:has(details[open]) { min-width: 0; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .workflow-focus-view .workflow-copy:has(details[open]) { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.workflow-focus-view .workflow-copy:has(.workflow-specification-details[open]) > .workflow-research-details:not([open]),
+.workflow-focus-view .workflow-copy:has(.workflow-research-details[open]) > .workflow-specification-details:not([open]) { display: none; }
 .workflow-focus-view .workflow-copy details[open] { min-width: 0; min-height: 0; max-width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .workflow-focus-view .workflow-artifact { width: auto; min-width: 0; min-height: 0; max-width: none; height: 100%; max-height: none; justify-self: stretch; }
 .capability-tabs {
@@ -576,8 +578,9 @@ button { color: inherit; }
 .workflow-identity > span { display: grid; gap: 1px; }
 .workflow-identity small { color: var(--accent); font-size: 6px; font-weight: 800; letter-spacing: .13em; }
 .workflow-identity b { font-size: 12px; font-weight: 680; }
-.engineering-workflow > header > em { padding: 4px 6px; border: 1px solid rgba(49, 92, 70, .17); border-radius: 3px; background: rgba(255, 255, 255, .66); color: var(--muted); font-size: 6px; font-style: normal; font-weight: 750; letter-spacing: .08em; white-space: nowrap; }
-.workflow-stage-rail { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0; padding: 9px 10px 7px; list-style: none; }
+.workflow-header-meta { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.workflow-header-meta em { padding: 4px 6px; border: 1px solid rgba(49, 92, 70, .17); border-radius: 3px; background: rgba(255, 255, 255, .66); color: var(--muted); font-size: 6px; font-style: normal; font-weight: 750; letter-spacing: .08em; white-space: nowrap; }
+.workflow-stage-rail { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 0; padding: 9px 10px 7px; list-style: none; }
 .workflow-stage-rail li { position: relative; display: grid; justify-items: center; gap: 4px; color: #929c94; font-size: 6px; font-weight: 800; letter-spacing: .07em; }
 .workflow-stage-rail li::before { content: ""; position: absolute; top: 8px; right: 50%; width: 100%; height: 1px; background: #cfdbd2; }
 .workflow-stage-rail li:first-child::before { display: none; }
@@ -618,6 +621,8 @@ button { color: inherit; }
 .workflow-detail-list b { color: var(--accent); font-size: 7px; letter-spacing: .05em; overflow-wrap: anywhere; }
 .workflow-detail-list span { color: var(--text); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; text-wrap: pretty; }
 .workflow-detail-list small { color: var(--muted); font: 6px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.workflow-research-brief a { color: var(--accent); font-size: 8px; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.workflow-research-brief a:hover { color: var(--text); }
 .workflow-copy { min-width: 0; padding: 7px 11px 9px; border-top: 1px solid rgba(49, 92, 70, .1); }
 .workflow-copy > p { margin: 0; color: #475149; font-size: 9px; line-height: 1.45; }
 .workflow-copy > strong { display: block; margin-top: 5px; color: var(--danger); font-size: 8px; line-height: 1.4; }
@@ -939,6 +944,15 @@ button.composer-config-state { width: 100%; cursor: pointer; }
 .workflow-intro p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .workflow-dialog textarea { min-height: 132px; resize: vertical; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 5px; outline: 0; background: var(--panel); color: var(--text); font-size: 13px; line-height: 1.55; }
 .workflow-dialog textarea:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+.workflow-research-policy { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0; padding: 0; border: 0; }
+.workflow-research-policy legend { grid-column: 1 / -1; margin-bottom: 1px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.dialog-body .workflow-research-policy label { min-width: 0; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 6px; padding: 9px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); cursor: pointer; text-transform: none; letter-spacing: 0; transition-property: border-color, background-color, box-shadow; transition-duration: 120ms; transition-timing-function: ease-out; }
+.dialog-body .workflow-research-policy label.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(49, 92, 70, .08); }
+.dialog-body .workflow-research-policy input { width: 15px; height: 15px; margin: 1px 0 0; padding: 0; accent-color: var(--accent); }
+.workflow-research-policy span { min-width: 0; display: grid; gap: 3px; }
+.workflow-research-policy b { color: var(--text); font-size: 8px; letter-spacing: .06em; }
+.workflow-research-policy small { color: var(--muted); font-size: 8px; font-weight: 450; line-height: 1.4; text-wrap: pretty; }
+.workflow-research-policy > p { grid-column: 1 / -1; margin: 0; padding: 7px 8px; border-left: 2px solid #b68a42; background: #fff8e9; color: #75613f; font-size: 8px; line-height: 1.45; text-wrap: pretty; }
 .workflow-intervention-note { margin: 0; padding: 10px 11px; border: 1px solid #bfd0c3; background: var(--accent-soft); color: var(--muted); font-size: 9px; line-height: 1.55; }
 .workflow-dialog-body .workflow-scope-change { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: start; gap: 9px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); cursor: pointer; text-transform: none; letter-spacing: 0; }
 .workflow-dialog-body .workflow-scope-change input { width: 18px; height: 18px; margin: 1px 0 0; padding: 0; accent-color: var(--accent); }
@@ -1225,6 +1239,13 @@ button.composer-config-state { width: 100%; cursor: pointer; }
   .workflow-dialog textarea { min-height: 145px; resize: none; font-size: 16px; }
   .workflow-intro { grid-template-columns: 39px minmax(0, 1fr); padding: 11px; }
   .workflow-intro > i { width: 38px; height: 38px; }
+  .workflow-header-meta { gap: 3px; }
+  .workflow-header-meta em:first-child { display: none; }
+  .workflow-research-policy { gap: 5px; }
+  .dialog-body .workflow-research-policy label { grid-template-columns: 13px minmax(0, 1fr); gap: 4px; padding: 7px 5px; }
+  .dialog-body .workflow-research-policy input { width: 13px; height: 13px; }
+  .workflow-research-policy b { font-size: 7px; }
+  .workflow-research-policy small { font-size: 7px; }
   .workflow-repair-limit { grid-template-columns: minmax(0, 1fr) 62px; }
   .directory-results { height: 148px; min-height: 148px; }
   .session-dialog > footer { padding: 11px 14px max(11px, env(safe-area-inset-bottom)); }

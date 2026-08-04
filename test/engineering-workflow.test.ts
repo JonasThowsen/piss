@@ -4,6 +4,7 @@ import test from "node:test";
 import * as Schema from "effect/Schema";
 import { EngineeringWorkflow as EngineeringWorkflowSchema, WORKFLOW_MUTATION_RECEIPT_CAPACITY, WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH, WORKFLOW_SUPERSEDED_REVISION_CAPACITY } from "../shared/domain.ts";
 import type { EngineeringWorkflow, EngineeringWorkflowCheckpoint, EngineeringWorkflowDossier, EngineeringWorkflowPhase } from "../shared/domain.ts";
+import { activeResearchTools, researchToolAllowed } from "../workflow-resources/researchToolPolicy.ts";
 import {
   appendBoundedSupersededRevision,
   appendBoundedWorkflowGuidance,
@@ -101,6 +102,7 @@ test("workflow badge labels cover active phases and exclude terminal phases", ()
   const expected = new Map<EngineeringWorkflowPhase, string>([
     ["defining", "DEFINE"],
     ["awaitingSpecApproval", "SPEC READY"],
+    ["researching", "RESEARCH"],
     ["planning", "PLAN"],
     ["awaitingPlanApproval", "PLAN APPROVAL"],
     ["building", "BUILD"],
@@ -126,6 +128,64 @@ test("definition flows directly into planning and only the complete plan needs a
   assert.equal(planned.dossier?.revision, 1);
   assert.equal(planned.artifactRevision, 1);
   assert.equal(workflowNeedsApproval(planned.phase), true);
+});
+
+test("source-pinned research gates Plan and requires an explicit finding handoff", () => {
+  const questions = [{ id: "RQ1", prompt: "Which existing implementation should this workflow adapt?", required: true }];
+  const defined = applyWorkflowCheckpoint(
+    workflow("defining", { researchPolicy: "targeted_external", researchQuestions: [] }),
+    checkpoint("define", "ready", "# Specification", { researchQuestions: questions }),
+  );
+  assert.equal(defined.phase, "researching");
+  assert.deepEqual(defined.researchQuestions, questions);
+
+  const missingRevision = {
+    policy: "targeted_external" as const,
+    questions: [{ id: "RQ1", prompt: questions[0]!.prompt, status: "answered" as const, summary: "Found an implementation", sourceIds: ["SRC1"] }],
+    sources: [{ id: "SRC1", kind: "repository" as const, title: "Example", url: "https://github.com/example/project", repository: "example/project", accessedAt: startedAt }],
+    findings: [{ id: "F1", questionIds: ["RQ1"], sourceIds: ["SRC1"], confidence: "verified" as const, decision: "adapt" as const, summary: "Adapt its durable artifact boundary" }],
+    summary: "One comparable implementation was inspected",
+    completedAt: startedAt,
+  };
+  const rejected = applyWorkflowCheckpoint(defined, checkpoint("research", "ready", "# Research", { researchBrief: missingRevision }));
+  assert.equal(rejected.phase, "blocked");
+  assert.match(rejected.error ?? "", /immutable commit SHA/i);
+
+  const researchBrief = {
+    ...missingRevision,
+    sources: [{ ...missingRevision.sources[0]!, revision: "0123456789abcdef0123456789abcdef01234567" }],
+  };
+  const researched = applyWorkflowCheckpoint(defined, checkpoint("research", "ready", "# Research", { researchBrief }));
+  assert.equal(researched.phase, "planning");
+  assert.equal(researched.researchBrief?.findings[0]?.id, "F1");
+
+  const omitted = applyWorkflowCheckpoint(researched, checkpoint("plan", "ready", "# Plan", { dossier: dossier() }));
+  assert.equal(omitted.phase, "blocked");
+  assert.match(omitted.error ?? "", /did not apply required research findings: F1/i);
+
+  const planned = applyWorkflowCheckpoint(researched, checkpoint("plan", "ready", "# Plan", { dossier: dossier(), appliedResearchFindingIds: ["F1"] }));
+  assert.equal(planned.phase, "awaitingPlanApproval");
+  assert.deepEqual(planned.appliedResearchFindingIds, ["F1"]);
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(EngineeringWorkflowSchema)(planned));
+});
+
+test("targeted research records unsupported capability while required external coverage blocks", () => {
+  const questions = [{ id: "RQ1", prompt: "What does public prior art establish?", required: true }];
+  const unsupportedBrief = {
+    policy: "targeted_external" as const,
+    questions: [{ id: "RQ1", prompt: questions[0]!.prompt, status: "unsupported" as const, summary: "No external research capability is configured", sourceIds: [] }],
+    sources: [],
+    findings: [],
+    summary: "External research capability was unavailable and no evidence was fabricated",
+    completedAt: startedAt,
+  };
+  const targeted = workflow("researching", { researchPolicy: "targeted_external", researchQuestions: questions });
+  assert.equal(applyWorkflowCheckpoint(targeted, checkpoint("research", "ready", "# Unsupported", { researchBrief: unsupportedBrief })).phase, "planning");
+
+  const required = workflow("researching", { researchPolicy: "required_external", researchQuestions: questions });
+  const blocked = applyWorkflowCheckpoint(required, checkpoint("research", "ready", "# Unsupported", { researchBrief: { ...unsupportedBrief, policy: "required_external" } }));
+  assert.equal(blocked.phase, "blocked");
+  assert.match(blocked.error ?? "", /lacks external source coverage/i);
 });
 
 test("planning stamps the control-plane allocated revision without regression", () => {
@@ -877,16 +937,32 @@ test("legacy plans retain compatibility without fabricated structured completion
   assert.ok(fallbackWorkflowDossier().operations.some((operation) => operation.id === "workspace-write"));
 });
 
+test("research tool policy removes mutation tools and external tools outside disclosure authority", () => {
+  const configured = ["read", "grep", "edit", "write", "bash", "web_search", "fetch_content", "piss_workflow_checkpoint", "piss_workflow_progress"];
+  assert.deepEqual(activeResearchTools("local_only", configured), ["read", "grep", "piss_workflow_checkpoint", "piss_workflow_progress"]);
+  assert.deepEqual(activeResearchTools("targeted_external", configured), ["read", "grep", "web_search", "fetch_content", "piss_workflow_checkpoint", "piss_workflow_progress"]);
+  assert.equal(researchToolAllowed("required_external", "web_search"), true);
+  assert.equal(researchToolAllowed("targeted_external", "edit"), false);
+  assert.equal(researchToolAllowed("local_only", "web_search"), false);
+});
+
 test("workflow skills encode conversational planning, structured progress, and standing authority", async () => {
   const resource = (name: string) => readFile(new URL(`../workflow-resources/skills/piss-engineering-${name}/SKILL.md`, import.meta.url), "utf8");
-  const [define, plan, build, verify, review, protocol] = await Promise.all([resource("define"), resource("plan"), resource("build"), resource("verify"), resource("review"), readFile(new URL("../workflow-resources/piss-workflow.ts", import.meta.url), "utf8")]);
+  const [define, research, plan, build, verify, review, protocol] = await Promise.all([resource("define"), resource("research"), resource("plan"), resource("build"), resource("verify"), resource("review"), readFile(new URL("../workflow-resources/piss-workflow.ts", import.meta.url), "utf8")]);
   assert.match(define, /piss_workflow_draft/i);
+  assert.match(define, /researchQuestions/i);
+  assert.match(research, /Search-result snippets alone are not evidence/i);
+  assert.match(research, /exact immutable 40-character commit SHA/i);
+  assert.match(research, /mark externally dependent questions `unsupported`/i);
+  assert.match(protocol, /PISS Research is read-only/i);
+  assert.match(protocol, /setActiveTools/);
   assert.match(plan, /specification—not the first tracer—as the completion boundary/i);
   assert.match(plan, /one final interactive authority checkpoint/i);
   assert.match(plan, /dossier\.operations/i);
   assert.match(plan, /non-mutating readiness checks/i);
   assert.match(plan, /every commit, push, migration, deployment, or production write requires a stable `idempotencyKey`/i);
   assert.match(plan, /queued or transcript-backed carry-forward guidance/i);
+  assert.match(plan, /appliedResearchFindingIds/);
   assert.match(plan, /Never request \*\*Approve & Run\*\* while applicable guidance remains unacknowledged/i);
   assert.match(protocol, /Plan must report all applicable current\/carry-forward IDs before requesting Approve & Run/i);
   assert.match(plan, /receiptRequired: true/i);
@@ -904,10 +980,12 @@ test("workflow supervisors state blockers plainly for the operator", async () =>
   assert.match(supervisor, /do not use unexplained acronyms/i);
   assert.match(supervisor, /Plan approval is standing operator authorization/i);
   assert.match(supervisor, /choose `resume_with_guidance`/i);
+  assert.match(supervisor, /Never route Define, Research, or Plan into implementation Repair/i);
+  assert.match(supervisor, /Research capability failure is not an implementation defect/i);
   assert.match(supervisor, /consultation ID.*workflow ID\/revision.*phase-run ID.*runtime generation/i);
 });
 
 test("autonomous phase classification remains explicit", () => {
-  for (const phase of ["building", "verifying", "reviewing", "repairing"] as const) assert.equal(isAutonomousWorkflowPhase(phase), true);
+  for (const phase of ["researching", "building", "verifying", "reviewing", "repairing"] as const) assert.equal(isAutonomousWorkflowPhase(phase), true);
   for (const phase of ["defining", "planning", "blocked", "readyToShip"] as const) assert.equal(isAutonomousWorkflowPhase(phase), false);
 });

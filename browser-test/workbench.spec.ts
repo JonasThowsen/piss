@@ -34,13 +34,23 @@ type TestSession = {
   compaction: { status: "idle" | "running" | "succeeded" | "failed"; reason: string | null; tokensBefore: number | null; estimatedTokensAfter: number | null; error: string | null; updatedAt: string | null };
   workflow: null | {
     id: string;
-    phase: "defining" | "awaitingSpecApproval" | "planning" | "awaitingPlanApproval" | "building" | "verifying" | "reviewing" | "repairing" | "readyToShip" | "accepted" | "blocked" | "cancelled" | "failed";
+    phase: "defining" | "awaitingSpecApproval" | "researching" | "planning" | "awaitingPlanApproval" | "building" | "verifying" | "reviewing" | "repairing" | "readyToShip" | "accepted" | "blocked" | "cancelled" | "failed";
     objective: string;
+    researchPolicy?: "local_only" | "targeted_external" | "required_external";
+    researchQuestions?: Array<{ id: string; prompt: string; required: boolean }>;
+    researchBrief?: {
+      policy: "local_only" | "targeted_external" | "required_external";
+      questions: Array<{ id: string; prompt: string; status: "answered" | "unsupported" | "not_applicable"; summary: string; sourceIds: string[] }>;
+      sources: Array<{ id: string; kind: "workspace" | "repository" | "documentation" | "web"; title: string; url: string; repository?: string; revision?: string; accessedAt: string }>;
+      findings: Array<{ id: string; questionIds: string[]; sourceIds: string[]; confidence: "verified" | "inferred"; decision: "adopt" | "adapt" | "reject" | "context"; summary: string }>;
+      summary: string;
+      completedAt: string;
+    };
     repairAttempts: number;
     maxRepairAttempts: number;
     specification: string | null;
     plan: string | null;
-    checkpoint: null | { stage: "define" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
+    checkpoint: null | { stage: "define" | "research" | "plan" | "build" | "verify" | "review"; outcome: "ready" | "passed" | "failed" | "blocked"; summary: string; artifact: string | null; toolCallId: string; sequence: number; receivedAt: string };
     blockedFromPhase: string | null;
     queuedIntervention?: string;
     executionAuthority?: { mode: "approved_plan"; grantedAt: string; planRevision?: number; artifactDigest?: string };
@@ -359,10 +369,22 @@ async function installApi(page: Page, options: { readonly empty?: boolean; reado
       let workflow = session.workflow;
       if (body?.action === "start") {
         const specification = `# Specification\n\n${Array.from({ length: 40 }, (_, index) => `${index + 1}. Verify a durable, accessible workflow acceptance criterion.`).join("\n")}`;
+        const researchPrompt = "Which existing implementation pattern best fits the durable workflow boundary?";
+        const researchPolicy = body.researchPolicy === "local_only" || body.researchPolicy === "required_external" ? body.researchPolicy : "targeted_external";
         workflow = {
           id: "browser-workflow-1",
           phase: "planning",
           objective: typeof body.objective === "string" ? body.objective : "Build the workflow",
+          researchPolicy,
+          researchQuestions: [{ id: "RQ-1", prompt: researchPrompt, required: true }],
+          researchBrief: {
+            policy: researchPolicy,
+            questions: [{ id: "RQ-1", prompt: researchPrompt, status: "answered", summary: "A durable state-machine extension is the closest fit.", sourceIds: ["SRC-1"] }],
+            sources: [{ id: "SRC-1", kind: "repository", title: "Pinned comparable implementation", url: "https://github.com/example/workflow", repository: "example/workflow", revision: "0123456789abcdef0123456789abcdef01234567", accessedAt: timestamp }],
+            findings: [{ id: "F-1", questionIds: ["RQ-1"], sourceIds: ["SRC-1"], confidence: "verified", decision: "adapt", summary: "Adapt the existing durable phase boundary and preserve control-plane validation." }],
+            summary: "One source-backed implementation pattern should be adapted during Plan.",
+            completedAt: timestamp,
+          },
           repairAttempts: 0,
           maxRepairAttempts: typeof body.maxRepairAttempts === "number" ? body.maxRepairAttempts : 3,
           specification,
@@ -969,6 +991,9 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   const dialogBounds = await dialog.boundingBox();
   expect(dialogBounds?.y).toBeLessThanOrEqual(8);
   expect(dialogBounds?.height).toBeGreaterThanOrEqual(828);
+  const targetedResearch = dialog.getByRole("radio", { name: /targeted/i });
+  await expect(targetedResearch).toBeChecked();
+  await expect(dialog).toContainText("External modes send redacted technical queries");
   const repairBudget = dialog.getByLabel("Repair budget");
   await repairBudget.fill("");
   await expect(repairBudget).toHaveValue("");
@@ -990,15 +1015,17 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await dialog.getByRole("button", { name: /start define/i }).click();
   await expect.poll(() => startAttempts.length).toBe(2);
   expect(startAttempts[1]).toEqual(startAttempts[0]);
-  await expect.poll(() => api.workflowMutations[0]).toMatchObject({ action: "start", mutationId: expect.any(String) });
+  await expect.poll(() => api.workflowMutations[0]).toMatchObject({ action: "start", researchPolicy: "targeted_external", mutationId: expect.any(String) });
 
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("0/2 REPAIRS");
   await expect(workflow).toContainText("Planning");
+  await expect(workflow).toContainText("TARGETED EXTERNAL RESEARCH");
   await expect(workflow).toContainText("Refining the specification into an executable plan");
+  await expect(workflow.getByText(/RESEARCH BRIEF · 1 SOURCES/)).toBeVisible();
   await expect(workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" })).toBeVisible();
   await expect(workflow.getByRole("button", { name: /approve spec|continue to plan/i })).toHaveCount(0);
-  await workflow.locator("summary").click();
+  await workflow.getByText("COMPLETE SPECIFICATION", { exact: true }).click();
   await expect(workflow.locator(".workflow-artifact")).toBeVisible();
   const approvalLayout = await workflow.evaluate((element) => {
     const artifact = element.querySelector<HTMLElement>(".workflow-artifact")!;

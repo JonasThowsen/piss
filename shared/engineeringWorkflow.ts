@@ -8,13 +8,16 @@ import type {
   EngineeringWorkflowOperationReceipt,
   EngineeringWorkflowPhase,
   EngineeringWorkflowProgress,
+  EngineeringWorkflowResearchBrief,
+  EngineeringWorkflowResearchQuestion,
   EngineeringWorkflowSupersededRevision,
 } from "./domain.ts";
 import { WORKFLOW_MUTATION_RECEIPT_CAPACITY, WORKFLOW_PROGRESS_NEXT_ACTION_MAX_LENGTH, WORKFLOW_SUPERSEDED_REVISION_CAPACITY } from "./domain.ts";
 
-export const ENGINEERING_WORKFLOW_PACK_VERSION = "engineering-v9";
+export const ENGINEERING_WORKFLOW_PACK_VERSION = "engineering-v10";
 
 const AUTONOMOUS_PHASES: ReadonlySet<EngineeringWorkflowPhase> = new Set([
+  "researching",
   "building",
   "verifying",
   "reviewing",
@@ -36,13 +39,81 @@ export function workflowOperationRequiresReceipt(operation: EngineeringWorkflowD
   return operation !== undefined && (operation.receiptRequired === true || operation.idempotencyKey !== undefined || INHERENT_RECEIPT_OPERATION_KINDS.has(operation.kind));
 }
 
+function unique(values: ReadonlyArray<string>): boolean {
+  return new Set(values).size === values.length;
+}
+
+export function workflowResearchQuestionsValidationError(questions: ReadonlyArray<EngineeringWorkflowResearchQuestion> | undefined): string | null {
+  if (!questions?.length) return "Define must include at least one stable research question";
+  if (!unique(questions.map((question) => question.id))) return "Research question IDs must be unique";
+  return null;
+}
+
+function validResearchSourceUrl(source: EngineeringWorkflowResearchBrief["sources"][number]): boolean {
+  if (source.kind === "workspace") return /^workspace:\/\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\s?#]+$/u.test(source.url);
+  try {
+    const parsed = new URL(source.url);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
+export function workflowResearchValidationError(
+  policy: EngineeringWorkflow["researchPolicy"],
+  expectedQuestions: ReadonlyArray<EngineeringWorkflowResearchQuestion> | undefined,
+  brief: EngineeringWorkflowResearchBrief | undefined,
+): string | null {
+  if (!policy) return "The workflow does not declare an external research policy";
+  const questionError = workflowResearchQuestionsValidationError(expectedQuestions);
+  if (questionError) return questionError;
+  if (!brief) return "Research did not include a structured brief";
+  if (brief.policy !== policy) return "Research brief policy does not match the workflow disclosure boundary";
+  if (!unique(brief.questions.map((question) => question.id))) return "Research answer IDs must be unique";
+  if (!unique(brief.sources.map((source) => source.id))) return "Research source IDs must be unique";
+  if (!unique(brief.findings.map((finding) => finding.id))) return "Research finding IDs must be unique";
+  const expectedById = new Map(expectedQuestions!.map((question) => [question.id, question]));
+  if (brief.questions.length !== expectedById.size
+    || brief.questions.some((answer) => expectedById.get(answer.id)?.prompt !== answer.prompt)) {
+    return "Research brief must answer the exact Define question set";
+  }
+  if (policy === "local_only" && brief.sources.some((source) => source.kind !== "workspace")) return "Local-only research cannot persist external sources";
+  const sourceIds = new Set(brief.sources.map((source) => source.id));
+  const externalSourceIds = new Set(brief.sources.filter((source) => source.kind !== "workspace").map((source) => source.id));
+  for (const source of brief.sources) {
+    if (!validResearchSourceUrl(source)) return `Research source ${source.id} has an invalid or unsafe URL`;
+    if ((source.kind === "repository" || /^https:\/\/github\.com\//iu.test(source.url)) && !/^[0-9a-f]{40,64}$/iu.test(source.revision ?? "")) {
+      return `Repository research source ${source.id} must include an immutable commit SHA`;
+    }
+    if (source.kind === "repository" && !source.repository?.trim()) return `Repository research source ${source.id} must identify its repository`;
+  }
+  for (const answer of brief.questions) {
+    if (!unique(answer.sourceIds) || answer.sourceIds.some((id) => !sourceIds.has(id))) return `Research answer ${answer.id} refers to an unknown or duplicate source`;
+    const expected = expectedById.get(answer.id)!;
+    if (expected.required && answer.status === "not_applicable") return `Required research question ${answer.id} must be answered or explicitly unsupported`;
+    if (answer.status === "answered" && answer.sourceIds.length === 0) return `Answered research question ${answer.id} must cite at least one opened source`;
+    if (policy === "required_external" && expected.required
+      && (answer.status !== "answered" || !answer.sourceIds.some((id) => externalSourceIds.has(id)))) {
+      return `Required external research question ${answer.id} lacks external source coverage`;
+    }
+  }
+  const answered = new Set(brief.questions.filter((answer) => answer.status === "answered").map((answer) => answer.id));
+  const findingQuestionIds = new Set<string>();
+  for (const finding of brief.findings) {
+    if (!unique(finding.questionIds) || finding.questionIds.some((id) => !expectedById.has(id))) return `Research finding ${finding.id} refers to an unknown or duplicate question`;
+    if (!unique(finding.sourceIds) || finding.sourceIds.some((id) => !sourceIds.has(id))) return `Research finding ${finding.id} refers to an unknown or duplicate source`;
+    for (const id of finding.questionIds) findingQuestionIds.add(id);
+  }
+  if ([...answered].some((id) => !findingQuestionIds.has(id))) return "Every answered research question must produce a source-backed finding";
+  return null;
+}
+
 export function workflowDossierValidationError(dossier: EngineeringWorkflowDossier | undefined): string | null {
   if (!dossier) return "The plan did not include a structured autonomy dossier";
   if (dossier.operations.length === 0) return "The autonomy dossier must list every permitted operation";
   if (dossier.verificationRequirements.length === 0) return "The autonomy dossier must include verification requirements";
   if (dossier.recoveryRequirements.length === 0) return "The autonomy dossier must include recovery requirements";
   if (dossier.readiness.length === 0) return "The autonomy dossier must include non-mutating readiness results";
-  const unique = (values: ReadonlyArray<string>) => new Set(values).size === values.length;
   const criterionIds = dossier.criteria.map((item) => item.id);
   const sliceIds = dossier.slices.map((item) => item.id);
   const operationIds = dossier.operations.map((item) => item.id);
@@ -141,6 +212,8 @@ export function expectedCheckpointStage(phase: EngineeringWorkflowPhase): Engine
     case "defining":
     case "awaitingSpecApproval":
       return "define";
+    case "researching":
+      return "research";
     case "planning":
     case "awaitingPlanApproval":
       return "plan";
@@ -444,16 +517,46 @@ export function applyWorkflowCheckpoint(
         error: checkpoint.summary,
       };
     }
+    const researchError = workflow.researchPolicy
+      ? workflowResearchQuestionsValidationError(checkpoint.researchQuestions)
+      : null;
     return {
       ...workflow,
       ...common,
-      phase: "planning",
+      phase: researchError ? "blocked" : workflow.researchPolicy ? "researching" : "planning",
       specification: checkpoint.artifact,
+      researchQuestions: checkpoint.researchQuestions ?? workflow.researchQuestions,
       artifactRevision: (workflow.artifactRevision ?? 0) + 1,
-      blockedFromPhase: null,
+      blockedFromPhase: researchError ? "defining" : null,
       openQuestions: [],
-      progress: withCheckpointProgress(workflow, checkpoint, "working", "Prepare the complete executable plan"),
-      error: null,
+      progress: withCheckpointProgress(
+        workflow,
+        checkpoint,
+        researchError ? "blocked" : "working",
+        researchError ? "Add a stable research question set to Define" : workflow.researchPolicy ? "Research the defined questions without modifying the workspace" : "Prepare the complete executable plan",
+      ),
+      error: researchError,
+    };
+  }
+
+  if (checkpoint.stage === "research") {
+    const researchError = checkpoint.outcome === "ready"
+      ? workflowResearchValidationError(workflow.researchPolicy, workflow.researchQuestions, checkpoint.researchBrief)
+      : checkpoint.summary;
+    return {
+      ...workflow,
+      ...common,
+      phase: researchError ? "blocked" : "planning",
+      researchBrief: checkpoint.researchBrief ?? workflow.researchBrief,
+      blockedFromPhase: researchError ? "researching" : null,
+      openQuestions: [],
+      progress: withCheckpointProgress(
+        workflow,
+        checkpoint,
+        researchError ? "blocked" : "working",
+        researchError ? "Resolve research coverage or capability failures" : "Prepare the complete executable plan from the specification and research brief",
+      ),
+      error: researchError,
     };
   }
 
@@ -480,15 +583,28 @@ export function applyWorkflowCheckpoint(
     const guidanceError = missingGuidanceIds.length > 0
       ? `The replacement plan did not acknowledge applicable guidance: ${missingGuidanceIds.join(", ")}`
       : null;
+    const researchFindingIds = new Set(workflow.researchBrief?.findings.map((finding) => finding.id) ?? []);
+    const requiredResearchFindingIds = workflow.researchBrief?.findings
+      .filter((finding) => finding.decision === "adopt" || finding.decision === "adapt")
+      .map((finding) => finding.id) ?? [];
+    const reportedResearchFindingIds = checkpoint.appliedResearchFindingIds ?? [];
+    const researchHandoffError = !unique(reportedResearchFindingIds)
+      ? "The plan acknowledged duplicate research finding IDs"
+      : reportedResearchFindingIds.some((id) => !researchFindingIds.has(id))
+        ? "The plan acknowledged an unknown research finding"
+        : requiredResearchFindingIds.some((id) => !reportedResearchFindingIds.includes(id))
+          ? `The plan did not apply required research findings: ${requiredResearchFindingIds.filter((id) => !reportedResearchFindingIds.includes(id)).join(", ")}`
+          : null;
     const planningError = structuredWorkflow
-      ? dossierError ?? (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError
-      : (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError;
+      ? dossierError ?? (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError ?? researchHandoffError
+      : (unresolved ? "The plan has unresolved readiness requirements" : null) ?? guidanceError ?? researchHandoffError;
     return {
       ...workflow,
       ...common,
       phase: planningError ? "blocked" : "awaitingPlanApproval",
       plan: checkpoint.artifact,
       dossier,
+      appliedResearchFindingIds: reportedResearchFindingIds,
       artifactRevision: allocatedRevision,
       blockedFromPhase: planningError ? "planning" : null,
       openQuestions: [],
@@ -775,6 +891,7 @@ export function workflowBadgePhaseLabel(phase: EngineeringWorkflowPhase): string
   switch (phase) {
     case "defining": return "DEFINE";
     case "awaitingSpecApproval": return "SPEC READY";
+    case "researching": return "RESEARCH";
     case "planning": return "PLAN";
     case "awaitingPlanApproval": return "PLAN APPROVAL";
     case "building": return "BUILD";
@@ -793,6 +910,7 @@ export function workflowPhaseLabel(phase: EngineeringWorkflowPhase): string {
   switch (phase) {
     case "defining": return "Defining";
     case "awaitingSpecApproval": return "Specification ready";
+    case "researching": return "Researching";
     case "planning": return "Planning";
     case "awaitingPlanApproval": return "Final approval";
     case "building": return "Building";

@@ -49,11 +49,23 @@ const handlePrompt = (command) => {
     if (appliedGuidanceIds.length) tool(`progress-define-guidance-${defineTurns}`, "piss_workflow_progress", { ...args, eventId: `progress-define-guidance-${defineTurns}`, activity: "Applied refinement guidance", appliedGuidanceIds, condition: "working", nextAction: "Continue refining the specification" });
     if (defineTurns === 1) tool("draft-define-1", "piss_workflow_draft", { ...args, stage: "define", summary: "Clarify the primary reliability boundary", specification: "# Draft specification\n\nPreserve authority safely.", questions: ["Which reliability boundary matters most?"] });
     else if (defineTurns === 2) tool("draft-define-2", "piss_workflow_draft", { ...args, stage: "define", summary: "Clarify acceptable recovery behavior", specification: "# Refined specification\n\nPreserve authority and recover automatically.", questions: ["Should recoverable failures enter bounded Repair automatically?"] });
-    else return checkpoint("define", "ready", args, "# Approved specification\n\nEnforce authority, durable guidance, automatic repair, and restored progress.");
+    else return checkpoint("define", "ready", { ...args, researchQuestions: [{ id: "RQ-FIXTURE", prompt: "How should the existing durable workflow boundary be extended?", required: true }] }, "# Approved specification\n\nEnforce authority, durable guidance, automatic repair, and restored progress.");
     settled();
     return;
   }
-  if (command.message.startsWith("/skill:piss-engineering-plan")) return checkpoint("plan", "ready", { ...args, dossier }, "# Complete delivery plan\n\nTwo ordered slices, bounded local authority, verification, and one automatic repair.");
+  if (command.message.startsWith("/skill:piss-engineering-research")) {
+    const policy = /External research policy: (local_only|targeted_external|required_external)/.exec(command.message)?.[1] ?? "local_only";
+    const researchBrief = {
+      policy,
+      questions: [{ id: "RQ-FIXTURE", prompt: "How should the existing durable workflow boundary be extended?", status: "answered", summary: "Extend the existing state machine and persistence boundary.", sourceIds: ["SRC-FIXTURE"] }],
+      sources: [{ id: "SRC-FIXTURE", kind: "workspace", title: "Engineering workflow control plane", url: "workspace://shared/engineeringWorkflow.ts", accessedAt: new Date().toISOString() }],
+      findings: [{ id: "F-FIXTURE", questionIds: ["RQ-FIXTURE"], sourceIds: ["SRC-FIXTURE"], confidence: "verified", decision: "adapt", summary: "Adapt the current durable phase transition rather than creating a parallel workflow." }],
+      summary: "Read-only local architecture research completed.",
+      completedAt: new Date().toISOString(),
+    };
+    return checkpoint("research", "ready", { ...args, researchBrief }, "# Research brief\n\nAdapt the existing durable workflow boundary.");
+  }
+  if (command.message.startsWith("/skill:piss-engineering-plan")) return checkpoint("plan", "ready", { ...args, dossier, appliedResearchFindingIds: ["F-FIXTURE"] }, "# Complete delivery plan\n\nTwo ordered slices, bounded local authority, verification, and one automatic repair.");
   if (command.message.startsWith("/skill:piss-engineering-build")) {
     if (command.message.includes("Repair attempt")) return checkpoint("build", "passed", args);
     heldBuild = args;

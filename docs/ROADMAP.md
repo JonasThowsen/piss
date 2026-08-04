@@ -18,7 +18,7 @@ The current implementation proves these end-to-end paths:
 - Web Push and the offline shell avoid caching or transmitting private session content;
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
-- an authenticated user can conversationally refine a guided engineering workflow, grant revision-bound authority once through **Approve & Run**, and continue unattended through ordered Build → Verify → Review slices, bounded repairs, durable guidance/progress, exact structured authority checks, and independent read-only supervisor adjudication;
+- an authenticated user can conversationally refine a guided engineering workflow, choose a local/targeted/required disclosure boundary, receive a validated source-pinned read-only Research brief, grant revision-bound authority once through **Approve & Run**, and continue unattended through ordered Build → Verify → Review slices, bounded repairs, durable guidance/progress, exact structured authority checks, and independent read-only supervisor adjudication;
 - an owned Pi session can use a PISS-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
@@ -30,7 +30,7 @@ These paths are covered by focused Node tests, an HTTP integration test with moc
 - The outgoing tray is device-local. Pi's native `queue_update` and JSONL transcript remain authoritative rather than duplicating queued prompt text in PISS storage.
 - Existing registered Git worktrees are supported, but browser-managed worktree creation is not.
 - Concurrent writable sessions in one checkout are warned about rather than automatically isolated.
-- The guided engineering workflow persists structured slice/criterion evidence, immutable guidance submission bindings plus replacement-Plan carry targets, authority decisions, operation receipts, retained superseded-revision evidence, session-scoped start-mutation receipts, and a terminal cancellation identity. Bounded ledgers fail closed rather than evict replay/evidence safety state, while cancellation remains available at ordinary mutation capacity. Unsupported irreversible operations without an approved idempotency or system-of-record reconciliation method remain outside unattended authority.
+- The guided engineering workflow persists structured research questions, source/finding provenance and Plan handoff IDs, slice/criterion evidence, immutable guidance submission bindings plus replacement-Plan carry targets, authority decisions, operation receipts, retained superseded-revision evidence, session-scoped start-mutation receipts, and a terminal cancellation identity. Research currently uses a hard read-only tool set inside the owned Pi session; isolated parallel research workers and managed source caches are deliberately deferred until a child-session tracer can preserve the same phase identity and replay guarantees. Bounded ledgers fail closed rather than evict replay/evidence safety state, while cancellation remains available at ordinary mutation capacity. Unsupported irreversible operations without an approved idempotency or system-of-record reconciliation method remain outside unattended authority.
 - An unexpected control-plane restart replays bounded workflow progress, guidance-delivery, authority, checkpoint, and receipt records across the metadata/timeline crash window, then resumes from the first incomplete safe boundary. A completed dossier-bound receipt is not repeated or evicted; an ambiguous started receipt-required operation blocks with a concrete reconciliation requirement.
 - Managed browser evidence remains intentionally short-lived and quota-bounded: recordings are silent VP8 WebM up to 60 seconds/50 MiB, with no generated poster, arbitrary JavaScript/selectors, external top-level navigation, or long-form retention policy.
 
@@ -62,6 +62,7 @@ These require usage evidence before architecture work:
 - a PISS capability through which one Pi can inspect or launch sibling sessions;
 - shared tasks or scratchpads;
 - read-only identities and device-specific permissions;
-- complete projection of historical non-message transcript events.
+- complete projection of historical non-message transcript events;
+- bounded metric-driven hypothesis experiments in managed worktrees, with immutable evaluation contracts and separate merge authority.
 
 Introduce new Effect services only when a real capability or test boundary requires them.

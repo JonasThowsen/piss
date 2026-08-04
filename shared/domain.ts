@@ -221,9 +221,17 @@ export const CompactionState = Schema.Struct({
 });
 export type CompactionState = typeof CompactionState.Type;
 
+export const EngineeringWorkflowResearchPolicy = Schema.Literals([
+  "local_only",
+  "targeted_external",
+  "required_external",
+]);
+export type EngineeringWorkflowResearchPolicy = typeof EngineeringWorkflowResearchPolicy.Type;
+
 export const EngineeringWorkflowPhase = Schema.Literals([
   "defining",
   "awaitingSpecApproval",
+  "researching",
   "planning",
   "awaitingPlanApproval",
   "building",
@@ -309,6 +317,53 @@ export const EngineeringWorkflowDossier = Schema.Struct({
   unresolved: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024))).check(Schema.isMaxLength(100)),
 });
 export type EngineeringWorkflowDossier = typeof EngineeringWorkflowDossier.Type;
+
+export const EngineeringWorkflowResearchQuestion = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  required: Schema.Boolean,
+});
+export type EngineeringWorkflowResearchQuestion = typeof EngineeringWorkflowResearchQuestion.Type;
+
+export const EngineeringWorkflowResearchSource = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  kind: Schema.Literals(["workspace", "repository", "documentation", "web"]),
+  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  repository: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
+  revision: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+  accessedAt: Schema.String,
+});
+export type EngineeringWorkflowResearchSource = typeof EngineeringWorkflowResearchSource.Type;
+
+export const EngineeringWorkflowResearchFinding = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  questionIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+  sourceIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+  confidence: Schema.Literals(["verified", "inferred"]),
+  decision: Schema.Literals(["adopt", "adapt", "reject", "context"]),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+});
+export type EngineeringWorkflowResearchFinding = typeof EngineeringWorkflowResearchFinding.Type;
+
+export const EngineeringWorkflowResearchAnswer = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  status: Schema.Literals(["answered", "unsupported", "not_applicable"]),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4 * 1024)),
+  sourceIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(50)),
+});
+export type EngineeringWorkflowResearchAnswer = typeof EngineeringWorkflowResearchAnswer.Type;
+
+export const EngineeringWorkflowResearchBrief = Schema.Struct({
+  policy: EngineeringWorkflowResearchPolicy,
+  questions: Schema.Array(EngineeringWorkflowResearchAnswer).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+  sources: Schema.Array(EngineeringWorkflowResearchSource).check(Schema.isMaxLength(50)),
+  findings: Schema.Array(EngineeringWorkflowResearchFinding).check(Schema.isMaxLength(50)),
+  summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
+  completedAt: Schema.String,
+});
+export type EngineeringWorkflowResearchBrief = typeof EngineeringWorkflowResearchBrief.Type;
 
 export const EngineeringWorkflowPhaseRun = Schema.Struct({
   id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
@@ -415,7 +470,7 @@ export const EngineeringWorkflowOperationReceipt = Schema.Struct({
 export type EngineeringWorkflowOperationReceipt = typeof EngineeringWorkflowOperationReceipt.Type;
 
 export const EngineeringWorkflowCheckpoint = Schema.Struct({
-  stage: Schema.Literals(["define", "plan", "build", "verify", "review"]),
+  stage: Schema.Literals(["define", "research", "plan", "build", "verify", "review"]),
   outcome: Schema.Literals(["ready", "passed", "failed", "blocked"]),
   summary: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024)),
   artifact: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
@@ -427,6 +482,9 @@ export const EngineeringWorkflowCheckpoint = Schema.Struct({
   planRevision: Schema.optional(NonNegativeInt),
   runtimeId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   dossier: Schema.optional(EngineeringWorkflowDossier),
+  researchQuestions: Schema.optional(Schema.Array(EngineeringWorkflowResearchQuestion).check(Schema.isMinLength(1), Schema.isMaxLength(20))),
+  researchBrief: Schema.optional(EngineeringWorkflowResearchBrief),
+  appliedResearchFindingIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(50))),
   appliedGuidanceIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(64))),
 });
 export type EngineeringWorkflowCheckpoint = typeof EngineeringWorkflowCheckpoint.Type;
@@ -474,6 +532,10 @@ export const EngineeringWorkflow = Schema.Struct({
   id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   phase: EngineeringWorkflowPhase,
   objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+  researchPolicy: Schema.optional(EngineeringWorkflowResearchPolicy),
+  researchQuestions: Schema.optional(Schema.Array(EngineeringWorkflowResearchQuestion).check(Schema.isMaxLength(20))),
+  researchBrief: Schema.optional(EngineeringWorkflowResearchBrief),
+  appliedResearchFindingIds: Schema.optional(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(50))),
   repairAttempts: NonNegativeInt,
   maxRepairAttempts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
   specification: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64 * 1024))),
@@ -743,6 +805,7 @@ export const EngineeringWorkflowMutationInput = Schema.Union([
     mutationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
     action: Schema.Literal("start"),
     objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024)),
+    researchPolicy: Schema.optional(EngineeringWorkflowResearchPolicy),
     maxRepairAttempts: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))),
   }),
   Schema.Struct({

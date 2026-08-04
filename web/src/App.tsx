@@ -17,7 +17,7 @@ import { ATTENTION_STATE_LABELS, canAcceptPrompt, canConfigureSession, isWritabl
 import { isTerminalWorkflowPhase, workflowBadgePhaseLabel, workflowPhaseLabel } from "../../shared/engineeringWorkflow.ts";
 
 type WorkflowMutationRequest =
-  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "start"; readonly objective: string; readonly maxRepairAttempts?: number }
+  | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "start"; readonly objective: string; readonly researchPolicy?: NonNullable<EngineeringWorkflow["researchPolicy"]>; readonly maxRepairAttempts?: number }
   | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "approve" | "accept" | "cancel" }
   | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "resume"; readonly feedback?: string }
   | { readonly runtimeId: string; readonly mutationId?: string; readonly action: "continueRepairs"; readonly additionalRepairAttempts: number }
@@ -429,6 +429,7 @@ export function App() {
   const [workflowObjective, setWorkflowObjective] = useState("");
   const [workflowFeedback, setWorkflowFeedback] = useState("");
   const [workflowScopeChange, setWorkflowScopeChange] = useState(false);
+  const [workflowResearchPolicy, setWorkflowResearchPolicy] = useState<NonNullable<EngineeringWorkflow["researchPolicy"]>>("targeted_external");
   const [workflowRepairLimit, setWorkflowRepairLimit] = useState("3");
   const [workflowAdditionalRepairs, setWorkflowAdditionalRepairs] = useState("2");
   const [workflowMutationPending, setWorkflowMutationPending] = useState<{ readonly token: number; readonly sessionId: string; readonly phase: EngineeringWorkflow["phase"] | null }>();
@@ -1901,6 +1902,7 @@ export function App() {
   const openWorkflowStarter = (returnFocus: HTMLElement) => {
     workflowReturnFocusRef.current = returnFocus;
     setWorkflowObjective(commandText.trim());
+    setWorkflowResearchPolicy("targeted_external");
     setWorkflowRepairLimit("3");
     setWorkflowDialog("start");
   };
@@ -1918,6 +1920,7 @@ export function App() {
       runtimeId: session.runtimeId,
       action: "start",
       objective,
+      researchPolicy: workflowResearchPolicy,
       maxRepairAttempts: Math.max(1, Math.min(10, Number.parseInt(workflowRepairLimit, 10) || 1)),
     });
   };
@@ -2847,6 +2850,18 @@ export function App() {
         <div className="dialog-body workflow-dialog-body">
           <div className="workflow-intro"><i aria-hidden="true"><Workflow /></i><div><b>Complete approved scope, delivered in vertical slices</b><p>PISS uses an initial tracer to prove the path, then continues through the full delivery plan before whole-specification Verify and Review. It stops before commit, push, or deployment.</p></div></div>
           <label>Objective<textarea ref={workflowObjectiveRef} value={workflowObjective} onChange={(event) => setWorkflowObjective(event.target.value)} maxLength={64 * 1024} rows={6} placeholder="Describe the outcome, user, constraints, and what success looks like…" /></label>
+          <fieldset className="workflow-research-policy">
+            <legend>Research boundary</legend>
+            {([
+              ["local_only", "LOCAL ONLY", "Keep every question inside this workspace."],
+              ["targeted_external", "TARGETED", "Search public sources only when uncertainty warrants disclosure."],
+              ["required_external", "REQUIRED", "Require opened external evidence for every required question."],
+            ] as const).map(([value, label, description]) => <label key={value} className={workflowResearchPolicy === value ? "selected" : undefined}>
+              <input type="radio" name="workflow-research-policy" value={value} checked={workflowResearchPolicy === value} onChange={() => setWorkflowResearchPolicy(value)} />
+              <span><b>{label}</b><small>{description}</small></span>
+            </label>)}
+            <p>External modes send redacted technical queries to configured research providers. Never include secrets, customer data, private repository names, or local paths.</p>
+          </fieldset>
           <label className="workflow-repair-limit">Repair budget<input type="number" inputMode="numeric" min={1} max={10} value={workflowRepairLimit} onChange={(event) => setWorkflowRepairLimit(event.target.value)} onBlur={() => setWorkflowRepairLimit(String(Math.max(1, Math.min(10, Number.parseInt(workflowRepairLimit, 10) || 1))))} /><small>Maximum autonomous repair cycles before PISS blocks for you.</small></label>
           {operationError && <div className="dialog-error" role="alert">{operationError}</div>}
         </div>
@@ -2954,14 +2969,14 @@ export function App() {
   );
 }
 
-const WORKFLOW_STAGES = ["DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
+const WORKFLOW_STAGES = ["DEFINE", "RESEARCH", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
 function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase === "defining" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "readyToShip" || phase === "blocked";
+  return phase === "defining" || phase === "researching" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "readyToShip" || phase === "blocked";
 }
 
 function workflowRunsAutonomously(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase === "defining" || phase === "planning" || phase === "building" || phase === "verifying" || phase === "reviewing" || phase === "repairing";
+  return phase === "defining" || phase === "researching" || phase === "planning" || phase === "building" || phase === "verifying" || phase === "reviewing" || phase === "repairing";
 }
 
 function workflowOwnsComposer(phase: EngineeringWorkflow["phase"]): boolean {
@@ -2970,6 +2985,7 @@ function workflowOwnsComposer(phase: EngineeringWorkflow["phase"]): boolean {
 
 function workflowActivityLabel(phase: EngineeringWorkflow["phase"]): string {
   switch (phase) {
+    case "researching": return "Pi is gathering read-only implementation evidence";
     case "planning": return "Pi is preparing the complete delivery plan";
     case "building": return "Pi is implementing the approved delivery plan";
     case "verifying": return "Pi is verifying the implementation";
@@ -2983,17 +2999,19 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
   const phase = workflow.phase === "blocked" && workflow.blockedFromPhase ? workflow.blockedFromPhase : workflow.phase;
   if (phase === "failed" && workflow.checkpoint) {
     if (workflow.checkpoint.stage === "define") return 0;
-    if (workflow.checkpoint.stage === "plan") return 1;
-    if (workflow.checkpoint.stage === "build") return 2;
-    if (workflow.checkpoint.stage === "verify") return 3;
-    return 4;
+    if (workflow.checkpoint.stage === "research") return 1;
+    if (workflow.checkpoint.stage === "plan") return 2;
+    if (workflow.checkpoint.stage === "build") return 3;
+    if (workflow.checkpoint.stage === "verify") return 4;
+    return 5;
   }
   if (phase === "defining" || phase === "awaitingSpecApproval") return 0;
-  if (phase === "planning" || phase === "awaitingPlanApproval") return 1;
-  if (phase === "building" || phase === "repairing") return 2;
-  if (phase === "verifying") return 3;
-  if (phase === "reviewing") return 4;
-  if (phase === "readyToShip" || phase === "accepted") return 5;
+  if (phase === "researching") return 1;
+  if (phase === "planning" || phase === "awaitingPlanApproval") return 2;
+  if (phase === "building" || phase === "repairing") return 3;
+  if (phase === "verifying") return 4;
+  if (phase === "reviewing") return 5;
+  if (phase === "readyToShip" || phase === "accepted") return 6;
   return -1;
 }
 
@@ -3031,6 +3049,10 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
     && workflow.supervisor?.lastAdvice?.action !== "human_authority_required";
   const phaseSummary = workflow.checkpoint?.summary ?? workflow.objective;
   const phaseReport = workflow.error ?? phaseSummary;
+  const researchBrief = workflow.researchBrief;
+  const researchQuestions = workflow.researchQuestions ?? [];
+  const researchAnswered = researchBrief?.questions.filter((question) => question.status === "answered").length ?? 0;
+  const researchUnsupported = researchBrief?.questions.filter((question) => question.status === "unsupported").length ?? 0;
   const dossier = workflow.dossier;
   const progress = workflow.progress;
   const totalSlices = dossier?.slices.length ?? 0;
@@ -3060,7 +3082,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
   return <section className={`engineering-workflow ${workflow.phase}`} aria-label="Engineering workflow" aria-live="polite">
     <header>
       <div className="workflow-identity"><i aria-hidden="true"><Workflow /></i><span><small>ENGINEERING WORKFLOW</small><b>{workflowPhaseLabel(workflow.phase)}</b></span></div>
-      <em>{workflow.repairAttempts}/{workflow.maxRepairAttempts} REPAIRS</em>
+      <div className="workflow-header-meta"><em>{(workflow.researchPolicy ?? "local_only").replaceAll("_", " ").toUpperCase()} RESEARCH</em><em>{workflow.repairAttempts}/{workflow.maxRepairAttempts} REPAIRS</em></div>
     </header>
     <ol className="workflow-stage-rail" aria-label="Workflow progress">
       {WORKFLOW_STAGES.map((stage, index) => <li className={index < activeStage ? "complete" : index === activeStage ? "active" : "pending"} key={stage}><i>{index < activeStage ? <Check aria-hidden="true" /> : index + 1}</i><span>{stage}</span></li>)}
@@ -3070,7 +3092,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
       <dl>
         <div><dt>SLICES</dt><dd>{completedSlices}/{totalSlices || "—"}</dd></div>
         <div><dt>CRITERIA</dt><dd>{passedCriteria}/{totalCriteria || "—"}</dd></div>
-        <div><dt>REPAIR</dt><dd>{workflow.repairAttempts}/{workflow.maxRepairAttempts}</dd></div>
+        <div><dt>RESEARCH</dt><dd>{researchAnswered}/{researchQuestions.length || "—"}{researchUnsupported ? ` · ${researchUnsupported}U` : ""}</dd></div>
         <div><dt>GUIDANCE</dt><dd>{queuedGuidance}Q · {deliveredGuidance}D · {appliedGuidance}A</dd></div>
       </dl>
       {(progress.currentSliceId || progress.verificationStep || progress.reviewStep) && <p><b>{progress.currentSliceId ? `Slice ${progress.currentSliceId}` : workflowPhaseLabel(workflow.phase)}</b><span>{progress.verificationStep ?? progress.reviewStep ?? "In progress"}</span></p>}
@@ -3111,7 +3133,13 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
           <div className="workflow-report" data-keyboard-scroll tabIndex={0}><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{phaseReport}</Markdown></div>
         </details>}
         {workflow.error && workflow.error !== phaseSummary && !hasLongPhaseReport && <strong role="alert">{workflow.error}</strong>}
-        {workflow.specification && <details><summary><ClipboardCheck aria-hidden="true" /> COMPLETE SPECIFICATION<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.specification}</Markdown></div></details>}
+        {workflow.specification && <details className="workflow-specification-details"><summary><ClipboardCheck aria-hidden="true" /> COMPLETE SPECIFICATION<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.specification}</Markdown></div></details>}
+        {researchBrief && <details className="workflow-research-details"><summary><Search aria-hidden="true" /> RESEARCH BRIEF · {researchBrief.sources.length} SOURCES<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list workflow-research-brief">
+          <p><b>{researchBrief.policy.replaceAll("_", " ").toUpperCase()} · {researchAnswered} ANSWERED · {researchUnsupported} UNSUPPORTED</b><span>{researchBrief.summary}</span></p>
+          {researchBrief.questions.map((question) => <p key={question.id}><b>{question.status.replaceAll("_", " ").toUpperCase()} · {question.id}</b><span>{question.prompt}</span><small>{question.summary}</small></p>)}
+          {researchBrief.findings.map((finding) => <p key={finding.id}><b>{finding.decision.toUpperCase()} · {finding.confidence.toUpperCase()} · {finding.id}</b><span>{finding.summary}</span><small>Questions {finding.questionIds.join(", ")} · sources {finding.sourceIds.join(", ")}</small></p>)}
+          {researchBrief.sources.map((source) => <p key={source.id}><b>{source.kind.toUpperCase()} · {source.id}</b>{source.kind === "workspace" ? <span>{source.title}</span> : <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>}<small>{source.url}{source.revision ? ` · ${source.revision}` : ""}</small></p>)}
+        </div></details>}
         {workflow.plan && <details><summary><ClipboardCheck aria-hidden="true" /> EXECUTABLE PLAN & AUTONOMY ENVELOPE<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.plan}</Markdown></div></details>}
         {workflow.phase !== "awaitingPlanApproval" && workflow.checkpoint?.artifact && workflow.checkpoint.artifact !== workflow.specification && workflow.checkpoint.artifact !== workflow.plan && <details key={`${workflow.id}:${workflow.phase}`}><summary><ClipboardCheck aria-hidden="true" /> {artifactLabel}<ChevronRight aria-hidden="true" /></summary><div className="workflow-artifact"><Markdown remarkPlugins={[remarkGfm]} components={codeBlockMarkdownComponents}>{workflow.checkpoint.artifact}</Markdown></div></details>}
         {dossier && <details><summary><ClipboardCheck aria-hidden="true" /> CRITERIA & EVIDENCE · {passedCriteria}/{totalCriteria}<ChevronRight aria-hidden="true" /></summary><div className="workflow-detail-list">{dossier.criteria.map((criterion) => { const evidence = evidenceByCriterion.get(criterion.id); const passed = passedCriterionIds.has(criterion.id) && Boolean(evidence); return <p key={criterion.id}><b>{passed ? "PASSED" : "REMAINING"} · {criterion.id}</b><span>{criterion.title}</span>{evidence && <small>{evidence.summary}{evidence.eventSequence !== undefined ? ` · event ${evidence.eventSequence}` : ""}</small>}</p>; })}</div></details>}
@@ -3154,7 +3182,7 @@ function EngineeringWorkflowPanel({ workflow, pending, onApprove, onAccept, onCa
         <button className="workflow-continue" disabled={pending} type="button" onClick={(event) => onContinueRepairs(event.currentTarget)}><RefreshCw aria-hidden="true" />CONTINUE REPAIRS</button>
       </>}
       {!terminal && !approval && workflow.phase !== "blocked" && <span className="workflow-activity" role="status"><LoaderCircle className="icon-spin" aria-hidden="true" />{workflowActivityLabel(workflow.phase)}</span>}
-      {(workflow.phase === "defining" || workflow.phase === "planning" || workflow.phase === "building" || workflow.phase === "repairing" || workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{queuedGuidance > 0 ? `${queuedGuidance} GUIDANCE QUEUED` : "GUIDE CURRENT WORKFLOW"}</button>}
+      {(workflow.phase === "defining" || workflow.phase === "researching" || workflow.phase === "planning" || workflow.phase === "building" || workflow.phase === "repairing" || workflow.phase === "verifying" || workflow.phase === "reviewing") && <button className="workflow-intervene" disabled={pending} type="button" onClick={(event) => onIntervene(event.currentTarget)}><MessageSquare aria-hidden="true" />{queuedGuidance > 0 ? `${queuedGuidance} GUIDANCE QUEUED` : "GUIDE CURRENT WORKFLOW"}</button>}
       {!terminal && <button className="workflow-cancel" disabled={pending} type="button" onClick={onCancel}>CANCEL WORKFLOW</button>}
     </footer>
   </section>;

@@ -13,8 +13,9 @@ Turn the supplied objective into the latest complete specification without writi
 3. Incorporate every feedback turn into a complete replacement specification; never lose previously agreed requirements.
 4. Publish meaningful draft updates with `piss_workflow_draft` so the UI always shows the latest specification.
 5. Cover objective, user-visible acceptance criteria with stable IDs, boundaries, repository commands, likely architecture, risks, and explicit non-goals.
-6. Do not implement, commit, push, migrate, or deploy.
-7. When the specification is complete enough for planning, call `piss_workflow_checkpoint` exactly once with the supplied workflow ID, plan revision and phase-run ID, `stage: "define"`, `outcome: "ready"`, a concise summary, and the complete specification Markdown in `artifact`. PISS proceeds directly to Plan; this is not an authority approval.
-8. Use `outcome: "blocked"` only for a concrete decision or capability that cannot be resolved through another focused conversational turn.
+6. Derive 1–20 stable research questions that would materially improve implementation choices or validate local architecture. Preserve their exact IDs and wording in the terminal checkpoint. Mark a question `required: true` only when Plan would be unsafe or materially underdetermined without its result.
+7. Do not perform external research in Define and do not implement, commit, push, migrate, or deploy.
+8. When the specification is complete enough for research, call `piss_workflow_checkpoint` exactly once with the supplied workflow ID, plan revision and phase-run ID, `stage: "define"`, `outcome: "ready"`, a concise summary, the complete specification Markdown in `artifact`, and the complete `researchQuestions` array. PISS proceeds directly to read-only Research; this is not an authority approval.
+9. Use `outcome: "blocked"` only for a concrete decision or capability that cannot be resolved through another focused conversational turn.
 
 The terminal checkpoint ends this phase. Do not emit another assistant response after calling it.

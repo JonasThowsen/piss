@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { activeExternalResearchTools, activeResearchTools, researchToolAllowed, type ResearchToolPolicy } from "./researchToolPolicy.ts";
 
 const boundedId = () => Type.String({ minLength: 1, maxLength: 128 });
 const boundedText = (maxLength = 4 * 1024) => Type.String({ maxLength });
@@ -41,6 +42,42 @@ const dossier = Type.Object({
   unresolved: Type.Array(Type.String({ minLength: 1, maxLength: 4 * 1024 }), { maxItems: 100 }),
 });
 
+const researchQuestion = Type.Object({
+  id: boundedId(),
+  prompt: Type.String({ minLength: 1, maxLength: 4 * 1024 }),
+  required: Type.Boolean(),
+});
+const researchSource = Type.Object({
+  id: boundedId(),
+  kind: StringEnum(["workspace", "repository", "documentation", "web"] as const),
+  title: Type.String({ minLength: 1, maxLength: 1024 }),
+  url: Type.String({ minLength: 1, maxLength: 4 * 1024 }),
+  repository: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+  revision: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  accessedAt: Type.String({ minLength: 1, maxLength: 128 }),
+});
+const researchBrief = Type.Object({
+  policy: StringEnum(["local_only", "targeted_external", "required_external"] as const),
+  questions: Type.Array(Type.Object({
+    id: boundedId(),
+    prompt: Type.String({ minLength: 1, maxLength: 4 * 1024 }),
+    status: StringEnum(["answered", "unsupported", "not_applicable"] as const),
+    summary: Type.String({ minLength: 1, maxLength: 4 * 1024 }),
+    sourceIds: Type.Array(boundedId(), { maxItems: 50 }),
+  }), { minItems: 1, maxItems: 20 }),
+  sources: Type.Array(researchSource, { maxItems: 50 }),
+  findings: Type.Array(Type.Object({
+    id: boundedId(),
+    questionIds: Type.Array(boundedId(), { minItems: 1, maxItems: 20 }),
+    sourceIds: Type.Array(boundedId(), { minItems: 1, maxItems: 50 }),
+    confidence: StringEnum(["verified", "inferred"] as const),
+    decision: StringEnum(["adopt", "adapt", "reject", "context"] as const),
+    summary: Type.String({ minLength: 1, maxLength: 4 * 1024 }),
+  }), { maxItems: 50 }),
+  summary: Type.String({ minLength: 1, maxLength: 16 * 1024 }),
+  completedAt: Type.String({ minLength: 1, maxLength: 128 }),
+});
+
 const workflowEventIdentity = {
   workflowId: Type.String({ minLength: 1, maxLength: 128, description: "The exact PISS workflow ID from the phase prompt" }),
   eventId: Type.Optional(boundedId()),
@@ -51,11 +88,14 @@ const workflowEventIdentity = {
 
 const checkpoint = Type.Object({
   ...workflowEventIdentity,
-  stage: StringEnum(["define", "plan", "build", "verify", "review"] as const),
+  stage: StringEnum(["define", "research", "plan", "build", "verify", "review"] as const),
   outcome: StringEnum(["ready", "passed", "failed", "blocked"] as const),
   summary: Type.String({ minLength: 1, maxLength: 16 * 1024, description: "Concise evidence-based phase result" }),
-  artifact: Type.Optional(Type.String({ maxLength: 64 * 1024, description: "Latest specification or complete plan Markdown" })),
+  artifact: Type.Optional(Type.String({ maxLength: 64 * 1024, description: "Latest specification, research report, or complete plan Markdown" })),
   dossier: Type.Optional(dossier),
+  researchQuestions: Type.Optional(Type.Array(researchQuestion, { minItems: 1, maxItems: 20, description: "Stable questions established by Define for the read-only Research phase" })),
+  researchBrief: Type.Optional(researchBrief),
+  appliedResearchFindingIds: Type.Optional(Type.Array(boundedId(), { maxItems: 50, description: "Validated adopt/adapt research finding IDs consumed by Plan" })),
   appliedGuidanceIds: Type.Optional(Type.Array(boundedId(), { maxItems: 64, description: "Every delivered guidance ID applied by this phase. Plan must report all applicable current/carry-forward IDs before requesting Approve & Run." })),
 });
 
@@ -127,6 +167,52 @@ const supervisorAdvice = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+  let researchGuardActive = false;
+  let researchPolicy: ResearchToolPolicy = "local_only";
+  let toolsBeforeResearch: string[] = [];
+
+  pi.on("input", (event) => {
+    const researchPrompt = event.text.startsWith("/skill:piss-engineering-research");
+    const anotherWorkflowPhase = event.text.startsWith("/skill:piss-engineering-") && !researchPrompt;
+    if (researchPrompt) {
+      if (!researchGuardActive) toolsBeforeResearch = pi.getActiveTools();
+      researchGuardActive = true;
+      const declared = /External research policy: (local_only|targeted_external|required_external)/u.exec(event.text)?.[1];
+      researchPolicy = declared === "targeted_external" || declared === "required_external" ? declared : "local_only";
+      pi.setActiveTools([...activeResearchTools(researchPolicy, pi.getActiveTools())]);
+      return { action: "continue" as const };
+    }
+    if (researchGuardActive && anotherWorkflowPhase) {
+      pi.setActiveTools(toolsBeforeResearch);
+      researchGuardActive = false;
+      toolsBeforeResearch = [];
+    }
+    return { action: "continue" as const };
+  });
+
+  pi.on("before_agent_start", () => {
+    if (!researchGuardActive) return;
+    const availableExternal = activeExternalResearchTools(pi.getActiveTools());
+    return {
+      message: {
+        customType: "piss-research-capability",
+        display: false,
+        content: researchPolicy === "local_only"
+          ? "PISS research capability: local-only policy is active; external tools are intentionally unavailable."
+          : availableExternal.length > 0
+            ? `PISS research capability: external read tools available: ${availableExternal.join(", ")}.`
+            : "PISS research capability: no external research tool is available. Mark externally dependent questions unsupported; never invent sources.",
+      },
+    };
+  });
+
+  pi.on("tool_call", (event) => {
+    if (!researchGuardActive) return;
+    const allowed = researchToolAllowed(researchPolicy, event.toolName);
+    if (!allowed) return { block: true, reason: `PISS Research is read-only; ${event.toolName} is outside the active research capability set.` };
+  });
+
+  // TODO(tracer): Move this guarded turn into an isolated child session before adding parallel research workers.
   pi.registerTool({
     name: "piss_workflow_checkpoint",
     label: "Workflow checkpoint",
