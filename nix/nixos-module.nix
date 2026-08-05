@@ -19,6 +19,7 @@ let
       inherit (cfg)
         port
         piCommand
+        sshAgentSocket
         environmentFiles
         allowedUsers
         workspaceDiscoveryRoots
@@ -153,6 +154,16 @@ in
       description = "Absolute Pi CLI path recommended for the systemd user service.";
     };
 
+    sshAgentSocket = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/user/1000/ssh-agent";
+      description = ''
+        Shared SSH agent socket inherited by every Pi runtime. When unset,
+        PISS uses SSH_AUTH_SOCK or the standard $XDG_RUNTIME_DIR/ssh-agent.
+      '';
+    };
+
     environmentFiles = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -255,6 +266,10 @@ in
         message = "Every services.piss.workspaceDiscoveryRoots entry must be absolute";
       }
       {
+        assertion = cfg.sshAgentSocket == null || lib.hasPrefix "/" cfg.sshAgentSocket;
+        message = "services.piss.sshAgentSocket must be an absolute path";
+      }
+      {
         assertion = lib.all (path: lib.hasPrefix "/" path) cfg.environmentFiles;
         message = "Every services.piss.environmentFiles entry must be absolute";
       }
@@ -301,6 +316,10 @@ in
             inherit (workspace) trustProjectResources;
           }) cfg.workspaces
         );
+      }
+      // lib.optionalAttrs (cfg.sshAgentSocket != null) {
+        PISS_SSH_AUTH_SOCK = cfg.sshAgentSocket;
+        SSH_AUTH_SOCK = cfg.sshAgentSocket;
       };
       serviceConfig = {
         EnvironmentFile = cfg.environmentFiles;

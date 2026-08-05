@@ -3032,6 +3032,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
             detached: true,
             env: {
               ...process.env,
+              ...(config.sshAuthSock ? { SSH_AUTH_SOCK: config.sshAuthSock } : {}),
               ...(config.browserExecutablePath ? { PISS_BROWSER_EXECUTABLE_PATH: config.browserExecutablePath } : {}),
               PISS_BROWSER_ARTIFACT_STAGING_DIR: artifactStagingDirectory,
             },
@@ -3273,6 +3274,7 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           detached: true,
           env: {
             ...process.env,
+            ...(config.sshAuthSock ? { SSH_AUTH_SOCK: config.sshAuthSock } : {}),
             ...(config.browserExecutablePath ? { PISS_BROWSER_EXECUTABLE_PATH: config.browserExecutablePath } : {}),
             PISS_BROWSER_ARTIFACT_STAGING_DIR: artifactStagingDirectory,
           },

@@ -89,6 +89,12 @@ services.piss.workspaces = [
 
 Set `trustProjectResources = true` only when Pi may load that workspace's local settings, extensions, skills, and packages.
 
+Pi runtimes share your normal SSH agent. PISS automatically uses `SSH_AUTH_SOCK` or the standard `$XDG_RUNTIME_DIR/ssh-agent`, so one `ssh-add` applies to every session and loop. If your agent uses another stable socket (for example 1Password or GCR), configure it explicitly:
+
+```nix
+services.piss.sshAgentSocket = "/run/user/1000/gcr/ssh";
+```
+
 Apply the configuration:
 
 ```bash
@@ -231,6 +237,7 @@ nix/           NixOS module
 | `services.piss.webPackage` | `piss-web` | Independently updatable browser shell |
 | `services.piss.port` | `4317` | Loopback application port |
 | `services.piss.piCommand` | `"pi"` | Pi CLI executable |
+| `services.piss.sshAgentSocket` | auto-detected | Shared SSH agent socket inherited by every Pi runtime |
 | `services.piss.allowedUsers` | `[]` | Explicit Tailscale login allowlist |
 | `services.piss.allowAllTailnetUsers` | `false` | Permit every identity allowed by tailnet policy |
 | `services.piss.workspaceDiscoveryRoots` | `[]` | Roots available for workspace discovery and creation |

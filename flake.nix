@@ -222,6 +222,7 @@
                   enable = true;
                   allowedUsers = [ "owner@example.com" ];
                   environmentFiles = [ "/run/secrets/piss-api-keys.env" ];
+                  sshAgentSocket = "/run/user/1000/ssh-agent";
                 };
               }
             ];
@@ -232,7 +233,9 @@
             assert
               moduleEvaluation.config.systemd.user.services.piss.serviceConfig.EnvironmentFile == [
                 "/run/secrets/piss-api-keys.env"
-              ];
+              ]
+              && moduleEvaluation.config.systemd.user.services.piss.environment.PISS_SSH_AUTH_SOCK == "/run/user/1000/ssh-agent"
+              && moduleEvaluation.config.systemd.user.services.piss.environment.SSH_AUTH_SOCK == "/run/user/1000/ssh-agent";
             pkgs.runCommand "piss-nixos-module-check" { } "touch $out";
         }
       );

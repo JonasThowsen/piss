@@ -15,6 +15,7 @@ export interface AppConfigShape {
   readonly stateDir: string;
   readonly publicDir: string;
   readonly piCommand: string;
+  readonly sshAuthSock?: string;
   readonly piSessionRoots?: ReadonlyArray<string>;
   readonly workflowResourceDir?: string;
   readonly browserExecutablePath?: string;
@@ -37,6 +38,11 @@ function parsePort(raw: string): number {
     throw new Error("PISS_PORT must be a valid TCP port");
   }
   return port;
+}
+
+export function resolveSshAuthSock(environment: NodeJS.ProcessEnv): string | undefined {
+  return environment.PISS_SSH_AUTH_SOCK?.trim() || environment.SSH_AUTH_SOCK?.trim()
+    || (environment.XDG_RUNTIME_DIR ? join(environment.XDG_RUNTIME_DIR, "ssh-agent") : undefined);
 }
 
 function loadFromEnvironment(): AppConfigShape {
@@ -78,6 +84,7 @@ function loadFromEnvironment(): AppConfigShape {
       join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "piss"),
     publicDir: process.env.PISS_PUBLIC_DIR ?? fileURLToPath(new URL("./public", import.meta.url)),
     piCommand: process.env.PISS_PI_COMMAND ?? "pi",
+    sshAuthSock: resolveSshAuthSock(process.env),
     piSessionRoots: process.env.PISS_PI_SESSION_ROOTS
       ? decodeWorkspaceDiscoveryRoots(JSON.parse(process.env.PISS_PI_SESSION_ROOTS))
       : [join(homedir(), ".pi", "agent", "sessions")],
