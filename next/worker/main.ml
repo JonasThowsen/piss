@@ -73,11 +73,22 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               status := Domain.Idle
           | _ -> ()
         done
-      with End_of_file ->
-        status := Domain.Failed;
-        ignore
-          (Store.append_event store ~kind:"harness.disconnected"
-             (`Assoc [ ("harnessPid", `Int harness_pid) ])));
+      with
+      | End_of_file ->
+          status := Domain.Failed;
+          ignore
+            (Store.append_event store ~kind:"harness.disconnected"
+               (`Assoc [ ("harnessPid", `Int harness_pid) ]))
+      | exn ->
+          status := Domain.Failed;
+          ignore
+            (Store.append_event store ~kind:"harness.protocol_error"
+               (`Assoc
+                  [
+                    ("harnessPid", `Int harness_pid);
+                    ("error", `String (Printexc.to_string exn));
+                  ]));
+          raise exn);
   let worker_snapshot () =
     Domain.
       {
@@ -144,18 +155,35 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   in
   let handle_connection flow _address =
     let reader = Eio.Buf_read.of_flow flow ~max_size:max_frame_bytes in
-    let response =
+    let receive () =
       try
         let json = read_json reader in
         match Wire.request_of_yojson json with
-        | Ok request -> handle_request request
+        | Ok request -> Ok request
         | Error message -> Error message
       with
       | Yojson.Json_error message -> Error ("invalid JSON: " ^ message)
       | Eio.Buf_read.Buffer_limit_exceeded -> Error "worker frame is too large"
       | exn -> Error (Printexc.to_string exn)
     in
-    write_json flow (Wire.response_to_yojson response)
+    match receive () with
+    | Ok (Wire.Hello _ as hello) -> (
+        let negotiation = handle_request hello in
+        write_json flow (Wire.response_to_yojson negotiation);
+        match negotiation with
+        | Error _ -> ()
+        | Ok _ -> (
+            match receive () with
+            | Ok request ->
+                write_json flow
+                  (Wire.response_to_yojson (handle_request request))
+            | Error message ->
+                write_json flow (Wire.response_to_yojson (Error message))))
+    | Ok _ ->
+        write_json flow
+          (Wire.response_to_yojson
+             (Error "hello must be the first request on a worker connection"))
+    | Error message -> write_json flow (Wire.response_to_yojson (Error message))
   in
   let net = Eio.Stdenv.net env in
   let socket =

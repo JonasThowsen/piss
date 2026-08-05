@@ -44,6 +44,27 @@ let test_event_sequence () =
   Alcotest.(check int) "exclusive cursor" 1 (List.length replay);
   Alcotest.(check string) "right event" "second" (List.hd replay).kind
 
+let test_wire_bounds () =
+  let decode json = Wire.request_of_yojson (Yojson.Safe.from_string json) in
+  (match decode {|{"op":"events","after":0,"limit":501}|} with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "oversized event page was accepted");
+  (match decode {|{"op":"unknown"}|} with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "unknown worker operation was accepted");
+  let oversized = String.make ((64 * 1024) + 1) 'x' in
+  let prompt =
+    `Assoc
+      [
+        ("op", `String "prompt");
+        ("commandId", `String "bounded");
+        ("text", `String oversized);
+      ]
+  in
+  match Wire.request_of_yojson prompt with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "oversized prompt was accepted"
+
 let test_stable_state_decoding () =
   List.iter
     (fun state ->
@@ -78,5 +99,6 @@ let () =
         [
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
+          Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;
         ] );
     ]

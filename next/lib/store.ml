@@ -5,6 +5,9 @@ exception Store_error of string
 type t = { db : Sqlite3.db; session_id : session_id; worker_id : worker_id }
 type accepted_command = { state : command_state; duplicate : bool }
 
+let max_retained_events = 4096
+let max_retained_commands = 1024
+
 let fail_rc operation rc =
   if not (Sqlite3.Rc.is_success rc) then
     raise
@@ -70,16 +73,28 @@ let transaction store f =
       (try exec store.db "ROLLBACK" with _ -> ());
       raise exn
 
-let last_sequence store =
-  with_statement store.db "SELECT COALESCE(MAX(sequence), 0) FROM events"
-    (fun statement ->
+let scalar_int64 store ~operation sql =
+  with_statement store.db sql (fun statement ->
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW -> Sqlite3.column_int64 statement 0
       | rc ->
-          fail_rc "read last sequence" rc;
+          fail_rc operation rc;
           0L)
 
+let last_sequence store =
+  scalar_int64 store ~operation:"read last sequence"
+    "SELECT COALESCE(MAX(sequence), 0) FROM events"
+
+let row_count store table =
+  scalar_int64 store ~operation:("count " ^ table)
+    ("SELECT COUNT(*) FROM " ^ table)
+
 let append_event store ~kind payload =
+  if row_count store "events" >= Int64.of_int max_retained_events then
+    raise
+      (Store_error
+         (Printf.sprintf "event retention limit reached (%d)"
+            max_retained_events));
   let created_at = Unix.gettimeofday () in
   with_statement store.db
     "INSERT INTO events(kind, payload, created_at) VALUES (?, ?, ?)"
@@ -138,6 +153,12 @@ let accept_command store ~command_id ~request_id ~prompt =
       match find_command store command_id with
       | Some state -> { state; duplicate = true }
       | None ->
+          if row_count store "commands" >= Int64.of_int max_retained_commands
+          then
+            raise
+              (Store_error
+                 (Printf.sprintf "command retention limit reached (%d)"
+                    max_retained_commands));
           let now = Unix.gettimeofday () in
           with_statement store.db
             "INSERT INTO commands(command_id, request_id, prompt, state, \
