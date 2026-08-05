@@ -32,6 +32,38 @@ let test_command_deduplication () =
     "durable state is returned" "accepted"
     (Domain.command_state_to_string duplicate.state)
 
+let test_restart_reconciliation () =
+  let path = Filename.temp_file "piss-reconcile-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let open_store () =
+        Store.open_ ~path ~session_id:(Domain.Session_id "session")
+          ~worker_id:(Domain.Worker_id "worker")
+      in
+      let first = open_store () in
+      ignore
+        (Store.accept_command first ~command_id:"interrupted"
+           ~request_id:"interrupted" ~prompt:"perform a consequential action");
+      Store.set_command_state first ~command_id:"interrupted" Domain.Dispatched;
+      Store.close first;
+      let replacement = open_store () in
+      Fun.protect ~finally:(fun () -> Store.close replacement) @@ fun () ->
+      let reconciled = Store.reconcile_incomplete_commands replacement in
+      Alcotest.(check (list string))
+        "reconciled identity" [ "interrupted" ] reconciled;
+      match Store.find_command replacement "interrupted" with
+      | Some Domain.Ambiguous -> ()
+      | Some state ->
+          Alcotest.failf "expected ambiguous, got %s"
+            (Domain.command_state_to_string state)
+      | None -> Alcotest.fail "reconciled command disappeared")
+
 let test_event_sequence () =
   with_store @@ fun store ->
   let first = Store.append_event store ~kind:"first" (`String "one") in
@@ -65,6 +97,29 @@ let test_wire_bounds () =
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized prompt was accepted"
 
+let test_acp_error_response () =
+  let response =
+    `Assoc
+      [
+        ("jsonrpc", `String "2.0");
+        ("id", `String "session-new");
+        ( "error",
+          `Assoc
+            [
+              ("code", `Int (-32603));
+              ("message", `String "adapter could not create its state directory");
+            ] );
+      ]
+  in
+  match Acp.response_result ~expected_id:"session-new" response with
+  | Error message ->
+      Alcotest.(check string)
+        "message is retained"
+        "ACP request session-new failed: adapter could not create its state \
+         directory"
+        message
+  | Ok _ -> Alcotest.fail "ACP error response was accepted as success"
+
 let test_stable_state_decoding () =
   List.iter
     (fun state ->
@@ -94,11 +149,15 @@ let () =
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
+          Alcotest.test_case "restart reconciliation" `Quick
+            test_restart_reconciliation;
         ] );
       ( "domain",
         [
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
           Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;
+          Alcotest.test_case "ACP errors fail closed" `Quick
+            test_acp_error_response;
         ] );
     ]

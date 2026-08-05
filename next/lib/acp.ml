@@ -34,6 +34,26 @@ let envelope_of_yojson json =
       Ok (Response { id; result; error })
   | _ -> Error "invalid ACP JSON-RPC envelope"
 
+let response_result ~expected_id json =
+  match envelope_of_yojson json with
+  | Ok (Response { id; result = Some result; error = None })
+    when String.equal id expected_id ->
+      Ok result
+  | Ok (Response { id; error = Some error; _ }) when String.equal id expected_id
+    ->
+      let message =
+        match Yojson.Safe.Util.member "message" error with
+        | `String value -> value
+        | _ -> Yojson.Safe.to_string error
+      in
+      Error (Printf.sprintf "ACP request %s failed: %s" expected_id message)
+  | Ok (Response { id; _ }) ->
+      Error
+        (Printf.sprintf "expected ACP response %s but received %s" expected_id
+           id)
+  | Ok _ -> Error ("expected ACP response for " ^ expected_id)
+  | Error message -> Error message
+
 let request ~id ~method_ params =
   `Assoc
     [

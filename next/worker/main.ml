@@ -20,11 +20,15 @@ let event_kind json =
   | _ -> "acp.response"
 
 let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
-    ~harness_command =
+    ~harness_command ~harness_args =
   let store =
     Store.open_ ~path:database_path ~session_id:(Domain.Session_id session_id)
       ~worker_id:(Domain.Worker_id worker_id)
   in
+  let reconciled_commands = Store.reconcile_incomplete_commands store in
+  if reconciled_commands <> [] then
+    Format.eprintf "reconciled %d incomplete command(s) as ambiguous@."
+      (List.length reconciled_commands);
   Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
   Eio.Switch.run @@ fun sw ->
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -33,7 +37,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   let harness =
     Eio.Process.spawn ~sw process_mgr ~stdin:harness_stdin_source
       ~stdout:harness_stdout_sink ~stderr:(Eio.Stdenv.stderr env)
-      [ harness_command ]
+      (harness_command :: harness_args)
   in
   let harness_pid = Eio.Process.pid harness in
   let harness_reader =
@@ -42,13 +46,23 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   write_json harness_stdin Acp.initialize_request;
   let initialize_response = read_json harness_reader in
   ignore (Store.append_event store ~kind:"acp.initialize" initialize_response);
+  let initialize_result =
+    match Acp.response_result ~expected_id:"initialize" initialize_response with
+    | Ok result -> result
+    | Error message -> raise (Failure message)
+  in
+  (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
+  | `Int 1 -> ()
+  | _ -> raise (Failure "ACP agent did not negotiate protocol version 1"));
   write_json harness_stdin (Acp.new_session_request ~cwd:workspace);
   let session_response = read_json harness_reader in
+  let session_result =
+    match Acp.response_result ~expected_id:"session-new" session_response with
+    | Ok result -> result
+    | Error message -> raise (Failure message)
+  in
   let harness_session_id =
-    match
-      Yojson.Safe.Util.(
-        session_response |> member "result" |> member "sessionId")
-    with
+    match Yojson.Safe.Util.member "sessionId" session_result with
     | `String value -> value
     | _ -> raise (Failure "ACP agent did not return a sessionId")
   in
@@ -205,6 +219,7 @@ let () =
   let worker_id = ref "tracer-worker" in
   let workspace = ref (Sys.getcwd ()) in
   let harness_command = ref "piss-mock-agent" in
+  let harness_args = ref [] in
   Arg.parse
     [
       ("--socket", Arg.Set_string socket_path, "Worker Unix socket path");
@@ -215,6 +230,9 @@ let () =
       ( "--harness",
         Arg.Set_string harness_command,
         "Fixed ACP harness executable" );
+      ( "--harness-arg",
+        Arg.String (fun value -> harness_args := value :: !harness_args),
+        "Fixed ACP harness argument (repeatable)" );
     ]
     (fun value -> raise (Arg.Bad ("unexpected argument: " ^ value)))
     "piss-session-worker";
@@ -223,4 +241,4 @@ let () =
   Eio_main.run @@ fun env ->
   run ~env ~socket_path:!socket_path ~database_path:!database_path
     ~session_id:!session_id ~worker_id:!worker_id ~workspace:!workspace
-    ~harness_command:!harness_command
+    ~harness_command:!harness_command ~harness_args:(List.rev !harness_args)
