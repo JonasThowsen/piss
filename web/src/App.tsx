@@ -1597,6 +1597,11 @@ export function App() {
     if (view === "changes" && selectedSessionRef.current) void requestReview(selectedSessionRef.current);
   };
 
+  useEffect(() => {
+    if (activeView !== "workflow" || !selectedSession || !sessionSyncRef.current.serverConfirmed || (selectedSession.workflow && workflowHasDedicatedPane(selectedSession.workflow))) return;
+    changeView("agent", "replace");
+  }, [activeView, selectedSession?.id, selectedSession?.workflow?.phase]);
+
   const chooseGlobalPickerAction = (action: SelectSessionAction) => {
     setGlobalPickerOpen(false);
     globalPickerReturnFocusRef.current = sessionHeadingRef.current;
@@ -1879,7 +1884,10 @@ export function App() {
     setOperationError(undefined);
     try {
       const result = await Effect.runPromise(mutateEngineeringWorkflow(session.id, guardedInput));
-      if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(result.session);
+      if (selectedSessionIdRef.current === targetId) {
+        acceptAuthoritativeSession(result.session);
+        if (input.action === "start" && result.session.workflow && workflowHasDedicatedPane(result.session.workflow)) changeView("workflow");
+      }
       setWorkflowDialog(undefined);
       setWorkflowFeedback("");
       await refresh(false);
@@ -2140,6 +2148,7 @@ export function App() {
   const canWrite = selectedSession ? runtimeIsCurrent && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
   const canConfigure = selectedSession ? runtimeIsCurrent && canConfigureSession(selectedSession.status) : false;
   const workflowActive = Boolean(selectedSession?.workflow && !isTerminalWorkflowPhase(selectedSession.workflow.phase));
+  const visibleWorkflow = selectedSession?.workflow && workflowHasDedicatedPane(selectedSession.workflow) ? selectedSession.workflow : undefined;
   const canStartWorkflow = Boolean(selectedSession && runtimeIsCurrent && canAcceptPrompt(selectedSession.status) && !workflowActive);
   const sendReviewComment = (message: string): Promise<boolean> => {
     if (!selectedSession || !canWrite || busy) return Promise.resolve(false);
@@ -2294,17 +2303,18 @@ export function App() {
 
       <main className="workspace">
         {(operationError || refreshProblem) && <button className="operation-error" onClick={() => { setOperationError(undefined); setRefreshProblem(undefined); }} type="button" aria-live="assertive">{operationError ?? `Refresh failed: ${refreshProblem}`}<span aria-hidden="true"><X /></span></button>}
-        {selectedSession && !sessionIsLoading ? <Tabs.Root className={`session-view${activeView === "agent" && selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-view" : ""}`} value={activeView} onValueChange={(value) => {
+        {selectedSession && !sessionIsLoading ? <Tabs.Root className="session-view" value={activeView} onValueChange={(value) => {
           changeView(value as SessionView);
         }}>
           <Tabs.List className="capability-tabs" aria-label="Session views">
             <Tabs.Tab className={activeView === "agent" ? "active" : ""} value="agent"><Bot aria-hidden="true" /> Agent</Tabs.Tab>
+            {visibleWorkflow && <Tabs.Tab className={`workflow-tab ${activeView === "workflow" ? "active" : ""}`} value="workflow"><Workflow aria-hidden="true" /> Loop</Tabs.Tab>}
             <Tabs.Tab className={activeView === "changes" ? "active" : ""} value="changes"><FileDiff aria-hidden="true" /> Changes{reviewState?.sessionId === selectedSession.id && reviewState.snapshot && reviewState.snapshot.totalFiles > 0 && <em>{reviewState.snapshot.totalFiles}</em>}</Tabs.Tab>
             <Tabs.Tab className={`details-tab ${activeView === "details" ? "active" : ""}`} value="details"><Gauge aria-hidden="true" /> Details</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel className="timeline-wrap" value={activeView}>
             <section
-              className={`timeline ${activeView === "changes" ? "review-stream" : activeView === "details" ? "details-stream" : ""}`}
+              className={`timeline ${activeView === "changes" ? "review-stream" : activeView === "details" ? "details-stream" : activeView === "workflow" ? "workflow-stream" : ""}`}
               id="session-view-panel"
               role="tabpanel"
               ref={timelineRef}
@@ -2438,6 +2448,19 @@ export function App() {
                       </details>;
                     })())}
               {activeView === "changes" && <ReviewView state={reviewState?.sessionId === selectedSession.id ? reviewState : undefined} canComment={canWrite && !busy} onRefresh={() => void requestReview(selectedSession)} onSendComment={sendReviewComment} />}
+              {activeView === "workflow" && visibleWorkflow && <EngineeringWorkflowPanel
+                workflow={visibleWorkflow}
+                pending={workflowMutationPending?.sessionId === selectedSession.id && workflowMutationPending.phase === visibleWorkflow.phase}
+                onApprove={() => mutateCurrentWorkflow("approve")}
+                onAccept={() => mutateCurrentWorkflow("accept")}
+                onCancel={() => mutateCurrentWorkflow("cancel")}
+                onContinue={continueWorkflow}
+                onResume={openWorkflowResume}
+                onRevise={openWorkflowRevision}
+                onIntervene={openWorkflowIntervention}
+                onContinueRepairs={openWorkflowContinuation}
+                onReviewChanges={() => changeView("changes")}
+              />}
               {activeView === "details" && <div className="details-view">
                 <header className="details-heading"><div><span>SESSION</span><h2>Details</h2></div><b>{selectedSession.usage?.contextUsage?.percent !== null && selectedSession.usage?.contextUsage?.percent !== undefined ? `${selectedSession.usage.contextUsage.percent.toFixed(1)}% CONTEXT` : selectedSession.usage ? "CONTEXT RECALCULATING" : "USAGE NOT LOADED"}</b></header>
                 <section className="session-details" role="region" aria-label="Session usage and compaction" aria-busy={selectedSession.compaction.status === "running"}>
@@ -2460,7 +2483,7 @@ export function App() {
             {activeView === "agent" && <button className={`jump-bottom ${atBottom ? "at-bottom" : ""}`} onClick={() => { followingRef.current = true; setTimelineWindowEnd(undefined); setAtBottom(true); window.requestAnimationFrame(() => { if (timelineRef.current) { timelineRef.current.scrollTop = timelineRef.current.scrollHeight; timelineScrollTopRef.current = timelineRef.current.scrollTop; } }); }} aria-label="Jump to latest message" type="button"><ArrowDown aria-hidden="true" /><small>LATEST</small></button>}
           </Tabs.Panel>
 
-          {activeView !== "changes" && <section className={`control-deck${selectedSession.workflow && workflowUsesFocusedLayout(selectedSession.workflow.phase) ? " workflow-focus-mode" : selectedSession.workflow && (workflowRunsAutonomously(selectedSession.workflow.phase) || selectedSession.workflow.phase === "failed") ? " workflow-monitor-mode" : ""}`}>
+          {activeView !== "changes" && activeView !== "workflow" && <section className="control-deck">
             {outbox.length > 0 && <section className="outbox-tray" data-keyboard-scroll tabIndex={0} aria-label="Outgoing messages" aria-live="polite">
               <header><span>OUTGOING QUEUE</span><b>{outbox.length.toString().padStart(2, "0")}</b></header>
               {outbox.map((item) => <article className={`outbox-message ${item.status}`} key={item.id}>
@@ -2468,19 +2491,6 @@ export function App() {
                 {item.status === "rejected" && <button onClick={() => setOutbox((items) => items.filter((candidate) => candidate.id !== item.id))} type="button" aria-label="Dismiss rejected message"><X aria-hidden="true" /></button>}
               </article>)}
             </section>}
-            {selectedSession.workflow && selectedSession.workflow.phase !== "accepted" && <EngineeringWorkflowPanel
-              workflow={selectedSession.workflow}
-              pending={workflowMutationPending?.sessionId === selectedSession.id && workflowMutationPending.phase === selectedSession.workflow.phase}
-              onApprove={() => mutateCurrentWorkflow("approve")}
-              onAccept={() => mutateCurrentWorkflow("accept")}
-              onCancel={() => mutateCurrentWorkflow("cancel")}
-              onContinue={continueWorkflow}
-              onResume={openWorkflowResume}
-              onRevise={openWorkflowRevision}
-              onIntervene={openWorkflowIntervention}
-              onContinueRepairs={openWorkflowContinuation}
-              onReviewChanges={() => changeView("changes")}
-            />}
             {!(selectedSession.workflow && workflowOwnsComposer(selectedSession.workflow.phase)) && <>
             <div className="composer" ref={composerRef}>
               <span className="sr-only" id="composer-picker-status" aria-live="polite">
@@ -2971,10 +2981,6 @@ export function App() {
 
 const WORKFLOW_STAGES = ["DEFINE", "RESEARCH", "PLAN", "BUILD", "VERIFY", "REVIEW", "READY"] as const;
 
-function workflowUsesFocusedLayout(phase: EngineeringWorkflow["phase"]): boolean {
-  return phase === "defining" || phase === "researching" || phase === "planning" || phase === "awaitingSpecApproval" || phase === "awaitingPlanApproval" || phase === "readyToShip" || phase === "blocked";
-}
-
 function workflowRunsAutonomously(phase: EngineeringWorkflow["phase"]): boolean {
   return phase === "defining" || phase === "researching" || phase === "planning" || phase === "building" || phase === "verifying" || phase === "reviewing" || phase === "repairing";
 }
@@ -3017,6 +3023,10 @@ function workflowStageIndex(workflow: EngineeringWorkflow): number {
 
 function workflowWasInterrupted(workflow: EngineeringWorkflow): boolean {
   return workflow.phase === "cancelled" && Boolean(workflow.error?.includes("runtime stopped"));
+}
+
+function workflowHasDedicatedPane(workflow: EngineeringWorkflow): boolean {
+  return workflow.phase !== "accepted" && (workflow.phase !== "cancelled" || workflowWasInterrupted(workflow));
 }
 
 function workflowBlockerProblem(workflow: EngineeringWorkflow): string {

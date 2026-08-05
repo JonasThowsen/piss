@@ -1017,7 +1017,33 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   expect(startAttempts[1]).toEqual(startAttempts[0]);
   await expect.poll(() => api.workflowMutations[0]).toMatchObject({ action: "start", researchPolicy: "targeted_external", mutationId: expect.any(String) });
 
+  const loopTab = page.getByRole("tab", { name: "Loop" });
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
+  await expect(loopTab).toHaveAttribute("aria-selected", "true");
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const desktopLayout = await workflow.evaluate((element) => {
+    const pane = element.closest<HTMLElement>(".workflow-stream")!;
+    const bounds = element.getBoundingClientRect();
+    return {
+      paneLeft: pane.getBoundingClientRect().left,
+      paneRight: pane.getBoundingClientRect().right,
+      workflowLeft: bounds.left,
+      workflowRight: bounds.right,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(desktopLayout.workflowLeft).toBeGreaterThanOrEqual(desktopLayout.paneLeft);
+  expect(desktopLayout.workflowRight).toBeLessThanOrEqual(desktopLayout.paneRight);
+  expect(desktopLayout.documentScrollWidth).toBeLessThanOrEqual(desktopLayout.viewportWidth);
+  await expect(page.locator(".control-deck")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Agent" }).click();
+  await expect(workflow).toHaveCount(0);
+  await expect(page.getByLabel("Message Pi")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loopTab.click();
   await expect(workflow).toContainText("0/2 REPAIRS");
   await expect(workflow).toContainText("Planning");
   await expect(workflow).toContainText("TARGETED EXTERNAL RESEARCH");
@@ -1093,7 +1119,10 @@ test("mobile composer starts and approves a guided engineering workflow", async 
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   await workflow.getByRole("button", { name: "APPROVE & RUN" }).click();
   await expect(workflow).toContainText("Ready to ship");
+  await page.getByRole("tab", { name: "Agent" }).click();
   await expect(page.getByLabel("Message Pi")).toBeVisible();
+  await expect(workflow).toHaveCount(0);
+  await loopTab.click();
   await expect(workflow.getByRole("button", { name: "REVIEW CHANGES" })).toBeVisible();
   await workflow.getByRole("button", { name: "ACCEPT RESULT" }).click();
   await expect(workflow).toHaveCount(0);
@@ -1205,8 +1234,8 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   await expect(workflow.getByRole("button", { name: "CONTINUE" })).toHaveCount(0);
   const feedbackButton = workflow.getByRole("button", { name: "GIVE FEEDBACK" });
   await expect(feedbackButton).toBeEnabled();
-  const focusedDeck = page.locator(".control-deck.workflow-focus-mode");
-  const scrollLayout = await focusedDeck.evaluate((element) => ({
+  const workflowStream = page.locator(".workflow-stream");
+  const scrollLayout = await workflowStream.evaluate((element) => ({
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
     overflowY: getComputedStyle(element).overflowY,
@@ -1215,8 +1244,8 @@ test("blocked workflows collect operator guidance before resuming the phase", as
   expect(scrollLayout.scrollHeight).toBeGreaterThan(scrollLayout.clientHeight);
   expect(scrollLayout.overflowY).toBe("auto");
   expect(scrollLayout.touchAction).toContain("pan-y");
-  await focusedDeck.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  expect(await focusedDeck.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await workflowStream.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await workflowStream.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(feedbackButton).toBeVisible();
   await feedbackButton.click();
 
@@ -1258,11 +1287,12 @@ test("long ready-to-ship workflows scroll to their acceptance controls on mobile
   api.setWorkflowReadyWithLongReport();
   await page.reload();
 
+  await page.getByRole("tab", { name: "Loop" }).click();
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("Ready to ship");
-  const focusedDeck = page.locator(".control-deck.workflow-focus-mode");
+  const workflowStream = page.locator(".workflow-stream");
   const acceptButton = workflow.getByRole("button", { name: "ACCEPT RESULT" });
-  const layout = await focusedDeck.evaluate((element) => ({
+  const layout = await workflowStream.evaluate((element) => ({
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
     overflowY: getComputedStyle(element).overflowY,
@@ -1272,8 +1302,8 @@ test("long ready-to-ship workflows scroll to their acceptance controls on mobile
   expect(layout.overflowY).toBe("auto");
   expect(layout.touchAction).toContain("pan-y");
 
-  await focusedDeck.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  expect(await focusedDeck.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await workflowStream.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await workflowStream.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(acceptButton).toBeVisible();
   const footerBottom = await workflow.locator(":scope > footer").evaluate((element) => element.getBoundingClientRect().bottom);
   expect(footerBottom).toBeLessThanOrEqual(780);
@@ -1319,8 +1349,11 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   api.setStatus("working");
   await page.reload();
 
+  const loopTab = page.getByRole("tab", { name: "Loop" });
   const workflow = page.getByRole("region", { name: "Engineering workflow" });
   await expect(workflow).toContainText("Building");
+  await page.getByRole("tab", { name: "Agent" }).click();
+  await expect(workflow).toHaveCount(0);
   await expect(page.locator(".thinking-trace")).toContainText("PI THINKING");
   await expect(page.locator(".tool-row")).toContainText("read");
   await expect(page.locator(".tool-row")).toContainText("running");
@@ -1329,6 +1362,7 @@ test("autonomous workflow phases expose Pi thinking and tool activity", async ({
   await expect(page.getByLabel("Message Pi")).toHaveCount(0);
   expect(await page.locator(".timeline").evaluate((element) => element.clientHeight)).toBeGreaterThan(100);
 
+  await loopTab.click();
   await workflow.getByRole("button", { name: "GUIDE CURRENT WORKFLOW" }).click();
   const guidanceDialog = page.getByRole("dialog", { name: "Guide current workflow" });
   await expect(guidanceDialog).toContainText("stores this guidance durably");

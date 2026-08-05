@@ -34,6 +34,21 @@ test("non-agent pages retain their nested scroll position", () => {
   });
 });
 
+test("workflow panes retain their nested scroll position", () => {
+  const href = workbenchRouteHref({
+    sessionId: "session-1",
+    view: "workflow",
+    position: { _tag: "scroll", top: 275 },
+  }, "https://piss.test/");
+
+  assert.equal(href, "/?session=session-1&view=workflow&scroll=275");
+  assert.deepEqual(readWorkbenchRoute(location(`https://piss.test${href}`)), {
+    sessionId: "session-1",
+    view: "workflow",
+    position: { _tag: "scroll", top: 275 },
+  });
+});
+
 test("missing and malformed route values safely open the agent at latest", () => {
   assert.deepEqual(readWorkbenchRoute(location("https://piss.test/?view=changes&scroll=100")), {
     view: "agent",

@@ -1,4 +1,4 @@
-export const SESSION_VIEWS = ["agent", "changes", "details"] as const;
+export const SESSION_VIEWS = ["agent", "workflow", "changes", "details"] as const;
 
 export type SessionView = typeof SESSION_VIEWS[number];
 
