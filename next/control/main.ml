@@ -30,12 +30,20 @@ let error_json ?(status = `Bad_request) message =
 let worker_request net socket_path request =
   Eio.Switch.run @@ fun sw ->
   let flow = Eio.Net.connect ~sw net (`Unix socket_path) in
-  Eio.Flow.copy_string (Yojson.Safe.to_string request ^ "\n") flow;
-  let response =
-    Eio.Buf_read.of_flow flow ~max_size:max_frame_bytes
-    |> Eio.Buf_read.line |> Yojson.Safe.from_string
+  let reader = Eio.Buf_read.of_flow flow ~max_size:max_frame_bytes in
+  let exchange request =
+    Eio.Flow.copy_string (Yojson.Safe.to_string request ^ "\n") flow;
+    Eio.Buf_read.line reader |> Yojson.Safe.from_string
+    |> Wire.response_of_yojson
   in
-  Wire.response_of_yojson response
+  match
+    exchange (`Assoc [ ("op", `String "hello"); ("protocolVersion", `Int 1) ])
+  with
+  | Error message -> Error ("worker negotiation failed: " ^ message)
+  | Ok hello -> (
+      match Yojson.Safe.Util.member "protocolVersion" hello with
+      | `Int 1 -> exchange request
+      | _ -> Error "worker selected an unsupported protocol version")
 
 let parse_after uri =
   match Uri.get_query_param uri "after" with
