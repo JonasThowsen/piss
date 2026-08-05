@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { AppConfig, type AppConfigShape } from "../server/config.ts";
 import { FileMentionSearch } from "../server/files/FileMentionSearch.ts";
-import { appendBoundedEvent, interruptedWorkflowRecoveryPhase, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, reconcileTranscriptGuidance, reconcileWorkflowAfterRestart, replayEventsFromTranscriptEntry, transcriptGuidanceIds, workflowGuidanceForDispatch, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
+import { appendBoundedEvent, cloneSession, interruptedWorkflowRecoveryPhase, PiRuntimeSupervisor, PiRuntimeSupervisorLive, processArguments, projectEventData, projectEventWithDetachedOutput, reconcilePersistedWorkflow, reconcileTranscriptGuidance, reconcileWorkflowAfterRestart, replayEventsFromTranscriptEntry, transcriptGuidanceIds, workflowGuidanceForDispatch, workflowPhasePrompt } from "../server/runtimes/PiRuntimeSupervisor.ts";
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
@@ -891,6 +891,27 @@ test("loads PISS browser resources without trusting project-local resources", ()
   assert.ok(supervisorArgs.includes("/opt/piss/workflow-resources/skills/piss-engineering-supervisor"));
   assert.equal(supervisorArgs[toolIndex + 1], "read,grep,find,ls,piss_workflow_supervisor_advice");
   assert.ok(!supervisorArgs.includes("--approve"));
+});
+
+test("session snapshots share immutable event payloads instead of deep-cloning them", () => {
+  const event: OwnedSessionEvent = {
+    sequence: 1,
+    type: "message_end",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    data: { message: { role: "assistant", content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] } },
+  };
+  const source = {
+    events: [event],
+    interactiveRequests: [],
+  } as unknown as OwnedSession;
+
+  const snapshots = Array.from({ length: 100 }, () => cloneSession(source));
+
+  assert.notEqual(snapshots[0], source);
+  assert.notEqual(snapshots[0]?.events, source.events);
+  assert.notEqual(snapshots[0]?.interactiveRequests, source.interactiveRequests);
+  assert.ok(snapshots.every((snapshot) => snapshot.events[0] === event));
+  assert.ok(snapshots.every((snapshot) => snapshot.events[0]?.data === event.data));
 });
 
 test("multi-megabyte tool output is detached from live event projections", () => {

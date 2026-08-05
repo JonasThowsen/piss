@@ -273,8 +273,16 @@ function workflowBlockerFingerprint(checkpoint: EngineeringWorkflowCheckpoint): 
   return createHash("sha256").update(normalized).digest("hex").slice(0, 32);
 }
 
-function cloneSession(session: OwnedSession): OwnedSession {
-  return structuredClone(session);
+export function cloneSession(session: OwnedSession): OwnedSession {
+  // Session state is updated immutably, including the retained event and
+  // interactive-request arrays. Copy those collection boundaries without
+  // serializing and deserializing up to eight MiB of immutable event payloads
+  // for every RPC event and SSE publication.
+  return {
+    ...session,
+    events: [...session.events],
+    interactiveRequests: [...session.interactiveRequests],
+  };
 }
 
 export function isSessionUpdateSafe(
@@ -1473,8 +1481,10 @@ export const PiRuntimeSupervisorLive = Layer.effect(
     let continueWorkflowAfterSettle = (_session: MutableOwnedSession): void => undefined;
 
     const publishSession = (session: MutableOwnedSession): void => {
+      const listeners = sessionSubscribers.get(session.snapshot.id);
+      if (!listeners || listeners.size === 0) return;
       const snapshot = cloneSession(session.snapshot);
-      for (const listener of sessionSubscribers.get(snapshot.id) ?? []) {
+      for (const listener of listeners) {
         try { listener(snapshot); }
         catch (cause) { console.error(`Session subscriber failed for ${snapshot.id}`, cause); }
       }

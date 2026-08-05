@@ -24,6 +24,7 @@ import {
   type CreateWorkspaceResponse,
   type DirectorySearchResponse,
   type FileMentionSearchResponse,
+  type OwnedSession,
   type OwnedSessionDetailResponse,
   type OwnedSessionListResponse,
   type OwnedSessionStreamResponse,
@@ -92,6 +93,76 @@ function json(response: ServerResponse, status: number, body: unknown): void {
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(body));
+}
+
+interface SessionEventStreamResponse {
+  readonly writableEnded: boolean;
+  readonly destroyed: boolean;
+  write(chunk: string): boolean;
+  once(event: "drain", listener: () => void): unknown;
+  off(event: "drain", listener: () => void): unknown;
+}
+
+export interface SessionEventStreamWriter {
+  readonly publish: (session: OwnedSession) => void;
+  readonly heartbeat: () => void;
+  readonly close: () => void;
+}
+
+export function createSessionEventStreamWriter(
+  response: SessionEventStreamResponse,
+  initialCursor: number,
+): SessionEventStreamWriter {
+  let cursor = initialCursor;
+  let blocked = false;
+  let closed = false;
+  let pending: OwnedSession | undefined;
+
+  const writable = () => !closed && !response.writableEnded && !response.destroyed;
+  const waitForDrain = () => {
+    blocked = true;
+    response.once("drain", drain);
+  };
+  const write = (chunk: string, nextCursor?: number) => {
+    if (!writable()) return;
+    const accepted = response.write(chunk);
+    if (nextCursor !== undefined) cursor = nextCursor;
+    if (!accepted) waitForDrain();
+  };
+  const publish = (session: OwnedSession): void => {
+    if (!writable()) return;
+    if (blocked) {
+      // Keep one immutable projection boundary. A newer snapshot supersedes an
+      // older pending one; its cursor/reset projection recovers any omitted gap.
+      pending = session;
+      return;
+    }
+    const earliestSequence = session.events.at(0)?.sequence;
+    const latestSequence = session.events.at(-1)?.sequence ?? 0;
+    const reset = cursor > latestSequence || cursor > 0 && earliestSequence !== undefined && cursor < earliestSequence - 1;
+    const events = reset ? session.events : session.events.filter((event) => event.sequence > cursor);
+    const body = { session: { ...session, events }, reset } satisfies OwnedSessionStreamResponse;
+    write(`id: ${latestSequence}\nevent: session\ndata: ${JSON.stringify(body)}\n\n`, latestSequence);
+  };
+  const drain = (): void => {
+    if (!writable()) return;
+    blocked = false;
+    const latest = pending;
+    pending = undefined;
+    if (latest) publish(latest);
+  };
+  const heartbeat = (): void => {
+    if (!writable() || blocked) return;
+    write("event: heartbeat\ndata: {}\n\n");
+  };
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    pending = undefined;
+    response.off("drain", drain);
+  };
+
+  return { publish, heartbeat, close };
 }
 
 function requestErrorStatus(error: unknown): number {
@@ -596,7 +667,6 @@ function makeRequestHandler() {
           if (!Number.isSafeInteger(parsedAfterSequence) || parsedAfterSequence < 0) {
             return yield* Effect.fail(new HttpRequestError({ status: 400, message: "afterSequence must be a non-negative integer" }));
           }
-          let cursor = parsedAfterSequence;
           response.writeHead(200, {
             ...securityHeaders(),
             "Cache-Control": "no-store",
@@ -605,19 +675,14 @@ function makeRequestHandler() {
             "X-Accel-Buffering": "no",
           });
           response.flushHeaders();
-          const unsubscribe = yield* supervisor.subscribe(sessionId, (session) => {
-            const earliestSequence = session.events.at(0)?.sequence;
-            const latestSequence = session.events.at(-1)?.sequence ?? 0;
-            const reset = cursor > latestSequence || cursor > 0 && earliestSequence !== undefined && cursor < earliestSequence - 1;
-            const events = reset ? session.events : session.events.filter((event) => event.sequence > cursor);
-            cursor = latestSequence;
-            response.write(`id: ${cursor}\nevent: session\ndata: ${JSON.stringify({ session: { ...session, events }, reset } satisfies OwnedSessionStreamResponse)}\n\n`);
-          });
-          const heartbeat = setInterval(() => response.write("event: heartbeat\ndata: {}\n\n"), 15_000);
+          const stream = createSessionEventStreamWriter(response, parsedAfterSequence);
+          const unsubscribe = yield* supervisor.subscribe(sessionId, stream.publish);
+          const heartbeat = setInterval(stream.heartbeat, 15_000);
           heartbeat.unref();
           yield* Effect.never.pipe(Effect.ensuring(Effect.sync(() => {
             clearInterval(heartbeat);
             unsubscribe();
+            stream.close();
             if (!response.writableEnded) response.end();
           })));
           return;
