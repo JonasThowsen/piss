@@ -29,11 +29,92 @@
           '';
           common = {
             version = "0.1.0";
-            npmDepsHash = "sha256-p1wo4I4a/3uRICEpNN2Ud6TlWKWPb+KJ55UHXGf/2Ew=";
+            npmDepsHash = "sha256-AMohshQsdsjF4hK3/bWly258P2eOGLXuJI/jytGaqTw=";
             npmDepsFetcherVersion = 2;
           };
         in
         rec {
+          piss-next-native = pkgs.ocamlPackages.buildDunePackage {
+            pname = "piss-next";
+            version = "0.1.0-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./LICENSE
+              ./next
+            ];
+            propagatedBuildInputs = with pkgs.ocamlPackages; [
+              eio_main
+              cohttp-eio
+              yojson
+              ocaml_sqlite3
+              logs
+              fmt
+            ];
+            checkInputs = [ pkgs.ocamlPackages.alcotest ];
+            doCheck = true;
+            meta = {
+              description = "OCaml PISS control plane, session worker, and ACP tracer";
+              homepage = "https://github.com/JonasThowsen/piss";
+              license = nixpkgs.lib.licenses.mit;
+              platforms = systems;
+            };
+          };
+
+          piss-next-web = pkgs.buildNpmPackage {
+            pname = "piss-next-web";
+            version = "0.1.0-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./package.json
+              ./package-lock.json
+              ./web-next
+            ];
+            inherit (common) npmDepsHash npmDepsFetcherVersion;
+            nativeBuildInputs = [
+              pkgs.dune_3
+              pkgs.esbuild
+              pkgs.ocamlPackages.ocaml
+              pkgs.ocamlPackages.melange
+              pkgs.ocamlPackages.reason
+            ];
+            buildInputs = nixpkgs.lib.closePropagation (
+              with pkgs.ocamlPackages;
+              [
+                melange
+                reason
+                reason-react
+                reason-react-ppx
+              ]
+            );
+            OCAMLPATH = nixpkgs.lib.makeSearchPath "lib/ocaml/${pkgs.ocamlPackages.ocaml.version}/site-lib" (
+              nixpkgs.lib.closePropagation [
+                pkgs.ocamlPackages.melange
+                pkgs.ocamlPackages.reason
+                pkgs.ocamlPackages.reason-react
+                pkgs.ocamlPackages.reason-react-ppx
+              ]
+            );
+            npmBuildScript = "build:next:web";
+            doCheck = false;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/share/piss-next/public
+              cp -r web-next/public/. $out/share/piss-next/public/
+              cp _build/default/web-next/app.js $out/share/piss-next/public/app.js
+              runHook postInstall
+            '';
+            meta = {
+              description = "OCaml/Melange browser shell for the PISS rewrite";
+              homepage = "https://github.com/JonasThowsen/piss";
+              license = nixpkgs.lib.licenses.mit;
+              platforms = systems;
+            };
+          };
+
           piss-server = pkgs.buildNpmPackage (
             common
             // {
@@ -229,13 +310,19 @@
           };
         in
         {
+          piss-next-native = self.packages.${system}.piss-next-native;
+          piss-next-web = self.packages.${system}.piss-next-web;
           nixos-module =
             assert
               moduleEvaluation.config.systemd.user.services.piss.serviceConfig.EnvironmentFile == [
                 "/run/secrets/piss-api-keys.env"
               ]
-              && moduleEvaluation.config.systemd.user.services.piss.environment.PISS_SSH_AUTH_SOCK == "/run/user/1000/ssh-agent"
-              && moduleEvaluation.config.systemd.user.services.piss.environment.SSH_AUTH_SOCK == "/run/user/1000/ssh-agent";
+              &&
+                moduleEvaluation.config.systemd.user.services.piss.environment.PISS_SSH_AUTH_SOCK
+                == "/run/user/1000/ssh-agent"
+              &&
+                moduleEvaluation.config.systemd.user.services.piss.environment.SSH_AUTH_SOCK
+                == "/run/user/1000/ssh-agent";
             pkgs.runCommand "piss-nixos-module-check" { } "touch $out";
         }
       );

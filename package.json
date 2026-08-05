@@ -26,6 +26,7 @@
     "build": "npm run clean && npm run build:server && npm run build:web",
     "build:server": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/server.js",
     "build:web": "vite build",
+    "build:next:web": "dune build @web-bundle",
     "audit": "npm audit --omit=dev --audit-level=high",
     "check": "npm run typecheck && npm run test",
     "typecheck": "tsc --noEmit",
