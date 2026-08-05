@@ -1,0 +1,82 @@
+open Piss_core
+
+let with_store f =
+  let path = Filename.temp_file "piss-worker-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let store =
+        Store.open_ ~path ~session_id:(Domain.Session_id "session")
+          ~worker_id:(Domain.Worker_id "worker")
+      in
+      Fun.protect ~finally:(fun () -> Store.close store) (fun () -> f store))
+
+let test_command_deduplication () =
+  with_store @@ fun store ->
+  let first =
+    Store.accept_command store ~command_id:"command-1" ~request_id:"command-1"
+      ~prompt:"do the thing"
+  in
+  let duplicate =
+    Store.accept_command store ~command_id:"command-1" ~request_id:"command-1"
+      ~prompt:"this must never replace the accepted prompt"
+  in
+  Alcotest.(check bool) "first delivery is new" false first.duplicate;
+  Alcotest.(check bool) "second delivery is duplicate" true duplicate.duplicate;
+  Alcotest.(check string)
+    "durable state is returned" "accepted"
+    (Domain.command_state_to_string duplicate.state)
+
+let test_event_sequence () =
+  with_store @@ fun store ->
+  let first = Store.append_event store ~kind:"first" (`String "one") in
+  let second = Store.append_event store ~kind:"second" (`String "two") in
+  Alcotest.(check int64)
+    "monotonic"
+    Int64.(add first.sequence 1L)
+    second.sequence;
+  let replay = Store.list_events store ~after:first.sequence ~limit:10 in
+  Alcotest.(check int) "exclusive cursor" 1 (List.length replay);
+  Alcotest.(check string) "right event" "second" (List.hd replay).kind
+
+let test_stable_state_decoding () =
+  List.iter
+    (fun state ->
+      let encoded = Domain.command_state_to_string state in
+      match Domain.command_state_of_string encoded with
+      | Ok decoded ->
+          Alcotest.(check string)
+            encoded encoded
+            (Domain.command_state_to_string decoded)
+      | Error message -> Alcotest.fail message)
+    Domain.
+      [
+        Received;
+        Accepted;
+        Dispatched;
+        Acknowledged;
+        Completed;
+        Ambiguous;
+        Rejected;
+      ]
+
+let () =
+  Alcotest.run "piss-next"
+    [
+      ( "durability",
+        [
+          Alcotest.test_case "command deduplication" `Quick
+            test_command_deduplication;
+          Alcotest.test_case "event sequence" `Quick test_event_sequence;
+        ] );
+      ( "domain",
+        [
+          Alcotest.test_case "command states round trip" `Quick
+            test_stable_state_decoding;
+        ] );
+    ]

@@ -1,0 +1,23 @@
+(test
+ (name core_test)
+ (libraries piss-next.core alcotest unix))
+
+(rule
+ (alias replaceability-test)
+ (deps
+  replaceability.sh
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../../web-next/app.js
+  (source_tree ../../web-next/public))
+ (action
+  (run
+   bash
+   %{dep:replaceability.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web-next/public
+   %{dep:../../web-next/app.js}
+   %{workspace_root})))
