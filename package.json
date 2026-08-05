@@ -42,6 +42,8 @@
     "@tanstack/react-hotkeys": "0.10.0",
     "effect": "4.0.0-beta.101",
     "lucide-react": "1.27.0",
+    "melange": "^7.0.1",
+    "melange.js": "^7.0.1",
     "playwright-core": "1.62.0",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",

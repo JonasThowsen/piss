@@ -1,0 +1,27 @@
+opam-version: "2.0"
+synopsis: "A durable, harness-agnostic control plane for coding agents"
+description: "The OCaml rewrite of the PISS local-first agent control plane"
+maintainer: ["Jonas Ådland Thowsen"]
+authors: ["Jonas Ådland Thowsen"]
+license: "MIT"
+homepage: "https://github.com/JonasThowsen/piss"
+bug-reports: "https://github.com/JonasThowsen/piss/issues"
+depends: [
+  "ocaml" {>= "5.4"}
+  "dune" {>= "3.20"}
+  "eio_main"
+  "cohttp-eio"
+  "yojson"
+  "sqlite3"
+  "logs"
+  "fmt"
+  "alcotest" {with-test}
+  "melange"
+  "reason"
+  "reason-react"
+  "reason-react-ppx"
+]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+]

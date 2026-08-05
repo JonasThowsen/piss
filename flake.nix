@@ -260,6 +260,22 @@
               tailscale
               jq
               nixfmt
+              dune_3
+              esbuild
+              ocamlPackages.ocaml
+              ocamlPackages.findlib
+              ocamlPackages.ocamlformat
+              ocamlPackages.eio_main
+              ocamlPackages.cohttp-eio
+              ocamlPackages.yojson
+              ocamlPackages.ocaml_sqlite3
+              ocamlPackages.logs
+              ocamlPackages.fmt
+              ocamlPackages.alcotest
+              ocamlPackages.melange
+              ocamlPackages.reason
+              ocamlPackages.reason-react
+              ocamlPackages.reason-react-ppx
             ];
             shellHook = ''
               export PATH="$PWD/node_modules/.bin:$PATH"
@@ -267,8 +283,8 @@
               export PISS_BROWSER_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
               export PISS_BROWSER_FFPROBE_PATH="${pkgs.ffmpeg}/bin/ffprobe"
               export PLAYWRIGHT_BROWSERS_PATH="${playwrightFfmpeg}"
-              echo "PISS development shell — Node $(node --version)"
-              echo "Run npm ci once, then npm run dev"
+              echo "PISS development shell — Node $(node --version), OCaml $(ocamlc -version)"
+              echo "Run npm ci once for the legacy app; use dune build @all for the rewrite"
             '';
           };
         }

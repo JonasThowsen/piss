@@ -1,0 +1,21 @@
+(melange.emit
+ (target output)
+ (alias web-next)
+ (libraries reason-react)
+ (modules app)
+ (preprocess
+  (pps melange.ppx reason-react-ppx))
+ (module_systems es6))
+
+(rule
+ (alias web-bundle)
+ (target app.js)
+ (deps output/web-next/App.js)
+ (action
+  (run
+   esbuild
+   %{dep:output/web-next/App.js}
+   --bundle
+   --format=esm
+   --minify
+   --outfile=%{target})))

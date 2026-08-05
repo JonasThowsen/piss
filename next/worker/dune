@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name piss-session-worker)
+ (libraries piss-next.core eio_main eio.unix yojson unix))
