@@ -181,6 +181,9 @@ test("targeted research records unsupported capability while required external c
   };
   const targeted = workflow("researching", { researchPolicy: "targeted_external", researchQuestions: questions });
   assert.equal(applyWorkflowCheckpoint(targeted, checkpoint("research", "ready", "# Unsupported", { researchBrief: unsupportedBrief })).phase, "planning");
+  const incorrectlyBlockedTargeted = applyWorkflowCheckpoint(targeted, checkpoint("research", "blocked", "Live readiness is unavailable in Research", { researchBrief: unsupportedBrief }));
+  assert.equal(incorrectlyBlockedTargeted.phase, "planning");
+  assert.equal(incorrectlyBlockedTargeted.error, null);
 
   const internalReceiptBrief = {
     ...unsupportedBrief,
@@ -194,6 +197,8 @@ test("targeted research records unsupported capability while required external c
   const blocked = applyWorkflowCheckpoint(required, checkpoint("research", "ready", "# Unsupported", { researchBrief: { ...unsupportedBrief, policy: "required_external" } }));
   assert.equal(blocked.phase, "blocked");
   assert.match(blocked.error ?? "", /lacks external source coverage/i);
+  const explicitlyBlocked = applyWorkflowCheckpoint(required, checkpoint("research", "blocked", "Required external coverage is unavailable", { researchBrief: { ...unsupportedBrief, policy: "required_external" } }));
+  assert.equal(explicitlyBlocked.phase, "blocked");
 });
 
 test("planning stamps the control-plane allocated revision without regression", () => {

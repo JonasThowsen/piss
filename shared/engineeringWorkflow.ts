@@ -496,7 +496,12 @@ export function applyWorkflowCheckpoint(
     updatedAt,
   };
 
-  if (checkpoint.outcome === "blocked") {
+  const blockedResearchCanProceed = checkpoint.outcome === "blocked"
+    && checkpoint.stage === "research"
+    && workflow.researchPolicy !== "required_external"
+    && workflowResearchValidationError(workflow.researchPolicy, workflow.researchQuestions, checkpoint.researchBrief) === null;
+
+  if (checkpoint.outcome === "blocked" && !blockedResearchCanProceed) {
     return {
       ...workflow,
       ...common,
@@ -541,7 +546,7 @@ export function applyWorkflowCheckpoint(
   }
 
   if (checkpoint.stage === "research") {
-    const researchError = checkpoint.outcome === "ready"
+    const researchError = checkpoint.outcome === "ready" || blockedResearchCanProceed
       ? workflowResearchValidationError(workflow.researchPolicy, workflow.researchQuestions, checkpoint.researchBrief)
       : checkpoint.summary;
     return {
