@@ -459,6 +459,17 @@ test("blocked phase guidance is included when the workflow resumes", () => {
     maxRepairAttempts: 5,
     specification: "# Approved specification",
     plan: "# Approved delivery plan",
+    dossier: {
+      revision: 3,
+      criteria: [{ id: "AC-LEDGER", title: "Resume with the exact operation ledger" }],
+      slices: [{ id: "SL-LEDGER", title: "Ledger recovery", criterionIds: ["AC-LEDGER"], dependencies: [] }],
+      verificationRequirements: ["Verify the exact receipt identity"],
+      operations: [{ id: "OP-LEDGER", kind: "git_push", target: "origin main", constraints: ["No force"], receiptRequired: true, idempotencyKey: "workflow-ledger-push-v3", description: "Push the verified branch", recovery: "Read local and remote refs before retry", evidence: "Local and remote refs are equal" }],
+      recoveryRequirements: ["Never replay a completed receipt"],
+      exclusions: ["Force push"],
+      readiness: [{ id: "RD-LEDGER", label: "Ledger available", status: "passed", detail: "Persisted by the control plane" }],
+      unresolved: [],
+    },
     checkpoint: null,
     blockedFromPhase: null,
     createdAt: "2026-08-02T20:00:00.000Z",
@@ -472,6 +483,9 @@ test("blocked phase guidance is included when the workflow resumes", () => {
   assert.match(prompt, /CHG-42/);
   assert.match(prompt, /standing execution authority/i);
   assert.match(prompt, /Do not stop to request confirmation again/i);
+  assert.match(prompt, /Approved structured autonomy dossier/);
+  assert.match(prompt, /OP-LEDGER/);
+  assert.match(prompt, /workflow-ledger-push-v3/);
 });
 
 test("repair prompts expose the control-plane finding instead of a passing Review summary", () => {
