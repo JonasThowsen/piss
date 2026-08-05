@@ -10,10 +10,11 @@ external fetchWithInit: (string, requestInit) => Js.Promise.t(response) =
 
 [@mel.send] external responseText: response => Js.Promise.t(string) = "text";
 
-[@mel.obj]
-external requestInit:
-  (~method_: string, ~headers: Js.Dict.t(string), ~body: string, unit) =>
-  requestInit;
+[@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
+
+let makePostInit: (Js.Dict.t(string), string) => requestInit = [%raw
+  "(headers, body) => ({ method: 'POST', headers, body })"
+];
 
 let thenPromise = (promise, callback) => Js.Promise.then_(callback, promise);
 let catchPromise = (promise, callback) =>
@@ -24,7 +25,7 @@ let getText = url => fetch(url)->thenPromise(responseText);
 let postJson = (url, body) => {
   let headers = Js.Dict.empty();
   Js.Dict.set(headers, "Content-Type", "application/json");
-  fetchWithInit(url, requestInit(~method_="POST", ~headers, ~body, ()))
+  fetchWithInit(url, makePostInit(headers, body))
   ->thenPromise(responseText);
 };
 
@@ -35,7 +36,7 @@ module App = {
   [@react.component]
   let make = () => {
     let (session, setSession) =
-      React.useState(() => "Connecting to the session worker…");
+      React.useState(() => "Connecting to the session worker...");
     let (events, setEvents) = React.useState(() => "[]");
     let (control, setControl) =
       React.useState(() => "Control plane is starting");
@@ -104,7 +105,9 @@ module App = {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark"> {React.string("π")} </span>
+          <span className="brand-mark">
+            {React.string(fromCodePoint(0x03c0))}
+          </span>
           <div>
             <p className="eyebrow">
               {React.string("CONTROL PLANE / OCAML TRACER")}
@@ -114,7 +117,9 @@ module App = {
         </div>
         <span className="live-indicator">
           <i />
-          {React.string("LOCAL · RECONNECTABLE")}
+          {React.string(
+             "LOCAL " ++ fromCodePoint(0x00b7) ++ " RECONNECTABLE",
+           )}
         </span>
       </header>
       <section className="hero-grid">
@@ -141,7 +146,15 @@ module App = {
             <span>
               {React.string(busy ? "PROOF RUNNING" : "START STABILITY PROOF")}
             </span>
-            <b> {React.string(busy ? "•••" : "→")} </b>
+            <b>
+              {React.string(
+                 busy
+                   ? fromCodePoint(0x2022)
+                     ++ fromCodePoint(0x2022)
+                     ++ fromCodePoint(0x2022)
+                   : fromCodePoint(0x2192),
+               )}
+            </b>
           </button>
         </article>
         <aside className="principles-card">
@@ -186,7 +199,11 @@ module App = {
         <article className="telemetry-card event-log">
           <div className="telemetry-title">
             <span> {React.string("EVENT SPOOL")} </span>
-            <small> {React.string("SQLITE WAL · 1S POLL")} </small>
+            <small>
+              {React.string(
+                 "SQLITE WAL " ++ fromCodePoint(0x00b7) ++ " 1S POLL",
+               )}
+            </small>
           </div>
           <pre> {React.string(events)} </pre>
         </article>
