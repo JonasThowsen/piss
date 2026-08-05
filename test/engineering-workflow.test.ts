@@ -182,6 +182,14 @@ test("targeted research records unsupported capability while required external c
   const targeted = workflow("researching", { researchPolicy: "targeted_external", researchQuestions: questions });
   assert.equal(applyWorkflowCheckpoint(targeted, checkpoint("research", "ready", "# Unsupported", { researchBrief: unsupportedBrief })).phase, "planning");
 
+  const internalReceiptBrief = {
+    ...unsupportedBrief,
+    questions: [{ id: "RQ1", prompt: questions[0]!.prompt, status: "answered" as const, summary: "A bounded operator observation supplied the missing live fact", sourceIds: ["G07"] }],
+    sources: [{ id: "G07", kind: "documentation" as const, title: "Bounded operator observation", url: "piss://workflow/90295f45-707e-4ead-8b47-4446fa6fb83a/guidance/rq-07-2026-08-05T19:07:00+02:00", accessedAt: startedAt }],
+    findings: [{ id: "F-G07", questionIds: ["RQ1"], sourceIds: ["G07"], confidence: "verified" as const, decision: "context" as const, summary: "The durable workflow receipt records the bounded observation" }],
+  };
+  assert.equal(applyWorkflowCheckpoint(targeted, checkpoint("research", "ready", "# Internal receipt", { researchBrief: internalReceiptBrief })).phase, "planning");
+
   const required = workflow("researching", { researchPolicy: "required_external", researchQuestions: questions });
   const blocked = applyWorkflowCheckpoint(required, checkpoint("research", "ready", "# Unsupported", { researchBrief: { ...unsupportedBrief, policy: "required_external" } }));
   assert.equal(blocked.phase, "blocked");

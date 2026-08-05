@@ -51,6 +51,7 @@ export function workflowResearchQuestionsValidationError(questions: ReadonlyArra
 
 function validResearchSourceUrl(source: EngineeringWorkflowResearchBrief["sources"][number]): boolean {
   if (source.kind === "workspace") return /^workspace:\/\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\s?#]+$/u.test(source.url);
+  if (source.kind === "documentation" && /^piss:\/\/workflow\/[0-9a-f-]{36}\/guidance\/[A-Za-z0-9._:+-]+$/u.test(source.url)) return true;
   try {
     const parsed = new URL(source.url);
     return parsed.protocol === "https:" && !parsed.username && !parsed.password;
