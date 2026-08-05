@@ -680,7 +680,7 @@ button { color: inherit; }
 .workflow-artifact table { display: block; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; touch-action: pan-x pan-y; }
 .workflow-artifact > :first-child { margin-top: 0; }
 .workflow-artifact > :last-child { margin-bottom: 0; }
-.engineering-workflow > footer { min-height: 39px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 5px 8px; border-top: 1px solid rgba(49, 92, 70, .12); background: rgba(255, 255, 255, .56); }
+.engineering-workflow > footer { min-height: 39px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 5px 8px; border-top: 1px solid rgba(49, 92, 70, .12); background: var(--panel); }
 .engineering-workflow > footer > span { display: flex; align-items: center; gap: 7px; margin-right: auto; color: var(--muted); font-size: 7px; font-weight: 700; letter-spacing: .04em; }
 .workflow-activity svg, .workflow-accepted svg { width: 12px; height: 12px; color: var(--accent); }
 .workflow-accepted { color: var(--accent) !important; }

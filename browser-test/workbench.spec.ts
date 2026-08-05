@@ -1305,8 +1305,12 @@ test("long ready-to-ship workflows scroll to their acceptance controls on mobile
   await workflowStream.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   expect(await workflowStream.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(acceptButton).toBeVisible();
-  const footerBottom = await workflow.locator(":scope > footer").evaluate((element) => element.getBoundingClientRect().bottom);
-  expect(footerBottom).toBeLessThanOrEqual(780);
+  const footerSurface = await workflow.locator(":scope > footer").evaluate((element) => ({
+    backgroundColor: getComputedStyle(element).backgroundColor,
+    bottom: element.getBoundingClientRect().bottom,
+  }));
+  expect(footerSurface.backgroundColor).toBe("rgb(255, 255, 255)");
+  expect(footerSurface.bottom).toBeLessThanOrEqual(780);
 });
 
 test("autonomous workflow phases expose Pi thinking and tool activity", async ({ page }) => {
