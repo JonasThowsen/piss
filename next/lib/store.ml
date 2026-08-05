@@ -179,15 +179,18 @@ let accept_command store ~command_id ~request_id ~prompt =
                   ]));
           { state = Accepted; duplicate = false })
 
+let update_command_state store ~command_id state =
+  with_statement store.db
+    "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = ?"
+    (fun statement ->
+      bind_text statement 1 (command_state_to_string state);
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 command_id;
+      expect_done "update command" statement)
+
 let set_command_state store ~command_id state =
   transaction store (fun () ->
-      with_statement store.db
-        "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = ?"
-        (fun statement ->
-          bind_text statement 1 (command_state_to_string state);
-          bind_float statement 2 (Unix.gettimeofday ());
-          bind_text statement 3 command_id;
-          expect_done "update command" statement);
+      update_command_state store ~command_id state;
       ignore
         (append_event store ~kind:"command.state"
            (`Assoc
@@ -195,3 +198,34 @@ let set_command_state store ~command_id state =
                 ("commandId", `String command_id);
                 ("state", `String (command_state_to_string state));
               ])))
+
+let incomplete_command_ids store =
+  with_statement store.db
+    "SELECT command_id FROM commands WHERE state IN ('accepted', 'dispatched', \
+     'acknowledged') ORDER BY created_at ASC" (fun statement ->
+      let rec collect ids =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW -> collect (Sqlite3.column_text statement 0 :: ids)
+        | Sqlite3.Rc.DONE -> List.rev ids
+        | rc ->
+            fail_rc "list incomplete commands" rc;
+            List.rev ids
+      in
+      collect [])
+
+let reconcile_incomplete_commands store =
+  transaction store (fun () ->
+      let command_ids = incomplete_command_ids store in
+      List.iter
+        (fun command_id ->
+          update_command_state store ~command_id Ambiguous;
+          ignore
+            (append_event store ~kind:"command.reconciled"
+               (`Assoc
+                  [
+                    ("commandId", `String command_id);
+                    ("state", `String "ambiguous");
+                    ("reason", `String "worker restarted before completion");
+                  ])))
+        command_ids;
+      command_ids)
