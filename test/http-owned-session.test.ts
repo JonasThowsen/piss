@@ -157,6 +157,20 @@ async function waitForExit(child: ChildProcess): Promise<void> {
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 }
 
+async function waitForExitWithin(child: ChildProcess, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      waitForExit(child),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Server did not exit within ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 test("serves the authenticated owned-session tracer through HTTP", async () => {
   const directory = await mkdtemp(join(tmpdir(), "piss-http-"));
   const publicDir = join(directory, "public");
@@ -984,8 +998,22 @@ test("serves the authenticated owned-session tracer through HTTP", async () => {
     const imported = await importResponse.json() as { session: { id: string; runtimeId: string; status: string; piSessionId: string } };
     assert.equal(imported.session.status, "stopped");
     assert.equal(imported.session.piSessionId, "http-imported-pi-session");
-  } finally {
+
+    const shutdownStream = await fetch(`${base}/api/sessions/${empty.session.id}/events`, { headers: identityHeaders });
+    assert.equal(shutdownStream.status, 200);
+    assert.match(shutdownStream.headers.get("content-type") ?? "", /^text\/event-stream/u);
+    assert.ok(shutdownStream.body, "shutdown tracer keeps an SSE connection open");
+
     child.kill("SIGTERM");
+    await waitForExitWithin(child, 5_000);
+    const shutdownState = JSON.parse(await readFile(join(directory, "state", "owned-sessions.json"), "utf8")) as {
+      sessions: Array<{ id: string; status: string; resumeAfterRestart?: boolean }>;
+    };
+    const interrupted = shutdownState.sessions.find((session) => session.id === empty.session.id);
+    assert.equal(interrupted?.status, "stopped");
+    assert.equal(interrupted?.resumeAfterRestart, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await waitForExit(child);
     await rm(directory, { recursive: true, force: true });
   }

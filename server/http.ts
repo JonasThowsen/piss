@@ -934,6 +934,10 @@ function close(server: Server): Effect.Effect<void> {
       return;
     }
     server.close(() => resume(Effect.void));
+    // Session event streams are intentionally long-lived. Drain them after
+    // stopping acceptance so they cannot block supervisor shutdown and the
+    // durable restart-intent checkpoint behind it.
+    server.closeAllConnections();
   });
 }
 
