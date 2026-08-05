@@ -320,6 +320,8 @@ function summarizeSession(session: OwnedSession): OwnedSessionSummary {
     createdAt: session.createdAt,
     lastActivityAt: session.lastActivityAt,
     eventCount: session.events.length,
+    interactiveRequest: session.interactiveRequests[0] ?? null,
+    interactiveRequestCount: session.interactiveRequests.length,
     error: session.error,
   };
 }
@@ -2047,6 +2049,18 @@ export const PiRuntimeSupervisorLive = Layer.effect(
       }
       if (request && request.method === "confirm" && workflow && correlatedAuthority) {
         session.pendingWorkflowAuthority.delete(correlatedAuthority.toolCallId);
+        session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, {
+          expectedRequestTitle: correlatedAuthority.expectedRequestTitle,
+          displayTitle: correlatedAuthority.displayTitle,
+          confirmed: false,
+          durable: false,
+          waitingRequestIds: [request.id],
+        });
+        while (session.resolvedWorkflowAuthority.size > 200) {
+          const oldest = session.resolvedWorkflowAuthority.keys().next().value;
+          if (typeof oldest !== "string") break;
+          session.resolvedWorkflowAuthority.delete(oldest);
+        }
         const decidedAt = now();
         const decision = {
           eventId: `authority:${correlatedAuthority.toolCallId}`,
@@ -2070,6 +2084,27 @@ export const PiRuntimeSupervisorLive = Layer.effect(
           lastActivityAt: decidedAt,
         };
         appendEvent(session, "workflow_authority_decision", { workflowId: workflow.id, ...decision }, true);
+        void Effect.runPromise(persist()).then(async () => {
+          const resolved = session.resolvedWorkflowAuthority.get(correlatedAuthority.toolCallId);
+          if (!resolved) return;
+          session.resolvedWorkflowAuthority.set(correlatedAuthority.toolCallId, { ...resolved, durable: true, waitingRequestIds: [] });
+          for (const requestId of new Set(resolved.waitingRequestIds)) {
+            await writeInteractiveResponse(session, { id: requestId, confirmed: false });
+          }
+        }).catch((cause) => crash(session, "Could not durably reject workflow authority outside the approved plan", cause));
+        return;
+      }
+      if (request && workflow && isAutonomousWorkflowPhase(workflow.phase)) {
+        appendEvent(session, "workflow_interactive_request_rejected", {
+          workflowId: workflow.id,
+          requestId: request.id,
+          method: request.method,
+          reason: "Autonomous workflow phases accept operator input only through durable workflow guidance or scope revision",
+        }, true);
+        void Effect.runPromise(persist()).then(
+          () => writeInteractiveResponse(session, { id: request.id, cancelled: true }),
+        ).catch((cause) => crash(session, "Could not durably reject an unexpected interactive workflow request", cause));
+        return;
       }
       const duplicate = request && session.snapshot.interactiveRequests.some((candidate) => candidate.id === request.id);
       if (!request || duplicate || session.snapshot.interactiveRequests.length >= 8) {

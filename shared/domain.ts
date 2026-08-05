@@ -619,6 +619,12 @@ export const OwnedSessionSummary = Schema.Struct({
   createdAt: Schema.String,
   lastActivityAt: Schema.String,
   eventCount: NonNegativeInt,
+  interactiveRequest: Schema.NullOr(InteractiveRequest).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  interactiveRequestCount: NonNegativeInt.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+  ),
   error: Schema.NullOr(Schema.String),
 });
 export type OwnedSessionSummary = typeof OwnedSessionSummary.Type;

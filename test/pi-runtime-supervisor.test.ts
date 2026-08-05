@@ -220,6 +220,7 @@ process.stdin.on("data", (chunk) => {
             const authorityArgs = { workflowId, phaseRunId, planRevision, runtimeId, operationId: "approved-edit", kind: "workspace_write", target: "shared/", constraints: [], title: "Confirm approved workspace edit", message: "Continue with the operation already listed in the approved plan?" };
             const interleavedArgs = { ...authorityArgs, operationId: "unrelated-edit", target: "outside/", title: "Unrelated authority request" };
             console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "workflow-authority-interleaved", toolName: "piss_workflow_authority_request", args: interleavedArgs }));
+            console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-raw-input", method: "input", title: "Raw workflow prompt", message: "This must not leak into the operator UI." }));
             console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "workflow-authority-request", toolName: "piss_workflow_authority_request", args: authorityArgs }));
             console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-authority-confirm", method: "confirm", title: "[PISS authority:workflow-authority-request] " + authorityArgs.title, message: authorityArgs.message }));
             console.log(JSON.stringify({ type: "extension_ui_request", id: "workflow-authority-confirm", method: "confirm", title: "[PISS authority:workflow-authority-request] " + authorityArgs.title, message: authorityArgs.message }));
@@ -335,7 +336,9 @@ process.stdin.on("data", (chunk) => {
       }
     }
     if (command.type === "extension_ui_response") {
-      if (command.id === "workflow-outside-authority-confirm" && command.confirmed !== true && heldAuthorityArgs) {
+      if (command.id === "workflow-raw-input" && command.cancelled === true) {
+        continue;
+      } else if (command.id === "workflow-outside-authority-confirm" && command.confirmed !== true && heldAuthorityArgs) {
         heldAuthorityArgs = undefined;
         console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "workflow-outside-authority-request", toolName: "piss_workflow_authority_request", result: { content: [{ type: "text", text: "not authorized" }], details: { confirmed: false } }, isError: false }));
       } else if (command.id === "workflow-authority-confirm" && command.confirmed === true && heldAuthorityArgs) {
@@ -1550,17 +1553,13 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
             guardedWorkflowMutation(authorityPlan, { action: "approve" }, "approve-authority-outside"),
           );
           let authorityOutside = yield* supervisor.get(authoritySession.id);
-          for (let attempt = 0; attempt < 200 && authorityOutside.interactiveRequests[0]?.id !== "workflow-outside-authority-confirm"; attempt += 1) {
+          for (let attempt = 0; attempt < 200 && authorityOutside.workflow?.authorityDecisions?.at(-1)?.operationId !== "production-deploy"; attempt += 1) {
             yield* Effect.sleep("10 millis");
             authorityOutside = yield* supervisor.get(authoritySession.id);
           }
-          const authorityAfterRejection = yield* supervisor.respondInteractive(
-            { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
-            { requestId: "workflow-outside-authority-confirm", confirmed: false },
-          );
           yield* supervisor.mutateWorkflow(
             { sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId },
-            guardedWorkflowMutation(authorityAfterRejection, { action: "cancel" }, "cancel-outside-authority"),
+            guardedWorkflowMutation(authorityOutside, { action: "cancel" }, "cancel-outside-authority"),
           );
           yield* supervisor.stop({ sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId });
           yield* supervisor.remove({ sessionId: authoritySession.id, runtimeId: authoritySession.runtimeId });
@@ -1800,7 +1799,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.equal(result.supervisedReady.events.filter((event) => event.type === "workflow_supervisor_advice").length, 1);
     assert.equal(result.supervisedReady.workflow?.processedEventIds?.some((id) => id.startsWith("supervisor-advice:")), false);
     assert.ok(result.supervisorSibling?.name.startsWith("Supervisor ·"));
-    assert.equal(result.authorityOutside.interactiveRequests[0]?.title, "Confirm production deployment");
+    assert.deepEqual(result.authorityOutside.interactiveRequests, [], "authority outside the approved plan is denied without leaking a raw Pi modal");
     assert.equal(result.authorityOutside.workflow?.authorityDecisions?.at(-1)?.allowed, false);
     assert.equal(result.authorityOutside.workflow?.authorityDecisions?.at(-1)?.operationId, "production-deploy");
     assert.equal(result.authorityReady.workflow?.phase, "readyToShip", JSON.stringify(result.authorityReady.workflow));
@@ -1814,6 +1813,7 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.match(JSON.stringify(result.authorityReady.events), /auto_retry_start/);
     assert.deepEqual(result.authorityReady.interactiveRequests, []);
     assert.match(JSON.stringify(result.authorityReady.events), /workflow_authority_decision/);
+    assert.match(JSON.stringify(result.authorityReady.events), /workflow_interactive_request_rejected/);
     assert.doesNotMatch(JSON.stringify({ models: result.models, events: result.configuredModel.events }), /super-secret|credential@example/);
     assert.equal(result.staleResult, "StaleRuntimeGenerationError");
     assert.equal(result.interactiveBlocked.status, "blocked");

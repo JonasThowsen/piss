@@ -127,8 +127,13 @@ const models: TestModel[] = [
 ];
 
 function sessionSummary(session: TestSession) {
-  const { events, ...summary } = session;
-  return { ...summary, eventCount: events.length };
+  const { events, interactiveRequests, ...summary } = session;
+  return {
+    ...summary,
+    eventCount: events.length,
+    interactiveRequest: interactiveRequests[0] ?? null,
+    interactiveRequestCount: interactiveRequests.length,
+  };
 }
 
 async function installApi(page: Page, options: { readonly empty?: boolean; readonly emptyReview?: boolean; readonly notifications?: boolean; readonly delaySessionCreationMs?: number } = {}) {
@@ -3098,15 +3103,14 @@ test("interactive Pi requests restore on refresh and support select, confirm, in
     request("confirm-queued", "confirm", "Confirm queued action", { message: "This follows the selection." }),
   ] as Parameters<typeof api.setInteractiveRequests>[0]);
 
+  api.delaySessionLoad("New session", 2_000);
+  await page.reload();
   let dialog = page.getByRole("dialog", { name: "Choose deployment" });
-  await expect(dialog).toBeVisible({ timeout: 5_000 });
+  await expect(dialog).toBeVisible({ timeout: 1_000 });
   await expect(dialog).toContainText("1 more request is queued");
   await expect(dialog).toContainText("<img src=x onerror=alert(1)>");
   await expect(dialog.locator("img")).toHaveCount(0);
   await expect(page.getByText("New session is Needs input", { exact: true })).toBeAttached();
-  await page.reload();
-  dialog = page.getByRole("dialog", { name: "Choose deployment" });
-  await expect(dialog).toBeVisible();
   const select = dialog.getByLabel("Choose one");
   await expect(select).toBeFocused();
   await page.keyboard.press("Shift+Tab");
@@ -3122,7 +3126,7 @@ test("interactive Pi requests restore on refresh and support select, confirm, in
 
   dialog = page.getByRole("dialog", { name: "Confirm queued action" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "YES" }).click();
+  await dialog.getByRole("button", { name: "AUTHORIZE & CONTINUE" }).click();
   await expect.poll(() => api.interactiveResponses.at(-1)?.confirmed).toBe(true);
 
   api.setInteractiveRequests([request("input-1", "input", "Name the release", { placeholder: "release name" })] as Parameters<typeof api.setInteractiveRequests>[0]);

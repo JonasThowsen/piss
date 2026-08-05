@@ -454,6 +454,7 @@ export function App() {
   const [imageSelectionPending, setImageSelectionPending] = useState(false);
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
   const [busy, setBusy] = useState(false);
+  const [interactiveResponsePendingId, setInteractiveResponsePendingId] = useState<string>();
   const [abortBusy, setAbortBusy] = useState(false);
   const [operationError, setOperationError] = useState<string>();
   const [creatorError, setCreatorError] = useState<string>();
@@ -1821,24 +1822,28 @@ export function App() {
   };
 
   const answerInteractive = async (request: InteractiveRequest, response: { readonly cancelled?: boolean; readonly value?: string; readonly confirmed?: boolean }) => {
-    if (!selectedSession || busy || selectedSession.runtimeId === "") return;
-    const targetId = selectedSession.id;
-    setBusy(true);
+    if (interactiveResponsePendingId) return;
+    const targetId = selectedSessionIdRef.current;
+    const detail = selectedSessionRef.current;
+    const summary = state._tag === "Ready" && targetId ? state.sessions.find((session) => session.id === targetId) : undefined;
+    const runtimeId = detail && detail.id === targetId ? detail.runtimeId : summary?.runtimeId;
+    if (!targetId || !runtimeId) return;
+    setInteractiveResponsePendingId(request.id);
     setOperationError(undefined);
     try {
       const { session } = await Effect.runPromise(respondToInteractiveRequest({
-        sessionId: selectedSession.id,
-        runtimeId: selectedSession.runtimeId,
+        sessionId: targetId,
+        runtimeId,
         requestId: request.id,
         ...response,
       }));
       if (selectedSessionIdRef.current === targetId) acceptAuthoritativeSession(session);
-      await refresh(false);
+      void refresh(false);
     } catch (cause) {
       if (selectedSessionIdRef.current === targetId) setOperationError(errorMessage(cause));
-      await refresh(false);
+      void refresh(false);
     } finally {
-      if (selectedSessionIdRef.current === targetId) setBusy(false);
+      setInteractiveResponsePendingId((pendingId) => pendingId === request.id ? undefined : pendingId);
     }
   };
 
@@ -2143,8 +2148,16 @@ export function App() {
   const selectedWorkspace = state._tag === "Ready" && selectedSession
     ? state.workspaces.find((workspace) => workspace.id === selectedSession.workspaceId)
     : undefined;
-  const interactiveRequest = selectedSession?.interactiveRequests[0];
   const runtimeIsCurrent = Boolean(selectedSession && sessionSyncRef.current.runtimeGenerationConfirmed && selectedSessionSummary?.runtimeId === selectedSession.runtimeId && sessionSyncState !== "connecting");
+  const summaryHasNewerInteractiveState = Boolean(selectedSessionSummary && (!selectedSession
+    || selectedSessionSummary.runtimeId !== selectedSession.runtimeId
+    || selectedSessionSummary.lastActivityAt > selectedSession.lastActivityAt));
+  const interactiveRequest = summaryHasNewerInteractiveState
+    ? selectedSessionSummary?.interactiveRequest ?? undefined
+    : selectedSession?.interactiveRequests[0] ?? selectedSessionSummary?.interactiveRequest ?? undefined;
+  const interactiveRequestCount = summaryHasNewerInteractiveState
+    ? selectedSessionSummary?.interactiveRequestCount ?? 0
+    : selectedSession?.interactiveRequests.length ?? selectedSessionSummary?.interactiveRequestCount ?? 0;
   const canWrite = selectedSession ? runtimeIsCurrent && isWritableRuntime(selectedSession.status) && selectedSession.status !== "blocked" : false;
   const canConfigure = selectedSession ? runtimeIsCurrent && canConfigureSession(selectedSession.status) : false;
   const workflowActive = Boolean(selectedSession?.workflow && !isTerminalWorkflowPhase(selectedSession.workflow.phase));
@@ -2704,11 +2717,11 @@ export function App() {
         </div>
       </DialogSurface>}
 
-      {interactiveRequest && selectedSession && runtimeIsCurrent && <InteractiveRequestDialog
+      {interactiveRequest && selectedSessionSummary && <InteractiveRequestDialog
         key={interactiveRequest.id}
         request={interactiveRequest}
-        queuedCount={selectedSession.interactiveRequests.length - 1}
-        pending={busy}
+        queuedCount={Math.max(0, interactiveRequestCount - 1)}
+        pending={interactiveResponsePendingId === interactiveRequest.id}
         returnFocus={composerTextareaRef.current}
         fallbackFocus={sessionHeadingRef.current}
         onRespond={(response) => void answerInteractive(interactiveRequest, response)}
@@ -3450,7 +3463,7 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
   const submitValue = () => onRespond({ value });
   const cancel = () => onRespond({ cancelled: true });
   return <DialogSurface className="session-dialog interactive-request-dialog" pending={pending} returnFocus={returnFocus} fallbackFocus={fallbackFocus} onClose={cancel}>
-    <header><div><span>PI REQUEST · {request.method.toUpperCase()}</span><Dialog.Title render={<b />}>{request.title || "Pi needs input"}</Dialog.Title></div></header>
+    <header><div><span>OPERATOR INPUT · {request.method.toUpperCase()}</span><Dialog.Title render={<b />}>{request.title || "Operator decision required"}</Dialog.Title></div></header>
     <div className="dialog-body">
       {request.message && <Dialog.Description className="interactive-message" data-keyboard-scroll>{request.message}</Dialog.Description>}
       {queuedCount > 0 && <p className="interactive-queue">{queuedCount} more request{queuedCount === 1 ? " is" : "s are"} queued</p>}
@@ -3465,7 +3478,7 @@ function InteractiveRequestDialog({ request, queuedCount, pending, returnFocus, 
         }}>{request.options?.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>}
       {request.method === "input" && <label>Response<input value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); submitValue(); } }} /></label>}
       {request.method === "editor" && <label>Response<textarea value={value} disabled={pending} maxLength={256 * 1024} placeholder={request.placeholder} rows={9} onChange={(event) => setValue(event.target.value)} /></label>}
-      {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>NO</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>YES</button></div>}
+      {request.method === "confirm" && <div className="interactive-confirm" role="group" aria-label="Confirmation response"><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: false })}>DECLINE</button><button disabled={pending} type="button" onClick={() => onRespond({ confirmed: true })}>{pending ? "CONTINUING…" : "AUTHORIZE & CONTINUE"}</button></div>}
     </div>
     <footer><Dialog.Close className="cancel" disabled={pending}>CANCEL</Dialog.Close>{request.method !== "confirm" && <button className="launch" disabled={pending || request.method === "select" && !value} onClick={submitValue} type="button">{pending ? "ANSWERING…" : "SUBMIT"}</button>}</footer>
   </DialogSurface>;
