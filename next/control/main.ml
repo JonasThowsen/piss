@@ -209,10 +209,37 @@ let archive_managed_session manager id =
             if Registry.archive manager.registry id then Ok ()
             else Error "session was already archived")
 
-let archive_path path =
+let restore_managed_session manager id =
+  (* TODO(tracer): Persist started/completed lifecycle receipts before replacing
+     the local synchronous systemd launcher with a remote or queued launcher. *)
+  match Registry.find manager.registry id with
+  | None -> Error "archived session not found"
+  | Some { archived_at = None; _ } -> Error "session is already active"
+  | Some session -> (
+      if Registry.active_count manager.registry >= max_active_sessions then
+        Error "active session limit reached"
+      else if not (Registry.restore manager.registry id) then
+        Error "session could not be restored"
+      else
+        try
+          write_session_spec manager { session with archived_at = None };
+          match run_lifecycle manager.launcher id with
+          | Ok () -> Ok ()
+          | Error message ->
+              ignore (Registry.archive manager.registry id);
+              Error message
+        with exn ->
+          ignore (Registry.archive manager.registry id);
+          Error (Printexc.to_string exn))
+
+type session_action = Archive of string | Restore of string
+
+let session_action path =
   match String.split_on_char '/' path with
   | [ ""; "api"; "v2"; "sessions"; id; "archive" ] when valid_session_id id ->
-      Some id
+      Some (Archive id)
+  | [ ""; "api"; "v2"; "sessions"; id; "restore" ] when valid_session_id id ->
+      Some (Restore id)
   | _ -> None
 
 let parse_after uri =
@@ -308,11 +335,20 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
     then error_json ~status:`Unauthorized "Tailscale identity is not authorized"
     else
       let managed_response =
-        match (workers, method_, path, archive_path path) with
+        match (workers, method_, path, session_action path) with
         | Managed manager, `GET, "/api/v2/sessions", _ ->
             let sessions =
-              Registry.list manager.registry ~include_archived:false
-              |> List.map (session_summary net manager)
+              match Uri.get_query_param uri "archived" with
+              | Some "true" ->
+                  Registry.list_archived manager.registry
+                  |> List.map (fun session ->
+                      match Registry.session_to_yojson session with
+                      | `Assoc fields ->
+                          `Assoc (("status", `String "archived") :: fields)
+                      | _ -> assert false)
+              | _ ->
+                  Registry.list manager.registry ~include_archived:false
+                  |> List.map (session_summary net manager)
             in
             Some (respond_json (`List sessions))
         | Managed manager, `POST, "/api/v2/sessions", _ ->
@@ -331,17 +367,23 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
                       respond_json ~status:`Created
                         (Registry.session_to_yojson session)
                   | Error message -> error_json ~status:`Conflict message))
-        | Managed manager, `POST, _, Some id ->
-            (* TODO(tracer): Add a restore operation once archived sessions are
-               shown in the browser. This slice retains every ledger and row but
-               deliberately exposes only active sessions. *)
+        | Managed manager, `POST, _, Some action ->
             Some
               (match valid_json_mutation ~dev_bypass request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
-                  match archive_managed_session manager id with
-                  | Ok () -> respond_json (`Assoc [ ("archived", `Bool true) ])
-                  | Error message -> error_json ~status:`Conflict message))
+                  ignore (read_body body);
+                  match action with
+                  | Archive id -> (
+                      match archive_managed_session manager id with
+                      | Ok () ->
+                          respond_json (`Assoc [ ("archived", `Bool true) ])
+                      | Error message -> error_json ~status:`Conflict message)
+                  | Restore id -> (
+                      match restore_managed_session manager id with
+                      | Ok () ->
+                          respond_json (`Assoc [ ("restored", `Bool true) ])
+                      | Error message -> error_json ~status:`Conflict message)))
         | _ -> None
       in
       match managed_response with
@@ -404,6 +446,7 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
               match valid_json_mutation ~dev_bypass request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
+                  ignore (read_body body);
                   match workers with
                   | Managed manager -> (
                       match
@@ -452,6 +495,7 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
               match valid_json_mutation ~dev_bypass request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
+                  ignore (read_body body);
                   match
                     with_worker workers uri (fun socket ->
                         worker_request net socket
@@ -492,7 +536,22 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
               match safe_asset_path public_dir resource with
               | Some (path, content_type) -> serve_asset path content_type
               | None -> error_json ~status:`Not_found "not found")
-          | _ -> error_json ~status:`Method_not_allowed "method not allowed")
+          | _ ->
+              let method_name =
+                match method_ with
+                | `GET -> "GET"
+                | `POST -> "POST"
+                | `PUT -> "PUT"
+                | `DELETE -> "DELETE"
+                | `PATCH -> "PATCH"
+                | `HEAD -> "HEAD"
+                | `OPTIONS -> "OPTIONS"
+                | `CONNECT -> "CONNECT"
+                | `TRACE -> "TRACE"
+                | `Other value -> value
+              in
+              error_json ~status:`Method_not_allowed
+                (method_name ^ " not allowed for " ^ path))
   with
   | Eio.Io _ as exn ->
       error_json ~status:`Service_unavailable (Printexc.to_string exn)
