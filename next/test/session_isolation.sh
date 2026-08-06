@@ -92,6 +92,7 @@ control_args=(
   --available-harness pi
   --available-harness opencode
   --default-harness pi
+  --workspace-spec "test-workspace|Test workspace|$workspace"
   --bootstrap-session s-bootstrap
   --public "$public_dir"
   --app-js "$app_js"
@@ -135,13 +136,22 @@ command_completed() {
 
 start_control
 wait_session_count 1
+workspaces=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces")
+[[ $(jq -r '.[0].id' <<<"$workspaces") == test-workspace ]]
+[[ $(jq -r '.[0].root' <<<"$workspaces") == "$workspace" ]]
 first=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id')
 second=$(curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"harness":"opencode"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
+  --data '{"harness":"opencode","workspaceId":"test-workspace","title":"Review agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
 third=$(curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"harness":"pi"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
+  --data '{"harness":"pi","workspaceId":"test-workspace","title":"Implementation agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
 [[ "$first" != "$second" && "$first" != "$third" && "$second" != "$third" ]]
 wait_session_count 3
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r --arg id "$second" '.[]|select(.id==$id)|.title') == "Review agent" ]]
+[[ $(cat "$state/sessions/$second/workspace") == "$workspace" ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"title":"OpenCode reviewer"}' \
+  "http://127.0.0.1:$port/api/v2/sessions/$second/rename" >/dev/null
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r --arg id "$second" '.[]|select(.id==$id)|.title') == "OpenCode reviewer" ]]
 
 curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"first-command","text":"work in first"}' \

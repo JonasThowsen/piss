@@ -33,10 +33,17 @@ let with_registry f =
 
 let test_session_registry () =
   with_registry @@ fun registry ->
-  ignore (Registry.insert registry ~id:"s-one" ~title:"Pi / one" ~harness:"pi");
+  Registry.upsert_workspace registry ~id:"workspace-one" ~name:"Workspace one"
+    ~root:"/tmp/workspace-one";
+  Alcotest.(check int)
+    "one workspace" 1
+    (List.length (Registry.list_workspaces registry));
+  ignore
+    (Registry.insert registry ~id:"s-one" ~title:"Pi / one" ~harness:"pi"
+       ~workspace_id:"workspace-one");
   ignore
     (Registry.insert registry ~id:"s-two" ~title:"OpenCode / two"
-       ~harness:"opencode");
+       ~harness:"opencode" ~workspace_id:"workspace-one");
   Alcotest.(check int) "two active sessions" 2 (Registry.active_count registry);
   Alcotest.(check bool)
     "archive changes state" true
@@ -55,8 +62,13 @@ let test_session_registry () =
     "restore changes state" true
     (Registry.restore registry "s-one");
   Alcotest.(check int) "two active again" 2 (Registry.active_count registry);
+  Alcotest.(check bool)
+    "rename changes title" true
+    (Registry.rename_session registry "s-one" "Orchestrator");
   let one = Option.get (Registry.find_active registry "s-one") in
   let two = Option.get (Registry.find_active registry "s-two") in
+  Alcotest.(check string) "renamed title retained" "Orchestrator" one.title;
+  Alcotest.(check string) "workspace retained" "workspace-one" one.workspace_id;
   Alcotest.(check bool)
     "broker tokens are unique" true
     (one.broker_token <> "" && two.broker_token <> ""

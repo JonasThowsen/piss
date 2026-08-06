@@ -30,7 +30,8 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
-- durable conversation creation, switching, archival, and restoration;
+- durable allowlisted workspaces with current-style responsive navigation;
+- named Pi/OpenCode session creation, renaming, switching, archival, and restoration;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
 - streamed assistant messages over resumable server-sent events;
@@ -129,7 +130,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 - Each session allows one prompt turn at a time; independent sessions can run concurrently.
 - Active sessions have a configurable resource cap (`maxActiveSessions`, 32 by default and at most 256). Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
-- Pi and OpenCode are selectable per session. The bootstrap default remains Pi.
+- Pi and OpenCode are selectable per session. The bootstrap default remains Pi. Every session is bound to one Nix-allowlisted workspace, written into its immutable owner-only worker specification.
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one browser connection; a worker-side wait/fanout primitive is deferred until multiple simultaneous observers per session are needed.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
 - Existing TypeScript PISS workflow metadata is not migrated.
