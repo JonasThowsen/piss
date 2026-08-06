@@ -828,45 +828,56 @@ let accept_peer_subscription manager ~(source : Registry.session) json =
       let _ = requests in
       Ok (subscription, duplicate)
 
-let reconcile_peer_subscription ~net manager
+let bounded_subscription_operation ~clock operation =
+  try Eio.Time.with_timeout_exn clock 2. operation with Eio.Time.Timeout -> ()
+
+let reconcile_peer_subscription ~net ~clock manager
     (subscription : Registry.peer_subscription) =
   match Registry.find_active manager.registry subscription.source_id with
   | None -> ()
   | Some source ->
       let requests = subscription_requests manager source subscription in
-      List.iter
-        (fun request ->
-          if not (peer_request_finished request) then
-            ignore (reconcile_peer_request ~net manager ~source request))
-        requests;
+      Eio.Switch.run (fun sw ->
+          requests
+          |> List.filter (Fun.negate peer_request_finished)
+          |> List.iter (fun request ->
+              Eio.Fiber.fork ~sw (fun () ->
+                  bounded_subscription_operation ~clock (fun () ->
+                      ignore
+                        (reconcile_peer_request ~net manager ~source request)))));
       let requests = subscription_requests manager source subscription in
       if peer_subscription_ready subscription requests then (
         Registry.mark_peer_subscription_dispatching manager.registry
           subscription.id;
-        match
-          worker_request net
-            (session_socket manager source.id)
-            (`Assoc
-               [
-                 ("op", `String "prompt");
-                 ("commandId", `String subscription.command_id);
-                 ("text", `String (peer_wake_prompt subscription requests));
-               ])
-        with
-        | Error _ -> ()
-        | Ok _ ->
-            ignore
-              (Registry.complete_peer_subscription manager.registry
-                 subscription.id))
+        bounded_subscription_operation ~clock (fun () ->
+            match
+              worker_request net
+                (session_socket manager source.id)
+                (`Assoc
+                   [
+                     ("op", `String "prompt");
+                     ("commandId", `String subscription.command_id);
+                     ("text", `String (peer_wake_prompt subscription requests));
+                   ])
+            with
+            | Error _ -> ()
+            | Ok _ ->
+                ignore
+                  (Registry.complete_peer_subscription manager.registry
+                     subscription.id)))
 
 let supervise_peer_subscriptions ~net ~clock manager =
+  let supervise subscription =
+    try reconcile_peer_subscription ~net ~clock manager subscription
+    with exn ->
+      Format.eprintf "peer subscription %s error: %s@." subscription.Registry.id
+        (Printexc.to_string exn)
+  in
   let rec loop () =
-    (try
-       Registry.list_open_peer_subscriptions manager.registry
-       |> List.iter (reconcile_peer_subscription ~net manager)
-     with exn ->
-       Format.eprintf "peer subscription supervisor error: %s@."
-         (Printexc.to_string exn));
+    Eio.Switch.run (fun sw ->
+        Registry.list_open_peer_subscriptions manager.registry
+        |> List.iter (fun subscription ->
+            Eio.Fiber.fork ~sw (fun () -> supervise subscription)));
     Eio.Time.sleep clock 0.25;
     loop ()
   in
