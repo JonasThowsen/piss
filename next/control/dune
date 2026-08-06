@@ -1,4 +1,4 @@
 (executable
  (name main)
  (public_name pissd-next)
- (libraries piss-next.core eio_main cohttp-eio uri yojson unix))
+ (libraries piss-next.core eio_main cohttp-eio cstruct uri yojson unix))

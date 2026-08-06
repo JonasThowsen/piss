@@ -7,7 +7,7 @@ Its boundaries are real:
 ```text
 Reason/Melange browser
         |
-        | authenticated same-origin HTTP
+        | authenticated same-origin HTTP + resumable SSE
         v
 pissd-next (replaceable; durable session registry)
         |
@@ -29,7 +29,7 @@ The deployed Reason application provides:
 - durable conversation creation, switching, archival, and restoration;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
-- streamed assistant messages;
+- streamed assistant messages over resumable server-sent events;
 - structured tool-call cards and output;
 - permission decisions for ACP agents that request them;
 - active-turn cancellation;
@@ -75,7 +75,7 @@ nix build .#piss-next-web
 nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, restores it under the same identity, and verifies its ledger and completed timeline remain intact.
+`@interaction-test` proves monotonic SSE delivery, `Last-Event-ID` resumption without duplicates, permission validation/resolution, and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, resumes SSE from the last received event ID, and verifies unchanged worker/harness PIDs, gap-free replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, restores it under the same identity, and verifies its ledger and completed timeline remain intact.
 
 A real-harness smoke has exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages and may now run simultaneously; `services.piss-next.harness` selects only the bootstrap default.
 
@@ -116,21 +116,20 @@ The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, 
 
 A command is committed before it is written to the ACP agent. Duplicate command IDs return the existing state and are never dispatched again. A write failure after acceptance becomes `ambiguous`; an interrupted worker reconciles accepted/dispatched commands to `ambiguous` instead of silently retrying consequential work. Completed, cancelled, rejected, and ambiguous outcomes are explicit.
 
-The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the oldest 512 events are compacted while SQLite's autoincrement sequence remains monotonic. The browser requests the newest bounded page, while ACP `session/load` remains the source for full harness conversation replay after worker replacement.
+The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the oldest 512 events are compacted while SQLite's autoincrement sequence remains monotonic. The browser loads the newest bounded page once, then follows the selected session over SSE. Every frame carries the durable sequence as its event ID, so native `Last-Event-ID` reconnection resumes strictly after the last received event without duplicates. ACP `session/load` remains the source for full harness conversation replay after worker replacement.
 
 ## Deliberate current limitations
 
 - Each session allows one prompt turn at a time; independent sessions can run concurrently.
 - Active sessions are capped at 32. Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
 - Pi and OpenCode are selectable per session. The bootstrap default remains Pi.
-- The browser uses bounded 750 ms polling rather than resumable SSE.
+- The first SSE path uses bounded 250 ms worker-ledger reads behind one browser connection; a worker-side wait/fanout primitive is deferred until multiple simultaneous observers per session are needed.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
 - Existing TypeScript PISS workflow metadata is not migrated.
 - Browser automation, workflow authority, reviews, notifications, and the rest of the TypeScript product remain outside this slice.
 
 ## Next production slices
 
-1. Replace polling with resumable SSE using the existing monotonic event cursor.
-2. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
-3. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
-4. Port one complete PISS workflow through the real authority and receipt model.
+1. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
+2. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
+3. Port one complete PISS workflow through the real authority and receipt model.

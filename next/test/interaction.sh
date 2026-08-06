@@ -11,8 +11,10 @@ port=${PISS_TEST_PORT:-$((40000 + ($$ % 8000)))}
 state=$(mktemp -d)
 worker_pid=
 control_pid=
+stream_pid=
 
 cleanup() {
+  [[ -z "$stream_pid" ]] || kill "$stream_pid" 2>/dev/null || true
   [[ -z "$control_pid" ]] || kill "$control_pid" 2>/dev/null || true
   [[ -z "$worker_pid" ]] || kill "$worker_pid" 2>/dev/null || true
   [[ -z "$control_pid" ]] || wait "$control_pid" 2>/dev/null || true
@@ -47,6 +49,13 @@ curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/session/new" >/dev/null
 initial_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "timeline.reset")] | length' <<<"$initial_events") == 1 ]]
+initial_cursor=$(jq '[.[].sequence] | max // 0' <<<"$initial_events")
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -H 'Last-Event-ID: invalid' \
+  "http://127.0.0.1:$port/api/v2/event-stream?after=$initial_cursor") == 400 ]]
+curl -NsS --max-time 12 \
+  "http://127.0.0.1:$port/api/v2/event-stream?after=$initial_cursor" \
+  >"$state/permission.stream" 2>"$state/permission.stream.log" &
+stream_pid=$!
 
 curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"permission-command","text":"permission: test the decision path"}' \
@@ -70,7 +79,30 @@ sleep 3
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "acp.permission.resolved")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "permission-command" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+for _ in $(seq 1 100); do
+  grep -q '"commandId":"permission-command","state":"completed"' \
+    "$state/permission.stream" 2>/dev/null && break
+  sleep .02
+done
+grep -q '^retry: 1000$' "$state/permission.stream"
+grep -q '"commandId":"permission-command","state":"completed"' \
+  "$state/permission.stream"
+kill "$stream_pid" 2>/dev/null || true
+wait "$stream_pid" 2>/dev/null || true
+stream_pid=
+resume_cursor=$(awk '/^id: / { value=$2 } END { print value+0 }' \
+  "$state/permission.stream")
+python3 - "$state/permission.stream" "$initial_cursor" <<'PY'
+import sys
+path, initial = sys.argv[1], int(sys.argv[2])
+ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id: ')]
+assert ids and ids == sorted(set(ids)) and min(ids) > initial, ids
+PY
 
+curl -NsS --max-time 12 -H "Last-Event-ID: $resume_cursor" \
+  "http://127.0.0.1:$port/api/v2/event-stream?after=0" \
+  >"$state/cancel.stream" 2>"$state/cancel.stream.log" &
+stream_pid=$!
 curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"cancel-command","text":"cancel this prompt"}' \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
@@ -81,5 +113,21 @@ sleep 2
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "command.cancel.requested")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "cancel-command" and .payload.state == "cancelled")] | length' <<<"$events") == 1 ]]
+for _ in $(seq 1 100); do
+  grep -q '"commandId":"cancel-command","state":"cancelled"' \
+    "$state/cancel.stream" 2>/dev/null && break
+  sleep .02
+done
+grep -q '"commandId":"cancel-command","state":"cancelled"' \
+  "$state/cancel.stream"
+kill "$stream_pid" 2>/dev/null || true
+wait "$stream_pid" 2>/dev/null || true
+stream_pid=
+python3 - "$state/cancel.stream" "$resume_cursor" <<'PY'
+import sys
+path, cursor = sys.argv[1], int(sys.argv[2])
+ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id: ')]
+assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
+PY
 
-echo "interaction proof passed: permission resolved and prompt cancelled"
+echo "interaction proof passed: resumable SSE, permission resolution, and cancellation"

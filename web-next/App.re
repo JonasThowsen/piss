@@ -81,7 +81,45 @@ let createdSessionId: string => string = [%raw
   "text => { try { return JSON.parse(text).id || ''; } catch (_) { return ''; } }"
 ];
 let settledNotice: string => string = [%raw
-  "current => current === 'Connecting to the durable worker...' || current === 'Switching durable session...' || current === 'Isolated session worker is starting.' || current.startsWith('Eio.Io ') ? 'Durable timeline synchronized.' : current"
+  "current => current === 'Connecting to the durable worker...' || current === 'Switching durable session...' || current === 'Isolated session worker is starting.' || current === 'Event stream reconnecting...' || current.startsWith('Eio.Io ') ? 'Durable event stream connected.' : current"
+];
+let mergeSessionSnapshot: (string, string, string) => string = [%raw
+  "(sessionsText, id, snapshotText) => { try { const sessions = JSON.parse(sessionsText); const snapshot = JSON.parse(snapshotText); if (!Array.isArray(sessions)) return sessionsText; return JSON.stringify(sessions.map(session => session.id === id ? { ...session, ...snapshot } : session)); } catch (_) { return sessionsText; } }"
+];
+let appendEvent: (string, string) => string = [%raw
+  "(eventsText, eventText) => { try { const events = JSON.parse(eventsText); const event = JSON.parse(eventText); if (!Array.isArray(events) || !Number.isSafeInteger(event.sequence)) return eventsText; const next = events.filter(existing => existing.sequence !== event.sequence); next.push(event); next.sort((a, b) => a.sequence - b.sequence); return JSON.stringify(next.slice(-500)); } catch (_) { return eventsText; } }"
+];
+let eventChangesRuntime: string => bool = [%raw
+  "text => { try { const kind = JSON.parse(text).kind || ''; return kind === 'command.state' || kind.startsWith('acp.permission.') || kind === 'acp.session.loaded' || kind === 'acp.session.load_failed'; } catch (_) { return false; } }"
+];
+let eventCompletesTurn: string => bool = [%raw
+  "text => { try { const event = JSON.parse(text); return event.kind === 'command.state' && ['completed', 'cancelled', 'rejected', 'ambiguous'].includes(event.payload?.state); } catch (_) { return false; } }"
+];
+let connectEventStream:
+  (string, string => unit, string => unit, unit => unit, unit => unit, unit) =>
+  unit = [%raw
+  {|(id, onInitial, onEvent, onOpen, onError) => {
+    let closed = false;
+    let source = null;
+    const close = () => { closed = true; if (source) source.close(); };
+    fetch(`/api/v2/events?recent=500&session=${encodeURIComponent(id)}`)
+      .then(async response => {
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+        if (closed) return;
+        let events;
+        try { events = JSON.parse(text); } catch (_) { events = []; }
+        if (!Array.isArray(events)) events = [];
+        onInitial(JSON.stringify(events));
+        const after = events.reduce((cursor, event) => Math.max(cursor, Number(event.sequence) || 0), 0);
+        source = new EventSource(`/api/v2/event-stream?session=${encodeURIComponent(id)}&after=${after}`);
+        source.onmessage = event => { if (!closed) onEvent(event.data); };
+        source.onopen = () => { if (!closed) onOpen(); };
+        source.onerror = () => { if (!closed) onError(); };
+      })
+      .catch(() => { if (!closed) onError(); });
+    return close;
+  }|}
 ];
 
 let projectTimeline: (string, string) => array(timelineItem) = [%raw
@@ -258,6 +296,9 @@ module App = {
         getText(sessionUrl("/api/v2/session", id))
         ->thenPromise(text => {
             setSessionJson(_ => text);
+            setSessionsJson(current =>
+              mergeSessionSnapshot(current, id, text)
+            );
             setNotice(current => settledNotice(current));
             Js.Promise.resolve();
           })
@@ -266,13 +307,6 @@ module App = {
             Js.Promise.resolve();
           })
         ->ignore;
-        getText(sessionUrl("/api/v2/events?recent=500", id))
-        ->thenPromise(text => {
-            setEventsJson(_ => text);
-            scrollTimeline();
-            Js.Promise.resolve();
-          })
-        ->ignorePromise;
       };
 
     let refresh = () => {
@@ -300,12 +334,38 @@ module App = {
       ->ignorePromise;
     };
 
+    React.useEffect0(() => {
+      refresh();
+      None;
+    });
+
     React.useEffect1(
-      () => {
-        refresh();
-        let timer = Js.Global.setInterval(~f=refresh, 750);
-        Some(() => Js.Global.clearInterval(timer));
-      },
+      () =>
+        if (activeSessionId == "") {
+          None;
+        } else {
+          let close =
+            connectEventStream(
+              activeSessionId,
+              text => {
+                setEventsJson(_ => text);
+                scrollTimeline();
+              },
+              event => {
+                setEventsJson(current => appendEvent(current, event));
+                if (eventChangesRuntime(event)) {
+                  refreshSession(activeSessionId);
+                };
+                if (eventCompletesTurn(event)) {
+                  setNotice(_ => "Durable event stream connected.");
+                };
+                scrollTimeline();
+              },
+              () => refreshSession(activeSessionId),
+              () => setNotice(_ => "Event stream reconnecting..."),
+            );
+          Some(close);
+        },
       [|activeSessionId|],
     );
 
