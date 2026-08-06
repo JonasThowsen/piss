@@ -14,6 +14,7 @@ external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external optionId: permissionOption => string = "optionId";
 [@mel.get] external optionName: permissionOption => string = "name";
 [@mel.get] external snapshotStatus: sessionSnapshot => string = "status";
+[@mel.get] external snapshotAgentName: sessionSnapshot => string = "agentName";
 [@mel.get] external snapshotWorkerPid: sessionSnapshot => int = "workerPid";
 [@mel.get] external snapshotHarnessPid: sessionSnapshot => int = "harnessPid";
 [@mel.get] external snapshotSequence: sessionSnapshot => int = "lastSequence";
@@ -54,11 +55,11 @@ let composerKeyDown: React.Event.Keyboard.t => unit = [%raw
 ];
 
 let parseSnapshot: string => sessionSnapshot = [%raw
-  "text => { try { return JSON.parse(text); } catch (_) { return { status: 'offline', workerPid: 0, harnessPid: 0, lastSequence: 0 }; } }"
+  "text => { try { return JSON.parse(text); } catch (_) { return { status: 'offline', agentName: 'ACP agent', workerPid: 0, harnessPid: 0, lastSequence: 0 }; } }"
 ];
 
-let projectTimeline: string => array(timelineItem) = [%raw
-  {|text => {
+let projectTimeline: (string, string) => array(timelineItem) = [%raw
+  {|(text, agentName) => {
     let events;
     try { events = JSON.parse(text); } catch (_) { return []; }
     if (!Array.isArray(events)) return [];
@@ -91,7 +92,7 @@ let projectTimeline: string => array(timelineItem) = [%raw
         const id = update.messageId || (role === 'agent' && currentAgent ? currentAgent.id : `${role}-${event.sequence}`);
         let item = messages.get(id);
         if (!item) {
-          item = { id, role, title: role === 'user' ? 'You' : 'Pi', text: '', status: '', options: [], sequence: event.sequence };
+          item = { id, role, title: role === 'user' ? 'You' : agentName, text: '', status: '', options: [], sequence: event.sequence };
           messages.set(id, item);
           items.push(item);
         }
@@ -216,7 +217,7 @@ module App = {
   let make = () => {
     let (sessionJson, setSessionJson) =
       React.useState(() =>
-        "{\"status\":\"connecting\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
+        "{\"status\":\"connecting\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (notice, setNotice) =
@@ -256,7 +257,7 @@ module App = {
     let snapshot = parseSnapshot(sessionJson);
     let status = snapshotStatus(snapshot);
     let running = status == "running" || status == "requires_action";
-    let timeline = projectTimeline(eventsJson);
+    let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
 
     let submitPrompt = event => {
       preventDefault(event);
@@ -367,7 +368,7 @@ module App = {
         <aside className="runtime-rail">
           <div>
             <p className="eyebrow"> {React.string("ACTIVE RUNTIME")} </p>
-            <h2> {React.string("Pi / piss-ocaml")} </h2>
+            <h2> {React.string(snapshotAgentName(snapshot))} </h2>
             <p className="runtime-copy">
               {React.string(
                  "One real ACP session, independently supervised and rooted in the OCaml rewrite workspace.",
@@ -426,7 +427,7 @@ module App = {
                    </h3>
                    <p>
                      {React.string(
-                        "Ask Pi to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                        "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
                       )}
                    </p>
                  </div>
@@ -445,7 +446,7 @@ module App = {
             <p className="notice" role="status"> {React.string(notice)} </p>
             <form className="composer" onSubmit=submitPrompt>
               <label htmlFor="prompt-input">
-                {React.string("Message Pi")}
+                {React.string("Message agent")}
               </label>
               <textarea
                 id="prompt-input"
@@ -456,7 +457,7 @@ module App = {
                 onKeyDown=composerKeyDown
                 placeholder={
                   running
-                    ? "Pi is working. Cancel the turn to interrupt it."
+                    ? "The agent is working. Cancel the turn to interrupt it."
                     : "Inspect the worker protocol and suggest the next smallest improvement..."
                 }
               />

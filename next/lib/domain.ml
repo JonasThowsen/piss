@@ -33,6 +33,7 @@ type snapshot = {
   runtime_generation : runtime_generation;
   worker_pid : int;
   harness_pid : int option;
+  agent_name : string;
   status : worker_status;
   last_sequence : int64;
 }
@@ -87,6 +88,7 @@ let snapshot_to_yojson snapshot =
       ("workerPid", `Int snapshot.worker_pid);
       ( "harnessPid",
         match snapshot.harness_pid with Some pid -> `Int pid | None -> `Null );
+      ("agentName", `String snapshot.agent_name);
       ("status", `String (worker_status_to_string snapshot.status));
       ("lastSequence", `Intlit (Int64.to_string snapshot.last_sequence));
     ]
