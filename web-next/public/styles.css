@@ -190,6 +190,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 /* Current-workbench parity overrides. */
 button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-events: none; }
 .mobile-menu, .search-trigger, .create-session-trigger, .workspace-heading > button:last-child, .session-more, .send-action, .cancel-action, .session-dialog header button { line-height: 0; }
+.create-session-trigger, .workspace-heading > button:last-child, .session-dialog header button { display: grid; place-items: center; padding: 0; }
 .mobile-menu i, .mobile-menu i::before, .mobile-menu i::after,
 .search-trigger::before, .search-trigger::after { display: none; }
 .mobile-menu, .search-trigger { display: grid; place-items: center; }
@@ -210,6 +211,7 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .session-menu button svg { width: 16px; height: 16px; }
 .capability-tabs { min-height: 54px; display: flex; align-items: stretch; gap: 6px; padding: 0 24px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .capability-tabs button { position: relative; min-width: 112px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 0; background: transparent; color: var(--muted); font-weight: 650; }
+.capability-tabs button svg { width: 19px; height: 19px; stroke-width: 1.7; }
 .capability-tabs button.active { color: var(--text); }
 .capability-tabs button.active::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--accent); }
 .capability-tabs button:disabled { opacity: .72; }
@@ -271,7 +273,7 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 @media (max-width: 760px) {
   .capability-tabs { min-height: 52px; padding: 0 12px; gap: 0; }
   .capability-tabs button { min-width: 0; flex: 1; font-size: 14px; }
-  .capability-tabs button svg { width: 20px; height: 20px; }
+  .capability-tabs button svg { width: 19px; height: 19px; }
   .composer-wrap { padding: 7px 10px max(10px, env(safe-area-inset-bottom)); }
   .composer { min-height: 102px; padding: 0; }
   .composer textarea { min-height: 58px; max-height: 128px; padding: 13px 14px 5px; font-size: 16px; }
