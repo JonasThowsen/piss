@@ -93,6 +93,7 @@ control_args=(
   --available-harness opencode
   --default-harness pi
   --workspace-spec "test-workspace|Test workspace|$workspace"
+  --workspace-discovery-root "$root"
   --bootstrap-session s-bootstrap
   --public "$public_dir"
   --app-js "$app_js"
@@ -139,6 +140,17 @@ wait_session_count 1
 workspaces=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces")
 [[ $(jq -r '.[0].id' <<<"$workspaces") == test-workspace ]]
 [[ $(jq -r '.[0].root' <<<"$workspaces") == "$workspace" ]]
+mkdir -p "$root/local-project"
+directories=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspace-directories?query=local-project")
+[[ $(jq -r '.[0].path' <<<"$directories") == "$root/local-project" ]]
+registered=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data "{\"path\":\"$root/local-project\"}" \
+  "http://127.0.0.1:$port/api/v2/workspaces")
+[[ $(jq -r .root <<<"$registered") == "$root/local-project" ]]
+outside_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data '{"path":"/tmp"}' \
+  "http://127.0.0.1:$port/api/v2/workspaces")
+[[ "$outside_status" == 403 ]]
 first=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id')
 second=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"harness":"opencode","workspaceId":"test-workspace","title":"Review agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)

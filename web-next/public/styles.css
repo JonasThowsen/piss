@@ -186,3 +186,58 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Current-workbench parity overrides. */
+button svg { width: 21px; height: 21px; display: block; }
+.mobile-menu i, .mobile-menu i::before, .mobile-menu i::after,
+.search-trigger::before, .search-trigger::after { display: none; }
+.mobile-menu, .search-trigger { display: grid; place-items: center; }
+.search-trigger svg { width: 24px; height: 24px; }
+.create-session-trigger svg, .workspace-heading > button svg { width: 22px; height: 22px; }
+.workspace-chevron svg { width: 17px; height: 17px; transform: rotate(90deg); transition: transform .16s ease; }
+.session-menu-wrap { position: relative; align-self: stretch; display: grid; place-items: center; }
+.session-more { display: grid; place-items: center; }
+.session-more svg { width: 20px; }
+.session-menu { position: absolute; z-index: 20; top: calc(50% + 18px); right: 2px; min-width: 148px; overflow: hidden; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: 0 12px 30px rgba(31, 38, 33, .16); }
+.session-menu button { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: 600 10px/1 "IBM Plex Mono", monospace; letter-spacing: .06em; text-align: left; cursor: pointer; }
+.session-menu button:hover { background: var(--soft); }
+.session-menu button.danger { color: var(--danger); }
+.session-menu button svg { width: 16px; height: 16px; }
+.capability-tabs { min-height: 54px; display: flex; align-items: stretch; gap: 6px; padding: 0 24px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.capability-tabs button { position: relative; min-width: 112px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 0; background: transparent; color: var(--muted); font-weight: 650; }
+.capability-tabs button.active { color: var(--text); }
+.capability-tabs button.active::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--accent); }
+.capability-tabs button:disabled { opacity: .72; }
+.composer-wrap { padding: 8px 24px 18px; }
+.composer { min-height: 108px; display: flex; flex-direction: column; padding: 0; overflow: visible; border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: 0 0 0 4px rgba(49, 92, 70, .06); }
+.composer:focus-within { border-color: #9eb6a8; outline: 2px solid rgba(49, 92, 70, .08); outline-offset: 1px; }
+.composer textarea { width: 100%; min-height: 60px; max-height: 180px; resize: none; padding: 15px 17px 7px; border: 0; background: transparent; font: 15px/1.5 "Inter", sans-serif; }
+.composer-footer { min-height: 52px; display: grid; grid-template-columns: minmax(84px, 1fr) auto 44px; align-items: center; gap: 8px; padding: 3px 7px 7px 8px; }
+.composer-insertions { display: flex; gap: 7px; }
+.composer-insertions button, .composer-config button { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); color: var(--muted); }
+.composer-insertions button:disabled, .composer-config button:disabled { opacity: .72; }
+.composer-config button { max-width: 128px; border-color: transparent; background: transparent; color: var(--text); font-weight: 650; }
+.composer-config button svg { width: 15px; height: 15px; }
+.send-action, .cancel-action { width: 42px; min-width: 42px; height: 42px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: var(--accent); color: white; }
+.cancel-action { background: var(--danger); }
+.send-action svg, .cancel-action svg { width: 22px; height: 22px; }
+.send-action:disabled { opacity: .45; }
+.workspace-dialog { width: min(620px, calc(100vw - 28px)); }
+.directory-search { position: relative; }
+.directory-search input { padding-right: 42px; }
+.directory-search svg { position: absolute; top: 50%; right: 13px; width: 18px; height: 18px; color: var(--muted); transform: translateY(-50%); }
+.workspace-dialog select[size] { min-height: 250px; padding: 5px; }
+.workspace-dialog select[size] option { padding: 9px 10px; border-radius: 4px; }
+.dialog-help, .archive-dialog > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.danger-action { border-color: #a85d55 !important; background: var(--danger) !important; color: white !important; }
+@media (max-width: 760px) {
+  .capability-tabs { min-height: 52px; padding: 0 12px; gap: 0; }
+  .capability-tabs button { min-width: 0; flex: 1; font-size: 14px; }
+  .capability-tabs button svg { width: 20px; height: 20px; }
+  .composer-wrap { padding: 7px 10px max(10px, env(safe-area-inset-bottom)); }
+  .composer { min-height: 102px; padding: 0; }
+  .composer textarea { min-height: 58px; max-height: 128px; padding: 13px 14px 5px; font-size: 16px; }
+  .composer-footer { min-height: 50px; grid-template-columns: minmax(80px, 1fr) auto 42px; gap: 5px; padding: 2px 7px 6px 8px; }
+  .send-action, .cancel-action { width: 42px; min-width: 42px; min-height: 42px; }
+  .session-menu { position: fixed; top: auto; right: 18px; bottom: 20px; left: 18px; min-width: 0; }
+}

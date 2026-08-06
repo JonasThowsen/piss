@@ -38,6 +38,10 @@ let test_session_registry () =
   Alcotest.(check int)
     "one workspace" 1
     (List.length (Registry.list_workspaces registry));
+  Alcotest.(check (option string))
+    "workspace can be recovered by canonical root" (Some "workspace-one")
+    (Registry.find_workspace_by_root registry "/tmp/workspace-one"
+    |> Option.map (fun (workspace : Registry.workspace) -> workspace.id));
   ignore
     (Registry.insert registry ~id:"s-one" ~title:"Pi / one" ~harness:"pi"
        ~workspace_id:"workspace-one");

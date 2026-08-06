@@ -5,6 +5,7 @@ type permissionOption;
 type sessionSnapshot;
 type sessionSummary;
 type workspaceSummary;
+type directoryCandidate;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -29,8 +30,14 @@ external sessionWorkspaceId: sessionSummary => string = "workspaceId";
 [@mel.get] external workspaceId: workspaceSummary => string = "id";
 [@mel.get] external workspaceName: workspaceSummary => string = "name";
 [@mel.get] external workspaceRoot: workspaceSummary => string = "root";
+[@mel.get] external directoryPath: directoryCandidate => string = "path";
+[@mel.get] external directoryName: directoryCandidate => string = "name";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
+
+let icon: string => React.element = [%raw
+  "name => { const p = { menu: ['M4 6h16','M4 12h16','M4 18h16'], search: ['M21 21l-4.35-4.35','M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16'], plus: ['M12 5v14','M5 12h14'], more: ['M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2','M19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2','M5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2'], chevron: ['m9 18 6-6-6-6'], up: ['m18 15-6-6-6 6','M12 9v12'], paperclip: ['m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'], at: ['M16 8a4 4 0 1 0 0 8c1.1 0 2-.9 2-2V8','M12 22a10 10 0 1 1 10-10c0 3-1.5 4-4 4'], bot: ['M12 8V4H8','M2 14h2','M20 14h2','M15 13v2','M9 13v2','M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2'], diff: ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z','M14 2v6h6','M9 13h6','M12 10v6'], gauge: ['M20 13a8 8 0 1 0-16 0','m12 13 3-3'], x: ['M18 6 6 18','M6 6l12 12'], archive: ['M21 8v13H3V8','M1 3h22v5H1z','M10 12h4'] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(p[name]||[]).map((d,i)=>React.createElement('path',{d,key:i}))); }"
+];
 
 let getText: string => Js.Promise.t(string) = [%raw
   "url => fetch(url).then(async response => { const text = await response.text(); if (!response.ok) throw new Error(text || `HTTP ${response.status}`); return text; })"
@@ -50,6 +57,12 @@ let promptValue: unit => string = [%raw
 let fieldValue: string => string = [%raw
   "id => document.getElementById(id)?.value?.trim() || ''"
 ];
+let eventValue: React.Event.Form.t => string = [%raw
+  "event => event.target.value"
+];
+let selectedDirectoryPath: unit => string = [%raw
+  "() => document.getElementById('workspace-directory')?.value || ''"
+];
 let confirmRename: string => option(string) = [%raw
   "current => { const value = window.prompt('Rename session', current); return value && value.trim() ? value.trim() : undefined; }"
 ];
@@ -68,7 +81,7 @@ let scrollTimeline: unit => unit = [%raw
   "() => requestAnimationFrame(() => { const timeline = document.getElementById('timeline'); if (!timeline) return; const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 280; if (nearBottom || !timeline.dataset.seen) { timeline.scrollTop = timeline.scrollHeight; timeline.dataset.seen = 'true'; } })"
 ];
 let composerKeyDown: React.Event.Keyboard.t => unit = [%raw
-  "event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }"
+  "event => { if (event.key === 'Enter' && !event.shiftKey && (event.metaKey || event.ctrlKey || !matchMedia('(max-width: 760px)').matches)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }"
 ];
 
 let parseSnapshot: string => sessionSnapshot = [%raw
@@ -80,12 +93,19 @@ let parseSessions: string => array(sessionSummary) = [%raw
 let parseWorkspaces: string => array(workspaceSummary) = [%raw
   "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
 ];
+let parseDirectories: string => array(directoryCandidate) = [%raw
+  "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
 let sessionsForWorkspace:
   (array(sessionSummary), string) => array(sessionSummary) = [%raw
   "(sessions, workspaceId) => sessions.filter(session => session.workspaceId === workspaceId)"
 ];
-let selectedSessionTitle: (array(sessionSummary), string) => string = [%raw
-  "(sessions, id) => sessions.find(session => session.id === id)?.title || 'PISS'"
+let selectedSessionHarness: (array(sessionSummary), string) => string = [%raw
+  "(sessions, id) => sessions.find(session => session.id === id)?.harness === 'opencode' ? 'OpenCode' : 'Pi'"
+];
+let selectedWorkspaceName:
+  (array(sessionSummary), array(workspaceSummary), string) => string = [%raw
+  "(sessions, workspaces, id) => { const workspaceId = sessions.find(session => session.id === id)?.workspaceId; return workspaces.find(workspace => workspace.id === workspaceId)?.name || 'PISS'; }"
 ];
 let selectSessionId: (string, string) => string = [%raw
   "(text, current) => { try { const sessions = JSON.parse(text); if (!Array.isArray(sessions) || sessions.length === 0) return ''; return sessions.some(session => session.id === current) ? current : sessions[0].id; } catch (_) { return ''; } }"
@@ -98,6 +118,9 @@ let archiveUrl: string => string = [%raw
 ];
 let restoreUrl: string => string = [%raw
   "id => `/api/v2/sessions/${encodeURIComponent(id)}/restore`"
+];
+let directorySearchUrl: string => string = [%raw
+  "query => `/api/v2/workspace-directories?query=${encodeURIComponent(query)}`"
 ];
 let createdSessionId: string => string = [%raw
   "text => { try { return JSON.parse(text).id || ''; } catch (_) { return ''; } }"
@@ -323,11 +346,19 @@ module App = {
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
-    let (archivedJson, setArchivedJson) = React.useState(() => "[]");
     let (workspacesJson, setWorkspacesJson) = React.useState(() => "[]");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
     let (drawerOpen, setDrawerOpen) = React.useState(() => false);
     let (creatorOpen, setCreatorOpen) = React.useState(() => false);
+    let (creatorWorkspaceId, setCreatorWorkspaceId) =
+      React.useState(() => "");
+    let (workspaceCreatorOpen, setWorkspaceCreatorOpen) =
+      React.useState(() => false);
+    let (directoriesJson, setDirectoriesJson) = React.useState(() => "[]");
+    let (sessionMenuId, setSessionMenuId) = React.useState(() => "");
+    let (archiveTargetId, setArchiveTargetId) = React.useState(() => "");
+    let (archiveTargetTitle, setArchiveTargetTitle) =
+      React.useState(() => "");
     let (notice, setNotice) =
       React.useState(() => "Connecting to the durable worker...");
     let (submitting, setSubmitting) = React.useState(() => false);
@@ -373,12 +404,6 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignorePromise;
-      getText("/api/v2/sessions?archived=true")
-      ->thenPromise(text => {
-          setArchivedJson(_ => text);
-          Js.Promise.resolve();
-        })
-      ->ignorePromise;
     };
 
     React.useEffect0(() => {
@@ -421,7 +446,6 @@ module App = {
     let running = status == "running" || status == "requires_action";
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let sessions = parseSessions(sessionsJson);
-    let archivedSessions = parseSessions(archivedJson);
     let workspaces = parseWorkspaces(workspacesJson);
 
     let submitPrompt = event => {
@@ -519,13 +543,17 @@ module App = {
       refreshSession(id);
     };
 
-    let archiveSession = _ =>
-      if (!running && !submitting && activeSessionId != "") {
+    let archiveSession = id =>
+      if (!submitting && id != "") {
         setSubmitting(_ => true);
-        postText(archiveUrl(activeSessionId), "{}")
+        postText(archiveUrl(id), "{}")
         ->thenPromise(_ => {
-            setActiveSessionId(_ => "");
-            setEventsJson(_ => "[]");
+            if (id == activeSessionId) {
+              setActiveSessionId(_ => "");
+              setEventsJson(_ => "[]");
+            };
+            setArchiveTargetId(_ => "");
+            setSessionMenuId(_ => "");
             setNotice(_ => "Session archived; its ledger remains durable.");
             setSubmitting(_ => false);
             refresh();
@@ -539,26 +567,44 @@ module App = {
         ->ignore;
       };
 
-    let restoreSession = id =>
-      if (!submitting) {
+    let searchDirectories = _ => {
+      let query = fieldValue("workspace-search");
+      getText(directorySearchUrl(query))
+      ->thenPromise(text => {
+          setDirectoriesJson(_ => text);
+          Js.Promise.resolve();
+        })
+      ->catchPromise(error => {
+          setNotice(_ => errorMessage(error));
+          Js.Promise.resolve();
+        })
+      ->ignore;
+    };
+
+    let registerWorkspace = event => {
+      preventDefault(event);
+      let path = selectedDirectoryPath();
+      if (path != "" && !submitting) {
         setSubmitting(_ => true);
-        setNotice(_ => "Restoring the archived worker and ledger...");
-        postText(restoreUrl(id), "{}")
+        postText(
+          "/api/v2/workspaces",
+          jsonBody([|("path", Js.Json.string(path))|]),
+        )
         ->thenPromise(_ => {
-            setActiveSessionId(_ => id);
-            setEventsJson(_ => "[]");
-            setNotice(_ => "Archived session restored.");
             setSubmitting(_ => false);
+            setWorkspaceCreatorOpen(_ => false);
+            setNotice(_ => "Local workspace added.");
             refresh();
             Js.Promise.resolve();
           })
         ->catchPromise(error => {
-            setNotice(_ => errorMessage(error));
             setSubmitting(_ => false);
+            setNotice(_ => errorMessage(error));
             Js.Promise.resolve();
           })
         ->ignore;
       };
+    };
 
     let cancel = _ => {
       setNotice(_ => "Cancellation requested...");
@@ -605,7 +651,7 @@ module App = {
           type_="button"
           ariaLabel="Open workspaces and sessions"
           onClick={_ => setDrawerOpen(_ => true)}>
-          <i />
+          {icon("menu")}
         </button>
         <div className="brand-lockup">
           <span className="brand-mark">
@@ -613,7 +659,9 @@ module App = {
           </span>
           <div>
             <h1>
-              {React.string(selectedSessionTitle(sessions, activeSessionId))}
+              {React.string(
+                 selectedWorkspaceName(sessions, workspaces, activeSessionId),
+               )}
             </h1>
             <p className="eyebrow">
               {React.string("DURABLE AGENT WORKBENCH")}
@@ -626,7 +674,7 @@ module App = {
           disabled=true
           title="Session search is the next production slice"
           ariaLabel="Search sessions (coming next)">
-          {React.string("")}
+          {icon("search")}
         </button>
         <div className={"connection-pill connection-" ++ status}>
           <i />
@@ -653,8 +701,11 @@ module App = {
               className="create-session-trigger"
               type_="button"
               ariaLabel="Create session"
-              onClick={_ => setCreatorOpen(_ => true)}>
-              {React.string("+")}
+              onClick={_ => {
+                setWorkspaceCreatorOpen(_ => true);
+                searchDirectories();
+              }}>
+              {icon("plus")}
             </button>
           </div>
           <nav className="session-index" ariaLabel="Workspaces and sessions">
@@ -666,7 +717,7 @@ module App = {
                    className="workspace-group" key={workspaceId(workspace)}>
                    <header className="workspace-heading">
                      <span className="workspace-chevron">
-                       {React.string("v")}
+                       {icon("chevron")}
                      </span>
                      <span>
                        <strong>
@@ -681,8 +732,11 @@ module App = {
                        ariaLabel={
                          "New session in " ++ workspaceName(workspace)
                        }
-                       onClick={_ => setCreatorOpen(_ => true)}>
-                       {React.string("+")}
+                       onClick={_ => {
+                         setCreatorWorkspaceId(_ => workspaceId(workspace));
+                         setCreatorOpen(_ => true);
+                       }}>
+                       {icon("plus")}
                      </button>
                    </header>
                    <div className="session-list">
@@ -724,15 +778,51 @@ module App = {
                                     </small>
                                   </span>
                                 </button>
-                                <button
-                                  className="session-more"
-                                  type_="button"
-                                  ariaLabel={
-                                    "Rename " ++ sessionTitle(session)
-                                  }
-                                  onClick={_ => renameSession(session)}>
-                                  {React.string("...")}
-                                </button>
+                                <div className="session-menu-wrap">
+                                  <button
+                                    className="session-more"
+                                    type_="button"
+                                    ariaLabel={
+                                      "Session settings for "
+                                      ++ sessionTitle(session)
+                                    }
+                                    ariaExpanded={sessionMenuId == id}
+                                    onClick={_ =>
+                                      setSessionMenuId(current =>
+                                        current == id ? "" : id
+                                      )
+                                    }>
+                                    {icon("more")}
+                                  </button>
+                                  {sessionMenuId == id
+                                     ? <div
+                                         className="session-menu" role="menu">
+                                         <button
+                                           type_="button"
+                                           role="menuitem"
+                                           onClick={_ => {
+                                             setSessionMenuId(_ => "");
+                                             renameSession(session);
+                                           }}>
+                                           {React.string("RENAME")}
+                                         </button>
+                                         <button
+                                           className="danger"
+                                           type_="button"
+                                           role="menuitem"
+                                           onClick={_ => {
+                                             setArchiveTargetId(_ => id);
+                                             setArchiveTargetTitle(_ =>
+                                               sessionTitle(session)
+                                             );
+                                             setSessionMenuId(_ => "");
+                                           }}>
+                                           {icon("archive")}
+                                           {React.string("ARCHIVE")}
+                                         </button>
+                                       </div>
+                                     : React.null}
+                                </div>
                               </div>;
                             },
                             workspaceSessions,
@@ -744,36 +834,6 @@ module App = {
                workspaces,
              )
              ->React.array}
-            {Array.length(archivedSessions) == 0
-               ? React.null
-               : <div className="archive-shelf">
-                   <div className="archive-shelf-heading">
-                     <span> {React.string("ARCHIVED")} </span>
-                     <b> {React.int(Array.length(archivedSessions))} </b>
-                   </div>
-                   {Array.map(
-                      session =>
-                        <div
-                          className="archived-row" key={sessionId(session)}>
-                          <span>
-                            <strong>
-                              {React.string(sessionTitle(session))}
-                            </strong>
-                            <small>
-                              {React.string(sessionHarness(session))}
-                            </small>
-                          </span>
-                          <button
-                            type_="button"
-                            disabled=submitting
-                            onClick={_ => restoreSession(sessionId(session))}>
-                            {React.string("Restore")}
-                          </button>
-                        </div>,
-                      archivedSessions,
-                    )
-                    ->React.array}
-                 </div>}
           </nav>
           <dl className="runtime-facts">
             <div>
@@ -789,15 +849,6 @@ module App = {
               <dd> {React.int(snapshotSequence(snapshot))} </dd>
             </div>
           </dl>
-          <div className="session-actions">
-            <button
-              className="archive-session-action"
-              type_="button"
-              disabled={running || submitting || Array.length(sessions) <= 1}
-              onClick=archiveSession>
-              {React.string("Archive current")}
-            </button>
-          </div>
           <div className="boundary-note">
             <span> {React.string("REPLACEABLE CONTROL")} </span>
             <p>
@@ -819,6 +870,22 @@ module App = {
                )}
             </span>
           </div>
+          <nav className="capability-tabs" ariaLabel="Session views">
+            <button className="active" type_="button">
+              {icon("bot")}
+              {React.string("Agent")}
+            </button>
+            <button
+              disabled=true type_="button" title="Changes view is coming next">
+              {icon("diff")}
+              {React.string("Changes")}
+            </button>
+            <button
+              disabled=true type_="button" title="Details view is coming next">
+              {icon("gauge")}
+              {React.string("Details")}
+            </button>
+          </nav>
           <div id="timeline" className="timeline" ariaLive="polite">
             {Array.length(timeline) == 0
                ? <div className="empty-state">
@@ -846,39 +913,62 @@ module App = {
           <div className="composer-wrap">
             <p className="notice" role="status"> {React.string(notice)} </p>
             <form className="composer" onSubmit=submitPrompt>
-              <label htmlFor="prompt-input">
-                {React.string("Message agent")}
-              </label>
               <textarea
                 id="prompt-input"
                 name="prompt"
-                rows=4
+                rows=2
                 maxLength=65536
+                ariaLabel="Message agent"
                 disabled={running || submitting}
                 onKeyDown=composerKeyDown
                 placeholder={
                   running
                     ? "The agent is working. Cancel the turn to interrupt it."
-                    : "Inspect the worker protocol and suggest the next smallest improvement..."
+                    : "Message agent / commands @ files"
                 }
               />
-              <div className="composer-actions">
-                <span> {React.string("ACP v1 / durable dispatch")} </span>
+              <div className="composer-footer">
+                <div className="composer-insertions">
+                  <button
+                    type_="button"
+                    disabled=true
+                    title="Image attachments are coming next"
+                    ariaLabel="Attach images">
+                    {icon("plus")}
+                  </button>
+                  <button
+                    type_="button"
+                    disabled=true
+                    title="File mentions are coming next"
+                    ariaLabel="Mention a file">
+                    {icon("at")}
+                  </button>
+                </div>
+                <div className="composer-config">
+                  <button
+                    type_="button"
+                    disabled=true
+                    title="Model configuration is coming next">
+                    {React.string(
+                       selectedSessionHarness(sessions, activeSessionId),
+                     )}
+                    {icon("chevron")}
+                  </button>
+                </div>
                 {running
                    ? <button
-                       className="cancel-action" type_="button" onClick=cancel>
-                       {React.string("Cancel turn")}
+                       className="cancel-action"
+                       type_="button"
+                       onClick=cancel
+                       ariaLabel="Cancel turn">
+                       {icon("x")}
                      </button>
                    : <button
                        className="send-action"
                        type_="submit"
-                       disabled=submitting>
-                       <span>
-                         {React.string(
-                            submitting ? "Dispatching" : "Send to worker",
-                          )}
-                       </span>
-                       <b> {React.string(fromCodePoint(0x2192))} </b>
+                       disabled=submitting
+                       ariaLabel="Send message">
+                       {submitting ? React.string("...") : icon("up")}
                      </button>}
               </div>
             </form>
@@ -914,7 +1004,13 @@ module App = {
                  {React.string("WORKSPACE")}
                </label>
                <select
-                 id="new-session-workspace" name="workspace" required=true>
+                 id="new-session-workspace"
+                 name="workspace"
+                 required=true
+                 value=creatorWorkspaceId
+                 onChange={event =>
+                   setCreatorWorkspaceId(_ => eventValue(event))
+                 }>
                  {Array.map(
                     workspace =>
                       <option
@@ -948,6 +1044,118 @@ module App = {
                  </button>
                </footer>
              </form>
+           </div>
+         : React.null}
+      {workspaceCreatorOpen
+         ? <div className="dialog-backdrop" role="presentation">
+             <form
+               className="session-dialog workspace-dialog"
+               onSubmit=registerWorkspace>
+               <header>
+                 <div>
+                   <span> {React.string("ADD WORKSPACE")} </span>
+                   <h2> {React.string("Choose a local directory")} </h2>
+                 </div>
+                 <button
+                   type_="button"
+                   ariaLabel="Close workspace dialog"
+                   onClick={_ => setWorkspaceCreatorOpen(_ => false)}>
+                   {icon("x")}
+                 </button>
+               </header>
+               <label htmlFor="workspace-search">
+                 {React.string("SEARCH THIS COMPUTER")}
+               </label>
+               <div className="directory-search">
+                 <input
+                   id="workspace-search"
+                   placeholder="Search directories..."
+                   onInput=searchDirectories
+                 />
+                 {icon("search")}
+               </div>
+               <label htmlFor="workspace-directory">
+                 {React.string("DIRECTORY")}
+               </label>
+               <select id="workspace-directory" required=true size=8>
+                 {Array.map(
+                    directory =>
+                      <option
+                        value={directoryPath(directory)}
+                        key={directoryPath(directory)}>
+                        {React.string(
+                           directoryName(directory)
+                           ++ " / "
+                           ++ directoryPath(directory),
+                         )}
+                      </option>,
+                    parseDirectories(directoriesJson),
+                  )
+                  ->React.array}
+               </select>
+               <p className="dialog-help">
+                 {React.string(
+                    "Only directories inside administrator-approved local roots are available.",
+                  )}
+               </p>
+               <footer>
+                 <button
+                   type_="button"
+                   onClick={_ => setWorkspaceCreatorOpen(_ => false)}>
+                   {React.string("CANCEL")}
+                 </button>
+                 <button
+                   className="launch-session"
+                   type_="submit"
+                   disabled=submitting>
+                   {React.string(submitting ? "ADDING..." : "ADD WORKSPACE")}
+                 </button>
+               </footer>
+             </form>
+           </div>
+         : React.null}
+      {archiveTargetId != ""
+         ? <div className="dialog-backdrop" role="presentation">
+             <section
+               className="session-dialog archive-dialog"
+               role="alertdialog"
+               ariaModal=true
+               ariaLabel="Archive session">
+               <header>
+                 <div>
+                   <span> {React.string("ARCHIVE SESSION")} </span>
+                   <h2>
+                     {React.string("Archive " ++ archiveTargetTitle ++ "?")}
+                   </h2>
+                 </div>
+                 <button
+                   type_="button"
+                   ariaLabel="Close archive dialog"
+                   onClick={_ => setArchiveTargetId(_ => "")}>
+                   {icon("x")}
+                 </button>
+               </header>
+               <p>
+                 {React.string(
+                    "The worker will stop, but its durable ledger will remain available for a future restoration interface.",
+                  )}
+               </p>
+               <footer>
+                 <button
+                   type_="button" onClick={_ => setArchiveTargetId(_ => "")}>
+                   {React.string("CANCEL")}
+                 </button>
+                 <button
+                   className="danger-action"
+                   type_="button"
+                   disabled=submitting
+                   onClick={_ => archiveSession(archiveTargetId)}>
+                   {React.string(
+                      submitting ? "ARCHIVING..." : "ARCHIVE SESSION",
+                    )}
+                 </button>
+               </footer>
+             </section>
            </div>
          : React.null}
     </main>;

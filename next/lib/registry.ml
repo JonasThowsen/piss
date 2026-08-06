@@ -211,6 +211,18 @@ let upsert_workspace registry ~id ~name ~root =
       bind_float statement 4 (Unix.gettimeofday ());
       expect_done "upsert workspace" statement)
 
+let find_workspace_by_root registry root =
+  with_statement registry.db
+    "SELECT id,name,root,created_at FROM workspaces WHERE root = ?"
+    (fun statement ->
+      bind_text statement 1 root;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (workspace_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find workspace by root" rc;
+          None)
+
 let list_workspaces registry =
   with_statement registry.db
     "SELECT id,name,root,created_at FROM workspaces ORDER BY created_at ASC"
