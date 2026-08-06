@@ -46,6 +46,12 @@ let preventDefault: React.Event.Form.t => unit = [%raw
 let isRejectOption: string => bool = [%raw
   "value => value.includes('reject')"
 ];
+let scrollTimeline: unit => unit = [%raw
+  "() => requestAnimationFrame(() => { const timeline = document.getElementById('timeline'); if (!timeline) return; const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 280; if (nearBottom || !timeline.dataset.seen) { timeline.scrollTop = timeline.scrollHeight; timeline.dataset.seen = 'true'; } })"
+];
+let composerKeyDown: React.Event.Keyboard.t => unit = [%raw
+  "event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }"
+];
 
 let parseSnapshot: string => sessionSnapshot = [%raw
   "text => { try { return JSON.parse(text); } catch (_) { return { status: 'offline', workerPid: 0, harnessPid: 0, lastSequence: 0 }; } }"
@@ -233,6 +239,7 @@ module App = {
       getText("/api/v2/events?recent=500")
       ->thenPromise(text => {
           setEventsJson(_ => text);
+          scrollTimeline();
           Js.Promise.resolve();
         })
       ->ignorePromise;
@@ -380,7 +387,7 @@ module App = {
                )}
             </span>
           </div>
-          <div className="timeline" ariaLive="polite">
+          <div id="timeline" className="timeline" ariaLive="polite">
             {Array.length(timeline) == 0
                ? <div className="empty-state">
                    <span> {React.string(fromCodePoint(0x2198))} </span>
@@ -416,6 +423,7 @@ module App = {
                 rows=4
                 maxLength=65536
                 disabled={running || submitting}
+                onKeyDown=composerKeyDown
                 placeholder={
                   running
                     ? "Pi is working. Cancel the turn to interrupt it."

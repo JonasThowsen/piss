@@ -52,7 +52,10 @@ let parse_after uri =
   match Uri.get_query_param uri "after" with
   | None -> Ok 0L
   | Some value -> (
-      try Ok (Int64.of_string value)
+      try
+        let after = Int64.of_string value in
+        if after < 0L then Error "after must be a non-negative integer"
+        else Ok after
       with Failure _ -> Error "after must be a non-negative integer")
 
 let parse_limit value =

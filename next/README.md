@@ -1,34 +1,58 @@
-# PISS next — OCaml replaceability tracer
+# PISS next — usable OCaml agent control plane
 
-This directory contains the first vertical slice of the [OCaml rewrite specification](../docs/OCAML-REWRITE.md).
+This directory contains the first usable vertical slice of the [OCaml rewrite specification](../docs/OCAML-REWRITE.md).
 
-It is intentionally narrow, but its boundaries are real:
+Its boundaries are real:
 
 ```text
-OCaml/Melange browser
+Reason/Melange browser
         |
-        | HTTP
+        | authenticated same-origin HTTP
         v
 pissd-next (replaceable)
         |
-        | negotiated JSONL over an owner-only Unix socket
+        | negotiated bounded JSONL over an owner-only Unix socket
         v
-piss-session-worker (durable SQLite event/command ledger)
+piss-session-worker (independently supervised; SQLite WAL)
         |
-        | ACP v1 JSON-RPC over stdio
+        | bidirectional ACP v1 JSON-RPC over stdio
         v
-piss-mock-agent
+pi-acp (pinned Nix package)
+        |
+        | Pi RPC
+        v
+Pi coding agent
 ```
 
-## What the tracer proves
+The mock ACP agent remains only as a deterministic integration-test fixture.
 
-- The control plane does not own the agent process.
-- The worker and agent retain their PIDs across a forced control-plane replacement.
-- ACP updates produced while the control plane is absent are committed to SQLite WAL.
-- The replacement control plane reconnects through a version-negotiated Unix socket and projects the retained events.
-- A repeated `(session, commandId)` returns the durable result and is not dispatched twice.
-- The browser is written in Reason, compiled by Melange through Dune, and reconnects without a page reload.
-- Native and browser artifacts build reproducibly through Nix.
+## Current user workflow
+
+The deployed Reason application provides:
+
+- an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
+- streamed assistant messages;
+- structured tool-call cards and output;
+- permission decisions for ACP agents that request them;
+- active-turn cancellation;
+- worker, adapter, and event-sequence telemetry;
+- automatic reconnection to the durable timeline.
+
+The NixOS module runs the control plane and worker as separate user-systemd services. Updating or restarting `piss-ocaml.service` does not restart the worker, `pi-acp`, Pi, or an active tool. If the worker itself restarts, it uses ACP `session/load` to reattach to the Pi session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
+
+## Security boundary
+
+The deployed control plane:
+
+- binds only to loopback and is published through an independent Tailscale Serve node;
+- requires an allowlisted `Tailscale-User-Login` for every route except `/health`;
+- requires same-origin JSON mutations;
+- uses a restrictive content security policy and denies framing;
+- bounds HTTP bodies, worker frames, prompts, event pages, command IDs, and retained state;
+- starts only fixed harness commands from the NixOS service definition;
+- passes model credentials and the SSH agent only to the worker service.
+
+Tailscale Serve strips client-supplied identity headers before injecting the authenticated user identity. Tagged source devices do not receive a user identity header and therefore cannot use the browser/API routes.
 
 ## Build and test
 
@@ -36,33 +60,41 @@ The repository is Nix-managed:
 
 ```bash
 nix develop
-npm ci                     # JavaScript runtime modules used by the Melange bundle
+npm ci
 dune build @all @web-bundle
 dune runtest
+dune build @interaction-test
 dune build @replaceability-test
 ```
 
-Production-style package checks:
+Production packages:
 
 ```bash
+nix build .#pi-acp
 nix build .#piss-next-native
 nix build .#piss-next-web
+nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-The replaceability test starts a worker and ACP mock, dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a new control-plane generation, and verifies unchanged worker/harness PIDs plus exactly-once command completion.
+`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion.
 
-## Run the browser tracer
+A real-harness smoke has also exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol.
+
+## Local real-Pi run
+
+Build first, then provide a writable HOME with normal Pi configuration:
 
 ```bash
 state="$(mktemp -d)"
+adapter="$(nix build .#pi-acp --no-link --print-out-paths)"
 
 dune exec piss-session-worker -- \
   --socket "$state/worker.sock" \
   --database "$state/worker.sqlite3" \
-  --session tracer-session \
-  --worker tracer-worker \
+  --session development-session \
+  --worker development-worker \
   --workspace "$PWD" \
-  --harness "$PWD/_build/default/next/mock_agent/main.exe"
+  --harness "$adapter/bin/pi-acp"
 ```
 
 In another terminal:
@@ -73,48 +105,34 @@ dune exec pissd-next -- \
   --worker-socket "$state/worker.sock" \
   --public "$PWD/web-next/public" \
   --app-js "$PWD/_build/default/web-next/app.js" \
-  --generation development
+  --generation development \
+  --dev-bypass-auth
 ```
 
-Open <http://127.0.0.1:4318> and choose **Start stability proof**.
+Open <http://127.0.0.1:4318>.
 
-## Current durability boundary
+## Durability semantics
 
-The worker database uses:
+The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, unique command/request IDs, and monotonic event sequences.
 
-- WAL journal mode;
-- `synchronous=FULL`;
-- foreign keys;
-- a busy timeout;
-- a unique command ID and request ID;
-- an autoincrementing event sequence;
-- transactions around command acceptance and state transitions.
+A command is committed before it is written to the ACP agent. Duplicate command IDs return the existing state and are never dispatched again. A write failure after acceptance becomes `ambiguous`; an interrupted worker reconciles accepted/dispatched commands to `ambiguous` instead of silently retrying consequential work. Completed, cancelled, rejected, and ambiguous outcomes are explicit.
 
-A command is durably accepted before it is written to the ACP agent. A duplicate command returns its existing state. A write failure after durable acceptance transitions the command to `ambiguous` rather than retrying it invisibly.
+The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the oldest 512 events are compacted while SQLite's autoincrement sequence remains monotonic. The browser requests the newest bounded page, while ACP `session/load` remains the source for full harness conversation replay after worker replacement.
 
-## Deliberate tracer limitations
+## Deliberate current limitations
 
-- The mock agent implements only the ACP methods needed by this slice.
-- One worker handles one ACP session and one active prompt at a time by convention; the next slice will enforce this in the domain reducer.
-- `pissd-next` is development-loopback-only and does not yet implement production Tailscale identity authentication.
-- The browser polls the bounded event endpoint once per second; resumable SSE follows after replay semantics are finalized.
-- Worker creation is manual; the production worker launcher must use independently supervised user-systemd units with fixed arguments.
-- The worker has no production retention pass yet, although all endpoint and frame reads are bounded.
-- Existing PISS metadata is not read or migrated.
-- The current TypeScript application remains the reference for features not represented by this tracer.
+- One deployed worker owns one active ACP session and allows one prompt turn at a time.
+- Dynamic create/list/archive and independently supervised multi-session workers are not exposed in the browser yet.
+- OpenCode has passed a real ACP smoke through the same path, but the deployed Tailnet service currently selects Pi.
+- The browser uses bounded 750 ms polling rather than resumable SSE.
+- Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
+- Existing TypeScript PISS workflow metadata is not migrated.
+- Browser automation, workflow authority, reviews, notifications, and the rest of the TypeScript product remain outside this slice.
 
-These limitations are at explicit boundaries. None weakens the replaceability proof.
+## Next production slices
 
-## Next slice
-
-Connect one real ACP harness through the existing worker boundary, initially `pi-acp` or OpenCode, and implement the shared contract for:
-
-- capability negotiation;
-- messages and tool calls;
-- permission requests;
-- session configuration;
-- cancellation;
-- malformed/oversized ACP containment;
-- agent exit and restart reconciliation.
-
-Only after the same worker/control path supports a second harness should additional product features move from the TypeScript implementation.
+1. Add a narrow launcher that creates one fixed-argument user-systemd worker per durable session.
+2. Add create/list/archive/load UI backed by that launcher and a control-plane session registry.
+3. Deploy OpenCode as the second selectable harness and run the replaceability suite against both.
+4. Replace polling with resumable SSE using the existing monotonic event cursor.
+5. Port one complete PISS workflow through the real authority and receipt model.

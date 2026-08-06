@@ -108,12 +108,14 @@ let row_count store table =
   scalar_int64 store ~operation:("count " ^ table)
     ("SELECT COUNT(*) FROM " ^ table)
 
-let append_event store ~kind payload =
+let compact_events_if_needed store =
   if row_count store "events" >= Int64.of_int max_retained_events then
-    raise
-      (Store_error
-         (Printf.sprintf "event retention limit reached (%d)"
-            max_retained_events));
+    exec store.db
+      "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER \
+       BY sequence ASC LIMIT 512)"
+
+let append_event store ~kind payload =
+  compact_events_if_needed store;
   let created_at = Unix.gettimeofday () in
   with_statement store.db
     "INSERT INTO events(kind, payload, created_at) VALUES (?, ?, ?)"

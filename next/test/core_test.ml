@@ -32,6 +32,25 @@ let test_command_deduplication () =
     "durable state is returned" "accepted"
     (Domain.command_state_to_string duplicate.state)
 
+let test_event_retention_compacts () =
+  with_store @@ fun store ->
+  Store.transaction store (fun () ->
+      for index = 1 to Store.max_retained_events + 1 do
+        ignore
+          (Store.append_event store
+             ~kind:("event-" ^ string_of_int index)
+             `Null)
+      done);
+  let count = Store.row_count store "events" |> Int64.to_int in
+  Alcotest.(check bool)
+    "bounded" true
+    (count <= Store.max_retained_events && count > 0);
+  let recent = Store.list_recent_events store ~limit:1 in
+  Alcotest.(check string)
+    "newest retained"
+    ("event-" ^ string_of_int (Store.max_retained_events + 1))
+    (List.hd recent).kind
+
 let test_restart_reconciliation () =
   let path = Filename.temp_file "piss-reconcile-" ".sqlite3" in
   Fun.protect
@@ -153,6 +172,8 @@ let () =
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
+          Alcotest.test_case "event retention compacts" `Quick
+            test_event_retention_compacts;
           Alcotest.test_case "restart reconciliation" `Quick
             test_restart_reconciliation;
         ] );
