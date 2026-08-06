@@ -8,6 +8,7 @@ type command_state =
   | Dispatched
   | Acknowledged
   | Completed
+  | Cancelled
   | Ambiguous
   | Rejected
 
@@ -42,6 +43,7 @@ let command_state_to_string = function
   | Dispatched -> "dispatched"
   | Acknowledged -> "acknowledged"
   | Completed -> "completed"
+  | Cancelled -> "cancelled"
   | Ambiguous -> "ambiguous"
   | Rejected -> "rejected"
 
@@ -51,6 +53,7 @@ let command_state_of_string = function
   | "dispatched" -> Ok Dispatched
   | "acknowledged" -> Ok Acknowledged
   | "completed" -> Ok Completed
+  | "cancelled" -> Ok Cancelled
   | "ambiguous" -> Ok Ambiguous
   | "rejected" -> Ok Rejected
   | value -> Error ("unknown command state: " ^ value)

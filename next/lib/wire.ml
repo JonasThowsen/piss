@@ -3,6 +3,8 @@ type request =
   | Snapshot
   | Events of { after : int64; limit : int }
   | Prompt of { command_id : string; text : string }
+  | Cancel
+  | Permission of { request_id : string; option_id : string option }
 
 type response = (Yojson.Safe.t, string) result
 
@@ -54,9 +56,29 @@ let request_of_yojson json =
   | "prompt" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
-      if String.length command_id > 128 then Error "commandId is too long"
+      if command_id = "" then Error "commandId must not be empty"
+      else if String.length command_id > 128 then Error "commandId is too long"
+      else if text = "" then Error "prompt must not be empty"
       else if String.length text > 64 * 1024 then Error "prompt is too large"
       else Ok (Prompt { command_id; text })
+  | "cancel" -> Ok Cancel
+  | "permission" ->
+      let* request_id = string_member "requestId" json in
+      let option_id =
+        match member "optionId" json with
+        | `String value -> Ok (Some value)
+        | `Null -> Ok None
+        | _ -> Error "optionId must be a string or null"
+      in
+      let* option_id = option_id in
+      if request_id = "" || String.length request_id > 128 then
+        Error "requestId must contain between 1 and 128 characters"
+      else if
+        Option.fold ~none:false
+          ~some:(fun value -> String.length value > 128)
+          option_id
+      then Error "optionId is too long"
+      else Ok (Permission { request_id; option_id })
   | value -> Error ("unknown operation: " ^ value)
 
 let response_to_yojson = function

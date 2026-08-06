@@ -9,7 +9,13 @@ let
   cfg = config.services.piss-next;
   nativePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-native;
   webPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-web;
+  defaultAdapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
   serviceStateName = "piss-ocaml";
+  harnessCommand =
+    if cfg.harness == "pi" then
+      "${cfg.adapterPackage}/bin/pi-acp"
+    else
+      "${cfg.package}/bin/piss-mock-agent";
   runtimeDirectory = "%t/${serviceStateName}";
   tailscaleStateName = cfg.tailscale.stateName;
   tailscaleSocket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
@@ -90,6 +96,40 @@ in
       description = "Reason/Melange browser package.";
     };
 
+    adapterPackage = lib.mkOption {
+      type = lib.types.package;
+      default = defaultAdapterPackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.pi-acp";
+      description = "Pinned Pi ACP adapter package.";
+    };
+
+    harness = lib.mkOption {
+      type = lib.types.enum [
+        "pi"
+        "mock"
+      ];
+      default = "pi";
+      description = "ACP harness used by the deployed session worker.";
+    };
+
+    piCommand = lib.mkOption {
+      type = lib.types.str;
+      default = "pi";
+      description = "Absolute Pi CLI path used by pi-acp.";
+    };
+
+    environmentFiles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Absolute systemd EnvironmentFile paths containing model provider credentials.";
+    };
+
+    sshAgentSocket = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "SSH agent socket inherited by the real agent worker.";
+    };
+
     port = lib.mkOption {
       type = lib.types.port;
       default = 4318;
@@ -100,6 +140,12 @@ in
       type = lib.types.str;
       default = "/home/jonas/coding/piss-ocaml";
       description = "Authorized workspace passed to the tracer ACP session.";
+    };
+
+    allowedUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Tailscale user logins authorized to use the agent control plane.";
     };
 
     tailscale = {
@@ -134,6 +180,22 @@ in
         message = "services.piss-next.workspace must be absolute";
       }
       {
+        assertion = cfg.allowedUsers != [ ];
+        message = "services.piss-next.allowedUsers must contain at least one Tailscale login";
+      }
+      {
+        assertion = cfg.harness != "pi" || lib.hasPrefix "/" cfg.piCommand;
+        message = "services.piss-next.piCommand must be absolute for the Pi harness";
+      }
+      {
+        assertion = lib.all (path: lib.hasPrefix "/" path) cfg.environmentFiles;
+        message = "services.piss-next.environmentFiles entries must be absolute";
+      }
+      {
+        assertion = cfg.sshAgentSocket == null || lib.hasPrefix "/" cfg.sshAgentSocket;
+        message = "services.piss-next.sshAgentSocket must be absolute";
+      }
+      {
         assertion = cfg.tailscale.authKeyFile == null || lib.hasPrefix "/" cfg.tailscale.authKeyFile;
         message = "services.piss-next.tailscale.authKeyFile must be absolute";
       }
@@ -160,8 +222,9 @@ in
           "--workspace"
           cfg.workspace
           "--harness"
-          "${cfg.package}/bin/piss-mock-agent"
+          harnessCommand
         ];
+        EnvironmentFile = cfg.environmentFiles;
         Restart = "on-failure";
         RestartSec = 2;
         RuntimeDirectory = serviceStateName;
@@ -174,12 +237,28 @@ in
         PrivateTmp = true;
         ProtectHome = "read-only";
         ProtectSystem = "strict";
-        ReadWritePaths = [ "%S/${serviceStateName}" ];
+        ReadWritePaths = [
+          "%S/${serviceStateName}"
+          "-%h/.pi"
+          cfg.workspace
+        ];
         LockPersonality = true;
-        RestrictAddressFamilies = [ "AF_UNIX" ];
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
+      };
+      environment = {
+        PI_ACP_ENABLE_EMBEDDED_CONTEXT = "true";
+        PI_ACP_PI_COMMAND = cfg.piCommand;
+      }
+      // lib.optionalAttrs (cfg.sshAgentSocket != null) {
+        PISS_SSH_AUTH_SOCK = cfg.sshAgentSocket;
+        SSH_AUTH_SOCK = cfg.sshAgentSocket;
       };
     };
 
@@ -189,19 +268,25 @@ in
       after = [ "piss-ocaml-worker.service" ];
       requires = [ "piss-ocaml-worker.service" ];
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          "${cfg.package}/bin/pissd-next"
-          "--port"
-          (toString cfg.port)
-          "--worker-socket"
-          "${runtimeDirectory}/worker.sock"
-          "--public"
-          "${cfg.webPackage}/share/piss-next/public"
-          "--app-js"
-          "${cfg.webPackage}/share/piss-next/public/app.js"
-          "--generation"
-          (toString cfg.package)
-        ];
+        ExecStart = lib.escapeShellArgs (
+          [
+            "${cfg.package}/bin/pissd-next"
+            "--port"
+            (toString cfg.port)
+            "--worker-socket"
+            "${runtimeDirectory}/worker.sock"
+            "--public"
+            "${cfg.webPackage}/share/piss-next/public"
+            "--app-js"
+            "${cfg.webPackage}/share/piss-next/public/app.js"
+            "--generation"
+            (toString cfg.package)
+          ]
+          ++ lib.concatMap (user: [
+            "--allowed-user"
+            user
+          ]) cfg.allowedUsers
+        );
         Restart = "always";
         RestartSec = 2;
         UMask = "0077";

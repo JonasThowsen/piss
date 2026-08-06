@@ -85,6 +85,25 @@ let last_sequence store =
   scalar_int64 store ~operation:"read last sequence"
     "SELECT COALESCE(MAX(sequence), 0) FROM events"
 
+let get_metadata store key =
+  with_statement store.db "SELECT value FROM metadata WHERE key = ?"
+    (fun statement ->
+      bind_text statement 1 key;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (Sqlite3.column_text statement 0)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "read metadata" rc;
+          None)
+
+let set_metadata store key value =
+  with_statement store.db
+    "INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE \
+     SET value = excluded.value" (fun statement ->
+      bind_text statement 1 key;
+      bind_text statement 2 value;
+      expect_done "write metadata" statement)
+
 let row_count store table =
   scalar_int64 store ~operation:("count " ^ table)
     ("SELECT COUNT(*) FROM " ^ table)
@@ -176,6 +195,7 @@ let accept_command store ~command_id ~request_id ~prompt =
                   [
                     ("commandId", `String command_id);
                     ("requestId", `String request_id);
+                    ("text", `String prompt);
                   ]));
           { state = Accepted; duplicate = false })
 
