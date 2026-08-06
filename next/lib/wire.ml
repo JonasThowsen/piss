@@ -6,6 +6,8 @@ type request =
   | New_session
   | Prompt of { command_id : string; text : string }
   | Cancel
+  | Config_options
+  | Set_config_option of { config_id : string; value : string }
   | Permission of { request_id : string; option_id : string option }
   | Peer_event of {
       kind : string;
@@ -75,6 +77,15 @@ let request_of_yojson json =
       else if String.length text > 64 * 1024 then Error "prompt is too large"
       else Ok (Prompt { command_id; text })
   | "cancel" -> Ok Cancel
+  | "config_options" -> Ok Config_options
+  | "set_config_option" ->
+      let* config_id = string_member "configId" json in
+      let* value = string_member "value" json in
+      if config_id = "" || String.length config_id > 128 then
+        Error "configId must contain between 1 and 128 characters"
+      else if value = "" || String.length value > 512 then
+        Error "value must contain between 1 and 512 characters"
+      else Ok (Set_config_option { config_id; value })
   | "peer_event" ->
       let* kind = string_member "kind" json in
       let* request_id = string_member "requestId" json in

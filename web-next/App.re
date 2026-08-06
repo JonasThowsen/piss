@@ -6,6 +6,8 @@ type sessionSnapshot;
 type sessionSummary;
 type workspaceSummary;
 type directoryCandidate;
+type configOption;
+type configChoice;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -32,11 +34,19 @@ external sessionWorkspaceId: sessionSummary => string = "workspaceId";
 [@mel.get] external workspaceRoot: workspaceSummary => string = "root";
 [@mel.get] external directoryPath: directoryCandidate => string = "path";
 [@mel.get] external directoryName: directoryCandidate => string = "name";
+[@mel.get] external configId: configOption => string = "id";
+[@mel.get] external configCategory: configOption => string = "category";
+[@mel.get] external configName: configOption => string = "name";
+[@mel.get]
+external configCurrentValue: configOption => string = "currentValue";
+[@mel.get]
+external configChoices: configOption => array(configChoice) = "options";
+[@mel.get] external choiceValue: configChoice => string = "value";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const p = { menu: ['M4 6h16','M4 12h16','M4 18h16'], search: ['M21 21l-4.35-4.35','M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16'], plus: ['M12 5v14','M5 12h14'], more: ['M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2','M19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2','M5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2'], chevron: ['m9 18 6-6-6-6'], up: ['m18 15-6-6-6 6','M12 9v12'], paperclip: ['m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'], at: ['M16 8a4 4 0 1 0 0 8c1.1 0 2-.9 2-2V8','M12 22a10 10 0 1 1 10-10c0 3-1.5 4-4 4'], bot: ['M12 8V4H8','M2 14h2','M20 14h2','M15 13v2','M9 13v2','M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2'], diff: ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z','M14 2v6h6','M9 13h6','M12 10v6'], gauge: ['M20 13a8 8 0 1 0-16 0','m12 13 3-3'], x: ['M18 6 6 18','M6 6l12 12'], archive: ['M21 8v13H3V8','M1 3h22v5H1z','M10 12h4'] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(p[name]||[]).map((d,i)=>React.createElement('path',{d,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
 ];
 
 let getText: string => Js.Promise.t(string) = [%raw
@@ -90,6 +100,21 @@ let parseWorkspaces: string => array(workspaceSummary) = [%raw
 let parseDirectories: string => array(directoryCandidate) = [%raw
   "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
 ];
+let parseConfigOptions: string => array(configOption) = [%raw
+  "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
+let configOptionsFromSnapshot: string => string = [%raw
+  "text => { try { const value = JSON.parse(text).configOptions; return JSON.stringify(Array.isArray(value) ? value : []); } catch (_) { return '[]'; } }"
+];
+let findConfigOption: (array(configOption), string) => option(configOption) = [%raw
+  "(options, category) => options.find(option => option.category === category)"
+];
+let configCurrentName: configOption => string = [%raw
+  "option => { const name = option.options?.find(choice => choice.value === option.currentValue)?.name || option.currentValue || 'Choose'; return name.includes('/') ? name.slice(name.indexOf('/') + 1) : name; }"
+];
+let choiceDisplayName: configChoice => string = [%raw
+  "choice => choice.name.includes('/') ? choice.name.slice(choice.name.indexOf('/') + 1) : choice.name"
+];
 let sessionsForWorkspace:
   (array(sessionSummary), string) => array(sessionSummary) = [%raw
   "(sessions, workspaceId) => sessions.filter(session => session.workspaceId === workspaceId)"
@@ -99,9 +124,6 @@ let idInJson: (string, string) => bool = [%raw
 ];
 let toggleIdJson: (string, string) => string = [%raw
   "(text, id) => { let values = []; try { values = JSON.parse(text); } catch (_) {} return JSON.stringify(values.includes(id) ? values.filter(value => value !== id) : [...values, id]); }"
-];
-let selectedSessionHarness: (array(sessionSummary), string) => string = [%raw
-  "(sessions, id) => sessions.find(session => session.id === id)?.harness === 'opencode' ? 'OpenCode' : 'Pi'"
 ];
 let selectedWorkspaceName:
   (array(sessionSummary), array(workspaceSummary), string) => string = [%raw
@@ -350,6 +372,9 @@ module App = {
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
     let (workspacesJson, setWorkspacesJson) = React.useState(() => "[]");
+    let (configOptionsJson, setConfigOptionsJson) =
+      React.useState(() => "[]");
+    let (configMenu, setConfigMenu) = React.useState(() => "");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
     let (drawerOpen, setDrawerOpen) = React.useState(() => false);
     let (creatorOpen, setCreatorOpen) = React.useState(() => false);
@@ -375,6 +400,7 @@ module App = {
         getText(sessionUrl("/api/v2/session", id))
         ->thenPromise(text => {
             setSessionJson(_ => text);
+            setConfigOptionsJson(_ => configOptionsFromSnapshot(text));
             setSessionsJson(current =>
               mergeSessionSnapshot(current, id, text)
             );
@@ -454,6 +480,36 @@ module App = {
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let sessions = parseSessions(sessionsJson);
     let workspaces = parseWorkspaces(workspacesJson);
+    let configOptions = parseConfigOptions(configOptionsJson);
+    let modelOption = findConfigOption(configOptions, "model");
+    let thinkingOption = findConfigOption(configOptions, "thought_level");
+
+    let applyConfig = (option, value) =>
+      if (!running && !submitting) {
+        setSubmitting(_ => true);
+        setConfigMenu(_ => "");
+        let body =
+          jsonBody([|
+            ("configId", Js.Json.string(configId(option))),
+            ("value", Js.Json.string(value)),
+          |]);
+        postText(sessionUrl("/api/v2/config-options", activeSessionId), body)
+        ->thenPromise(text => {
+            let resultOptions: string => string = [%raw
+              "text => { try { return JSON.stringify(JSON.parse(text).configOptions || []); } catch (_) { return '[]'; } }"
+            ];
+            setConfigOptionsJson(_ => resultOptions(text));
+            setSubmitting(_ => false);
+            setNotice(_ => "Session configuration updated.");
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setSubmitting(_ => false);
+            setNotice(_ => errorMessage(error));
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
 
     let submitPrompt = event => {
       preventDefault(event);
@@ -545,6 +601,8 @@ module App = {
     let selectSession = id => {
       setActiveSessionId(_ => id);
       setEventsJson(_ => "[]");
+      setConfigOptionsJson(_ => "[]");
+      setConfigMenu(_ => "");
       setNotice(_ => "Switching durable session...");
       setDrawerOpen(_ => false);
       refreshSession(id);
@@ -962,16 +1020,160 @@ module App = {
                     {icon("at")}
                   </button>
                 </div>
-                <div className="composer-config">
-                  <button
-                    type_="button"
-                    disabled=true
-                    title="Model configuration is coming next">
-                    {React.string(
-                       selectedSessionHarness(sessions, activeSessionId),
-                     )}
-                    {icon("chevron")}
-                  </button>
+                <div
+                  className="composer-config"
+                  role="group"
+                  ariaLabel="Model configuration">
+                  {switch (modelOption) {
+                   | None => React.null
+                   | Some(option) =>
+                     <div className="config-control">
+                       <button
+                         className="composer-config-trigger model"
+                         type_="button"
+                         disabled={running || submitting}
+                         ariaExpanded={configMenu == "model"}
+                         ariaLabel={"Model: " ++ configCurrentName(option)}
+                         onClick={_ =>
+                           setConfigMenu(current =>
+                             current == "model" ? "" : "model"
+                           )
+                         }>
+                         <span>
+                           <small> {React.string("MODEL")} </small>
+                           <b> {React.string(configCurrentName(option))} </b>
+                         </span>
+                         {icon("chevron")}
+                       </button>
+                       {configMenu == "model"
+                          ? <div
+                              className="composer-config-menu model-menu"
+                              role="menu"
+                              ariaLabel="Model options">
+                              <header>
+                                <span>
+                                  {React.string("AVAILABLE MODELS")}
+                                </span>
+                                <small>
+                                  {React.int(
+                                     Array.length(configChoices(option)),
+                                   )}
+                                </small>
+                              </header>
+                              {Array.map(
+                                 choice =>
+                                   <button
+                                     className={
+                                       choiceValue(choice)
+                                       == configCurrentValue(option)
+                                         ? "selected" : ""
+                                     }
+                                     type_="button"
+                                     role="menuitemradio"
+                                     ariaChecked={
+                                       choiceValue(choice)
+                                       == configCurrentValue(option)
+                                         ? "true" : "false"
+                                     }
+                                     key={choiceValue(choice)}
+                                     onClick={_ =>
+                                       applyConfig(
+                                         option,
+                                         choiceValue(choice),
+                                       )
+                                     }>
+                                     <span>
+                                       <b>
+                                         {React.string(
+                                            choiceDisplayName(choice),
+                                          )}
+                                       </b>
+                                       <small>
+                                         {React.string(choiceValue(choice))}
+                                       </small>
+                                     </span>
+                                     {choiceValue(choice)
+                                      == configCurrentValue(option)
+                                        ? icon("check") : React.null}
+                                   </button>,
+                                 configChoices(option),
+                               )
+                               ->React.array}
+                            </div>
+                          : React.null}
+                     </div>
+                   }}
+                  {switch (thinkingOption) {
+                   | None => React.null
+                   | Some(option) =>
+                     <div className="config-control">
+                       <button
+                         className="composer-config-trigger thinking"
+                         type_="button"
+                         disabled={running || submitting}
+                         ariaExpanded={configMenu == "thinking"}
+                         ariaLabel={"Thinking: " ++ configCurrentName(option)}
+                         onClick={_ =>
+                           setConfigMenu(current =>
+                             current == "thinking" ? "" : "thinking"
+                           )
+                         }>
+                         <span>
+                           <small> {React.string("THINKING")} </small>
+                           <b> {React.string(configCurrentName(option))} </b>
+                         </span>
+                         {icon("chevron")}
+                       </button>
+                       {configMenu == "thinking"
+                          ? <div
+                              className="composer-config-menu thinking-menu"
+                              role="menu"
+                              ariaLabel="Thinking options">
+                              <header>
+                                <span>
+                                  {React.string("THINKING LEVEL")}
+                                </span>
+                              </header>
+                              {Array.map(
+                                 choice =>
+                                   <button
+                                     className={
+                                       choiceValue(choice)
+                                       == configCurrentValue(option)
+                                         ? "selected" : ""
+                                     }
+                                     type_="button"
+                                     role="menuitemradio"
+                                     ariaChecked={
+                                       choiceValue(choice)
+                                       == configCurrentValue(option)
+                                         ? "true" : "false"
+                                     }
+                                     key={choiceValue(choice)}
+                                     onClick={_ =>
+                                       applyConfig(
+                                         option,
+                                         choiceValue(choice),
+                                       )
+                                     }>
+                                     <span>
+                                       <b>
+                                         {React.string(
+                                            choiceDisplayName(choice),
+                                          )}
+                                       </b>
+                                     </span>
+                                     {choiceValue(choice)
+                                      == configCurrentValue(option)
+                                        ? icon("check") : React.null}
+                                   </button>,
+                                 configChoices(option),
+                               )
+                               ->React.array}
+                            </div>
+                          : React.null}
+                     </div>
+                   }}
                 </div>
                 {running
                    ? <button
