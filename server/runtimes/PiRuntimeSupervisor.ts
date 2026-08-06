@@ -18,6 +18,7 @@ import {
   EngineeringWorkflowResearchBrief as EngineeringWorkflowResearchBriefSchema,
   EngineeringWorkflowResearchQuestion as EngineeringWorkflowResearchQuestionSchema,
   SessionArtifact as SessionArtifactSchema,
+  WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH,
 } from "../../shared/domain.ts";
 import type {
   AvailableModel,
@@ -3761,7 +3762,9 @@ export const PiRuntimeSupervisorLive = Layer.effect(
               passedCriterionIds: previousProgress?.passedCriterionIds ?? [],
               evidence: previousProgress?.evidence ?? [],
               supersededAt: submittedAt,
-              reason: feedback,
+              reason: feedback.length <= WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH
+                ? feedback
+                : `${feedback.slice(0, WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH - 1)}…`,
             };
             const nextPlanRevision = workflowPlanRevision(current) + 1;
             const nextSupersededRevisions = appendBoundedSupersededRevision(current.supersededRevisions, superseded);

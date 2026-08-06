@@ -15,7 +15,7 @@ import { appendBoundedEvent, cloneSession, interruptedWorkflowRecoveryPhase, PiR
 import { PushNotifications } from "../server/notifications/PushNotifications.ts";
 import { WorkspaceDirectory } from "../server/workspaces/WorkspaceDirectory.ts";
 import { WorkspaceRepository } from "../server/workspaces/WorkspaceRepository.ts";
-import { WorkspaceId, type EngineeringWorkflow, type EngineeringWorkflowMutationInput, type OwnedSession, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
+import { WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH, WorkspaceId, type EngineeringWorkflow, type EngineeringWorkflowMutationInput, type OwnedSession, type OwnedSessionEvent, type Workspace } from "../shared/domain.ts";
 import { applyWorkflowCheckpoint, initialWorkflowProgress } from "../shared/engineeringWorkflow.ts";
 
 const decodeWorkspaceId = Schema.decodeUnknownSync(WorkspaceId);
@@ -1384,9 +1384,10 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
           ).pipe(Effect.as("unexpected-success"), Effect.catch((error) => Effect.succeed(error._tag)));
           const authoritativeScope = yield* supervisor.get(scopeSession.id);
           let scopeMutationError = "";
+          const scopeChangeFeedback = `Add a newly discovered authority constraint\n${"x".repeat(WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH)}`;
           const scopeMutationApplied = yield* supervisor.mutateWorkflow(
             { sessionId: scopeSession.id, runtimeId: scopeSession.runtimeId },
-            { runtimeId: scopeSession.runtimeId, action: "intervene", feedback: "Add a newly discovered authority constraint", scopeChange: true, workflowId: authoritativeScope.workflow!.id, mutationId: "scope-change-once", expectedRevision: authoritativeScope.workflow!.revision ?? 0, expectedPhase: "building", expectedPhaseRunId: authoritativeScope.workflow!.phaseRun?.id },
+            { runtimeId: scopeSession.runtimeId, action: "intervene", feedback: scopeChangeFeedback, scopeChange: true, workflowId: authoritativeScope.workflow!.id, mutationId: "scope-change-once", expectedRevision: authoritativeScope.workflow!.revision ?? 0, expectedPhase: "building", expectedPhaseRunId: authoritativeScope.workflow!.phaseRun?.id },
           ).pipe(Effect.as(true), Effect.catch((error) => Effect.sync(() => { scopeMutationError = `${error._tag}: ${error.message}`; return false; })));
           let replannedScope = yield* supervisor.get(scopeSession.id);
           for (let attempt = 0; attempt < 200 && (replannedScope.workflow?.phase !== "awaitingPlanApproval" || replannedScope.status !== "finished"); attempt += 1) {
@@ -1789,6 +1790,9 @@ test("owns a Pi RPC process and projects its lifecycle", async () => {
     assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.completedSliceIds, ["S-PRIOR"]);
     assert.deepEqual(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.passedCriterionIds, ["AC-PRIOR"]);
     assert.equal(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.evidence[0]?.summary, "Prior revision evidence");
+    assert.equal(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.reason.length, WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH);
+    assert.match(result.replannedScope.workflow?.supersededRevisions?.at(-1)?.reason ?? "", /^Add a newly discovered authority constraint/u);
+    assert.ok((result.replannedScope.workflow?.guidance?.find((item) => item.id === "scope-change-once")?.text.length ?? 0) > WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH);
     assert.equal(result.replannedScope.workflow?.processedMutationIds?.includes("scope-change-once"), true);
     assert.equal(result.guidanceFailureTag, "PiCommandError");
     assert.equal(result.guidanceFailureQueued.workflow?.guidance?.at(-1)?.status, "queued");

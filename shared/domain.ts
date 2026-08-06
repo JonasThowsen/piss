@@ -402,6 +402,7 @@ export const EngineeringWorkflowProgress = Schema.Struct({
 export type EngineeringWorkflowProgress = typeof EngineeringWorkflowProgress.Type;
 
 export const WORKFLOW_SUPERSEDED_REVISION_CAPACITY = 32;
+export const WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH = 8 * 1024;
 export const WORKFLOW_MUTATION_RECEIPT_CAPACITY = 256;
 
 export const EngineeringWorkflowSupersededRevision = Schema.Struct({
@@ -410,7 +411,7 @@ export const EngineeringWorkflowSupersededRevision = Schema.Struct({
   passedCriterionIds: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))).check(Schema.isMaxLength(200)),
   evidence: Schema.Array(EngineeringWorkflowEvidence).check(Schema.isMaxLength(200)),
   supersededAt: Schema.String,
-  reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8 * 1024)),
+  reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(WORKFLOW_SUPERSEDED_REASON_MAX_LENGTH)),
 });
 export type EngineeringWorkflowSupersededRevision = typeof EngineeringWorkflowSupersededRevision.Type;
 
