@@ -57,12 +57,6 @@ let promptValue: unit => string = [%raw
 let fieldValue: string => string = [%raw
   "id => document.getElementById(id)?.value?.trim() || ''"
 ];
-let eventValue: React.Event.Form.t => string = [%raw
-  "event => event.target.value"
-];
-let selectedDirectoryPath: unit => string = [%raw
-  "() => document.getElementById('workspace-directory')?.value || ''"
-];
 let confirmRename: string => option(string) = [%raw
   "current => { const value = window.prompt('Rename session', current); return value && value.trim() ? value.trim() : undefined; }"
 ];
@@ -100,12 +94,21 @@ let sessionsForWorkspace:
   (array(sessionSummary), string) => array(sessionSummary) = [%raw
   "(sessions, workspaceId) => sessions.filter(session => session.workspaceId === workspaceId)"
 ];
+let idInJson: (string, string) => bool = [%raw
+  "(text, id) => { try { return JSON.parse(text).includes(id); } catch (_) { return false; } }"
+];
+let toggleIdJson: (string, string) => string = [%raw
+  "(text, id) => { let values = []; try { values = JSON.parse(text); } catch (_) {} return JSON.stringify(values.includes(id) ? values.filter(value => value !== id) : [...values, id]); }"
+];
 let selectedSessionHarness: (array(sessionSummary), string) => string = [%raw
   "(sessions, id) => sessions.find(session => session.id === id)?.harness === 'opencode' ? 'OpenCode' : 'Pi'"
 ];
 let selectedWorkspaceName:
   (array(sessionSummary), array(workspaceSummary), string) => string = [%raw
   "(sessions, workspaces, id) => { const workspaceId = sessions.find(session => session.id === id)?.workspaceId; return workspaces.find(workspace => workspace.id === workspaceId)?.name || 'PISS'; }"
+];
+let workspaceNameById: (array(workspaceSummary), string) => string = [%raw
+  "(workspaces, id) => workspaces.find(workspace => workspace.id === id)?.name || 'workspace'"
 ];
 let selectSessionId: (string, string) => string = [%raw
   "(text, current) => { try { const sessions = JSON.parse(text); if (!Array.isArray(sessions) || sessions.length === 0) return ''; return sessions.some(session => session.id === current) ? current : sessions[0].id; } catch (_) { return ''; } }"
@@ -355,6 +358,10 @@ module App = {
     let (workspaceCreatorOpen, setWorkspaceCreatorOpen) =
       React.useState(() => false);
     let (directoriesJson, setDirectoriesJson) = React.useState(() => "[]");
+    let (selectedWorkspacePath, setSelectedWorkspacePath) =
+      React.useState(() => "");
+    let (collapsedWorkspacesJson, setCollapsedWorkspacesJson) =
+      React.useState(() => "[]");
     let (sessionMenuId, setSessionMenuId) = React.useState(() => "");
     let (archiveTargetId, setArchiveTargetId) = React.useState(() => "");
     let (archiveTargetTitle, setArchiveTargetTitle) =
@@ -481,7 +488,7 @@ module App = {
       preventDefault(event);
       if (!submitting) {
         let harness = fieldValue("new-session-harness");
-        let workspaceId = fieldValue("new-session-workspace");
+        let workspaceId = creatorWorkspaceId;
         let title = fieldValue("new-session-title");
         if (workspaceId != "" && title != "") {
           setSubmitting(_ => true);
@@ -569,6 +576,7 @@ module App = {
 
     let searchDirectories = _ => {
       let query = fieldValue("workspace-search");
+      setSelectedWorkspacePath(_ => "");
       getText(directorySearchUrl(query))
       ->thenPromise(text => {
           setDirectoriesJson(_ => text);
@@ -583,7 +591,7 @@ module App = {
 
     let registerWorkspace = event => {
       preventDefault(event);
-      let path = selectedDirectoryPath();
+      let path = selectedWorkspacePath;
       if (path != "" && !submitting) {
         setSubmitting(_ => true);
         postText(
@@ -700,7 +708,7 @@ module App = {
             <button
               className="create-session-trigger"
               type_="button"
-              ariaLabel="Create session"
+              ariaLabel="Add workspace"
               onClick={_ => {
                 setWorkspaceCreatorOpen(_ => true);
                 searchDirectories();
@@ -713,20 +721,36 @@ module App = {
                workspace => {
                  let workspaceSessions =
                    sessionsForWorkspace(sessions, workspaceId(workspace));
+                 let collapsed =
+                   idInJson(collapsedWorkspacesJson, workspaceId(workspace));
                  <section
                    className="workspace-group" key={workspaceId(workspace)}>
                    <header className="workspace-heading">
-                     <span className="workspace-chevron">
-                       {icon("chevron")}
-                     </span>
-                     <span>
-                       <strong>
-                         {React.string(workspaceName(workspace))}
-                       </strong>
-                       <small title={workspaceRoot(workspace)}>
-                         {React.string(workspaceRoot(workspace))}
-                       </small>
-                     </span>
+                     <button
+                       className="workspace-toggle"
+                       type_="button"
+                       ariaExpanded={!collapsed}
+                       onClick={_ =>
+                         setCollapsedWorkspacesJson(current =>
+                           toggleIdJson(current, workspaceId(workspace))
+                         )
+                       }>
+                       <span
+                         className={
+                           "workspace-chevron "
+                           ++ (collapsed ? "collapsed" : "")
+                         }>
+                         {icon("chevron")}
+                       </span>
+                       <span>
+                         <strong>
+                           {React.string(workspaceName(workspace))}
+                         </strong>
+                         <small title={workspaceRoot(workspace)}>
+                           {React.string(workspaceRoot(workspace))}
+                         </small>
+                       </span>
+                     </button>
                      <button
                        type_="button"
                        ariaLabel={
@@ -739,96 +763,101 @@ module App = {
                        {icon("plus")}
                      </button>
                    </header>
-                   <div className="session-list">
-                     {Array.length(workspaceSessions) == 0
-                        ? <p className="empty-workspace">
-                            {React.string("No sessions")}
-                          </p>
-                        : Array.map(
-                            session => {
-                              let id = sessionId(session);
-                              <div className="session-row-wrap" key=id>
-                                <button
-                                  type_="button"
-                                  className={
-                                    "session-row "
-                                    ++ (
-                                      id == activeSessionId
-                                        ? "session-row-active" : ""
-                                    )
-                                  }
-                                  disabled=submitting
-                                  onClick={_ => selectSession(id)}>
-                                  <i
-                                    className={
-                                      "session-dot status-"
-                                      ++ sessionStatus(session)
-                                    }
-                                  />
-                                  <span>
-                                    <strong>
-                                      {React.string(sessionTitle(session))}
-                                    </strong>
-                                    <small>
-                                      {React.string(
-                                         sessionStatus(session)
-                                         ++ " / "
-                                         ++ sessionHarness(session),
-                                       )}
-                                    </small>
-                                  </span>
-                                </button>
-                                <div className="session-menu-wrap">
-                                  <button
-                                    className="session-more"
-                                    type_="button"
-                                    ariaLabel={
-                                      "Session settings for "
-                                      ++ sessionTitle(session)
-                                    }
-                                    ariaExpanded={sessionMenuId == id}
-                                    onClick={_ =>
-                                      setSessionMenuId(current =>
-                                        current == id ? "" : id
-                                      )
-                                    }>
-                                    {icon("more")}
-                                  </button>
-                                  {sessionMenuId == id
-                                     ? <div
-                                         className="session-menu" role="menu">
-                                         <button
-                                           type_="button"
-                                           role="menuitem"
-                                           onClick={_ => {
-                                             setSessionMenuId(_ => "");
-                                             renameSession(session);
-                                           }}>
-                                           {React.string("RENAME")}
-                                         </button>
-                                         <button
-                                           className="danger"
-                                           type_="button"
-                                           role="menuitem"
-                                           onClick={_ => {
-                                             setArchiveTargetId(_ => id);
-                                             setArchiveTargetTitle(_ =>
-                                               sessionTitle(session)
-                                             );
-                                             setSessionMenuId(_ => "");
-                                           }}>
-                                           {icon("archive")}
-                                           {React.string("ARCHIVE")}
-                                         </button>
-                                       </div>
-                                     : React.null}
-                                </div>
-                              </div>;
-                            },
-                            workspaceSessions,
-                          )
-                          ->React.array}
-                   </div>
+                   {collapsed
+                      ? React.null
+                      : <div className="session-list">
+                          {Array.length(workspaceSessions) == 0
+                             ? <p className="empty-workspace">
+                                 {React.string("No sessions")}
+                               </p>
+                             : Array.map(
+                                 session => {
+                                   let id = sessionId(session);
+                                   <div className="session-row-wrap" key=id>
+                                     <button
+                                       type_="button"
+                                       className={
+                                         "session-row "
+                                         ++ (
+                                           id == activeSessionId
+                                             ? "session-row-active" : ""
+                                         )
+                                       }
+                                       disabled=submitting
+                                       onClick={_ => selectSession(id)}>
+                                       <i
+                                         className={
+                                           "session-dot status-"
+                                           ++ sessionStatus(session)
+                                         }
+                                       />
+                                       <span>
+                                         <strong>
+                                           {React.string(
+                                              sessionTitle(session),
+                                            )}
+                                         </strong>
+                                         <small>
+                                           {React.string(
+                                              sessionStatus(session)
+                                              ++ " / "
+                                              ++ sessionHarness(session),
+                                            )}
+                                         </small>
+                                       </span>
+                                     </button>
+                                     <div className="session-menu-wrap">
+                                       <button
+                                         className="session-more"
+                                         type_="button"
+                                         ariaLabel={
+                                           "Session settings for "
+                                           ++ sessionTitle(session)
+                                         }
+                                         ariaExpanded={sessionMenuId == id}
+                                         onClick={_ =>
+                                           setSessionMenuId(current =>
+                                             current == id ? "" : id
+                                           )
+                                         }>
+                                         {icon("more")}
+                                       </button>
+                                       {sessionMenuId == id
+                                          ? <div
+                                              className="session-menu"
+                                              role="menu">
+                                              <button
+                                                type_="button"
+                                                role="menuitem"
+                                                onClick={_ => {
+                                                  setSessionMenuId(_ => "");
+                                                  renameSession(session);
+                                                }}>
+                                                {React.string("RENAME")}
+                                              </button>
+                                              <button
+                                                className="danger"
+                                                type_="button"
+                                                role="menuitem"
+                                                onClick={_ => {
+                                                  setArchiveTargetId(_ => id);
+                                                  setArchiveTargetTitle(_ =>
+                                                    sessionTitle(session)
+                                                  );
+                                                  setSessionMenuId(_ => "");
+                                                }}>
+                                                {icon("archive")}
+                                                {React.string("ARCHIVE")}
+                                              </button>
+                                            </div>
+                                          : React.null}
+                                     </div>
+                                   </div>;
+                                 },
+                                 workspaceSessions,
+                               )
+                               ->React.array}
+                        </div>}
                  </section>;
                },
                workspaces,
@@ -859,17 +888,6 @@ module App = {
           </div>
         </aside>
         <section className="conversation-panel">
-          <div className="conversation-heading">
-            <div>
-              <p className="eyebrow"> {React.string("LIVE SESSION")} </p>
-              <h2> {React.string("Agent timeline")} </h2>
-            </div>
-            <span className="sequence-label">
-              {React.string(
-                 string_of_int(Array.length(timeline)) ++ " entries",
-               )}
-            </span>
-          </div>
           <nav className="capability-tabs" ariaLabel="Session views">
             <button className="active" type_="button">
               {icon("bot")}
@@ -987,7 +1005,7 @@ module App = {
                    type_="button"
                    ariaLabel="Close new session dialog"
                    onClick={_ => setCreatorOpen(_ => false)}>
-                   {React.string(fromCodePoint(0x00d7))}
+                   {icon("x")}
                  </button>
                </header>
                <label htmlFor="new-session-title">
@@ -1000,28 +1018,14 @@ module App = {
                  required=true
                  placeholder="Implementation agent"
                />
-               <label htmlFor="new-session-workspace">
-                 {React.string("WORKSPACE")}
-               </label>
-               <select
-                 id="new-session-workspace"
-                 name="workspace"
-                 required=true
-                 value=creatorWorkspaceId
-                 onChange={event =>
-                   setCreatorWorkspaceId(_ => eventValue(event))
-                 }>
-                 {Array.map(
-                    workspace =>
-                      <option
-                        value={workspaceId(workspace)}
-                        key={workspaceId(workspace)}>
-                        {React.string(workspaceName(workspace))}
-                      </option>,
-                    workspaces,
-                  )
-                  ->React.array}
-               </select>
+               <p className="fixed-workspace">
+                 {React.string("Creating in ")}
+                 <strong>
+                   {React.string(
+                      workspaceNameById(workspaces, creatorWorkspaceId),
+                    )}
+                 </strong>
+               </p>
                <label htmlFor="new-session-harness">
                  {React.string("HARNESS")}
                </label>
@@ -1074,25 +1078,35 @@ module App = {
                  />
                  {icon("search")}
                </div>
-               <label htmlFor="workspace-directory">
+               <span className="dialog-field-label">
                  {React.string("DIRECTORY")}
-               </label>
-               <select id="workspace-directory" required=true size=8>
+               </span>
+               <div
+                 className="directory-options"
+                 role="listbox"
+                 ariaLabel="Local directories">
                  {Array.map(
-                    directory =>
-                      <option
-                        value={directoryPath(directory)}
-                        key={directoryPath(directory)}>
-                        {React.string(
-                           directoryName(directory)
-                           ++ " / "
-                           ++ directoryPath(directory),
-                         )}
-                      </option>,
+                    directory => {
+                      let path = directoryPath(directory);
+                      <button
+                        type_="button"
+                        role="option"
+                        ariaSelected={selectedWorkspacePath == path}
+                        className={
+                          selectedWorkspacePath == path ? "selected" : ""
+                        }
+                        key=path
+                        onClick={_ => setSelectedWorkspacePath(_ => path)}>
+                        <strong>
+                          {React.string(directoryName(directory))}
+                        </strong>
+                        <small> {React.string(path)} </small>
+                      </button>;
+                    },
                     parseDirectories(directoriesJson),
                   )
                   ->React.array}
-               </select>
+               </div>
                <p className="dialog-help">
                  {React.string(
                     "Only directories inside administrator-approved local roots are available.",
@@ -1107,7 +1121,7 @@ module App = {
                  <button
                    className="launch-session"
                    type_="submit"
-                   disabled=submitting>
+                   disabled={submitting || selectedWorkspacePath == ""}>
                    {React.string(submitting ? "ADDING..." : "ADD WORKSPACE")}
                  </button>
                </footer>
