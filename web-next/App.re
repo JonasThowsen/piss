@@ -46,7 +46,7 @@ external configChoices: configOption => array(configChoice) = "options";
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
 ];
 
 let getText: string => Js.Promise.t(string) = [%raw
@@ -73,6 +73,17 @@ let confirmRename: string => option(string) = [%raw
 
 let clearPrompt: unit => unit = [%raw
   "() => { const field = document.getElementById('prompt-input'); if (field) { field.value = ''; field.focus(); } }"
+];
+let eventValue: 'a => string = [%raw
+  "event => event.currentTarget?.value || ''"
+];
+let eventKey: 'a => string = [%raw "event => event.key || ''"];
+let preventAnyDefault: 'a => unit = [%raw "event => event.preventDefault()"];
+let timelineAwayFromBottom: 'a => bool = [%raw
+  "event => event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight > 80"
+];
+let jumpTimelineToBottom: unit => unit = [%raw
+  "() => { const timeline = document.getElementById('timeline'); if (timeline) timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' }); }"
 ];
 
 let preventDefault: React.Event.Form.t => unit = [%raw
@@ -119,6 +130,14 @@ let sessionsForWorkspace:
   (array(sessionSummary), string) => array(sessionSummary) = [%raw
   "(sessions, workspaceId) => sessions.filter(session => session.workspaceId === workspaceId)"
 ];
+let searchSessions:
+  (array(sessionSummary), array(workspaceSummary), string) =>
+  array(sessionSummary) = [%raw
+  "(sessions, workspaces, query) => { const needle = query.trim().toLocaleLowerCase(); const workspaceById = new Map(workspaces.map(workspace => [workspace.id, workspace])); const ordered = [...sessions].sort((left, right) => left.title.localeCompare(right.title)); if (!needle) return ordered; return ordered.filter(session => { const workspace = workspaceById.get(session.workspaceId); return [session.title, session.id, session.harness, session.status, workspace?.name, workspace?.root].some(value => String(value || '').toLocaleLowerCase().includes(needle)); }); }"
+];
+let sessionWorkspaceName: (sessionSummary, array(workspaceSummary)) => string = [%raw
+  "(session, workspaces) => workspaces.find(workspace => workspace.id === session.workspaceId)?.name || 'Unknown workspace'"
+];
 let idInJson: (string, string) => bool = [%raw
   "(text, id) => { try { return JSON.parse(text).includes(id); } catch (_) { return false; } }"
 ];
@@ -131,6 +150,12 @@ let selectedWorkspaceName:
 ];
 let workspaceNameById: (array(workspaceSummary), string) => string = [%raw
   "(workspaces, id) => workspaces.find(workspace => workspace.id === id)?.name || 'workspace'"
+];
+let sessionTitleById: (array(sessionSummary), string) => string = [%raw
+  "(sessions, id) => sessions.find(session => session.id === id)?.title || 'Session'"
+];
+let sessionHarnessById: (array(sessionSummary), string) => string = [%raw
+  "(sessions, id) => sessions.find(session => session.id === id)?.harness || 'unknown'"
 ];
 let selectSessionId: (string, string) => string = [%raw
   "(text, current) => { try { const sessions = JSON.parse(text); if (!Array.isArray(sessions) || sessions.length === 0) return ''; return sessions.some(session => session.id === current) ? current : sessions[0].id; } catch (_) { return ''; } }"
@@ -376,7 +401,11 @@ module App = {
       React.useState(() => "[]");
     let (configMenu, setConfigMenu) = React.useState(() => "");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
+    let (activeView, setActiveView) = React.useState(() => "agent");
     let (drawerOpen, setDrawerOpen) = React.useState(() => false);
+    let (searchOpen, setSearchOpen) = React.useState(() => false);
+    let (searchQuery, setSearchQuery) = React.useState(() => "");
+    let (showJumpToBottom, setShowJumpToBottom) = React.useState(() => false);
     let (creatorOpen, setCreatorOpen) = React.useState(() => false);
     let (creatorWorkspaceId, setCreatorWorkspaceId) =
       React.useState(() => "");
@@ -483,6 +512,7 @@ module App = {
     let configOptions = parseConfigOptions(configOptionsJson);
     let modelOption = findConfigOption(configOptions, "model");
     let thinkingOption = findConfigOption(configOptions, "thought_level");
+    let searchResults = searchSessions(sessions, workspaces, searchQuery);
 
     let applyConfig = (option, value) =>
       if (!running && !submitting) {
@@ -605,6 +635,9 @@ module App = {
       setConfigMenu(_ => "");
       setNotice(_ => "Switching durable session...");
       setDrawerOpen(_ => false);
+      setSearchOpen(_ => false);
+      setSearchQuery(_ => "");
+      setShowJumpToBottom(_ => false);
       refreshSession(id);
     };
 
@@ -715,8 +748,13 @@ module App = {
         <button
           className="mobile-menu"
           type_="button"
-          ariaLabel="Open workspaces and sessions"
-          onClick={_ => setDrawerOpen(_ => true)}>
+          ariaLabel={
+            drawerOpen
+              ? "Close workspaces and sessions"
+              : "Open workspaces and sessions"
+          }
+          ariaExpanded=drawerOpen
+          onClick={_ => setDrawerOpen(current => !current)}>
           {icon("menu")}
         </button>
         <div className="brand-lockup">
@@ -737,9 +775,13 @@ module App = {
         <button
           className="search-trigger"
           type_="button"
-          disabled=true
-          title="Session search is the next production slice"
-          ariaLabel="Search sessions (coming next)">
+          title="Search sessions"
+          ariaLabel="Search sessions"
+          ariaExpanded=searchOpen
+          onClick={_ => {
+            setDrawerOpen(_ => false);
+            setSearchOpen(_ => true);
+          }}>
           {icon("search")}
         </button>
         <div className={"connection-pill connection-" ++ status}>
@@ -947,7 +989,11 @@ module App = {
         </aside>
         <section className="conversation-panel">
           <nav className="capability-tabs" ariaLabel="Session views">
-            <button className="active" type_="button">
+            <button
+              className={activeView == "agent" ? "active" : ""}
+              type_="button"
+              ariaPressed={activeView == "agent" ? "true" : "false"}
+              onClick={_ => setActiveView(_ => "agent")}>
               {icon("bot")}
               {React.string("Agent")}
             </button>
@@ -957,35 +1003,155 @@ module App = {
               {React.string("Changes")}
             </button>
             <button
-              disabled=true type_="button" title="Details view is coming next">
+              className={activeView == "details" ? "active" : ""}
+              type_="button"
+              ariaPressed={activeView == "details" ? "true" : "false"}
+              onClick={_ => setActiveView(_ => "details")}>
               {icon("gauge")}
               {React.string("Details")}
             </button>
           </nav>
-          <div id="timeline" className="timeline" ariaLive="polite">
-            {Array.length(timeline) == 0
-               ? <div className="empty-state">
-                   <span> {React.string(fromCodePoint(0x2198))} </span>
-                   <h3>
-                     {React.string("Give the worker something real to do.")}
-                   </h3>
+          {activeView == "details"
+             ? <section
+                 className="session-details"
+                 role="tabpanel"
+                 ariaLabel="Session details">
+                 <header>
+                   <span> {React.string("SESSION DETAILS")} </span>
+                   <h2>
+                     {React.string(
+                        sessionTitleById(sessions, activeSessionId),
+                      )}
+                   </h2>
                    <p>
                      {React.string(
-                        "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                        "Live values reported by the independently supervised worker.",
                       )}
                    </p>
+                 </header>
+                 <dl>
+                   <div>
+                     <dt> {React.string("STATUS")} </dt>
+                     <dd> {React.string(status)} </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("WORKSPACE")} </dt>
+                     <dd>
+                       {React.string(
+                          selectedWorkspaceName(
+                            sessions,
+                            workspaces,
+                            activeSessionId,
+                          ),
+                        )}
+                     </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("HARNESS")} </dt>
+                     <dd>
+                       {React.string(
+                          sessionHarnessById(sessions, activeSessionId),
+                        )}
+                     </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("AGENT")} </dt>
+                     <dd> {React.string(snapshotAgentName(snapshot))} </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("WORKER PID")} </dt>
+                     <dd> {React.int(snapshotWorkerPid(snapshot))} </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("HARNESS PID")} </dt>
+                     <dd> {React.int(snapshotHarnessPid(snapshot))} </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("EVENT SEQUENCE")} </dt>
+                     <dd> {React.int(snapshotSequence(snapshot))} </dd>
+                   </div>
+                   <div>
+                     <dt> {React.string("SESSION ID")} </dt>
+                     <dd title=activeSessionId>
+                       {React.string(activeSessionId)}
+                     </dd>
+                   </div>
+                 </dl>
+                 <section className="details-config">
+                   <h3> {React.string("ACP CONFIGURATION")} </h3>
+                   {Array.length(configOptions) == 0
+                      ? <p>
+                          {React.string(
+                             "This worker generation does not expose ACP configuration options.",
+                           )}
+                        </p>
+                      : <div>
+                          {Array.map(
+                             option =>
+                               <p key={configId(option)}>
+                                 <span>
+                                   {React.string(configName(option))}
+                                 </span>
+                                 <b>
+                                   {React.string(configCurrentName(option))}
+                                 </b>
+                               </p>,
+                             configOptions,
+                           )
+                           ->React.array}
+                        </div>}
+                 </section>
+               </section>
+             : <div className="timeline-wrap">
+                 <div
+                   id="timeline"
+                   className="timeline"
+                   tabIndex=0
+                   ariaLive="polite"
+                   onScroll={event => {
+                     let away = timelineAwayFromBottom(event);
+                     setShowJumpToBottom(_ => away);
+                   }}>
+                   {Array.length(timeline) == 0
+                      ? <div className="empty-state">
+                          <span>
+                            {React.string(fromCodePoint(0x2198))}
+                          </span>
+                          <h3>
+                            {React.string(
+                               "Give the worker something real to do.",
+                             )}
+                          </h3>
+                          <p>
+                            {React.string(
+                               "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                             )}
+                          </p>
+                        </div>
+                      : Array.map(
+                          item =>
+                            <TimelineItem
+                              key={itemId(item)}
+                              item
+                              onPermission=resolvePermission
+                            />,
+                          timeline,
+                        )
+                        ->React.array}
                  </div>
-               : Array.map(
-                   item =>
-                     <TimelineItem
-                       key={itemId(item)}
-                       item
-                       onPermission=resolvePermission
-                     />,
-                   timeline,
-                 )
-                 ->React.array}
-          </div>
+                 {showJumpToBottom
+                    ? <button
+                        className="timeline-jump"
+                        type_="button"
+                        ariaLabel="Jump to latest message"
+                        onClick={_ => {
+                          jumpTimelineToBottom();
+                          setShowJumpToBottom(_ => false);
+                        }}>
+                        {icon("down")}
+                      </button>
+                    : React.null}
+               </div>}
           <div className="composer-wrap">
             <p className="notice" role="status"> {React.string(notice)} </p>
             <form className="composer" onSubmit=submitPrompt>
@@ -1195,6 +1361,121 @@ module App = {
           </div>
         </section>
       </section>
+      {searchOpen
+         ? <div className="global-search-layer">
+             <button
+               className="global-search-backdrop"
+               type_="button"
+               ariaLabel="Close session search"
+               onClick={_ => {
+                 setSearchOpen(_ => false);
+                 setSearchQuery(_ => "");
+               }}
+             />
+             <section
+               className="global-search"
+               role="dialog"
+               ariaModal=true
+               ariaLabel="Search sessions">
+               <header>
+                 <div>
+                   <span> {React.string("SESSION SWITCHER")} </span>
+                   <b> {React.string("Go to a session")} </b>
+                 </div>
+                 <button
+                   type_="button"
+                   ariaLabel="Close session search"
+                   onClick={_ => {
+                     setSearchOpen(_ => false);
+                     setSearchQuery(_ => "");
+                   }}>
+                   {icon("x")}
+                 </button>
+               </header>
+               <div className="global-search-field">
+                 {icon("search")}
+                 <input
+                   autoFocus=true
+                   ariaLabel="Search sessions"
+                   placeholder="Search sessions and workspaces..."
+                   onInput={event => {
+                     let value = eventValue(event);
+                     setSearchQuery(_ => value);
+                   }}
+                   onKeyDown={event =>
+                     switch (eventKey(event)) {
+                     | "Escape" =>
+                       preventAnyDefault(event);
+                       setSearchOpen(_ => false);
+                       setSearchQuery(_ => "");
+                     | "Enter" =>
+                       if (Array.length(searchResults) > 0) {
+                         preventAnyDefault(event);
+                         selectSession(sessionId(searchResults[0]));
+                       }
+                     | _ => ()
+                     }
+                   }
+                 />
+               </div>
+               <div
+                 className="global-search-results"
+                 role="listbox"
+                 ariaLabel="Matching sessions">
+                 {Array.length(searchResults) == 0
+                    ? <div className="global-search-empty">
+                        {icon("search")}
+                        <b> {React.string("No matching sessions")} </b>
+                        <span>
+                          {React.string(
+                             "Try a session name, workspace, harness, or status.",
+                           )}
+                        </span>
+                      </div>
+                    : Array.map(
+                        session =>
+                          <button
+                            type_="button"
+                            role="option"
+                            ariaSelected={
+                              sessionId(session) == activeSessionId
+                            }
+                            key={sessionId(session)}
+                            onClick={_ => selectSession(sessionId(session))}>
+                            <i
+                              className={
+                                "session-dot status-"
+                                ++ sessionStatus(session)
+                              }
+                            />
+                            <span>
+                              <b> {React.string(sessionTitle(session))} </b>
+                              <small>
+                                {React.string(
+                                   sessionWorkspaceName(session, workspaces)
+                                   ++ " / "
+                                   ++ sessionHarness(session),
+                                 )}
+                              </small>
+                            </span>
+                            <em> {React.string(sessionStatus(session))} </em>
+                          </button>,
+                        searchResults,
+                      )
+                      ->React.array}
+               </div>
+               <footer>
+                 <span> {React.string("ENTER TO OPEN")} </span>
+                 <b>
+                   {React.string(
+                      string_of_int(Array.length(searchResults))
+                      ++ " SESSIONS",
+                    )}
+                 </b>
+               </footer>
+             </section>
+           </div>
+         : React.null}
       {creatorOpen
          ? <div className="dialog-backdrop" role="presentation">
              <form className="session-dialog" onSubmit=newSession>
