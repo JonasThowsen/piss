@@ -77,8 +77,22 @@ let test_session_registry () =
       ~start_sequence:99L
   in
   Alcotest.(check bool) "peer request deduplicates" true duplicate;
-  Registry.update_peer_request registry "peer-one" ~state:"completed"
-    ~response:(Some "reviewed");
+  Registry.mark_peer_dispatching registry "peer-one" ~start_sequence:8L;
+  let dispatching =
+    Option.get (Registry.find_peer_request registry "peer-one")
+  in
+  Alcotest.(check string)
+    "peer request dispatching" "dispatching" dispatching.state;
+  Alcotest.(check int64) "dispatch cursor updated" 8L dispatching.start_sequence;
+  Alcotest.(check bool)
+    "first completion changes state" true
+    (Registry.complete_peer_request registry "peer-one" "reviewed");
+  Alcotest.(check bool)
+    "completion deduplicates" false
+    (Registry.complete_peer_request registry "peer-one" "must not replace");
+  Alcotest.(check int)
+    "source request listing" 1
+    (List.length (Registry.list_peer_requests registry ~source_id:one.id));
   let completed = Option.get (Registry.find_peer_request registry "peer-one") in
   Alcotest.(check string)
     "peer response retained" "reviewed"

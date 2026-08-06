@@ -269,6 +269,34 @@ let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
           expect_done "accept peer request" statement);
       (Option.get (find_peer_request registry id), false)
 
+let list_peer_requests registry ~source_id =
+  with_statement registry.db
+    "SELECT \
+     id,source_id,target_id,prompt,command_id,start_sequence,state,response \
+     FROM peer_requests WHERE source_id = ? ORDER BY created_at ASC"
+    (fun statement ->
+      bind_text statement 1 source_id;
+      let rec collect requests =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (peer_request_of_statement statement :: requests)
+        | Sqlite3.Rc.DONE -> List.rev requests
+        | rc ->
+            fail_rc "list peer requests" rc;
+            List.rev requests
+      in
+      collect [])
+
+let mark_peer_dispatching registry id ~start_sequence =
+  with_statement registry.db
+    "UPDATE peer_requests SET state = 'dispatching',start_sequence = \
+     ?,updated_at = ? WHERE id = ? AND state IN ('accepted','queued')"
+    (fun statement ->
+      bind_int64 statement 1 start_sequence;
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 id;
+      expect_done "mark peer request dispatching" statement)
+
 let update_peer_request registry id ~state ~response =
   with_statement registry.db
     "UPDATE peer_requests SET state = ?,response = ?,updated_at = ? WHERE id = \
@@ -280,6 +308,16 @@ let update_peer_request registry id ~state ~response =
       bind_float statement 3 (Unix.gettimeofday ());
       bind_text statement 4 id;
       expect_done "update peer request" statement)
+
+let complete_peer_request registry id response =
+  with_statement registry.db
+    "UPDATE peer_requests SET state = 'completed',response = ?,updated_at = ? \
+     WHERE id = ? AND state <> 'completed'" (fun statement ->
+      bind_text statement 1 response;
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 id;
+      expect_done "complete peer request" statement);
+  Sqlite3.changes registry.db > 0
 
 let archive registry id =
   with_statement registry.db

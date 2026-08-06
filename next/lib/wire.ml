@@ -85,8 +85,11 @@ let request_of_yojson json =
           (List.exists (String.equal kind)
              [
                "session.ask.sent";
+               "session.ask.queued";
+               "session.ask.dispatched";
                "session.ask.received";
                "session.ask.completed";
+               "session.ask.failed";
              ])
       then Error "unsupported peer event kind"
       else if request_id = "" || String.length request_id > 128 then

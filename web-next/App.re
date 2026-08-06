@@ -147,14 +147,14 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
     for (const event of events) {
       const payload = event.payload || {};
       const update = payload.params?.update || {};
-      if (event.kind === 'session.ask.sent' || event.kind === 'session.ask.received' || event.kind === 'session.ask.completed') {
-        const direction = event.kind === 'session.ask.sent' ? 'Asked' : event.kind === 'session.ask.received' ? 'Request from' : 'Response from';
+      if (event.kind.startsWith('session.ask.')) {
+        const direction = event.kind === 'session.ask.sent' ? 'Sent to' : event.kind === 'session.ask.queued' ? 'Queued for' : event.kind === 'session.ask.dispatched' ? 'Dispatched to' : event.kind === 'session.ask.received' ? 'Request from' : event.kind === 'session.ask.failed' ? 'Failed for' : 'Response from';
         items.push({
           id: `${event.kind}-${payload.requestId || event.sequence}`,
           role: 'peer',
           title: `${direction} ${payload.peerId || 'session'}`,
           text: payload.text || '',
-          status: event.kind === 'session.ask.completed' ? 'completed' : '',
+          status: event.kind === 'session.ask.completed' ? 'completed' : event.kind === 'session.ask.failed' ? 'failed' : event.kind === 'session.ask.queued' ? 'pending' : event.kind === 'session.ask.dispatched' ? 'in_progress' : '',
           options: [],
           sequence: event.sequence
         });
