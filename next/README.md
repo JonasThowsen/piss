@@ -9,19 +9,15 @@ Reason/Melange browser
         |
         | authenticated same-origin HTTP
         v
-pissd-next (replaceable)
+pissd-next (replaceable; durable session registry)
         |
-        | negotiated bounded JSONL over an owner-only Unix socket
+        | one negotiated owner-only Unix socket per session
         v
-piss-session-worker (independently supervised; SQLite WAL)
+piss-session-worker@<session> (independent systemd unit + SQLite WAL)
         |
         | bidirectional ACP v1 JSON-RPC over stdio
         v
-pi-acp (pinned Nix package)
-        |
-        | Pi RPC
-        v
-Pi coding agent
+pi-acp + Pi  OR  opencode acp (selected per session)
 ```
 
 The mock ACP agent remains only as a deterministic integration-test fixture.
@@ -30,7 +26,8 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
-- fresh-conversation creation without restarting the control plane;
+- durable conversation creation, switching, and archival;
+- simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
 - streamed assistant messages;
 - structured tool-call cards and output;
@@ -39,7 +36,7 @@ The deployed Reason application provides:
 - worker, adapter, and event-sequence telemetry;
 - automatic reconnection to the durable timeline.
 
-The NixOS module runs the control plane and worker as separate user-systemd services. Updating or restarting `piss-ocaml.service` does not restart the worker, `pi-acp`, Pi, or an active tool. If the worker itself restarts, it uses ACP `session/load` to reattach to the Pi session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
+The NixOS module runs the control plane separately from dynamic `piss-ocaml-worker@<session>.service` instances. The durable registry records active and archived sessions, while each active session owns a Unix socket, SQLite ledger, ACP adapter, and systemd restart policy. Updating or restarting `piss-ocaml.service` idempotently starts missing workers without restarting healthy ones. If a worker itself restarts, it uses ACP `session/load` when supported to reattach to its harness session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
 
 ## Security boundary
 
@@ -66,6 +63,7 @@ dune build @all @web-bundle
 dune runtest
 dune build @interaction-test
 dune build @replaceability-test
+dune build @session-isolation-test
 ```
 
 Production packages:
@@ -77,9 +75,9 @@ nix build .#piss-next-web
 nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion.
+`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, and verifies its ledger remains on disk.
 
-A real-harness smoke has also exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages, and the NixOS module selects them with `services.piss-next.harness = "pi"` or `"opencode"`.
+A real-harness smoke has exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages and may now run simultaneously; `services.piss-next.harness` selects only the bootstrap default.
 
 ## Local real-Pi run
 
@@ -122,9 +120,9 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Deliberate current limitations
 
-- One deployed worker owns the currently selected ACP session and allows one prompt turn at a time.
-- The browser can create a fresh conversation. Until each session has its own worker, creation is capped at four per worker lifetime because adapters may retain harness processes; list/archive and concurrent sessions are not exposed yet.
-- OpenCode is packaged, selectable, and has passed a real ACP smoke through the same path, but the deployed Tailnet service currently selects Pi.
+- Each session allows one prompt turn at a time; independent sessions can run concurrently.
+- Active sessions are capped at 32. Archival stops the worker and retains its registry row and ledger; restoring an archived session is not exposed yet.
+- Pi and OpenCode are selectable per session. The bootstrap default remains Pi.
 - The browser uses bounded 750 ms polling rather than resumable SSE.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
 - Existing TypeScript PISS workflow metadata is not migrated.
@@ -132,8 +130,8 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Next production slices
 
-1. Add a narrow launcher that creates one fixed-argument user-systemd worker per durable session.
-2. Add create/list/archive/load UI backed by that launcher and a control-plane session registry.
-3. Deploy OpenCode as the second selectable harness and run the replaceability suite against both.
-4. Replace polling with resumable SSE using the existing monotonic event cursor.
+1. Add archived-session browsing and restore controls without deleting durable ledgers.
+2. Run the production isolation proof with simultaneous real Pi and OpenCode turns.
+3. Replace polling with resumable SSE using the existing monotonic event cursor.
+4. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
 5. Port one complete PISS workflow through the real authority and receipt model.

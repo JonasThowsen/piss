@@ -398,10 +398,12 @@
             assert nextModuleEvaluation.config.services.piss-next.port == 4318;
             assert nextModuleEvaluation.config.services.piss-next.tailscale.hostname == "piss-ocaml";
             assert
-              nextModuleEvaluation.config.systemd.user.services.piss-ocaml-worker.serviceConfig.Restart
+              nextModuleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
               == "on-failure";
-            assert nixpkgs.lib.hasInfix "--harness-arg acp"
-              opencodeModuleEvaluation.config.systemd.user.services.piss-ocaml-worker.serviceConfig.ExecStart;
+            assert nixpkgs.lib.hasInfix "--available-harness opencode"
+              nextModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
+            assert nixpkgs.lib.hasInfix "--default-harness opencode"
+              opencodeModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
             pkgs.runCommand "piss-next-nixos-module-check" { } "touch $out";
         }
       );
