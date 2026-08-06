@@ -3,6 +3,7 @@ type requestInit;
 type timelineItem;
 type permissionOption;
 type sessionSnapshot;
+type sessionSummary;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -18,6 +19,10 @@ external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external snapshotWorkerPid: sessionSnapshot => int = "workerPid";
 [@mel.get] external snapshotHarnessPid: sessionSnapshot => int = "harnessPid";
 [@mel.get] external snapshotSequence: sessionSnapshot => int = "lastSequence";
+[@mel.get] external sessionId: sessionSummary => string = "id";
+[@mel.get] external sessionTitle: sessionSummary => string = "title";
+[@mel.get] external sessionHarness: sessionSummary => string = "harness";
+[@mel.get] external sessionStatus: sessionSummary => string = "status";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
@@ -56,6 +61,24 @@ let composerKeyDown: React.Event.Keyboard.t => unit = [%raw
 
 let parseSnapshot: string => sessionSnapshot = [%raw
   "text => { try { return JSON.parse(text); } catch (_) { return { status: 'offline', agentName: 'ACP agent', workerPid: 0, harnessPid: 0, lastSequence: 0 }; } }"
+];
+let parseSessions: string => array(sessionSummary) = [%raw
+  "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
+let selectSessionId: (string, string) => string = [%raw
+  "(text, current) => { try { const sessions = JSON.parse(text); if (!Array.isArray(sessions) || sessions.length === 0) return ''; return sessions.some(session => session.id === current) ? current : sessions[0].id; } catch (_) { return ''; } }"
+];
+let sessionUrl: (string, string) => string = [%raw
+  "(path, id) => `${path}${path.includes('?') ? '&' : '?'}session=${encodeURIComponent(id)}`"
+];
+let archiveUrl: string => string = [%raw
+  "id => `/api/v2/sessions/${encodeURIComponent(id)}/archive`"
+];
+let createdSessionId: string => string = [%raw
+  "text => { try { return JSON.parse(text).id || ''; } catch (_) { return ''; } }"
+];
+let settledNotice: string => string = [%raw
+  "current => current === 'Connecting to the durable worker...' || current === 'Switching durable session...' || current === 'Isolated session worker is starting.' || current.startsWith('Eio.Io ') ? 'Durable timeline synchronized.' : current"
 ];
 
 let projectTimeline: (string, string) => array(timelineItem) = [%raw
@@ -220,18 +243,44 @@ module App = {
         "{\"status\":\"connecting\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
+    let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
+    let (activeSessionId, setActiveSessionId) = React.useState(() => "");
     let (notice, setNotice) =
       React.useState(() => "Connecting to the durable worker...");
     let (submitting, setSubmitting) = React.useState(() => false);
 
-    let refresh = () => {
-      getText("/api/v2/session")
+    let refreshSession = id =>
+      if (id != "") {
+        getText(sessionUrl("/api/v2/session", id))
+        ->thenPromise(text => {
+            setSessionJson(_ => text);
+            setNotice(current => settledNotice(current));
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setNotice(_ => errorMessage(error));
+            Js.Promise.resolve();
+          })
+        ->ignore;
+        getText(sessionUrl("/api/v2/events?recent=500", id))
+        ->thenPromise(text => {
+            setEventsJson(_ => text);
+            scrollTimeline();
+            Js.Promise.resolve();
+          })
+        ->ignorePromise;
+      };
+
+    let refresh = () =>
+      getText("/api/v2/sessions")
       ->thenPromise(text => {
-          setSessionJson(_ => text);
-          setNotice(current =>
-            current == "Connecting to the durable worker..."
-              ? "Durable timeline synchronized." : current
-          );
+          setSessionsJson(_ => text);
+          let selected = selectSessionId(text, activeSessionId);
+          if (selected != activeSessionId) {
+            setActiveSessionId(_ => selected);
+            setEventsJson(_ => "[]");
+          };
+          refreshSession(selected);
           Js.Promise.resolve();
         })
       ->catchPromise(error => {
@@ -239,25 +288,21 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignore;
-      getText("/api/v2/events?recent=500")
-      ->thenPromise(text => {
-          setEventsJson(_ => text);
-          scrollTimeline();
-          Js.Promise.resolve();
-        })
-      ->ignorePromise;
-    };
 
-    React.useEffect0(() => {
-      refresh();
-      let timer = Js.Global.setInterval(~f=refresh, 750);
-      Some(() => Js.Global.clearInterval(timer));
-    });
+    React.useEffect1(
+      () => {
+        refresh();
+        let timer = Js.Global.setInterval(~f=refresh, 750);
+        Some(() => Js.Global.clearInterval(timer));
+      },
+      [|activeSessionId|],
+    );
 
     let snapshot = parseSnapshot(sessionJson);
     let status = snapshotStatus(snapshot);
     let running = status == "running" || status == "requires_action";
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
+    let sessions = parseSessions(sessionsJson);
 
     let submitPrompt = event => {
       preventDefault(event);
@@ -271,7 +316,7 @@ module App = {
             ("commandId", Js.Json.string(commandId)),
             ("text", Js.Json.string(text)),
           |]);
-        postText("/api/v2/commands", body)
+        postText(sessionUrl("/api/v2/commands", activeSessionId), body)
         ->thenPromise(_ => {
             clearPrompt();
             setNotice(_ => "Prompt accepted. The worker owns this turn.");
@@ -288,14 +333,45 @@ module App = {
       };
     };
 
-    let newSession = _ =>
-      if (!running && !submitting) {
+    let newSession = harness =>
+      if (!submitting) {
         setSubmitting(_ => true);
-        setNotice(_ => "Creating a fresh ACP session...");
-        postText("/api/v2/session/new", "{}")
-        ->thenPromise(_ => {
+        setNotice(_ => "Starting an isolated " ++ harness ++ " worker...");
+        let body = jsonBody([|("harness", Js.Json.string(harness))|]);
+        postText("/api/v2/sessions", body)
+        ->thenPromise(text => {
+            let selected = createdSessionId(text);
+            setActiveSessionId(_ => selected);
             setEventsJson(_ => "[]");
-            setNotice(_ => "Fresh session ready.");
+            setNotice(_ => "Isolated session worker is starting.");
+            setSubmitting(_ => false);
+            refreshSession(selected);
+            refresh();
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setNotice(_ => errorMessage(error));
+            setSubmitting(_ => false);
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
+    let selectSession = id => {
+      setActiveSessionId(_ => id);
+      setEventsJson(_ => "[]");
+      setNotice(_ => "Switching durable session...");
+      refreshSession(id);
+    };
+
+    let archiveSession = _ =>
+      if (!running && !submitting && activeSessionId != "") {
+        setSubmitting(_ => true);
+        postText(archiveUrl(activeSessionId), "{}")
+        ->thenPromise(_ => {
+            setActiveSessionId(_ => "");
+            setEventsJson(_ => "[]");
+            setNotice(_ => "Session archived; its ledger remains durable.");
             setSubmitting(_ => false);
             refresh();
             Js.Promise.resolve();
@@ -310,7 +386,7 @@ module App = {
 
     let cancel = _ => {
       setNotice(_ => "Cancellation requested...");
-      postText("/api/v2/cancel", "{}")
+      postText(sessionUrl("/api/v2/cancel", activeSessionId), "{}")
       ->thenPromise(_ => {
           setNotice(_ => "Cancellation delivered to the agent.");
           Js.Promise.resolve();
@@ -333,7 +409,7 @@ module App = {
           ("requestId", Js.Json.string(requestId)),
           ("optionId", optionJson),
         |]);
-      postText("/api/v2/permissions", body)
+      postText(sessionUrl("/api/v2/permissions", activeSessionId), body)
       ->thenPromise(_ => {
           setNotice(_ => "Permission decision delivered.");
           refresh();
@@ -371,10 +447,48 @@ module App = {
             <h2> {React.string(snapshotAgentName(snapshot))} </h2>
             <p className="runtime-copy">
               {React.string(
-                 "One real ACP session, independently supervised and rooted in the OCaml rewrite workspace.",
+                 "Selected ACP session. Every conversation owns an independently supervised worker and durable ledger.",
                )}
             </p>
           </div>
+          <nav className="session-index" ariaLabel="Conversations">
+            <div className="session-index-heading">
+              <span> {React.string("CONVERSATIONS")} </span>
+              <b> {React.int(Array.length(sessions))} </b>
+            </div>
+            <div className="session-list">
+              {Array.map(
+                 session => {
+                   let id = sessionId(session);
+                   <button
+                     key=id
+                     type_="button"
+                     className={
+                       "session-row "
+                       ++ (id == activeSessionId ? "session-row-active" : "")
+                     }
+                     disabled=submitting
+                     onClick={_ => selectSession(id)}>
+                     <i
+                       className={
+                         "session-dot status-" ++ sessionStatus(session)
+                       }
+                     />
+                     <span>
+                       <strong>
+                         {React.string(sessionTitle(session))}
+                       </strong>
+                       <small>
+                         {React.string(sessionHarness(session))}
+                       </small>
+                     </span>
+                   </button>;
+                 },
+                 sessions,
+               )
+               ->React.array}
+            </div>
+          </nav>
           <dl className="runtime-facts">
             <div>
               <dt> {React.string("WORKER")} </dt>
@@ -389,19 +503,36 @@ module App = {
               <dd> {React.int(snapshotSequence(snapshot))} </dd>
             </div>
           </dl>
-          <button
-            className="new-session-action"
-            type_="button"
-            disabled={running || submitting}
-            onClick=newSession>
-            <span> {React.string("New conversation")} </span>
-            <b> {React.string(fromCodePoint(0x002b))} </b>
-          </button>
+          <div className="session-actions">
+            <button
+              className="new-session-action"
+              type_="button"
+              disabled=submitting
+              onClick={_ => newSession("pi")}>
+              <span> {React.string("New Pi session")} </span>
+              <b> {React.string(fromCodePoint(0x002b))} </b>
+            </button>
+            <button
+              className="new-session-action opencode-action"
+              type_="button"
+              disabled=submitting
+              onClick={_ => newSession("opencode")}>
+              <span> {React.string("New OpenCode session")} </span>
+              <b> {React.string(fromCodePoint(0x002b))} </b>
+            </button>
+            <button
+              className="archive-session-action"
+              type_="button"
+              disabled={running || submitting || Array.length(sessions) <= 1}
+              onClick=archiveSession>
+              {React.string("Archive current")}
+            </button>
+          </div>
           <div className="boundary-note">
             <span> {React.string("REPLACEABLE CONTROL")} </span>
             <p>
               {React.string(
-                 "This page may disappear. The worker, Pi process, tools, and SQLite timeline do not.",
+                 "This page may disappear. Session workers, harnesses, tools, and SQLite timelines continue independently.",
                )}
             </p>
           </div>

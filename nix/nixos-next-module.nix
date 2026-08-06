@@ -12,15 +12,63 @@ let
   defaultAdapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
   defaultOpenCodePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode;
   serviceStateName = "piss-ocaml";
-  harnessCommand =
-    if cfg.harness == "pi" then
-      "${cfg.adapterPackage}/bin/pi-acp"
-    else if cfg.harness == "opencode" then
-      "${cfg.opencodePackage}/bin/opencode"
-    else
-      "${cfg.package}/bin/piss-mock-agent";
-  harnessArgs = lib.optionals (cfg.harness == "opencode") [ "acp" ];
   runtimeDirectory = "%t/${serviceStateName}";
+  stateDirectory = "%S/${serviceStateName}";
+  sessionRuntimeRoot = "${runtimeDirectory}/sessions";
+  sessionStateRoot = "${stateDirectory}/sessions";
+
+  workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
+    set -euo pipefail
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || { echo "invalid session id" >&2; exit 64; }
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/${serviceStateName}"
+    session_state="$state/sessions/$id"
+    session_runtime="''${XDG_RUNTIME_DIR:?}/${serviceStateName}/sessions/$id"
+    mkdir -p "$session_state" "$session_runtime"
+    harness="$(tr -d '\n' < "$session_state/harness")"
+    if [[ "$id" == "deployed-tracer" && -e "$state/worker.sqlite3" && ! -e "$session_state/worker.sqlite3" ]]; then
+      for suffix in "" -wal -shm; do
+        [[ ! -e "$state/worker.sqlite3$suffix" ]] || mv "$state/worker.sqlite3$suffix" "$session_state/worker.sqlite3$suffix"
+      done
+    fi
+    case "$harness" in
+      pi)
+        command=${lib.escapeShellArg "${cfg.adapterPackage}/bin/pi-acp"}
+        args=()
+        ;;
+      opencode)
+        command=${lib.escapeShellArg "${cfg.opencodePackage}/bin/opencode"}
+        args=(--harness-arg acp)
+        ;;
+      mock)
+        command=${lib.escapeShellArg "${cfg.package}/bin/piss-mock-agent"}
+        args=()
+        ;;
+      *) echo "unsupported harness: $harness" >&2; exit 64 ;;
+    esac
+    exec ${cfg.package}/bin/piss-session-worker \
+      --socket "$session_runtime/worker.sock" \
+      --database "$session_state/worker.sqlite3" \
+      --session "$id" \
+      --worker "worker-$id" \
+      --workspace ${lib.escapeShellArg cfg.workspace} \
+      --harness "$command" \
+      "''${args[@]}"
+  '';
+
+  startWorker = pkgs.writeShellScript "piss-ocaml-start-session" ''
+    set -euo pipefail
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
+    exec ${lib.getExe' pkgs.systemd "systemctl"} --user start "piss-ocaml-worker@$id.service"
+  '';
+
+  stopWorker = pkgs.writeShellScript "piss-ocaml-stop-session" ''
+    set -euo pipefail
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
+    exec ${lib.getExe' pkgs.systemd "systemctl"} --user stop "piss-ocaml-worker@$id.service"
+  '';
   tailscaleStateName = cfg.tailscale.stateName;
   tailscaleSocket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
 
@@ -215,39 +263,18 @@ in
 
     environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
 
-    systemd.user.services.piss-ocaml-worker = {
-      description = "PISS OCaml independently supervised session worker";
-      wantedBy = [ "default.target" ];
+    systemd.user.services."piss-ocaml-worker@" = {
+      description = "PISS OCaml independently supervised worker for session %i";
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs (
-          [
-            "${cfg.package}/bin/piss-session-worker"
-            "--socket"
-            "${runtimeDirectory}/worker.sock"
-            "--database"
-            "%S/${serviceStateName}/worker.sqlite3"
-            "--session"
-            "deployed-tracer"
-            "--worker"
-            "deployed-worker"
-            "--workspace"
-            cfg.workspace
-            "--harness"
-            harnessCommand
-          ]
-          ++ lib.concatMap (argument: [
-            "--harness-arg"
-            argument
-          ]) harnessArgs
-        );
+        ExecStart = "${workerRunner} %i";
         EnvironmentFile = cfg.environmentFiles;
         Restart = "on-failure";
         RestartSec = 2;
-        RuntimeDirectory = serviceStateName;
+        RuntimeDirectory = "${serviceStateName}/sessions/%i";
         RuntimeDirectoryMode = "0700";
-        StateDirectory = serviceStateName;
+        StateDirectory = "${serviceStateName}/sessions/%i";
         StateDirectoryMode = "0700";
         UMask = "0077";
         NoNewPrivileges = true;
@@ -256,14 +283,12 @@ in
         ProtectHome = "read-only";
         ProtectSystem = "strict";
         ReadWritePaths = [
-          "%S/${serviceStateName}"
+          "%S/${serviceStateName}/sessions/%i"
           "-%h/.pi"
-          cfg.workspace
-        ]
-        ++ lib.optionals (cfg.harness == "opencode") [
           "-%h/.cache"
           "-%h/.config/opencode"
           "-%h/.local/share"
+          cfg.workspace
         ];
         LockPersonality = true;
         RestrictAddressFamilies = [
@@ -288,16 +313,34 @@ in
     systemd.user.services.piss-ocaml = {
       description = "PISS OCaml replaceable control plane";
       wantedBy = [ "default.target" ];
-      after = [ "piss-ocaml-worker.service" ];
-      requires = [ "piss-ocaml-worker.service" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [
             "${cfg.package}/bin/pissd-next"
             "--port"
             (toString cfg.port)
-            "--worker-socket"
-            "${runtimeDirectory}/worker.sock"
+            "--registry"
+            "${stateDirectory}/registry.sqlite3"
+            "--session-state-root"
+            sessionStateRoot
+            "--session-runtime-root"
+            sessionRuntimeRoot
+            "--session-launcher"
+            startWorker
+            "--session-stopper"
+            stopWorker
+            "--available-harness"
+            "pi"
+            "--available-harness"
+            "opencode"
+            "--available-harness"
+            "mock"
+            "--default-harness"
+            cfg.harness
+            "--bootstrap-session"
+            "deployed-tracer"
             "--public"
             "${cfg.webPackage}/share/piss-next/public"
             "--app-js"
@@ -312,6 +355,9 @@ in
         );
         Restart = "always";
         RestartSec = 2;
+        StateDirectory = serviceStateName;
+        StateDirectoryMode = "0700";
+        ReadWritePaths = [ stateDirectory ];
         UMask = "0077";
         NoNewPrivileges = true;
         PrivateDevices = true;

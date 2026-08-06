@@ -16,6 +16,39 @@ let with_store f =
       in
       Fun.protect ~finally:(fun () -> Store.close store) (fun () -> f store))
 
+let with_registry f =
+  let path = Filename.temp_file "piss-registry-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let registry = Registry.open_ ~path in
+      Fun.protect
+        ~finally:(fun () -> Registry.close registry)
+        (fun () -> f registry))
+
+let test_session_registry () =
+  with_registry @@ fun registry ->
+  ignore (Registry.insert registry ~id:"s-one" ~title:"Pi / one" ~harness:"pi");
+  ignore
+    (Registry.insert registry ~id:"s-two" ~title:"OpenCode / two"
+       ~harness:"opencode");
+  Alcotest.(check int) "two active sessions" 2 (Registry.active_count registry);
+  Alcotest.(check bool)
+    "archive changes state" true
+    (Registry.archive registry "s-one");
+  Alcotest.(check int) "one active session" 1 (Registry.active_count registry);
+  Alcotest.(check bool)
+    "archived session hidden" true
+    (Option.is_none (Registry.find_active registry "s-one"));
+  Alcotest.(check int)
+    "durable archived row retained" 2
+    (List.length (Registry.list registry ~include_archived:true))
+
 let test_command_deduplication () =
   with_store @@ fun store ->
   let first =
@@ -176,6 +209,8 @@ let () =
             test_event_retention_compacts;
           Alcotest.test_case "restart reconciliation" `Quick
             test_restart_reconciliation;
+          Alcotest.test_case "session registry archive" `Quick
+            test_session_registry;
         ] );
       ( "domain",
         [

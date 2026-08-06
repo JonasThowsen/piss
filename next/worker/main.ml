@@ -143,7 +143,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
           fail_pending "ACP harness disconnected";
           ignore
             (Store.append_event store ~kind:"harness.disconnected"
-               (`Assoc [ ("harnessPid", `Int harness_pid) ]))
+               (`Assoc [ ("harnessPid", `Int harness_pid) ]));
+          raise End_of_file
       | exn ->
           status := Domain.Failed;
           fail_pending (Printexc.to_string exn);
@@ -421,6 +422,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Error message -> write_json flow (Wire.response_to_yojson (Error message))
   in
   let net = Eio.Stdenv.net env in
+  (try Unix.unlink socket_path with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
   let socket =
     Eio.Net.listen net ~sw ~backlog:32 ~reuse_addr:true (`Unix socket_path)
   in
