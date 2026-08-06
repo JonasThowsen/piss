@@ -74,6 +74,9 @@ let sessionUrl: (string, string) => string = [%raw
 let archiveUrl: string => string = [%raw
   "id => `/api/v2/sessions/${encodeURIComponent(id)}/archive`"
 ];
+let restoreUrl: string => string = [%raw
+  "id => `/api/v2/sessions/${encodeURIComponent(id)}/restore`"
+];
 let createdSessionId: string => string = [%raw
   "text => { try { return JSON.parse(text).id || ''; } catch (_) { return ''; } }"
 ];
@@ -244,6 +247,7 @@ module App = {
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
+    let (archivedJson, setArchivedJson) = React.useState(() => "[]");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
     let (notice, setNotice) =
       React.useState(() => "Connecting to the durable worker...");
@@ -271,7 +275,7 @@ module App = {
         ->ignorePromise;
       };
 
-    let refresh = () =>
+    let refresh = () => {
       getText("/api/v2/sessions")
       ->thenPromise(text => {
           setSessionsJson(_ => text);
@@ -288,6 +292,13 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignore;
+      getText("/api/v2/sessions?archived=true")
+      ->thenPromise(text => {
+          setArchivedJson(_ => text);
+          Js.Promise.resolve();
+        })
+      ->ignorePromise;
+    };
 
     React.useEffect1(
       () => {
@@ -303,6 +314,7 @@ module App = {
     let running = status == "running" || status == "requires_action";
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let sessions = parseSessions(sessionsJson);
+    let archivedSessions = parseSessions(archivedJson);
 
     let submitPrompt = event => {
       preventDefault(event);
@@ -372,6 +384,27 @@ module App = {
             setActiveSessionId(_ => "");
             setEventsJson(_ => "[]");
             setNotice(_ => "Session archived; its ledger remains durable.");
+            setSubmitting(_ => false);
+            refresh();
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setNotice(_ => errorMessage(error));
+            setSubmitting(_ => false);
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
+    let restoreSession = id =>
+      if (!submitting) {
+        setSubmitting(_ => true);
+        setNotice(_ => "Restoring the archived worker and ledger...");
+        postText(restoreUrl(id), "{}")
+        ->thenPromise(_ => {
+            setActiveSessionId(_ => id);
+            setEventsJson(_ => "[]");
+            setNotice(_ => "Archived session restored.");
             setSubmitting(_ => false);
             refresh();
             Js.Promise.resolve();
@@ -488,6 +521,36 @@ module App = {
                )
                ->React.array}
             </div>
+            {Array.length(archivedSessions) == 0
+               ? React.null
+               : <div className="archive-shelf">
+                   <div className="archive-shelf-heading">
+                     <span> {React.string("ARCHIVED")} </span>
+                     <b> {React.int(Array.length(archivedSessions))} </b>
+                   </div>
+                   {Array.map(
+                      session =>
+                        <div
+                          className="archived-row" key={sessionId(session)}>
+                          <span>
+                            <strong>
+                              {React.string(sessionTitle(session))}
+                            </strong>
+                            <small>
+                              {React.string(sessionHarness(session))}
+                            </small>
+                          </span>
+                          <button
+                            type_="button"
+                            disabled=submitting
+                            onClick={_ => restoreSession(sessionId(session))}>
+                            {React.string("Restore")}
+                          </button>
+                        </div>,
+                      archivedSessions,
+                    )
+                    ->React.array}
+                 </div>}
           </nav>
           <dl className="runtime-facts">
             <div>

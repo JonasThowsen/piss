@@ -26,7 +26,7 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
-- durable conversation creation, switching, and archival;
+- durable conversation creation, switching, archival, and restoration;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
 - streamed assistant messages;
@@ -75,7 +75,7 @@ nix build .#piss-next-web
 nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, and verifies its ledger remains on disk.
+`@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, restores it under the same identity, and verifies its ledger and completed timeline remain intact.
 
 A real-harness smoke has exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages and may now run simultaneously; `services.piss-next.harness` selects only the bootstrap default.
 
@@ -121,7 +121,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 ## Deliberate current limitations
 
 - Each session allows one prompt turn at a time; independent sessions can run concurrently.
-- Active sessions are capped at 32. Archival stops the worker and retains its registry row and ledger; restoring an archived session is not exposed yet.
+- Active sessions are capped at 32. Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
 - Pi and OpenCode are selectable per session. The bootstrap default remains Pi.
 - The browser uses bounded 750 ms polling rather than resumable SSE.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
@@ -130,8 +130,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Next production slices
 
-1. Add archived-session browsing and restore controls without deleting durable ledgers.
-2. Run the production isolation proof with simultaneous real Pi and OpenCode turns.
-3. Replace polling with resumable SSE using the existing monotonic event cursor.
-4. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
-5. Port one complete PISS workflow through the real authority and receipt model.
+1. Replace polling with resumable SSE using the existing monotonic event cursor.
+2. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
+3. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
+4. Port one complete PISS workflow through the real authority and receipt model.

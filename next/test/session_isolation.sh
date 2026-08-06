@@ -179,6 +179,31 @@ curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
 wait_session_count 1
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id') == "$second" ]]
 [[ -f "$state/sessions/$first/worker.sqlite3" ]]
+archived=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true")
+[[ $(jq -r '.[0].id' <<<"$archived") == "$first" ]]
+[[ $(jq -r '.[0].status' <<<"$archived") == archived ]]
+ledger_before_restore=$(python3 - "$state/sessions/$first/worker.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute("select count(*) from events").fetchone()[0])
+PY
+)
 
-printf 'session isolation proof passed: first=%s replacement=%s second=%s control=%s->%s\n' \
-  "$first_worker" "$replacement" "$second_worker" "$old_control" "$control_pid"
+curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/sessions/$first/restore" >/dev/null
+wait_session_count 2
+restored_worker=$(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .workerPid)
+[[ "$restored_worker" != "$replacement" ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
+command_completed "$first" first-command
+ledger_after_restore=$(python3 - "$state/sessions/$first/worker.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute("select count(*) from events").fetchone()[0])
+PY
+)
+[[ "$ledger_after_restore" -ge "$ledger_before_restore" ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 0 ]]
+
+printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s control=%s->%s\n' \
+  "$first_worker" "$replacement" "$restored_worker" "$second_worker" "$old_control" "$control_pid"

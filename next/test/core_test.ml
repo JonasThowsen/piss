@@ -47,7 +47,14 @@ let test_session_registry () =
     (Option.is_none (Registry.find_active registry "s-one"));
   Alcotest.(check int)
     "durable archived row retained" 2
-    (List.length (Registry.list registry ~include_archived:true))
+    (List.length (Registry.list registry ~include_archived:true));
+  Alcotest.(check int)
+    "one archived session" 1
+    (List.length (Registry.list_archived registry));
+  Alcotest.(check bool)
+    "restore changes state" true
+    (Registry.restore registry "s-one");
+  Alcotest.(check int) "two active again" 2 (Registry.active_count registry)
 
 let test_command_deduplication () =
   with_store @@ fun store ->

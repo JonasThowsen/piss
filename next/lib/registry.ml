@@ -136,6 +136,18 @@ let archive registry id =
       expect_done "archive session" statement);
   Sqlite3.changes registry.db > 0
 
+let restore registry id =
+  with_statement registry.db
+    "UPDATE sessions SET archived_at = NULL WHERE id = ? AND archived_at IS \
+     NOT NULL" (fun statement ->
+      bind_text statement 1 id;
+      expect_done "restore session" statement);
+  Sqlite3.changes registry.db > 0
+
+let list_archived registry =
+  list registry ~include_archived:true
+  |> List.filter (fun session -> Option.is_some session.archived_at)
+
 let active_count registry = List.length (list registry ~include_archived:false)
 
 let session_to_yojson session =
