@@ -33,7 +33,7 @@ The deployed Reason application provides:
 - durable allowlisted workspaces with current-style responsive navigation and a bounded local-directory picker rooted only in Nix-approved discovery paths;
 - named Pi/OpenCode session creation, renaming, switching, archival, and restoration;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
-- an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
+- a current-workbench composer with Enter/Ctrl/Cmd dispatch plus ACP-backed model and thinking selectors;
 - streamed assistant messages over resumable server-sent events;
 - structured tool-call cards and output;
 - permission decisions for ACP agents that request them;

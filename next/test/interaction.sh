@@ -47,6 +47,14 @@ done
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/session/new" >/dev/null
+config_options=$(curl -fsS "http://127.0.0.1:$port/api/v2/config-options")
+[[ $(jq -r '.[]|select(.category=="model")|.currentValue' <<<"$config_options") == mock/fast ]]
+[[ $(jq -r '.[]|select(.category=="thought_level")|.currentValue' <<<"$config_options") == medium ]]
+updated_config=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"configId":"thought_level","value":"high"}' \
+  "http://127.0.0.1:$port/api/v2/config-options")
+[[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$updated_config") == high ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue') == high ]]
 initial_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "timeline.reset")] | length' <<<"$initial_events") == 1 ]]
 initial_cursor=$(jq '[.[].sequence] | max // 0' <<<"$initial_events")

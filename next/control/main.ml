@@ -1315,6 +1315,38 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Ok snapshot -> respond_json snapshot
               | Error message -> error_json ~status:`Service_unavailable message
               )
+          | `GET, "/api/v2/config-options" -> (
+              match
+                with_worker workers uri (fun socket ->
+                    worker_request net socket
+                      (`Assoc [ ("op", `String "config_options") ]))
+              with
+              | Ok options -> respond_json options
+              | Error message -> error_json ~status:`Service_unavailable message
+              )
+          | `POST, "/api/v2/config-options" -> (
+              match valid_json_mutation ~dev_bypass request with
+              | Error (status, message) -> error_json ~status message
+              | Ok () -> (
+                  let json = read_body body |> Yojson.Safe.from_string in
+                  match
+                    ( Yojson.Safe.Util.member "configId" json,
+                      Yojson.Safe.Util.member "value" json )
+                  with
+                  | `String config_id, `String value -> (
+                      match
+                        with_worker workers uri (fun socket ->
+                            worker_request net socket
+                              (`Assoc
+                                 [
+                                   ("op", `String "set_config_option");
+                                   ("configId", `String config_id);
+                                   ("value", `String value);
+                                 ]))
+                      with
+                      | Ok result -> respond_json result
+                      | Error message -> error_json ~status:`Conflict message)
+                  | _ -> error_json "configId and value must be strings"))
           | `GET, "/api/v2/event-stream" -> (
               match stream_after request uri with
               | Error message -> error_json message

@@ -144,6 +144,15 @@ let load_session_request ~session_id ~cwd ~piss_session_id ~mcp_command
              ~broker_url ~broker_token ~curl_command );
        ])
 
+let set_config_option_request ~id ~session_id ~config_id ~value =
+  request ~id ~method_:"session/set_config_option"
+    (`Assoc
+       [
+         ("sessionId", `String session_id);
+         ("configId", `String config_id);
+         ("value", `String value);
+       ])
+
 let cancel_notification ~session_id =
   notification ~method_:"session/cancel"
     (`Assoc [ ("sessionId", `String session_id) ])

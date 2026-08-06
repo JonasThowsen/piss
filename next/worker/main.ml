@@ -73,6 +73,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   in
   let status = ref Domain.Starting in
   let harness_session_id = ref "" in
+  let config_options = ref (`List []) in
   let send json = Eio.Stream.add outgoing json in
   let fail_pending message =
     Hashtbl.iter
@@ -126,6 +127,11 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                 (Store.append_event store ~kind:"acp.client_request.rejected"
                    (`Assoc
                       [ ("requestId", `String id); ("method", `String method_) ]))
+          | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
+              let update = Yojson.Safe.Util.member "update" params in
+              match Yojson.Safe.Util.member "configOptions" update with
+              | `List _ as options -> config_options := options
+              | _ -> ())
           | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
               match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
               | Some id when Hashtbl.mem pending_permissions id ->
@@ -212,6 +218,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
       | _ -> raise (Failure "ACP agent did not return a sessionId")
     in
     Store.set_metadata store "acp_session_id" created;
+    (match Yojson.Safe.Util.member "configOptions" result with
+    | `List _ as options -> config_options := options
+    | _ -> ());
     ignore (Store.append_event store ~kind:"acp.session.created" response);
     created
   in
@@ -226,7 +235,10 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         with
         | Ok response -> (
             match Acp.response_result ~expected_id:"session-load" response with
-            | Ok _ ->
+            | Ok result ->
+                (match Yojson.Safe.Util.member "configOptions" result with
+                | `List _ as options -> config_options := options
+                | _ -> ());
                 ignore
                   (Store.append_event store ~kind:"acp.session.loaded" response);
                 existing
@@ -280,13 +292,19 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                      `String "prompt";
                      `String "cancel";
                      `String "permission";
+                     `String "config_options";
                    ] );
              ])
     | Wire.Hello { protocol_version } ->
         Error
           (Printf.sprintf "unsupported worker protocol version %d"
              protocol_version)
-    | Wire.Snapshot -> Ok (Domain.snapshot_to_yojson (worker_snapshot ()))
+    | Wire.Snapshot -> (
+        let snapshot = Domain.snapshot_to_yojson (worker_snapshot ()) in
+        match snapshot with
+        | `Assoc fields ->
+            Ok (`Assoc (("configOptions", !config_options) :: fields))
+        | _ -> assert false)
     | Wire.Events { after; limit } ->
         let events = Store.list_events store ~after ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
@@ -348,6 +366,31 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               status := Domain.Failed;
               Store.set_command_state store ~command_id Domain.Ambiguous;
               Error (Printexc.to_string exn)))
+    | Wire.Config_options -> Ok !config_options
+    | Wire.Set_config_option { config_id; value } ->
+        if
+          Hashtbl.length running_commands > 0
+          || Hashtbl.length pending_permissions > 0
+        then Error "session configuration can only change while idle"
+        else
+          let id =
+            "config-"
+            ^ Digest.to_hex
+                (Digest.string
+                   (config_id ^ "\000" ^ value ^ "\000"
+                   ^ string_of_float (Unix.gettimeofday ())))
+          in
+          let result, response =
+            require_rpc_result ~id
+              (Acp.set_config_option_request ~id ~session_id:!harness_session_id
+                 ~config_id ~value)
+          in
+          (match Yojson.Safe.Util.member "configOptions" result with
+          | `List _ as options -> config_options := options
+          | _ -> ());
+          ignore
+            (Store.append_event store ~kind:"acp.config_option.changed" response);
+          Ok (`Assoc [ ("configOptions", !config_options) ])
     | Wire.Cancel ->
         if Hashtbl.length running_commands = 0 then
           Error "the session has no active prompt"

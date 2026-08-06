@@ -174,8 +174,49 @@ let run_prompt ~id ~session_id ~text =
               ]));
       write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))))
 
+let config_options ~model ~thinking =
+  `List
+    [
+      `Assoc
+        [
+          ("type", `String "select");
+          ("id", `String "model");
+          ("category", `String "model");
+          ("name", `String "Model");
+          ("currentValue", `String model);
+          ( "options",
+            `List
+              [
+                `Assoc
+                  [
+                    ("value", `String "mock/fast"); ("name", `String "Mock Fast");
+                  ];
+                `Assoc
+                  [
+                    ("value", `String "mock/deep"); ("name", `String "Mock Deep");
+                  ];
+              ] );
+        ];
+      `Assoc
+        [
+          ("type", `String "select");
+          ("id", `String "thought_level");
+          ("category", `String "thought_level");
+          ("name", `String "Thinking");
+          ("currentValue", `String thinking);
+          ( "options",
+            `List
+              (List.map
+                 (fun value ->
+                   `Assoc [ ("value", `String value); ("name", `String value) ])
+                 [ "off"; "low"; "medium"; "high" ]) );
+        ];
+    ]
+
 let () =
   let session_id = "mock-acp-session" in
+  let model = ref "mock/fast" in
+  let thinking = ref "medium" in
   try
     while true do
       let json = input_line stdin |> Yojson.Safe.from_string in
@@ -210,7 +251,28 @@ let () =
                   ]))
       | "session/new" ->
           write
-            (Acp.response ~id (`Assoc [ ("sessionId", `String session_id) ]))
+            (Acp.response ~id
+               (`Assoc
+                  [
+                    ("sessionId", `String session_id);
+                    ( "configOptions",
+                      config_options ~model:!model ~thinking:!thinking );
+                  ]))
+      | "session/set_config_option" ->
+          let params = Yojson.Safe.Util.member "params" json in
+          let config_id = Yojson.Safe.Util.member "configId" params in
+          let value = Yojson.Safe.Util.member "value" params in
+          (match (config_id, value) with
+          | `String "model", `String selected -> model := selected
+          | `String "thought_level", `String selected -> thinking := selected
+          | _ -> ());
+          write
+            (Acp.response ~id
+               (`Assoc
+                  [
+                    ( "configOptions",
+                      config_options ~model:!model ~thinking:!thinking );
+                  ]))
       | "session/prompt" ->
           let params = Yojson.Safe.Util.member "params" json in
           let text =
