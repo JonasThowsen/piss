@@ -208,7 +208,9 @@ in
         NoNewPrivileges = true;
         PrivateDevices = true;
         PrivateTmp = true;
-        ProtectHome = true;
+        # The worker socket lives under %t (/run/user/$UID), so the control
+        # plane needs read-only traversal of the user runtime directory.
+        ProtectHome = "read-only";
         ProtectSystem = "strict";
         LockPersonality = true;
         RestrictAddressFamilies = [
