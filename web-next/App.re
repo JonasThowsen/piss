@@ -4,6 +4,7 @@ type timelineItem;
 type permissionOption;
 type sessionSnapshot;
 type sessionSummary;
+type workspaceSummary;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -23,6 +24,11 @@ external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external sessionTitle: sessionSummary => string = "title";
 [@mel.get] external sessionHarness: sessionSummary => string = "harness";
 [@mel.get] external sessionStatus: sessionSummary => string = "status";
+[@mel.get]
+external sessionWorkspaceId: sessionSummary => string = "workspaceId";
+[@mel.get] external workspaceId: workspaceSummary => string = "id";
+[@mel.get] external workspaceName: workspaceSummary => string = "name";
+[@mel.get] external workspaceRoot: workspaceSummary => string = "root";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
@@ -40,6 +46,12 @@ let errorMessage: Js.Promise.error => string = [%raw
 
 let promptValue: unit => string = [%raw
   "() => document.getElementById('prompt-input')?.value?.trim() || ''"
+];
+let fieldValue: string => string = [%raw
+  "id => document.getElementById(id)?.value?.trim() || ''"
+];
+let confirmRename: string => option(string) = [%raw
+  "current => { const value = window.prompt('Rename session', current); return value && value.trim() ? value.trim() : undefined; }"
 ];
 
 let clearPrompt: unit => unit = [%raw
@@ -64,6 +76,16 @@ let parseSnapshot: string => sessionSnapshot = [%raw
 ];
 let parseSessions: string => array(sessionSummary) = [%raw
   "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
+let parseWorkspaces: string => array(workspaceSummary) = [%raw
+  "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
+let sessionsForWorkspace:
+  (array(sessionSummary), string) => array(sessionSummary) = [%raw
+  "(sessions, workspaceId) => sessions.filter(session => session.workspaceId === workspaceId)"
+];
+let selectedSessionTitle: (array(sessionSummary), string) => string = [%raw
+  "(sessions, id) => sessions.find(session => session.id === id)?.title || 'PISS'"
 ];
 let selectSessionId: (string, string) => string = [%raw
   "(text, current) => { try { const sessions = JSON.parse(text); if (!Array.isArray(sessions) || sessions.length === 0) return ''; return sessions.some(session => session.id === current) ? current : sessions[0].id; } catch (_) { return ''; } }"
@@ -302,7 +324,10 @@ module App = {
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
     let (archivedJson, setArchivedJson) = React.useState(() => "[]");
+    let (workspacesJson, setWorkspacesJson) = React.useState(() => "[]");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
+    let (drawerOpen, setDrawerOpen) = React.useState(() => false);
+    let (creatorOpen, setCreatorOpen) = React.useState(() => false);
     let (notice, setNotice) =
       React.useState(() => "Connecting to the durable worker...");
     let (submitting, setSubmitting) = React.useState(() => false);
@@ -342,6 +367,12 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignore;
+      getText("/api/v2/workspaces")
+      ->thenPromise(text => {
+          setWorkspacesJson(_ => text);
+          Js.Promise.resolve();
+        })
+      ->ignorePromise;
       getText("/api/v2/sessions?archived=true")
       ->thenPromise(text => {
           setArchivedJson(_ => text);
@@ -391,6 +422,7 @@ module App = {
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let sessions = parseSessions(sessionsJson);
     let archivedSessions = parseSessions(archivedJson);
+    let workspaces = parseWorkspaces(workspacesJson);
 
     let submitPrompt = event => {
       preventDefault(event);
@@ -421,25 +453,59 @@ module App = {
       };
     };
 
-    let newSession = harness =>
+    let newSession = event => {
+      preventDefault(event);
       if (!submitting) {
-        setSubmitting(_ => true);
-        setNotice(_ => "Starting an isolated " ++ harness ++ " worker...");
-        let body = jsonBody([|("harness", Js.Json.string(harness))|]);
-        postText("/api/v2/sessions", body)
-        ->thenPromise(text => {
-            let selected = createdSessionId(text);
-            setActiveSessionId(_ => selected);
-            setEventsJson(_ => "[]");
-            setNotice(_ => "Isolated session worker is starting.");
-            setSubmitting(_ => false);
-            refreshSession(selected);
+        let harness = fieldValue("new-session-harness");
+        let workspaceId = fieldValue("new-session-workspace");
+        let title = fieldValue("new-session-title");
+        if (workspaceId != "" && title != "") {
+          setSubmitting(_ => true);
+          setNotice(_ => "Starting an isolated " ++ harness ++ " worker...");
+          let body =
+            jsonBody([|
+              ("harness", Js.Json.string(harness)),
+              ("workspaceId", Js.Json.string(workspaceId)),
+              ("title", Js.Json.string(title)),
+            |]);
+          postText("/api/v2/sessions", body)
+          ->thenPromise(text => {
+              let selected = createdSessionId(text);
+              setActiveSessionId(_ => selected);
+              setEventsJson(_ => "[]");
+              setNotice(_ => "Isolated session worker is starting.");
+              setSubmitting(_ => false);
+              setCreatorOpen(_ => false);
+              setDrawerOpen(_ => false);
+              refreshSession(selected);
+              refresh();
+              Js.Promise.resolve();
+            })
+          ->catchPromise(error => {
+              setNotice(_ => errorMessage(error));
+              setSubmitting(_ => false);
+              Js.Promise.resolve();
+            })
+          ->ignore;
+        };
+      };
+    };
+
+    let renameSession = session =>
+      switch (confirmRename(sessionTitle(session))) {
+      | None => ()
+      | Some(title) =>
+        let body = jsonBody([|("title", Js.Json.string(title))|]);
+        postText(
+          "/api/v2/sessions/" ++ sessionId(session) ++ "/rename",
+          body,
+        )
+        ->thenPromise(_ => {
             refresh();
             Js.Promise.resolve();
           })
         ->catchPromise(error => {
             setNotice(_ => errorMessage(error));
-            setSubmitting(_ => false);
             Js.Promise.resolve();
           })
         ->ignore;
@@ -449,6 +515,7 @@ module App = {
       setActiveSessionId(_ => id);
       setEventsJson(_ => "[]");
       setNotice(_ => "Switching durable session...");
+      setDrawerOpen(_ => false);
       refreshSession(id);
     };
 
@@ -533,70 +600,148 @@ module App = {
 
     <main className="control-room">
       <header className="app-header">
+        <button
+          className="mobile-menu"
+          type_="button"
+          ariaLabel="Open workspaces and sessions"
+          onClick={_ => setDrawerOpen(_ => true)}>
+          <i />
+        </button>
         <div className="brand-lockup">
           <span className="brand-mark">
             {React.string(fromCodePoint(0x03c0))}
           </span>
           <div>
+            <h1>
+              {React.string(selectedSessionTitle(sessions, activeSessionId))}
+            </h1>
             <p className="eyebrow">
-              {React.string("PISS / OCAML CONTROL PLANE")}
+              {React.string("DURABLE AGENT WORKBENCH")}
             </p>
-            <h1> {React.string("A durable room for agent work.")} </h1>
           </div>
         </div>
+        <button
+          className="search-trigger"
+          type_="button"
+          ariaLabel="Search sessions">
+          {React.string("")}
+        </button>
         <div className={"connection-pill connection-" ++ status}>
           <i />
-          {React.string(status)}
+          <span> {React.string(status)} </span>
         </div>
       </header>
       <section className="workspace-grid">
-        <aside className="runtime-rail">
-          <div>
-            <p className="eyebrow"> {React.string("ACTIVE RUNTIME")} </p>
-            <h2> {React.string(snapshotAgentName(snapshot))} </h2>
-            <p className="runtime-copy">
-              {React.string(
-                 "Selected ACP session. Every conversation owns an independently supervised worker and durable ledger.",
-               )}
-            </p>
-          </div>
-          <nav className="session-index" ariaLabel="Conversations">
-            <div className="session-index-heading">
-              <span> {React.string("CONVERSATIONS")} </span>
-              <b> {React.int(Array.length(sessions))} </b>
+        {drawerOpen
+           ? <button
+               className="sidebar-scrim visible"
+               type_="button"
+               ariaLabel="Close navigation"
+               onClick={_ => setDrawerOpen(_ => false)}
+             />
+           : React.null}
+        <aside
+          className={"runtime-rail " ++ (drawerOpen ? "mobile-open" : "")}>
+          <div className="rail-heading">
+            <div>
+              <p className="eyebrow"> {React.string("WORKSPACES")} </p>
+              <h2> {React.string("Sessions")} </h2>
             </div>
-            <div className="session-list">
-              {Array.map(
-                 session => {
-                   let id = sessionId(session);
-                   <button
-                     key=id
-                     type_="button"
-                     className={
-                       "session-row "
-                       ++ (id == activeSessionId ? "session-row-active" : "")
-                     }
-                     disabled=submitting
-                     onClick={_ => selectSession(id)}>
-                     <i
-                       className={
-                         "session-dot status-" ++ sessionStatus(session)
-                       }
-                     />
+            <button
+              className="create-session-trigger"
+              type_="button"
+              ariaLabel="Create session"
+              onClick={_ => setCreatorOpen(_ => true)}>
+              {React.string("+")}
+            </button>
+          </div>
+          <nav className="session-index" ariaLabel="Workspaces and sessions">
+            {Array.map(
+               workspace => {
+                 let workspaceSessions =
+                   sessionsForWorkspace(sessions, workspaceId(workspace));
+                 <section
+                   className="workspace-group" key={workspaceId(workspace)}>
+                   <header className="workspace-heading">
+                     <span className="workspace-chevron">
+                       {React.string("v")}
+                     </span>
                      <span>
                        <strong>
-                         {React.string(sessionTitle(session))}
+                         {React.string(workspaceName(workspace))}
                        </strong>
-                       <small>
-                         {React.string(sessionHarness(session))}
+                       <small title={workspaceRoot(workspace)}>
+                         {React.string(workspaceRoot(workspace))}
                        </small>
                      </span>
-                   </button>;
-                 },
-                 sessions,
-               )
-               ->React.array}
-            </div>
+                     <button
+                       type_="button"
+                       ariaLabel={
+                         "New session in " ++ workspaceName(workspace)
+                       }
+                       onClick={_ => setCreatorOpen(_ => true)}>
+                       {React.string("+")}
+                     </button>
+                   </header>
+                   <div className="session-list">
+                     {Array.length(workspaceSessions) == 0
+                        ? <p className="empty-workspace">
+                            {React.string("No sessions")}
+                          </p>
+                        : Array.map(
+                            session => {
+                              let id = sessionId(session);
+                              <div className="session-row-wrap" key=id>
+                                <button
+                                  type_="button"
+                                  className={
+                                    "session-row "
+                                    ++ (
+                                      id == activeSessionId
+                                        ? "session-row-active" : ""
+                                    )
+                                  }
+                                  disabled=submitting
+                                  onClick={_ => selectSession(id)}>
+                                  <i
+                                    className={
+                                      "session-dot status-"
+                                      ++ sessionStatus(session)
+                                    }
+                                  />
+                                  <span>
+                                    <strong>
+                                      {React.string(sessionTitle(session))}
+                                    </strong>
+                                    <small>
+                                      {React.string(
+                                         sessionStatus(session)
+                                         ++ " / "
+                                         ++ sessionHarness(session),
+                                       )}
+                                    </small>
+                                  </span>
+                                </button>
+                                <button
+                                  className="session-more"
+                                  type_="button"
+                                  ariaLabel={
+                                    "Rename " ++ sessionTitle(session)
+                                  }
+                                  onClick={_ => renameSession(session)}>
+                                  {React.string("...")}
+                                </button>
+                              </div>;
+                            },
+                            workspaceSessions,
+                          )
+                          ->React.array}
+                   </div>
+                 </section>;
+               },
+               workspaces,
+             )
+             ->React.array}
             {Array.length(archivedSessions) == 0
                ? React.null
                : <div className="archive-shelf">
@@ -643,22 +788,6 @@ module App = {
             </div>
           </dl>
           <div className="session-actions">
-            <button
-              className="new-session-action"
-              type_="button"
-              disabled=submitting
-              onClick={_ => newSession("pi")}>
-              <span> {React.string("New Pi session")} </span>
-              <b> {React.string(fromCodePoint(0x002b))} </b>
-            </button>
-            <button
-              className="new-session-action opencode-action"
-              type_="button"
-              disabled=submitting
-              onClick={_ => newSession("opencode")}>
-              <span> {React.string("New OpenCode session")} </span>
-              <b> {React.string(fromCodePoint(0x002b))} </b>
-            </button>
             <button
               className="archive-session-action"
               type_="button"
@@ -754,6 +883,71 @@ module App = {
           </div>
         </section>
       </section>
+      {creatorOpen
+         ? <div className="dialog-backdrop" role="presentation">
+             <form className="session-dialog" onSubmit=newSession>
+               <header>
+                 <div>
+                   <span> {React.string("NEW SESSION")} </span>
+                   <h2> {React.string("Start an agent")} </h2>
+                 </div>
+                 <button
+                   type_="button"
+                   ariaLabel="Close new session dialog"
+                   onClick={_ => setCreatorOpen(_ => false)}>
+                   {React.string(fromCodePoint(0x00d7))}
+                 </button>
+               </header>
+               <label htmlFor="new-session-title">
+                 {React.string("NAME")}
+               </label>
+               <input
+                 id="new-session-title"
+                 name="title"
+                 maxLength=120
+                 required=true
+                 placeholder="Implementation agent"
+               />
+               <label htmlFor="new-session-workspace">
+                 {React.string("WORKSPACE")}
+               </label>
+               <select
+                 id="new-session-workspace" name="workspace" required=true>
+                 {Array.map(
+                    workspace =>
+                      <option
+                        value={workspaceId(workspace)}
+                        key={workspaceId(workspace)}>
+                        {React.string(workspaceName(workspace))}
+                      </option>,
+                    workspaces,
+                  )
+                  ->React.array}
+               </select>
+               <label htmlFor="new-session-harness">
+                 {React.string("HARNESS")}
+               </label>
+               <select id="new-session-harness" name="harness">
+                 <option value="pi"> {React.string("Pi")} </option>
+                 <option value="opencode">
+                   {React.string("OpenCode")}
+                 </option>
+               </select>
+               <footer>
+                 <button
+                   type_="button" onClick={_ => setCreatorOpen(_ => false)}>
+                   {React.string("CANCEL")}
+                 </button>
+                 <button
+                   className="launch-session"
+                   type_="submit"
+                   disabled=submitting>
+                   {React.string(submitting ? "STARTING..." : "START SESSION")}
+                 </button>
+               </footer>
+             </form>
+           </div>
+         : React.null}
     </main>;
   };
 };

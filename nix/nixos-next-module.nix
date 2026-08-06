@@ -20,6 +20,18 @@ let
   stateDirectory = "%S/${serviceStateName}";
   sessionRuntimeRoot = "${runtimeDirectory}/sessions";
   sessionStateRoot = "${stateDirectory}/sessions";
+  effectiveWorkspaces = if cfg.workspaces == { } then {
+    default = {
+      name = "PISS rewrite";
+      path = cfg.workspace;
+    };
+  } else cfg.workspaces;
+  workspaceEntries = lib.mapAttrsToList (id: value: value // { inherit id; }) effectiveWorkspaces;
+  workspaceArguments = lib.concatMap (workspace: [
+    "--workspace-spec"
+    "${workspace.id}|${workspace.name}|${workspace.path}"
+  ]) workspaceEntries;
+  workspacePaths = map (workspace: workspace.path) workspaceEntries;
 
   workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
     set -euo pipefail
@@ -37,6 +49,7 @@ let
     export XDG_STATE_HOME="$session_state/xdg-state"
     harness="$(tr -d '\n' < "$session_state/harness")"
     broker_token="$(tr -d '\n' < "$session_state/broker-token")"
+    workspace="$(tr -d '\n' < "$session_state/workspace")"
     if [[ "$id" == "deployed-tracer" && -e "$state/worker.sqlite3" && ! -e "$session_state/worker.sqlite3" ]]; then
       for suffix in "" -wal -shm; do
         [[ ! -e "$state/worker.sqlite3$suffix" ]] || mv "$state/worker.sqlite3$suffix" "$session_state/worker.sqlite3$suffix"
@@ -62,7 +75,7 @@ let
       --database "$session_state/worker.sqlite3" \
       --session "$id" \
       --worker "worker-$id" \
-      --workspace ${lib.escapeShellArg cfg.workspace} \
+      --workspace "$workspace" \
       --harness "$command" \
       --session-mcp ${cfg.sessionMcpPackage}/bin/piss-session-mcp \
       --broker-url http://127.0.0.1:${toString cfg.port} \
@@ -248,7 +261,18 @@ in
     workspace = lib.mkOption {
       type = lib.types.str;
       default = "/home/jonas/coding/piss-ocaml";
-      description = "Authorized workspace passed to the tracer ACP session.";
+      description = "Backward-compatible default workspace used when workspaces is empty.";
+    };
+
+    workspaces = lib.mkOption {
+      default = { };
+      description = "Allowlisted workspaces available to durable sessions.";
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          name = lib.mkOption { type = lib.types.str; };
+          path = lib.mkOption { type = lib.types.str; };
+        };
+      });
     };
 
     allowedUsers = lib.mkOption {
@@ -285,8 +309,12 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = lib.hasPrefix "/" cfg.workspace;
-        message = "services.piss-next.workspace must be absolute";
+        assertion = lib.all (workspace: lib.hasPrefix "/" workspace.path) workspaceEntries;
+        message = "services.piss-next workspace paths must be absolute";
+      }
+      {
+        assertion = lib.all (workspace: !(lib.hasInfix "|" workspace.id || lib.hasInfix "|" workspace.name || lib.hasInfix "|" workspace.path)) workspaceEntries;
+        message = "services.piss-next workspace fields must not contain |";
       }
       {
         assertion = cfg.allowedUsers != [ ];
@@ -339,8 +367,7 @@ in
         ReadWritePaths = [
           "%S/${serviceStateName}/sessions/%i"
           "-%h/.pi"
-          cfg.workspace
-        ];
+        ] ++ workspacePaths;
         LockPersonality = true;
         RestrictAddressFamilies = [
           "AF_INET"
@@ -401,6 +428,7 @@ in
             "--generation"
             (toString cfg.controlPackage)
           ]
+          ++ workspaceArguments
           ++ lib.concatMap (user: [
             "--allowed-user"
             user

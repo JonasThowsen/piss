@@ -12,6 +12,7 @@ type managed_workers = {
   stopper : string;
   available_harnesses : string list;
   default_harness : string;
+  default_workspace_id : string;
   max_active_sessions : int;
 }
 
@@ -186,13 +187,21 @@ let write_private_file path contents =
 
 let write_session_spec manager (session : Registry.session) =
   let directory = Filename.concat manager.state_root session.id in
+  let workspace =
+    match Registry.find_workspace manager.registry session.workspace_id with
+    | Some workspace -> workspace
+    | None -> raise (Invalid_argument "session workspace is not registered")
+  in
   mkdir_p directory;
   write_private_file
     (Filename.concat directory "harness")
     (session.harness ^ "\n");
   write_private_file
     (Filename.concat directory "broker-token")
-    (session.broker_token ^ "\n")
+    (session.broker_token ^ "\n");
+  write_private_file
+    (Filename.concat directory "workspace")
+    (workspace.root ^ "\n")
 
 let run_lifecycle executable session_id =
   if not (valid_session_id session_id) then Error "invalid session identity"
@@ -259,18 +268,27 @@ let session_summary net manager (session : Registry.session) =
   | `Assoc fields -> `Assoc (fields @ runtime)
   | _ -> assert false
 
-let create_managed_session manager harness =
+let valid_title value =
+  let value = String.trim value in
+  String.length value >= 1
+  && String.length value <= 120
+  && not (String.contains value '\000')
+
+let create_managed_session manager ~harness ~workspace_id ~title =
   if not (List.exists (String.equal harness) manager.available_harnesses) then
     Error "requested harness is not available"
+  else if Option.is_none (Registry.find_workspace manager.registry workspace_id)
+  then Error "requested workspace is not registered"
+  else if not (valid_title title) then
+    Error "title must contain between 1 and 120 characters"
   else if Registry.active_count manager.registry >= manager.max_active_sessions
   then Error "active session limit reached"
   else
     let id = random_session_id () in
-    let title =
-      (if String.equal harness "opencode" then "OpenCode" else "Pi")
-      ^ " / " ^ String.sub id 2 8
+    let session =
+      Registry.insert manager.registry ~id ~title:(String.trim title) ~harness
+        ~workspace_id
     in
-    let session = Registry.insert manager.registry ~id ~title ~harness in
     try
       write_session_spec manager session;
       match run_lifecycle manager.launcher id with
@@ -318,7 +336,7 @@ let restore_managed_session manager id =
           ignore (Registry.archive manager.registry id);
           Error (Printexc.to_string exn))
 
-type session_action = Archive of string | Restore of string
+type session_action = Archive of string | Restore of string | Rename of string
 
 let session_action path =
   match String.split_on_char '/' path with
@@ -326,6 +344,8 @@ let session_action path =
       Some (Archive id)
   | [ ""; "api"; "v2"; "sessions"; id; "restore" ] when valid_session_id id ->
       Some (Restore id)
+  | [ ""; "api"; "v2"; "sessions"; id; "rename" ] when valid_session_id id ->
+      Some (Rename id)
   | _ -> None
 
 let parse_non_negative_cursor value =
@@ -1053,6 +1073,11 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                                         `String request.id)
                                       pending) );
                              ])))
+        | Managed manager, `GET, "/api/v2/workspaces", _ ->
+            Some
+              ( Registry.list_workspaces manager.registry
+              |> List.map Registry.workspace_to_yojson
+              |> fun workspaces -> respond_json (`List workspaces) )
         | Managed manager, `GET, "/api/v2/sessions", _ ->
             let sessions =
               match Uri.get_query_param uri "archived" with
@@ -1074,12 +1099,28 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
+                  let open Yojson.Safe.Util in
                   let harness =
-                    match Yojson.Safe.Util.member "harness" json with
+                    match member "harness" json with
                     | `String value -> value
                     | _ -> manager.default_harness
                   in
-                  match create_managed_session manager harness with
+                  let workspace_id =
+                    match member "workspaceId" json with
+                    | `String value -> value
+                    | _ -> manager.default_workspace_id
+                  in
+                  let title =
+                    match member "title" json with
+                    | `String value -> value
+                    | _ ->
+                        if String.equal harness "opencode" then
+                          "New OpenCode session"
+                        else "New Pi session"
+                  in
+                  match
+                    create_managed_session manager ~harness ~workspace_id ~title
+                  with
                   | Ok session ->
                       respond_json ~status:`Created
                         (Registry.session_to_yojson session)
@@ -1089,7 +1130,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               (match valid_json_mutation ~dev_bypass request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
-                  ignore (read_body body);
+                  let request_body = read_body body in
                   match action with
                   | Archive id -> (
                       match archive_managed_session manager id with
@@ -1100,7 +1141,24 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                       match restore_managed_session manager id with
                       | Ok () ->
                           respond_json (`Assoc [ ("restored", `Bool true) ])
-                      | Error message -> error_json ~status:`Conflict message)))
+                      | Error message -> error_json ~status:`Conflict message)
+                  | Rename id ->
+                      let json = Yojson.Safe.from_string request_body in
+                      let title =
+                        Yojson.Safe.Util.member "title" json
+                        |> Yojson.Safe.Util.to_string |> String.trim
+                      in
+                      if not (valid_title title) then
+                        error_json
+                          "title must contain between 1 and 120 characters"
+                      else if Registry.rename_session manager.registry id title
+                      then
+                        respond_json
+                          (`Assoc
+                             [
+                               ("renamed", `Bool true); ("title", `String title);
+                             ])
+                      else error_json ~status:`Not_found "session not found"))
         | _ -> None
       in
       match managed_response with
@@ -1199,7 +1257,10 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                   match workers with
                   | Managed manager -> (
                       match
-                        create_managed_session manager manager.default_harness
+                        create_managed_session manager
+                          ~harness:manager.default_harness
+                          ~workspace_id:manager.default_workspace_id
+                          ~title:"New session"
                       with
                       | Ok session ->
                           respond_json ~status:`Created
@@ -1321,6 +1382,7 @@ let () =
   let session_stopper = ref "" in
   let available_harnesses = ref [] in
   let default_harness = ref "pi" in
+  let workspace_specs = ref [] in
   let bootstrap_session = ref "deployed-tracer" in
   let max_active_sessions = ref default_max_active_sessions in
   let public_dir = ref "web-next/public" in
@@ -1354,6 +1416,9 @@ let () =
       ( "--default-harness",
         Arg.Set_string default_harness,
         "Harness used by compatibility creation" );
+      ( "--workspace-spec",
+        Arg.String (fun value -> workspace_specs := value :: !workspace_specs),
+        "Allowlisted workspace encoded as id|name|absolute-path (repeatable)" );
       ( "--bootstrap-session",
         Arg.Set_string bootstrap_session,
         "Initial session identity for an empty registry" );
@@ -1393,6 +1458,28 @@ let () =
       mkdir_p (Filename.dirname !registry_path);
       mkdir_p !session_state_root;
       let registry = Registry.open_ ~path:!registry_path in
+      let configured_workspaces =
+        List.rev !workspace_specs
+        |> List.map (fun value ->
+            match String.split_on_char '|' value with
+            | [ id; name; root ]
+              when valid_session_id id && valid_title name
+                   && not (Filename.is_relative root) ->
+                (id, String.trim name, root)
+            | _ ->
+                raise
+                  (Arg.Bad
+                     "--workspace-spec must be id|name|absolute-path with a \
+                      valid id and name"))
+      in
+      if configured_workspaces = [] then
+        raise (Arg.Bad "--workspace-spec is required");
+      List.iter
+        (fun (id, name, root) ->
+          Registry.upsert_workspace registry ~id ~name ~root)
+        configured_workspaces;
+      let default_workspace_id, _, _ = List.hd configured_workspaces in
+      Registry.assign_unscoped_sessions registry default_workspace_id;
       let available = List.rev !available_harnesses in
       if available = [] then raise (Arg.Bad "--available-harness is required");
       if not (List.exists (String.equal !default_harness) available) then
@@ -1406,13 +1493,15 @@ let () =
           stopper = !session_stopper;
           available_harnesses = available;
           default_harness = !default_harness;
+          default_workspace_id;
           max_active_sessions = !max_active_sessions;
         }
       in
       if Registry.active_count registry = 0 then
         ignore
           (Registry.insert registry ~id:!bootstrap_session
-             ~title:"Pi / deployed" ~harness:!default_harness);
+             ~title:"Pi / deployed" ~harness:!default_harness
+             ~workspace_id:default_workspace_id);
       Registry.list registry ~include_archived:false
       |> List.iter (fun session ->
           write_session_spec manager session;

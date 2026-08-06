@@ -1,5 +1,12 @@
 exception Registry_error of string
 
+type workspace = {
+  id : string;
+  name : string;
+  root : string;
+  created_at : float;
+}
+
 type session = {
   id : string;
   title : string;
@@ -7,6 +14,7 @@ type session = {
   created_at : float;
   archived_at : float option;
   broker_token : string;
+  workspace_id : string;
 }
 
 type peer_request = {
@@ -95,13 +103,20 @@ let initialize db =
   exec db "PRAGMA foreign_keys=ON";
   exec db "PRAGMA busy_timeout=5000";
   exec db
+    "CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY,name TEXT NOT \
+     NULL,root TEXT NOT NULL UNIQUE,created_at REAL NOT NULL)";
+  exec db
     "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY,title TEXT NOT \
      NULL,harness TEXT NOT NULL CHECK(harness IN \
      ('pi','opencode','mock')),created_at REAL NOT NULL,archived_at \
-     REAL,broker_token TEXT NOT NULL DEFAULT '')";
+     REAL,broker_token TEXT NOT NULL DEFAULT '',workspace_id TEXT NOT NULL \
+     DEFAULT '')";
   if not (has_column db "sessions" "broker_token") then
     exec db
       "ALTER TABLE sessions ADD COLUMN broker_token TEXT NOT NULL DEFAULT ''";
+  if not (has_column db "sessions" "workspace_id") then
+    exec db
+      "ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''";
   exec db
     "CREATE INDEX IF NOT EXISTS sessions_active_idx ON \
      sessions(archived_at,created_at)";
@@ -174,30 +189,95 @@ let session_of_statement statement =
       | Sqlite3.Data.NULL -> None
       | _ -> Some (Sqlite3.column_double statement 4));
     broker_token = Sqlite3.column_text statement 5;
+    workspace_id = Sqlite3.column_text statement 6;
   }
 
-let insert registry ~id ~title ~harness =
+let workspace_of_statement statement =
+  {
+    id = Sqlite3.column_text statement 0;
+    name = Sqlite3.column_text statement 1;
+    root = Sqlite3.column_text statement 2;
+    created_at = Sqlite3.column_double statement 3;
+  }
+
+let upsert_workspace registry ~id ~name ~root =
+  with_statement registry.db
+    "INSERT INTO workspaces(id,name,root,created_at) VALUES (?,?,?,?) ON \
+     CONFLICT(id) DO UPDATE SET name=excluded.name,root=excluded.root"
+    (fun statement ->
+      bind_text statement 1 id;
+      bind_text statement 2 name;
+      bind_text statement 3 root;
+      bind_float statement 4 (Unix.gettimeofday ());
+      expect_done "upsert workspace" statement)
+
+let list_workspaces registry =
+  with_statement registry.db
+    "SELECT id,name,root,created_at FROM workspaces ORDER BY created_at ASC"
+    (fun statement ->
+      let rec collect workspaces =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (workspace_of_statement statement :: workspaces)
+        | Sqlite3.Rc.DONE -> List.rev workspaces
+        | rc ->
+            fail_rc "list workspaces" rc;
+            List.rev workspaces
+      in
+      collect [])
+
+let find_workspace registry id =
+  with_statement registry.db
+    "SELECT id,name,root,created_at FROM workspaces WHERE id = ?"
+    (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (workspace_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find workspace" rc;
+          None)
+
+let assign_unscoped_sessions registry workspace_id =
+  with_statement registry.db
+    "UPDATE sessions SET workspace_id = ? WHERE workspace_id = ''"
+    (fun statement ->
+      bind_text statement 1 workspace_id;
+      expect_done "assign legacy session workspace" statement)
+
+let insert registry ~id ~title ~harness ~workspace_id =
   let created_at = Unix.gettimeofday () in
   let broker_token = random_secret () in
   with_statement registry.db
     "INSERT INTO \
-     sessions(id,title,harness,created_at,archived_at,broker_token) VALUES \
-     (?,?,?,?,NULL,?)" (fun statement ->
+     sessions(id,title,harness,created_at,archived_at,broker_token,workspace_id) \
+     VALUES (?,?,?,?,NULL,?,?)" (fun statement ->
       bind_text statement 1 id;
       bind_text statement 2 title;
       bind_text statement 3 harness;
       bind_float statement 4 created_at;
       bind_text statement 5 broker_token;
+      bind_text statement 6 workspace_id;
       expect_done "create session" statement);
-  { id; title; harness; created_at; archived_at = None; broker_token }
+  {
+    id;
+    title;
+    harness;
+    created_at;
+    archived_at = None;
+    broker_token;
+    workspace_id;
+  }
 
 let list registry ~include_archived =
   let sql =
     if include_archived then
-      "SELECT id,title,harness,created_at,archived_at,broker_token FROM \
+      "SELECT \
+       id,title,harness,created_at,archived_at,broker_token,workspace_id FROM \
        sessions ORDER BY created_at ASC"
     else
-      "SELECT id,title,harness,created_at,archived_at,broker_token FROM \
+      "SELECT \
+       id,title,harness,created_at,archived_at,broker_token,workspace_id FROM \
        sessions WHERE archived_at IS NULL ORDER BY created_at ASC"
   in
   with_statement registry.db sql (fun statement ->
@@ -213,8 +293,8 @@ let list registry ~include_archived =
 
 let find registry id =
   with_statement registry.db
-    "SELECT id,title,harness,created_at,archived_at,broker_token FROM sessions \
-     WHERE id = ?" (fun statement ->
+    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
+     FROM sessions WHERE id = ?" (fun statement ->
       bind_text statement 1 id;
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
@@ -230,8 +310,9 @@ let find_active registry id =
 
 let find_active_by_token registry token =
   with_statement registry.db
-    "SELECT id,title,harness,created_at,archived_at,broker_token FROM sessions \
-     WHERE broker_token = ? AND archived_at IS NULL" (fun statement ->
+    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
+     FROM sessions WHERE broker_token = ? AND archived_at IS NULL"
+    (fun statement ->
       bind_text statement 1 token;
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
@@ -423,6 +504,14 @@ let complete_peer_request registry id response =
       expect_done "complete peer request" statement);
   Sqlite3.changes registry.db > 0
 
+let rename_session registry id title =
+  with_statement registry.db "UPDATE sessions SET title = ? WHERE id = ?"
+    (fun statement ->
+      bind_text statement 1 title;
+      bind_text statement 2 id;
+      expect_done "rename session" statement);
+  Sqlite3.changes registry.db > 0
+
 let archive registry id =
   with_statement registry.db
     "UPDATE sessions SET archived_at = ? WHERE id = ? AND archived_at IS NULL"
@@ -452,9 +541,19 @@ let session_to_yojson (session : session) =
       ("id", `String session.id);
       ("title", `String session.title);
       ("harness", `String session.harness);
+      ("workspaceId", `String session.workspace_id);
       ("createdAt", `Float session.created_at);
       ( "archivedAt",
         match session.archived_at with
         | Some value -> `Float value
         | None -> `Null );
+    ]
+
+let workspace_to_yojson (workspace : workspace) =
+  `Assoc
+    [
+      ("id", `String workspace.id);
+      ("name", `String workspace.name);
+      ("root", `String workspace.root);
+      ("createdAt", `Float workspace.created_at);
     ]
