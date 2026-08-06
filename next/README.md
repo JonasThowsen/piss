@@ -39,8 +39,9 @@ The deployed Reason application provides:
 - active-turn cancellation;
 - worker, adapter, and event-sequence telemetry;
 - automatic reconnection to the durable timeline;
-- harness-neutral agent collaboration through `piss_list_sessions`, synchronous `piss_ask_session`, asynchronous `piss_send_session`, and `piss_collect_responses` MCP tools;
-- parallel fan-out with durable request IDs and fan-in that can listen for the first response or all responses.
+- harness-neutral agent collaboration through `piss_list_sessions`, synchronous `piss_ask_session`, asynchronous `piss_send_session`, blocking `piss_collect_responses`, and durable `piss_subscribe_responses` MCP tools;
+- parallel fan-out with durable request IDs and fan-in that can listen for the first response or all responses;
+- dormant orchestrator wake-up: PISS durably waits after the originating turn ends, then starts exactly one new turn with captured results once the subscription is ready and the orchestrator is idle.
 
 The NixOS module builds the control plane, session worker, browser, and collaboration MCP server as separate immutable Nix closures. It runs the control plane separately from dynamic `piss-ocaml-worker@<session>.service` instances. Worker templates set `restartIfChanged = false` and `stopIfChanged = false`, so existing workers retain their current executable generation through PISS updates and unrelated NixOS rebuilds; newly created or independently restarted workers adopt the current generation. The durable registry records active and archived sessions, while each active session owns a Unix socket, SQLite ledger, ACP adapter, and systemd restart policy. Updating or restarting `piss-ocaml.service` idempotently starts missing workers without restarting healthy ones. If a worker itself restarts, it uses ACP `session/load` when supported to reattach to its harness session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
 
@@ -118,7 +119,7 @@ Open <http://127.0.0.1:4318>.
 
 ## Durability semantics
 
-The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, unique command/request IDs, and monotonic event sequences. The registry also durably records inter-session request identities, source/target sessions, target command IDs, replay cursors, queued/dispatched/completed states, and responses. An orchestrator may dispatch up to 64 tracked requests per collection call, continue other work, then collect the first finished response or wait for all selected targets. Collection reconstructs outputs from target ledgers after control-plane replacement without dispatching the target command twice.
+The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, unique command/request IDs, and monotonic event sequences. The registry also durably records inter-session request identities, source/target sessions, target command IDs, replay cursors, queued/dispatched/completed states, responses, and wake subscriptions. An orchestrator may dispatch up to 64 tracked requests, continue other work, synchronously collect results, or subscribe and end its turn. The replaceable control supervisor reconstructs target outputs from their ledgers and retries the same deterministic wake command until the source worker is idle. Worker command deduplication ensures control replacement cannot start the wake turn twice.
 
 A command is committed before it is written to the ACP agent. Duplicate command IDs return the existing state and are never dispatched again. A write failure after acceptance becomes `ambiguous`; an interrupted worker reconciles accepted/dispatched commands to `ambiguous` instead of silently retrying consequential work. Completed, cancelled, rejected, and ambiguous outcomes are explicit.
 

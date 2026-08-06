@@ -20,6 +20,15 @@ type peer_request = {
   response : string option;
 }
 
+type peer_subscription = {
+  id : string;
+  source_id : string;
+  request_ids : string list;
+  wait_for : string;
+  command_id : string;
+  state : string;
+}
+
 type t = { db : Sqlite3.db }
 
 let fail_rc operation rc =
@@ -105,7 +114,18 @@ let initialize db =
      TEXT NOT NULL UNIQUE,start_sequence INTEGER NOT NULL,state TEXT NOT \
      NULL,response TEXT,created_at REAL NOT NULL,updated_at REAL NOT \
      NULL,FOREIGN KEY(source_id) REFERENCES sessions(id),FOREIGN \
-     KEY(target_id) REFERENCES sessions(id))"
+     KEY(target_id) REFERENCES sessions(id))";
+  exec db
+    "CREATE TABLE IF NOT EXISTS peer_subscriptions (id TEXT PRIMARY \
+     KEY,source_id TEXT NOT NULL,request_ids TEXT NOT NULL,wait_for TEXT NOT \
+     NULL CHECK(wait_for IN ('any','all')),command_id TEXT NOT NULL \
+     UNIQUE,state TEXT NOT NULL CHECK(state IN \
+     ('pending','dispatching','delivered')),created_at REAL NOT \
+     NULL,updated_at REAL NOT NULL,FOREIGN KEY(source_id) REFERENCES \
+     sessions(id))";
+  exec db
+    "CREATE INDEX IF NOT EXISTS peer_subscriptions_open_idx ON \
+     peer_subscriptions(state,created_at)"
 
 let open_ ~path =
   let db = Sqlite3.db_open path in
@@ -286,6 +306,90 @@ let list_peer_requests registry ~source_id =
             List.rev requests
       in
       collect [])
+
+let peer_subscription_of_statement statement =
+  let request_ids =
+    Sqlite3.column_text statement 2
+    |> Yojson.Safe.from_string |> Yojson.Safe.Util.to_list
+    |> List.map Yojson.Safe.Util.to_string
+  in
+  {
+    id = Sqlite3.column_text statement 0;
+    source_id = Sqlite3.column_text statement 1;
+    request_ids;
+    wait_for = Sqlite3.column_text statement 3;
+    command_id = Sqlite3.column_text statement 4;
+    state = Sqlite3.column_text statement 5;
+  }
+
+let find_peer_subscription registry id =
+  with_statement registry.db
+    "SELECT id,source_id,request_ids,wait_for,command_id,state FROM \
+     peer_subscriptions WHERE id = ?" (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (peer_subscription_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find peer subscription" rc;
+          None)
+
+let accept_peer_subscription registry ~id ~source_id ~request_ids ~wait_for
+    ~command_id =
+  match find_peer_subscription registry id with
+  | Some subscription -> (subscription, true)
+  | None ->
+      let now = Unix.gettimeofday () in
+      let request_ids_json =
+        `List (List.map (fun value -> `String value) request_ids)
+        |> Yojson.Safe.to_string
+      in
+      with_statement registry.db
+        "INSERT INTO \
+         peer_subscriptions(id,source_id,request_ids,wait_for,command_id,state,created_at,updated_at) \
+         VALUES (?,?,?,?,?,'pending',?,?)" (fun statement ->
+          bind_text statement 1 id;
+          bind_text statement 2 source_id;
+          bind_text statement 3 request_ids_json;
+          bind_text statement 4 wait_for;
+          bind_text statement 5 command_id;
+          bind_float statement 6 now;
+          bind_float statement 7 now;
+          expect_done "accept peer subscription" statement);
+      (Option.get (find_peer_subscription registry id), false)
+
+let list_open_peer_subscriptions registry =
+  with_statement registry.db
+    "SELECT id,source_id,request_ids,wait_for,command_id,state FROM \
+     peer_subscriptions WHERE state IN ('pending','dispatching') ORDER BY \
+     created_at ASC" (fun statement ->
+      let rec collect subscriptions =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (peer_subscription_of_statement statement :: subscriptions)
+        | Sqlite3.Rc.DONE -> List.rev subscriptions
+        | rc ->
+            fail_rc "list open peer subscriptions" rc;
+            List.rev subscriptions
+      in
+      collect [])
+
+let mark_peer_subscription_dispatching registry id =
+  with_statement registry.db
+    "UPDATE peer_subscriptions SET state = 'dispatching',updated_at = ? WHERE \
+     id = ? AND state = 'pending'" (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "mark peer subscription dispatching" statement)
+
+let complete_peer_subscription registry id =
+  with_statement registry.db
+    "UPDATE peer_subscriptions SET state = 'delivered',updated_at = ? WHERE id \
+     = ? AND state <> 'delivered'" (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "complete peer subscription" statement);
+  Sqlite3.changes registry.db > 0
 
 let mark_peer_dispatching registry id ~start_sequence =
   with_statement registry.db

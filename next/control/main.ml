@@ -723,6 +723,155 @@ let collect_peer_requests ~net ~clock manager ~(source : Registry.session)
   in
   listen ()
 
+let subscription_requests manager (source : Registry.session)
+    (subscription : Registry.peer_subscription) =
+  List.map
+    (fun id ->
+      match Registry.find_peer_request manager.registry id with
+      | Some request when String.equal request.source_id source.id -> request
+      | Some _ ->
+          raise
+            (Invalid_argument
+               "peer subscription contains another source's request")
+      | None ->
+          raise
+            (Invalid_argument
+               ("peer subscription contains unknown request: " ^ id)))
+    subscription.request_ids
+
+let peer_request_finished (request : Registry.peer_request) =
+  List.exists (String.equal request.state) [ "completed"; "failed" ]
+
+let peer_subscription_ready (subscription : Registry.peer_subscription) requests
+    =
+  match subscription.wait_for with
+  | "any" -> List.exists peer_request_finished requests
+  | "all" -> List.for_all peer_request_finished requests
+  | _ -> false
+
+let peer_wake_prompt (subscription : Registry.peer_subscription) requests =
+  let request_text (request : Registry.peer_request) =
+    Printf.sprintf "\nRequest %s\nTarget: %s\nState: %s\nResponse:\n%s\n"
+      request.id request.target_id request.state
+      (Option.value ~default:"(no response)" request.response)
+  in
+  let pending, finished =
+    List.partition (Fun.negate peer_request_finished) requests
+  in
+  let full =
+    Printf.sprintf
+      "PISS durable collaboration wake-up.\n\n\
+       Subscription %s is ready (waitFor=%s). Your previous turn ended while \
+       these sessions continued independently. Review the captured results \
+       below and continue the orchestration. Do not redispatch completed \
+       requests.\n\
+       %s%s"
+      subscription.id subscription.wait_for
+      (finished |> List.map request_text |> String.concat "")
+      (match pending with
+      | [] -> ""
+      | requests ->
+          "\nStill pending:\n"
+          ^ (requests
+            |> List.map (fun (request : Registry.peer_request) ->
+                "- " ^ request.id ^ "\n")
+            |> String.concat ""))
+  in
+  let limit = (60 * 1024) - 32 in
+  if String.length full <= limit then full
+  else String.sub full 0 limit ^ "\n[responses truncated by PISS]\n"
+
+let accept_peer_subscription manager ~(source : Registry.session) json =
+  let open Yojson.Safe.Util in
+  let id = json |> member "subscriptionId" |> to_string in
+  let request_ids =
+    json |> member "requestIds" |> to_list |> List.map to_string
+    |> List.sort_uniq String.compare
+  in
+  let wait_for =
+    match member "waitFor" json with `String value -> value | _ -> "all"
+  in
+  if id = "" || String.length id > 100 then
+    Error "subscriptionId must contain between 1 and 100 characters"
+  else if request_ids = [] || List.length request_ids > 64 then
+    Error "requestIds must contain between 1 and 64 identities"
+  else if not (List.mem wait_for [ "any"; "all" ]) then
+    Error "waitFor must be 'any' or 'all'"
+  else
+    let requests =
+      List.map
+        (fun request_id ->
+          match Registry.find_peer_request manager.registry request_id with
+          | Some request when String.equal request.source_id source.id ->
+              request
+          | Some _ ->
+              raise
+                (Invalid_argument
+                   "peer request belongs to another source session")
+          | None ->
+              raise (Invalid_argument ("unknown peer request: " ^ request_id)))
+        request_ids
+    in
+    let command_id = "peer-wake-" ^ Digest.to_hex (Digest.string id) in
+    let subscription, duplicate =
+      Registry.accept_peer_subscription manager.registry ~id
+        ~source_id:source.id ~request_ids ~wait_for ~command_id
+    in
+    if
+      duplicate
+      && not
+           (String.equal subscription.source_id source.id
+           && subscription.request_ids = request_ids
+           && String.equal subscription.wait_for wait_for)
+    then Error "subscriptionId belongs to a different peer subscription"
+    else
+      let _ = requests in
+      Ok (subscription, duplicate)
+
+let reconcile_peer_subscription ~net manager
+    (subscription : Registry.peer_subscription) =
+  match Registry.find_active manager.registry subscription.source_id with
+  | None -> ()
+  | Some source ->
+      let requests = subscription_requests manager source subscription in
+      List.iter
+        (fun request ->
+          if not (peer_request_finished request) then
+            ignore (reconcile_peer_request ~net manager ~source request))
+        requests;
+      let requests = subscription_requests manager source subscription in
+      if peer_subscription_ready subscription requests then (
+        Registry.mark_peer_subscription_dispatching manager.registry
+          subscription.id;
+        match
+          worker_request net
+            (session_socket manager source.id)
+            (`Assoc
+               [
+                 ("op", `String "prompt");
+                 ("commandId", `String subscription.command_id);
+                 ("text", `String (peer_wake_prompt subscription requests));
+               ])
+        with
+        | Error _ -> ()
+        | Ok _ ->
+            ignore
+              (Registry.complete_peer_subscription manager.registry
+                 subscription.id))
+
+let supervise_peer_subscriptions ~net ~clock manager =
+  let rec loop () =
+    (try
+       Registry.list_open_peer_subscriptions manager.registry
+       |> List.iter (reconcile_peer_subscription ~net manager)
+     with exn ->
+       Format.eprintf "peer subscription supervisor error: %s@."
+         (Printexc.to_string exn));
+    Eio.Time.sleep clock 0.25;
+    loop ()
+  in
+  loop ()
+
 let broker_source workers request =
   match workers with
   | Fixed _ -> None
@@ -798,6 +947,25 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                                  ("state", `String peer_request.state);
                                  ("duplicate", `Bool duplicate);
                                ]))))
+        | Managed manager, `POST, "/api/v2/broker/subscribe", _ ->
+            Some
+              (match calling_session with
+              | None -> error_json ~status:`Unauthorized "broker token required"
+              | Some source -> (
+                  match valid_json_content request with
+                  | Error (status, message) -> error_json ~status message
+                  | Ok () -> (
+                      let json = read_body body |> Yojson.Safe.from_string in
+                      match accept_peer_subscription manager ~source json with
+                      | Error message -> error_json ~status:`Conflict message
+                      | Ok (subscription, duplicate) ->
+                          respond_json ~status:`Accepted
+                            (`Assoc
+                               [
+                                 ("subscriptionId", `String subscription.id);
+                                 ("state", `String subscription.state);
+                                 ("duplicate", `Bool duplicate);
+                               ]))))
         | Managed manager, `POST, "/api/v2/broker/ask", _ ->
             Some
               (match calling_session with
@@ -870,8 +1038,8 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                                ( "pendingRequestIds",
                                  `List
                                    (List.map
-                                      (fun request ->
-                                        `String request.Registry.id)
+                                      (fun (request : Registry.peer_request) ->
+                                        `String request.id)
                                       pending) );
                              ])))
         | Managed manager, `GET, "/api/v2/sessions", _ ->
@@ -1262,6 +1430,12 @@ let () =
       ~allowed_users:!allowed_users ~dev_bypass:!dev_bypass
   in
   let server = Cohttp_eio.Server.make ~callback () in
+  (match workers with
+  | Managed manager ->
+      Eio.Fiber.fork ~sw (fun () ->
+          supervise_peer_subscriptions ~net:(Eio.Stdenv.net env)
+            ~clock:(Eio.Stdenv.clock env) manager)
+  | Fixed _ -> ());
   Printf.printf "control_ready generation=%s pid=%d url=http://127.0.0.1:%d\n%!"
     !generation (Unix.getpid ()) !port;
   Cohttp_eio.Server.run socket server ~on_error:(fun exn ->

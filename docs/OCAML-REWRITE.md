@@ -49,7 +49,7 @@ ACP owns the interoperable vocabulary between them:
 - permission and elicitation requests;
 - configurable models, modes, and reasoning levels.
 
-PISS-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. The primary collaboration path is a PISS-provided MCP server with session discovery, synchronous request/reply, asynchronous fan-out, and durable response collection. An orchestrator can send work to many independently supervised sessions, continue its own turn, and later listen for any or all completions. This replaces a built-in reasoning loop with explicit composition between harness sessions. ACP wire messages are not the PISS persistence schema.
+PISS-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. The primary collaboration path is a PISS-provided MCP server with session discovery, synchronous request/reply, asynchronous fan-out, durable response collection, and durable wake subscriptions. An orchestrator can send work to many independently supervised sessions, subscribe to any or all completions, end its current turn, and be started in exactly one new turn containing the captured results once it is idle. Subscription and deterministic wake-command identities survive control replacement; PISS schedules the turn but does not own its reasoning loop. ACP wire messages are not the PISS persistence schema.
 
 ## 3. Non-negotiable invariants
 

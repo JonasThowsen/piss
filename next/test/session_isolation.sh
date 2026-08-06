@@ -181,7 +181,7 @@ mcp_output=$(printf '%s\n' "$mcp_input" | env \
   PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
   "$session_mcp_exe")
 [[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
-  "piss_list_sessions,piss_ask_session,piss_send_session,piss_collect_responses" ]]
+  "piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
 first_async=$(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 second_async=$(jq -r 'select(.id==4)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 collect_any_input=$(jq -nc --arg first "$first_async" --arg second "$second_async" '[
@@ -208,6 +208,31 @@ collect_json=$(jq -r 'select(.id==2)|.result.content[0].text|fromjson' <<<"$coll
 [[ $(jq '.pendingRequestIds|length' <<<"$collect_json") == 0 ]]
 [[ $(jq '[.responses[].response|select(.=="The worker retained ownership while the control plane was replaceable.")]|length' <<<"$collect_json") == 2 ]]
 [[ "$fanout_elapsed" -lt 3800 ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"source-still-active","text":"finish the original orchestrator turn"}' \
+  "http://127.0.0.1:$port/api/v2/commands?session=$first" >/dev/null
+idle_subscription=$(jq -nc --arg first "$first_async" --arg second "$second_async" \
+  '{subscriptionId:"wake-until-source-idle",requestIds:[$first,$second],waitFor:"all"}')
+curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$idle_subscription" \
+  "http://127.0.0.1:$port/api/v2/broker/subscribe" >/dev/null
+idle_wake_command=$(python3 - <<'PY'
+import hashlib
+print("peer-wake-" + hashlib.md5(b"wake-until-source-idle").hexdigest())
+PY
+)
+for _ in $(seq 1 600); do
+  command_completed "$first" "$idle_wake_command" && break
+  sleep .02
+done
+command_completed "$first" source-still-active
+command_completed "$first" "$idle_wake_command"
+first_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$first")
+source_completed_sequence=$(jq '[.[]|select(.kind=="command.state" and .payload.commandId=="source-still-active" and .payload.state=="completed")][0].sequence' <<<"$first_events")
+wake_accepted_sequence=$(jq --arg command "$idle_wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)][0].sequence' <<<"$first_events")
+[[ "$wake_accepted_sequence" -gt "$source_completed_sequence" ]]
+[[ $(jq --arg command "$idle_wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)]|length' <<<"$first_events") == 1 ]]
 first_events=$(curl -fsS \
   "http://127.0.0.1:$port/api/v2/events?recent=500&session=$first")
 second_events=$(curl -fsS \
@@ -218,6 +243,7 @@ second_events=$(curl -fsS \
 
 first_worker=$(cat "$root/supervisors/$first.child")
 second_worker=$(cat "$root/supervisors/$second.child")
+third_worker=$(cat "$root/supervisors/$third.child")
 kill -9 "$first_worker"
 for _ in $(seq 1 500); do
   replacement=$(cat "$root/supervisors/$first.child" 2>/dev/null || true)
@@ -229,31 +255,60 @@ done
 kill -0 "$second_worker"
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
 
-restart_peer_body=$(jq -nc --arg target "$second" \
-  '{requestId:"peer-control-restart",targetSessionId:$target,prompt:"finish while the control plane is replaced"}')
-curl -sS -X POST -H 'content-type: application/json' \
-  -H "x-piss-session-token: $first_token" --data "$restart_peer_body" \
-  "http://127.0.0.1:$port/api/v2/broker/ask" \
-  >"$root/restart-peer-first.json" 2>/dev/null &
-restart_peer_pid=$!
+wake_first_body=$(jq -nc --arg target "$second" \
+  '{requestId:"wake-control-first",targetSessionId:$target,prompt:"finish the first durable wake request"}')
+wake_second_body=$(jq -nc --arg target "$third" \
+  '{requestId:"wake-control-second",targetSessionId:$target,prompt:"finish the second durable wake request"}')
+curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$wake_first_body" \
+  "http://127.0.0.1:$port/api/v2/broker/send" >/dev/null
+curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$wake_second_body" \
+  "http://127.0.0.1:$port/api/v2/broker/send" >/dev/null
+wake_subscription=$(jq -nc \
+  '{subscriptionId:"wake-control-restart",requestIds:["wake-control-first","wake-control-second"],waitFor:"all"}')
+subscription_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$wake_subscription" \
+  "http://127.0.0.1:$port/api/v2/broker/subscribe")
+[[ $(jq -r .state <<<"$subscription_response") == pending ]]
 sleep .3
 old_control=$control_pid
 kill -9 "$control_pid"
 wait "$control_pid" 2>/dev/null || true
 control_pid=
-wait "$restart_peer_pid" 2>/dev/null || true
 start_control
 [[ "$control_pid" != "$old_control" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
-restart_peer_response=$(curl -fsS -X POST -H 'content-type: application/json' \
-  -H "x-piss-session-token: $first_token" --data "$restart_peer_body" \
-  "http://127.0.0.1:$port/api/v2/broker/ask")
-[[ $(jq -r .response <<<"$restart_peer_response") == \
-  "The worker retained ownership while the control plane was replaceable." ]]
-[[ $(jq -r .duplicate <<<"$restart_peer_response") == true ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$third" | jq -r .workerPid) == "$third_worker" ]]
+wake_command=$(python3 - <<'PY'
+import hashlib
+print("peer-wake-" + hashlib.md5(b"wake-control-restart").hexdigest())
+PY
+)
+for _ in $(seq 1 600); do
+  command_completed "$first" "$wake_command" && break
+  sleep .02
+done
+command_completed "$first" "$wake_command"
+first_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$first")
+[[ $(jq --arg command "$wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)]|length' <<<"$first_events") == 1 ]]
+wake_prompt=$(jq -r --arg command "$wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)][0].payload.text' <<<"$first_events")
+[[ "$wake_prompt" == *wake-control-first* && "$wake_prompt" == *wake-control-second* ]]
+[[ $(grep -o 'The worker retained ownership while the control plane was replaceable.' <<<"$wake_prompt" | wc -l) == 2 ]]
+wake_state=$(python3 - "$state/registry.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute("select state from peer_subscriptions where id = 'wake-control-restart'").fetchone()[0])
+PY
+)
+[[ "$wake_state" == delivered ]]
 second_events=$(curl -fsS \
   "http://127.0.0.1:$port/api/v2/events?recent=500&session=$second")
-[[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-c1674df3b5ab8ba8ea6b4a3cbf78d6d9")]|length' <<<"$second_events") == 1 ]]
+third_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$third")
+[[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-4e241a043f8b1499264cea36590a39d4")]|length' <<<"$second_events") == 1 ]]
+[[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-fd4ac6c02d97bb22f38918c9dc354468")]|length' <<<"$third_events") == 1 ]]
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/sessions/$first/archive" >/dev/null

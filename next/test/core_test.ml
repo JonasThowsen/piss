@@ -96,7 +96,37 @@ let test_session_registry () =
   let completed = Option.get (Registry.find_peer_request registry "peer-one") in
   Alcotest.(check string)
     "peer response retained" "reviewed"
-    (Option.get completed.response)
+    (Option.get completed.response);
+  let subscription, duplicate =
+    Registry.accept_peer_subscription registry ~id:"wake-one" ~source_id:one.id
+      ~request_ids:[ "peer-one" ] ~wait_for:"all"
+      ~command_id:"peer-wake-command"
+  in
+  Alcotest.(check bool) "first wake subscription is new" false duplicate;
+  Alcotest.(check string)
+    "wake subscription pending" "pending" subscription.state;
+  let _, duplicate =
+    Registry.accept_peer_subscription registry ~id:"wake-one" ~source_id:one.id
+      ~request_ids:[ "peer-one" ] ~wait_for:"all"
+      ~command_id:"peer-wake-command"
+  in
+  Alcotest.(check bool) "wake subscription deduplicates" true duplicate;
+  Registry.mark_peer_subscription_dispatching registry "wake-one";
+  Alcotest.(check string)
+    "wake subscription dispatching" "dispatching"
+    (Option.get (Registry.find_peer_subscription registry "wake-one")).state;
+  Alcotest.(check int)
+    "open wake subscription listed" 1
+    (List.length (Registry.list_open_peer_subscriptions registry));
+  Alcotest.(check bool)
+    "wake delivery changes state" true
+    (Registry.complete_peer_subscription registry "wake-one");
+  Alcotest.(check bool)
+    "wake delivery deduplicates" false
+    (Registry.complete_peer_subscription registry "wake-one");
+  Alcotest.(check int)
+    "delivered wake no longer open" 0
+    (List.length (Registry.list_open_peer_subscriptions registry))
 
 let test_command_deduplication () =
   with_store @@ fun store ->
