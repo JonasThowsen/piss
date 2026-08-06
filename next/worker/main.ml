@@ -179,6 +179,15 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
   | `Int 1 -> ()
   | _ -> raise (Failure "ACP agent did not negotiate protocol version 1"));
+  let agent_name =
+    let agent_info = Yojson.Safe.Util.member "agentInfo" initialize_result in
+    match Yojson.Safe.Util.member "title" agent_info with
+    | `String value -> value
+    | _ -> (
+        match Yojson.Safe.Util.member "name" agent_info with
+        | `String value -> value
+        | _ -> "ACP agent")
+  in
   let supports_load =
     match
       Yojson.Safe.Util.(
@@ -244,6 +253,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         runtime_generation = Runtime_generation 1;
         worker_pid = Unix.getpid ();
         harness_pid = Some harness_pid;
+        agent_name;
         status = !status;
         last_sequence = Store.last_sequence store;
       }
