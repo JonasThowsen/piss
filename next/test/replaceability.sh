@@ -16,8 +16,10 @@ control_log="$state/control.log"
 worker_pid=
 control_pid=
 harness_pid=
+stream_pid=
 
 cleanup() {
+  if [[ -n "$stream_pid" ]]; then kill "$stream_pid" 2>/dev/null || true; fi
   if [[ -n "$control_pid" ]]; then kill "$control_pid" 2>/dev/null || true; fi
   if [[ -n "$worker_pid" ]]; then kill "$worker_pid" 2>/dev/null || true; fi
   if [[ -n "$control_pid" ]]; then wait "$control_pid" 2>/dev/null || true; fi
@@ -71,6 +73,11 @@ reported_worker_pid=$(jq -r .workerPid <<<"$snapshot_before")
 harness_pid=$(jq -r .harnessPid <<<"$snapshot_before")
 [[ "$reported_worker_pid" == "$worker_pid" ]]
 kill -0 "$harness_pid"
+initial_cursor=$(jq -r .lastSequence <<<"$snapshot_before")
+curl -NsS --max-time 10 \
+  "http://127.0.0.1:$port/api/v2/event-stream?after=$initial_cursor" \
+  >"$state/generation-one.stream" 2>/dev/null &
+stream_pid=$!
 
 first_delivery=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"replaceability-command","text":"prove replacement"}' \
@@ -82,10 +89,19 @@ sleep 1
 kill -9 "$control_pid"
 wait "$control_pid" 2>/dev/null || true
 control_pid=
+wait "$stream_pid" 2>/dev/null || true
+stream_pid=
 kill -0 "$worker_pid"
 kill -0 "$harness_pid"
+first_stream_cursor=$(awk '/^id: / { value=$2 } END { print value+0 }' \
+  "$state/generation-one.stream")
+[[ "$first_stream_cursor" -gt "$initial_cursor" ]]
 
 start_control generation-two
+curl -NsS --max-time 10 -H "Last-Event-ID: $first_stream_cursor" \
+  "http://127.0.0.1:$port/api/v2/event-stream?after=0" \
+  >"$state/generation-two.stream" 2>/dev/null &
+stream_pid=$!
 sleep 4
 
 health_after=$(curl -fsS "http://127.0.0.1:$port/health")
@@ -100,6 +116,20 @@ events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "acp.tool_call_update")] | length' <<<"$events") -ge 4 ]]
 [[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+for _ in $(seq 1 100); do
+  grep -q '"state":"completed"' "$state/generation-two.stream" 2>/dev/null && break
+  sleep .02
+done
+grep -q '"state":"completed"' "$state/generation-two.stream"
+kill "$stream_pid" 2>/dev/null || true
+wait "$stream_pid" 2>/dev/null || true
+stream_pid=
+python3 - "$state/generation-two.stream" "$first_stream_cursor" <<'PY'
+import sys
+path, cursor = sys.argv[1], int(sys.argv[2])
+ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id: ')]
+assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
+PY
 
 duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"replaceability-command","text":"must not run twice"}' \

@@ -35,6 +35,12 @@ let json_headers =
 let text_headers content_type =
   Http.Header.of_list (("content-type", content_type) :: security_headers)
 
+let event_stream_headers =
+  Http.Header.of_list
+    (("content-type", "text/event-stream; charset=utf-8")
+    :: ("x-accel-buffering", "no")
+    :: security_headers)
+
 let respond_json ?(status = `OK) json =
   Cohttp_eio.Server.respond_string ~status ~headers:json_headers
     ~body:(Yojson.Safe.to_string json)
@@ -42,6 +48,78 @@ let respond_json ?(status = `OK) json =
 
 let error_json ?(status = `Bad_request) message =
   respond_json ~status (`Assoc [ ("error", `String message) ])
+
+module Event_stream_source = struct
+  type t = {
+    fetch : int64 -> (Yojson.Safe.t list, string) result;
+    sleep : float -> unit;
+    mutable cursor : int64;
+    mutable pending : string;
+    mutable offset : int;
+    mutable last_heartbeat : float;
+  }
+
+  let sequence event =
+    match Yojson.Safe.Util.member "sequence" event with
+    | `Int value -> Some (Int64.of_int value)
+    | `Intlit value -> Int64.of_string_opt value
+    | _ -> None
+
+  let frame event =
+    match sequence event with
+    | None -> None
+    | Some id ->
+        Some
+          ( id,
+            Printf.sprintf "id: %Ld\ndata: %s\n\n" id
+              (Yojson.Safe.to_string event) )
+
+  let rec refill stream =
+    match stream.fetch stream.cursor with
+    | Error _ -> raise End_of_file
+    | Ok events ->
+        let frames = List.filter_map frame events in
+        if List.length frames <> List.length events then raise End_of_file
+        else if frames <> [] then (
+          stream.cursor <-
+            List.fold_left
+              (fun cursor (id, _) -> Int64.max cursor id)
+              stream.cursor frames;
+          stream.pending <- frames |> List.map snd |> String.concat "";
+          stream.offset <- 0)
+        else if Unix.gettimeofday () -. stream.last_heartbeat >= 15. then (
+          stream.pending <- ": keep-alive\n\n";
+          stream.offset <- 0;
+          stream.last_heartbeat <- Unix.gettimeofday ())
+        else (
+          stream.sleep 0.25;
+          refill stream)
+
+  let single_read stream target =
+    if stream.offset >= String.length stream.pending then refill stream;
+    let length =
+      min (Cstruct.length target) (String.length stream.pending - stream.offset)
+    in
+    Cstruct.blit_from_string stream.pending stream.offset target 0 length;
+    stream.offset <- stream.offset + length;
+    length
+
+  let read_methods = []
+end
+
+let event_stream_source ~fetch ~sleep ~after =
+  let operations = Eio.Flow.Pi.source (module Event_stream_source) in
+  Eio.Resource.T
+    ( Event_stream_source.
+        {
+          fetch;
+          sleep;
+          cursor = after;
+          pending = "retry: 1000\n\n";
+          offset = 0;
+          last_heartbeat = Unix.gettimeofday ();
+        },
+      operations )
 
 let worker_request net socket_path request =
   Eio.Switch.run @@ fun sw ->
@@ -242,15 +320,26 @@ let session_action path =
       Some (Restore id)
   | _ -> None
 
+let parse_non_negative_cursor value =
+  match Int64.of_string_opt value with
+  | Some cursor when cursor >= 0L -> Ok cursor
+  | _ -> Error "event cursor must be a non-negative integer"
+
 let parse_after uri =
   match Uri.get_query_param uri "after" with
   | None -> Ok 0L
-  | Some value -> (
-      try
-        let after = Int64.of_string value in
-        if after < 0L then Error "after must be a non-negative integer"
-        else Ok after
-      with Failure _ -> Error "after must be a non-negative integer")
+  | Some value -> parse_non_negative_cursor value
+
+let stream_after request uri =
+  match parse_after uri with
+  | Error _ as error -> error
+  | Ok query_cursor -> (
+      match Http.Header.get (Http.Request.headers request) "last-event-id" with
+      | None | Some "" -> Ok query_cursor
+      | Some value -> (
+          match parse_non_negative_cursor value with
+          | Error _ as error -> error
+          | Ok header_cursor -> Ok (Int64.max query_cursor header_cursor)))
 
 let parse_limit value =
   try
@@ -322,7 +411,7 @@ let serve_asset path content_type =
       ~body ()
   with Sys_error _ -> error_json ~status:`Not_found "asset not found"
 
-let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
+let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
     ~dev_bypass _socket request body =
   let resource = Http.Request.resource request in
   let uri = Uri.of_string resource in
@@ -407,6 +496,38 @@ let handler ~net ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Ok snapshot -> respond_json snapshot
               | Error message -> error_json ~status:`Service_unavailable message
               )
+          | `GET, "/api/v2/event-stream" -> (
+              match stream_after request uri with
+              | Error message -> error_json message
+              | Ok after -> (
+                  match worker_socket workers uri with
+                  | Error message ->
+                      error_json ~status:`Service_unavailable message
+                  | Ok socket ->
+                      (* TODO(tracer): Add a worker-side wait_events primitive
+                         before supporting many concurrent observers per
+                         session; this first browser stream uses bounded 250 ms
+                         reads. *)
+                      let fetch cursor =
+                        match
+                          worker_request net socket
+                            (`Assoc
+                               [
+                                 ("op", `String "events");
+                                 ("after", `Intlit (Int64.to_string cursor));
+                                 ("limit", `Int 200);
+                               ])
+                        with
+                        | Ok (`List events) -> Ok events
+                        | Ok _ -> Error "worker returned an invalid event page"
+                        | Error message -> Error message
+                      in
+                      let stream =
+                        event_stream_source ~fetch ~after
+                          ~sleep:(Eio.Time.sleep clock)
+                      in
+                      Cohttp_eio.Server.respond ~status:`OK
+                        ~headers:event_stream_headers ~body:stream ()))
           | `GET, "/api/v2/events" -> (
               let request =
                 match Uri.get_query_param uri "recent" with
@@ -679,9 +800,9 @@ let () =
       (`Tcp (Eio.Net.Ipaddr.V4.loopback, !port))
   in
   let callback =
-    handler ~net:(Eio.Stdenv.net env) ~workers ~public_dir:!public_dir
-      ~app_js:!app_js ~generation:!generation ~allowed_users:!allowed_users
-      ~dev_bypass:!dev_bypass
+    handler ~net:(Eio.Stdenv.net env) ~clock:(Eio.Stdenv.clock env) ~workers
+      ~public_dir:!public_dir ~app_js:!app_js ~generation:!generation
+      ~allowed_users:!allowed_users ~dev_bypass:!dev_bypass
   in
   let server = Cohttp_eio.Server.make ~callback () in
   Printf.printf "control_ready generation=%s pid=%d url=http://127.0.0.1:%d\n%!"
