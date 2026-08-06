@@ -109,6 +109,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                   status :=
                     if Hashtbl.length pending_permissions > 0 then
                       Domain.Requires_action
+                    else if Hashtbl.length running_commands > 0 then
+                      Domain.Running
                     else Domain.Idle
               | None -> ())
           | Ok
@@ -290,6 +292,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                    [
                      `String "events";
                      `String "prompt";
+                     `String "steer";
+                     `String "follow_up";
                      `String "cancel";
                      `String "permission";
                      `String "config_options";
@@ -353,13 +357,49 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               Store.set_command_state store ~command_id Domain.Dispatched;
               Hashtbl.replace running_commands command_id ();
               send
-                (Acp.prompt_request ~command_id ~session_id:!harness_session_id
-                   ~text);
+                (Acp.prompt_request ~delivery:None ~command_id
+                   ~session_id:!harness_session_id ~text);
               Ok
                 (`Assoc
                    [
                      ("commandId", `String command_id);
                      ("state", `String "dispatched");
+                     ("duplicate", `Bool accepted.duplicate);
+                   ])
+            with exn ->
+              status := Domain.Failed;
+              Store.set_command_state store ~command_id Domain.Ambiguous;
+              Error (Printexc.to_string exn)))
+    | Wire.Deliver { command_id; text; action } -> (
+        match Store.find_command store command_id with
+        | Some state ->
+            Ok
+              (`Assoc
+                 [
+                   ("commandId", `String command_id);
+                   ("state", `String (Domain.command_state_to_string state));
+                   ("duplicate", `Bool true);
+                 ])
+        | None when Hashtbl.length running_commands = 0 ->
+            Error (action ^ " is only available during an active prompt")
+        | None -> (
+            let accepted =
+              Store.accept_command ~action store ~command_id
+                ~request_id:command_id ~prompt:text
+            in
+            try
+              status := Domain.Running;
+              Store.set_command_state store ~command_id Domain.Dispatched;
+              Hashtbl.replace running_commands command_id ();
+              send
+                (Acp.prompt_request ~delivery:(Some action) ~command_id
+                   ~session_id:!harness_session_id ~text);
+              Ok
+                (`Assoc
+                   [
+                     ("commandId", `String command_id);
+                     ("state", `String "dispatched");
+                     ("action", `String action);
                      ("duplicate", `Bool accepted.duplicate);
                    ])
             with exn ->

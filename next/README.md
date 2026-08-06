@@ -37,7 +37,7 @@ The deployed Reason application provides:
 - streamed assistant messages over resumable server-sent events;
 - structured tool-call cards and output;
 - permission decisions for ACP agents that request them;
-- active-turn cancellation;
+- durable active-turn steering and queued follow-up messages, with a replayable outgoing-message tray and isolated cancellation;
 - worker, adapter, and event-sequence telemetry;
 - automatic reconnection to the durable timeline;
 - harness-neutral agent collaboration through `piss_list_sessions`, synchronous `piss_ask_session`, asynchronous `piss_send_session`, blocking `piss_collect_responses`, and durable `piss_subscribe_responses` MCP tools;

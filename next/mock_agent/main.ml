@@ -61,15 +61,58 @@ let request_permission ~id ~session_id =
   | `String "allow-once" -> true
   | _ -> false
 
-let cancel_pending () =
+let prompt_text params =
+  match Yojson.Safe.Util.(params |> member "prompt" |> to_list) with
+  | first :: _ -> (
+      match Yojson.Safe.Util.member "text" first with
+      | `String value -> value
+      | _ -> "")
+  | [] -> ""
+
+let pending_prompts : (string * string) Queue.t = Queue.create ()
+
+let poll_pending ~session_id () =
   let readable, _, _ = Unix.select [ Unix.stdin ] [] [] 0. in
   match readable with
   | [] -> false
   | _ ->
       let json = input_line stdin |> Yojson.Safe.from_string in
-      Yojson.Safe.Util.member "method" json = `String "session/cancel"
+      if Yojson.Safe.Util.member "method" json = `String "session/cancel" then
+        true
+      else if Yojson.Safe.Util.member "method" json = `String "session/prompt"
+      then (
+        let id = response_id json in
+        let params = Yojson.Safe.Util.member "params" json in
+        let text = prompt_text params in
+        let delivery =
+          Yojson.Safe.Util.(
+            params |> member "_meta" |> member "piss" |> member "delivery")
+        in
+        match delivery with
+        | `String "steer" ->
+            write
+              (session_update ~session_id
+                 (`Assoc
+                    [
+                      ("sessionUpdate", `String "user_message_chunk");
+                      ("messageId", `String ("user-" ^ id));
+                      ( "content",
+                        `Assoc
+                          [ ("type", `String "text"); ("text", `String text) ]
+                      );
+                    ]));
+            write
+              (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]));
+            false
+        | `String "follow_up" ->
+            Queue.add (id, text) pending_prompts;
+            false
+        | _ ->
+            Queue.add (id, text) pending_prompts;
+            false)
+      else false
 
-let run_prompt ~id ~session_id ~text =
+let rec run_prompt ~id ~session_id ~text =
   write
     (session_update ~session_id
        (`Assoc
@@ -102,7 +145,7 @@ let run_prompt ~id ~session_id ~text =
     let second = ref 1 in
     while !second <= duration () && not !cancelled do
       Unix.sleepf 1.;
-      if cancel_pending () then cancelled := true
+      if poll_pending ~session_id () then cancelled := true
       else
         write
           (session_update ~session_id
@@ -131,8 +174,9 @@ let run_prompt ~id ~session_id ~text =
                 ]));
       incr second
     done;
-    if !cancelled then
-      write (Acp.response ~id (`Assoc [ ("stopReason", `String "cancelled") ]))
+    if !cancelled then (
+      Queue.clear pending_prompts;
+      write (Acp.response ~id (`Assoc [ ("stopReason", `String "cancelled") ])))
     else (
       write
         (session_update ~session_id
@@ -172,7 +216,10 @@ let run_prompt ~id ~session_id ~text =
                            plane was replaceable." );
                     ] );
               ]));
-      write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))))
+      write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))));
+  if not (Queue.is_empty pending_prompts) then
+    let next_id, next_text = Queue.take pending_prompts in
+    run_prompt ~id:next_id ~session_id ~text:next_text
 
 let config_options ~model ~thinking =
   `List
@@ -275,14 +322,7 @@ let () =
                   ]))
       | "session/prompt" ->
           let params = Yojson.Safe.Util.member "params" json in
-          let text =
-            match Yojson.Safe.Util.(params |> member "prompt" |> to_list) with
-            | first :: _ -> (
-                match Yojson.Safe.Util.member "text" first with
-                | `String value -> value
-                | _ -> "")
-            | [] -> ""
-          in
+          let text = prompt_text params in
           run_prompt ~id ~session_id ~text
       | "session/cancel" -> ()
       | _ ->

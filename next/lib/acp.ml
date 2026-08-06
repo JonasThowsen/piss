@@ -157,12 +157,19 @@ let cancel_notification ~session_id =
   notification ~method_:"session/cancel"
     (`Assoc [ ("sessionId", `String session_id) ])
 
-let prompt_request ~command_id ~session_id ~text =
-  request ~id:command_id ~method_:"session/prompt"
-    (`Assoc
-       [
-         ("sessionId", `String session_id);
-         ( "prompt",
-           `List [ `Assoc [ ("type", `String "text"); ("text", `String text) ] ]
-         );
-       ])
+let prompt_request ~delivery ~command_id ~session_id ~text =
+  let fields =
+    [
+      ("sessionId", `String session_id);
+      ( "prompt",
+        `List [ `Assoc [ ("type", `String "text"); ("text", `String text) ] ] );
+    ]
+  in
+  let fields =
+    match delivery with
+    | None -> fields
+    | Some action ->
+        ("_meta", `Assoc [ ("piss", `Assoc [ ("delivery", `String action) ]) ])
+        :: fields
+  in
+  request ~id:command_id ~method_:"session/prompt" (`Assoc fields)

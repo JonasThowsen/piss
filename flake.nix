@@ -55,6 +55,7 @@
             pname = "pi-acp";
             version = "0.0.33";
             src = pi-acp-src;
+            patches = [ ./nix/pi-acp-delivery.patch ];
             npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
             nativeBuildInputs = [ pkgs.makeWrapper ];
             npmBuildScript = "build";
