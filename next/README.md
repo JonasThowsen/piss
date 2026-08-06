@@ -130,6 +130,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Next production slices
 
-1. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
-2. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
-3. Port one complete PISS workflow through the real authority and receipt model.
+1. Split the control and worker Nix artifacts so a control/web-only deployment cannot change the worker unit closure or trigger session-worker restarts.
+2. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
+3. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
+4. Port one complete PISS workflow through the real authority and receipt model.
