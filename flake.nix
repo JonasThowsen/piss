@@ -308,6 +308,13 @@
               }
             ];
           };
+          nextModuleEvaluation = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.next
+              { services.piss-next.enable = true; }
+            ];
+          };
         in
         {
           piss-next-native = self.packages.${system}.piss-next-native;
@@ -324,6 +331,13 @@
                 moduleEvaluation.config.systemd.user.services.piss.environment.SSH_AUTH_SOCK
                 == "/run/user/1000/ssh-agent";
             pkgs.runCommand "piss-nixos-module-check" { } "touch $out";
+          piss-next-nixos-module =
+            assert nextModuleEvaluation.config.services.piss-next.port == 4318;
+            assert nextModuleEvaluation.config.services.piss-next.tailscale.hostname == "piss-ocaml";
+            assert
+              nextModuleEvaluation.config.systemd.user.services.piss-ocaml-worker.serviceConfig.Restart
+              == "on-failure";
+            pkgs.runCommand "piss-next-nixos-module-check" { } "touch $out";
         }
       );
 
@@ -383,6 +397,9 @@
         piss-server = self.packages.${final.stdenv.hostPlatform.system}.piss-server;
         piss-web = self.packages.${final.stdenv.hostPlatform.system}.piss-web;
       };
-      nixosModules.default = import ./nix/nixos-module.nix self;
+      nixosModules = {
+        default = import ./nix/nixos-module.nix self;
+        next = import ./nix/nixos-next-module.nix self;
+      };
     };
 }
