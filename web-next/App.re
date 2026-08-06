@@ -623,7 +623,9 @@ module App = {
         <button
           className="search-trigger"
           type_="button"
-          ariaLabel="Search sessions">
+          disabled=true
+          title="Session search is the next production slice"
+          ariaLabel="Search sessions (coming next)">
           {React.string("")}
         </button>
         <div className={"connection-pill connection-" ++ status}>

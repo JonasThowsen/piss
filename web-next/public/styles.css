@@ -42,7 +42,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .search-trigger { position: relative; width: 40px; height: 40px; margin-left: auto; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); color: var(--muted); cursor: pointer; }
 .search-trigger::before { content: ""; position: absolute; width: 13px; height: 13px; left: 10px; top: 9px; border: 2px solid currentColor; border-radius: 50%; }
 .search-trigger::after { content: ""; position: absolute; width: 9px; height: 2px; left: 22px; top: 24px; background: currentColor; transform: rotate(45deg); transform-origin: left center; }
-.search-trigger:hover { background: var(--soft); color: var(--text); }
+.search-trigger:hover:not(:disabled) { background: var(--soft); color: var(--text); }
+.search-trigger:disabled { opacity: .65; cursor: not-allowed; }
 .connection-pill { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 600 9px/1 "IBM Plex Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
 .connection-pill i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 .connection-idle { color: var(--accent); }
