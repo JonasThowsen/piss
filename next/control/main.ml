@@ -90,40 +90,40 @@ let search_workspace_directories roots query =
   let max_depth = if terms = [] then 1 else 6 in
   let seen = Hashtbl.create 512 in
   let results = ref [] in
-  let visited = ref 0 in
-  let rec scan root path depth =
-    if !visited < 5000 && depth <= max_depth then (
-      incr visited;
-      match canonical_directory path with
-      | None -> ()
-      | Some canonical
-        when (not (path_within ~root canonical)) || Hashtbl.mem seen canonical
-        ->
-          ()
-      | Some canonical -> (
-          Hashtbl.add seen canonical ();
-          if matches canonical && List.length !results < 60 then
-            results := canonical :: !results;
-          if depth < max_depth then
-            try
-              let entries = Sys.readdir canonical in
-              Array.sort String.compare entries;
-              entries
-              |> Array.iter (fun name ->
-                  if not (ignored_directory name) then
-                    let child = Filename.concat canonical name in
-                    try
-                      if (Unix.lstat child).st_kind = Unix.S_DIR then
-                        scan root child (depth + 1)
-                    with Unix.Unix_error _ -> ())
-            with Sys_error _ -> ()))
-  in
+  let queue = Queue.create () in
   List.iter
-    (fun root ->
-      match canonical_directory root with
-      | Some root -> scan root root 0
+    (fun path ->
+      match canonical_directory path with
+      | Some root -> Queue.add (root, root, 0) queue
       | None -> ())
     roots;
+  let visited = ref 0 in
+  while !visited < 5000 && not (Queue.is_empty queue) do
+    let root, path, depth = Queue.take queue in
+    incr visited;
+    match canonical_directory path with
+    | None -> ()
+    | Some canonical
+      when (not (path_within ~root canonical)) || Hashtbl.mem seen canonical ->
+        ()
+    | Some canonical -> (
+        Hashtbl.add seen canonical ();
+        if matches canonical && List.length !results < 60 then
+          results := canonical :: !results;
+        if depth < max_depth then
+          try
+            let entries = Sys.readdir canonical in
+            Array.sort String.compare entries;
+            entries
+            |> Array.iter (fun name ->
+                if not (ignored_directory name) then
+                  let child = Filename.concat canonical name in
+                  try
+                    if (Unix.lstat child).st_kind = Unix.S_DIR then
+                      Queue.add (root, child, depth + 1) queue
+                  with Unix.Unix_error _ -> ())
+          with Sys_error _ -> ())
+  done;
   List.rev !results
 
 let respond_json ?(status = `OK) json =
