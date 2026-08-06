@@ -146,6 +146,27 @@ h1 {
 }
 .runtime-facts dt { color: var(--muted); font-size: .6rem; letter-spacing: .13em; }
 .runtime-facts dd { margin: 0; color: var(--ink); font-size: .72rem; font-variant-numeric: tabular-nums; }
+.new-session-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: .62rem;
+  font-weight: 600;
+  transition-property: color, background-color, opacity, transform;
+  transition-duration: 130ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+.new-session-action b { color: var(--acid); font-size: 1rem; }
+.new-session-action:hover:not(:disabled) { color: var(--black); background: var(--acid); }
+.new-session-action:hover:not(:disabled) b { color: var(--black); }
+.new-session-action:active:not(:disabled) { transform: scale(.96); }
+.new-session-action:disabled { cursor: not-allowed; opacity: .45; }
 .boundary-note { padding: 17px; border-left: 2px solid var(--acid); background: rgba(7, 9, 11, .72); }
 .boundary-note span { color: var(--acid); font-size: .58rem; font-weight: 600; letter-spacing: .12em; }
 .boundary-note p { margin: 10px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.62; }

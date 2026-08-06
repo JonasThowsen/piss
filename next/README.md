@@ -30,6 +30,7 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
+- fresh-conversation creation without restarting the control plane;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;
 - streamed assistant messages;
 - structured tool-call cards and output;
@@ -78,7 +79,7 @@ nix build .#checks.x86_64-linux.piss-next-nixos-module
 
 `@interaction-test` proves permission validation/resolution and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, and verifies unchanged worker/harness PIDs, replay, and exactly-once command completion.
 
-A real-harness smoke has also exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol.
+A real-harness smoke has also exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages, and the NixOS module selects them with `services.piss-next.harness = "pi"` or `"opencode"`.
 
 ## Local real-Pi run
 
@@ -121,9 +122,9 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Deliberate current limitations
 
-- One deployed worker owns one active ACP session and allows one prompt turn at a time.
-- Dynamic create/list/archive and independently supervised multi-session workers are not exposed in the browser yet.
-- OpenCode has passed a real ACP smoke through the same path, but the deployed Tailnet service currently selects Pi.
+- One deployed worker owns the currently selected ACP session and allows one prompt turn at a time.
+- The browser can create a fresh conversation. Until each session has its own worker, creation is capped at four per worker lifetime because adapters may retain harness processes; list/archive and concurrent sessions are not exposed yet.
+- OpenCode is packaged, selectable, and has passed a real ACP smoke through the same path, but the deployed Tailnet service currently selects Pi.
 - The browser uses bounded 750 ms polling rather than resumable SSE.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
 - Existing TypeScript PISS workflow metadata is not migrated.

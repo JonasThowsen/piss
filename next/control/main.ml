@@ -187,6 +187,16 @@ let handler ~net ~worker_socket ~public_dir ~app_js ~generation ~allowed_users
               | Ok events -> respond_json events
               | Error message -> error_json ~status:`Service_unavailable message
               ))
+      | `POST, "/api/v2/session/new" -> (
+          match valid_json_mutation ~dev_bypass request with
+          | Error (status, message) -> error_json ~status message
+          | Ok () -> (
+              match
+                worker_request net worker_socket
+                  (`Assoc [ ("op", `String "new_session") ])
+              with
+              | Ok result -> respond_json ~status:`Created result
+              | Error message -> error_json ~status:`Conflict message))
       | `POST, "/api/v2/commands" -> (
           match valid_json_mutation ~dev_bypass request with
           | Error (status, message) -> error_json ~status message
