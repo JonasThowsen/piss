@@ -160,7 +160,8 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
         });
         currentAgent = null;
       } else if (event.kind === 'command.accepted' && payload.text && !acpUserTexts.has(payload.text)) {
-        const item = { id: payload.commandId || `user-${event.sequence}`, role: 'user', title: 'You', text: payload.text, status: '', options: [], sequence: event.sequence };
+        const isWake = payload.text.startsWith('PISS durable collaboration wake-up.');
+        const item = { id: payload.commandId || `user-${event.sequence}`, role: isWake ? 'peer' : 'user', title: isWake ? 'PISS wake-up' : 'You', text: payload.text, status: '', options: [], sequence: event.sequence };
         items.push(item);
         currentAgent = null;
       } else if (event.kind === 'acp.user_message_chunk' || event.kind === 'acp.agent_message_chunk') {
@@ -168,9 +169,10 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
         const chunkText = contentText(update.content);
         if (role === 'user' && chunkText.startsWith('Inter-session request from ')) continue;
         const id = update.messageId || (role === 'agent' && currentAgent ? currentAgent.id : `${role}-${event.sequence}`);
+        const isWake = role === 'user' && chunkText.startsWith('PISS durable collaboration wake-up.');
         let item = messages.get(id);
         if (!item) {
-          item = { id, role, title: role === 'user' ? 'You' : agentName, text: '', status: '', options: [], sequence: event.sequence };
+          item = { id, role: isWake ? 'peer' : role, title: isWake ? 'PISS wake-up' : role === 'user' ? 'You' : agentName, text: '', status: '', options: [], sequence: event.sequence };
           messages.set(id, item);
           items.push(item);
         }

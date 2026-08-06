@@ -179,6 +179,43 @@ let tools =
         ];
       `Assoc
         [
+          ("name", `String "piss_subscribe_responses");
+          ( "description",
+            `String
+              "Durably subscribe this orchestrator to asynchronous request \
+               completion, then end the current turn. PISS will wait while the \
+               session is dormant and automatically start exactly one new turn \
+               with the captured responses when any or all requests are \
+               finished." );
+          ( "inputSchema",
+            `Assoc
+              [
+                ("type", `String "object");
+                ( "properties",
+                  `Assoc
+                    [
+                      ( "requestIds",
+                        `Assoc
+                          [
+                            ("type", `String "array");
+                            ("items", `Assoc [ ("type", `String "string") ]);
+                            ("minItems", `Int 1);
+                            ("maxItems", `Int 64);
+                          ] );
+                      ( "waitFor",
+                        `Assoc
+                          [
+                            ("type", `String "string");
+                            ("enum", `List [ `String "any"; `String "all" ]);
+                            ("default", `String "all");
+                          ] );
+                    ] );
+                ("required", `List [ `String "requestIds" ]);
+                ("additionalProperties", `Bool false);
+              ] );
+        ];
+      `Assoc
+        [
           ("name", `String "piss_collect_responses");
           ( "description",
             `String
@@ -259,6 +296,15 @@ let call_tool params =
   | `String "piss_send_session" ->
       let body = peer_request_body arguments in
       retry_broker (fun () -> curl ~body "/api/v2/broker/send")
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_subscribe_responses" ->
+      let body =
+        match arguments with
+        | `Assoc fields ->
+            `Assoc (("subscriptionId", `String (random_request_id ())) :: fields)
+        | _ -> failwith "subscription arguments must be an object"
+      in
+      retry_broker (fun () -> curl ~body "/api/v2/broker/subscribe")
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_collect_responses" ->
       retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/collect")
