@@ -24,7 +24,13 @@ let
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/${serviceStateName}"
     session_state="$state/sessions/$id"
     session_runtime="''${XDG_RUNTIME_DIR:?}/${serviceStateName}/sessions/$id"
-    mkdir -p "$session_state" "$session_runtime"
+    mkdir -p "$session_state" "$session_runtime" \
+      "$session_state/cache" "$session_state/config" \
+      "$session_state/data" "$session_state/xdg-state"
+    export XDG_CACHE_HOME="$session_state/cache"
+    export XDG_CONFIG_HOME="$session_state/config"
+    export XDG_DATA_HOME="$session_state/data"
+    export XDG_STATE_HOME="$session_state/xdg-state"
     harness="$(tr -d '\n' < "$session_state/harness")"
     if [[ "$id" == "deployed-tracer" && -e "$state/worker.sqlite3" && ! -e "$session_state/worker.sqlite3" ]]; then
       for suffix in "" -wal -shm; do
@@ -285,9 +291,6 @@ in
         ReadWritePaths = [
           "%S/${serviceStateName}/sessions/%i"
           "-%h/.pi"
-          "-%h/.cache"
-          "-%h/.config/opencode"
-          "-%h/.local/share"
           cfg.workspace
         ];
         LockPersonality = true;

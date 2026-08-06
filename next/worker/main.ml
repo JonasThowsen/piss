@@ -58,6 +58,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
       ~stdout:harness_stdout_sink ~stderr:(Eio.Stdenv.stderr env)
       (harness_command :: harness_args)
   in
+  Eio.Flow.close harness_stdout_sink;
+  Eio.Flow.close harness_stdin_source;
   let harness_pid = Eio.Process.pid harness in
   let harness_reader =
     Eio.Buf_read.of_flow harness_stdout ~max_size:max_frame_bytes
