@@ -8,6 +8,7 @@ type workspaceSummary;
 type directoryCandidate;
 type configOption;
 type configChoice;
+type outboxItem;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -42,6 +43,10 @@ external configCurrentValue: configOption => string = "currentValue";
 [@mel.get]
 external configChoices: configOption => array(configChoice) = "options";
 [@mel.get] external choiceValue: configChoice => string = "value";
+[@mel.get] external outboxId: outboxItem => string = "id";
+[@mel.get] external outboxAction: outboxItem => string = "action";
+[@mel.get] external outboxText: outboxItem => string = "text";
+[@mel.get] external outboxState: outboxItem => string = "state";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
@@ -192,6 +197,9 @@ let eventChangesRuntime: string => bool = [%raw
 ];
 let eventCompletesTurn: string => bool = [%raw
   "text => { try { const event = JSON.parse(text); return event.kind === 'command.state' && ['completed', 'cancelled', 'rejected', 'ambiguous'].includes(event.payload?.state); } catch (_) { return false; } }"
+];
+let projectOutbox: string => array(outboxItem) = [%raw
+  "text => { let events; try { events = JSON.parse(text); } catch (_) { return []; } if (!Array.isArray(events)) return []; const items = new Map(); for (const event of events) { const payload = event.payload || {}; if (event.kind === 'command.accepted' && ['steer', 'follow_up'].includes(payload.action)) items.set(payload.commandId, { id: payload.commandId, action: payload.action, text: payload.text || '', state: 'accepted', sequence: event.sequence }); else if (event.kind === 'command.state' && items.has(payload.commandId)) items.get(payload.commandId).state = payload.state || 'accepted'; else if (event.kind === 'command.reconciled' && items.has(payload.commandId)) items.get(payload.commandId).state = payload.state || 'ambiguous'; } return [...items.values()].filter(item => !['completed', 'cancelled', 'rejected'].includes(item.state)).sort((a, b) => a.sequence - b.sequence).slice(-32); }"
 ];
 let connectEventStream:
   (string, string => unit, string => unit, unit => unit, unit => unit, unit) =>
@@ -403,6 +411,7 @@ module App = {
     let (configOptionsJson, setConfigOptionsJson) =
       React.useState(() => "[]");
     let (configMenu, setConfigMenu) = React.useState(() => "");
+    let (delivery, setDelivery) = React.useState(() => "steer");
     let (activeSessionId, setActiveSessionId) = React.useState(() => "");
     let (activeView, setActiveView) = React.useState(() => "agent");
     let (drawerOpen, setDrawerOpen) = React.useState(() => false);
@@ -511,6 +520,7 @@ module App = {
     let status = snapshotStatus(snapshot);
     let running = status == "running" || status == "requires_action";
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
+    let outbox = projectOutbox(eventsJson);
     let sessions = parseSessions(sessionsJson);
     let workspaces = parseWorkspaces(workspacesJson);
     let configOptions = parseConfigOptions(configOptionsJson);
@@ -548,19 +558,33 @@ module App = {
     let submitPrompt = event => {
       preventDefault(event);
       let text = promptValue();
-      if (text != "" && !running && !submitting) {
+      if (text != "" && !submitting) {
+        let action = running ? delivery : "prompt";
         setSubmitting(_ => true);
-        setNotice(_ => "Dispatching prompt durably...");
+        setNotice(_ =>
+          action == "steer"
+            ? "Delivering guidance after the current tool call..."
+            : action == "follow_up"
+                ? "Queueing a durable follow-up..."
+                : "Dispatching prompt durably..."
+        );
         let commandId = "web-" ++ string_of_float(Js.Date.now());
         let body =
           jsonBody([|
             ("commandId", Js.Json.string(commandId)),
             ("text", Js.Json.string(text)),
+            ("action", Js.Json.string(action)),
           |]);
         postText(sessionUrl("/api/v2/commands", activeSessionId), body)
         ->thenPromise(_ => {
             clearPrompt();
-            setNotice(_ => "Prompt accepted. The worker owns this turn.");
+            setNotice(_ =>
+              action == "steer"
+                ? "Steering message delivered."
+                : action == "follow_up"
+                    ? "Follow-up queued durably."
+                    : "Prompt accepted. The worker owns this turn."
+            );
             setSubmitting(_ => false);
             refresh();
             Js.Promise.resolve();
@@ -1157,6 +1181,48 @@ module App = {
                     : React.null}
                </div>}
           <div className="composer-wrap">
+            {Array.length(outbox) > 0
+               ? <section
+                   className="outbox-tray"
+                   ariaLabel="Outgoing messages"
+                   ariaLive="polite">
+                   <header>
+                     <span> {React.string("OUTGOING QUEUE")} </span>
+                     <b>
+                       {React.string(string_of_int(Array.length(outbox)))}
+                     </b>
+                   </header>
+                   {Array.map(
+                      item =>
+                        <article
+                          className={"outbox-message " ++ outboxState(item)}
+                          key={outboxId(item)}>
+                          <i />
+                          <div>
+                            <header>
+                              <b>
+                                {React.string(
+                                   outboxAction(item) == "follow_up"
+                                     ? "FOLLOW-UP" : "STEER",
+                                 )}
+                              </b>
+                              <small>
+                                {React.string(
+                                   outboxState(item) == "ambiguous"
+                                     ? "DELIVERY NEEDS REVIEW"
+                                     : outboxAction(item) == "follow_up"
+                                         ? "QUEUED IN PI" : "SENDING TO PI",
+                                 )}
+                              </small>
+                            </header>
+                            <p> {React.string(outboxText(item))} </p>
+                          </div>
+                        </article>,
+                      outbox,
+                    )
+                    ->React.array}
+                 </section>
+               : React.null}
             <p className="notice" role="status"> {React.string(notice)} </p>
             <form className="composer" onSubmit=submitPrompt>
               <textarea
@@ -1165,11 +1231,11 @@ module App = {
                 rows=2
                 maxLength=65536
                 ariaLabel="Message agent"
-                disabled={running || submitting}
+                disabled=submitting
                 onKeyDown=composerKeyDown
                 placeholder={
                   running
-                    ? "The agent is working. Cancel the turn to interrupt it."
+                    ? "Message Pi while it works..."
                     : "Message agent / commands @ files"
                 }
               />
@@ -1252,6 +1318,19 @@ module App = {
                                          choiceValue(choice),
                                        )
                                      }>
+                                     <i
+                                       className={
+                                         "composer-option-check "
+                                         ++ (
+                                           choiceValue(choice)
+                                           == configCurrentValue(option)
+                                             ? "checked" : ""
+                                         )
+                                       }>
+                                       {choiceValue(choice)
+                                        == configCurrentValue(option)
+                                          ? icon("check") : React.null}
+                                     </i>
                                      <span>
                                        <b>
                                          {React.string(
@@ -1262,9 +1341,14 @@ module App = {
                                          {React.string(choiceValue(choice))}
                                        </small>
                                      </span>
-                                     {choiceValue(choice)
-                                      == configCurrentValue(option)
-                                        ? icon("check") : React.null}
+                                     <em>
+                                       {React.string(
+                                          switch (thinkingOption) {
+                                          | Some(_) => "THINKING"
+                                          | None => "DIRECT"
+                                          },
+                                        )}
+                                     </em>
                                    </button>,
                                  configChoices(option),
                                )
@@ -1303,6 +1387,7 @@ module App = {
                                 <span>
                                   {React.string("THINKING LEVEL")}
                                 </span>
+                                <small> {React.string("REASONING")} </small>
                               </header>
                               {Array.map(
                                  choice =>
@@ -1326,16 +1411,24 @@ module App = {
                                          choiceValue(choice),
                                        )
                                      }>
+                                     <i
+                                       className={
+                                         "composer-option-check "
+                                         ++ (
+                                           choiceValue(choice)
+                                           == configCurrentValue(option)
+                                             ? "checked" : ""
+                                         )
+                                       }>
+                                       {choiceValue(choice)
+                                        == configCurrentValue(option)
+                                          ? icon("check") : React.null}
+                                     </i>
                                      <span>
-                                       <b>
-                                         {React.string(
-                                            choiceDisplayName(choice),
-                                          )}
-                                       </b>
+                                       {React.string(
+                                          choiceDisplayName(choice),
+                                        )}
                                      </span>
-                                     {choiceValue(choice)
-                                      == configCurrentValue(option)
-                                        ? icon("check") : React.null}
                                    </button>,
                                  configChoices(option),
                                )
@@ -1345,23 +1438,46 @@ module App = {
                      </div>
                    }}
                 </div>
-                {running
-                   ? <button
-                       className="cancel-action"
-                       type_="button"
-                       onClick=cancel
-                       ariaLabel="Cancel turn">
-                       {icon("x")}
-                     </button>
-                   : <button
-                       className="send-action"
-                       type_="submit"
-                       disabled=submitting
-                       ariaLabel="Send message">
-                       {submitting ? React.string("...") : icon("up")}
-                     </button>}
+                <button
+                  className="send-action"
+                  type_="submit"
+                  disabled=submitting
+                  ariaLabel={
+                    running
+                      ? delivery == "steer" ? "Steer Pi" : "Queue follow-up"
+                      : "Send message"
+                  }>
+                  {submitting ? React.string("...") : icon("up")}
+                </button>
               </div>
             </form>
+            {running
+               ? <div className="active-run-controls">
+                   <div
+                     className="delivery-toggle"
+                     role="group"
+                     ariaLabel="Message delivery">
+                     <button
+                       className={delivery == "steer" ? "active" : ""}
+                       type_="button"
+                       ariaPressed={delivery == "steer" ? "true" : "false"}
+                       onClick={_ => setDelivery(_ => "steer")}>
+                       {React.string("STEER NEXT")}
+                     </button>
+                     <button
+                       className={delivery == "follow_up" ? "active" : ""}
+                       type_="button"
+                       ariaPressed={delivery == "follow_up" ? "true" : "false"}
+                       onClick={_ => setDelivery(_ => "follow_up")}>
+                       {React.string("FOLLOW-UP")}
+                     </button>
+                   </div>
+                   <button className="abort-run" type_="button" onClick=cancel>
+                     <i />
+                     {React.string("ABORT RUN")}
+                   </button>
+                 </div>
+               : React.null}
           </div>
         </section>
       </section>

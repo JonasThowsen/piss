@@ -264,19 +264,43 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .composer-config-menu.thinking-menu { width: min(210px, calc(100vw - 20px)); }
 .composer-config-menu > header { position: sticky; top: -5px; z-index: 1; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -5px -5px 4px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--accent); }
 .composer-config-menu > header span, .composer-config-menu > header small { font: 700 7px/1 "IBM Plex Mono", monospace; letter-spacing: .1em; }
-.composer-config-menu > button { width: 100%; min-height: 48px; display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: center; gap: 8px; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.composer-config-menu > button { width: 100%; border: 0; border-radius: 4px; outline: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.model-menu > button { min-height: 48px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 9px; }
+.thinking-menu > button { min-height: 38px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 9px; padding: 6px 9px; font-size: 9px; font-weight: 750; text-transform: uppercase; }
 .composer-config-menu > button + button { border-top: 1px solid var(--line); border-radius: 0; }
 .composer-config-menu > button:hover, .composer-config-menu > button.selected { border-radius: 4px; background: var(--accent-soft); }
-.composer-config-menu > button > span { min-width: 0; display: grid; gap: 3px; }
-.composer-config-menu > button b, .composer-config-menu > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer-config-menu > button b { font-size: 10px; }
-.composer-config-menu > button small { color: var(--muted); font: 8px/1 ui-monospace, monospace; }
-.composer-config-menu > button > svg { width: 14px; height: 14px; color: var(--accent); }
+.model-menu > button > span { min-width: 0; display: grid; gap: 3px; }
+.model-menu > button b, .model-menu > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu > button b { font-size: 10px; font-weight: 700; }
+.model-menu > button small { color: var(--muted); font: 8px/1 ui-monospace, monospace; }
+.model-menu > button em { color: var(--faint); font-size: 7px; font-style: normal; font-weight: 750; }
+.composer-option-check { width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: transparent; font-style: normal; }
+.composer-option-check.checked { border-color: var(--accent); background: var(--accent); color: white; }
+.composer-option-check svg { width: 10px; height: 10px; stroke-width: 2.5; }
 .send-action, .cancel-action { width: 42px; min-width: 42px; height: 42px; display: grid; place-content: center; place-items: center; padding: 0; border: 0; border-radius: 8px; background: var(--accent); color: white; }
 .cancel-action { background: var(--danger); }
 .send-action svg, .cancel-action svg { width: 22px; height: 22px; }
 .send-action svg { transform: translateY(-1px); }
 .send-action:disabled { opacity: .45; }
+.outbox-tray { max-height: 118px; overflow: auto; margin: 0 auto 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+.outbox-tray > header { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 7px; letter-spacing: .1em; }
+.outbox-tray > header b { color: #8d5b22; }
+.outbox-message { min-height: 42px; display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; padding: 7px 9px; border-bottom: 1px solid var(--line); background: #fffdf7; }
+.outbox-message:last-child { border-bottom: 0; }
+.outbox-message > i { width: 7px; height: 7px; border-radius: 2px; background: #9a752e; transform: rotate(45deg); }
+.outbox-message > div { overflow: hidden; }
+.outbox-message header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+.outbox-message header b { color: #8d5b22; font-size: 8px; letter-spacing: .08em; }
+.outbox-message header small { overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.outbox-message p { margin: 0; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.outbox-message.ambiguous { background: #fff1ef; }
+.outbox-message.ambiguous > i { background: var(--danger); }
+.active-run-controls { min-height: 48px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; padding-top: 7px; }
+.delivery-toggle { min-width: 220px; height: 40px; display: grid; grid-template-columns: 1.1fr 1fr; padding: 3px; border-radius: 5px; background: var(--soft); }
+.delivery-toggle button { padding: 0 9px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; font-weight: 700; cursor: pointer; }
+.delivery-toggle button.active { outline: 1px solid var(--line-strong); background: var(--panel); color: var(--text); }
+.abort-run { height: 40px; display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid #e7bbb6; border-radius: 5px; background: #fff1ef; color: var(--danger); font-size: 9px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.abort-run i { width: 8px; height: 8px; background: currentColor; }
 .workspace-dialog { width: min(620px, calc(100vw - 28px)); max-height: min(760px, calc(var(--app-height, 100dvh) - 28px)); display: flex; flex-direction: column; overflow: hidden; }
 .fixed-workspace { margin: 14px 0 2px; padding: 10px 12px; border-left: 2px solid var(--accent); background: var(--soft); color: var(--muted); font-size: 13px; }
 .fixed-workspace strong { color: var(--text); }
@@ -332,7 +356,13 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
   .composer { min-height: 102px; padding: 0; }
   .composer textarea { min-height: 58px; max-height: 128px; padding: 13px 14px 5px; font-size: 16px; }
   .composer-footer { min-height: 50px; grid-template-columns: minmax(80px, 1fr) auto 42px; gap: 5px; padding: 2px 7px 6px 8px; }
-  .composer-config-menu, .composer-config-menu.model-menu, .composer-config-menu.thinking-menu { position: fixed; right: 10px; bottom: 74px; left: 10px; width: auto; }
+  .composer-config-menu { position: fixed; right: 8px; bottom: 74px; left: auto; }
+  .composer-config-menu.model-menu { width: min(370px, calc(100vw - 16px)); }
+  .composer-config-menu.thinking-menu { width: min(210px, calc(100vw - 16px)); }
+  .outbox-tray { max-height: 92px; margin-bottom: 7px; }
+  .active-run-controls { grid-template-columns: minmax(0, 1fr) auto; }
+  .delivery-toggle { min-width: 0; }
+  .delivery-toggle button, .abort-run { padding-inline: 8px; font-size: 10px; }
   .send-action, .cancel-action { width: 42px; min-width: 42px; min-height: 42px; }
   .session-menu { top: calc(50% + 18px); right: 2px; bottom: auto; left: auto; min-width: 148px; }
   .dialog-backdrop { align-items: center; padding: 12px; }

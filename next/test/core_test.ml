@@ -234,6 +234,12 @@ let test_wire_bounds () =
   (match decode {|{"op":"unknown"}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unknown worker operation was accepted");
+  (match
+     decode
+       {|{"op":"deliver","commandId":"delivery","text":"message","action":"later"}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "unknown delivery action was accepted");
   let oversized = String.make ((64 * 1024) + 1) 'x' in
   let prompt =
     `Assoc

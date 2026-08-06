@@ -194,7 +194,7 @@ let find_command store command_id =
           fail_rc "find command" rc;
           None)
 
-let accept_command store ~command_id ~request_id ~prompt =
+let accept_command ?(action = "prompt") store ~command_id ~request_id ~prompt =
   transaction store (fun () ->
       match find_command store command_id with
       | Some state -> { state; duplicate = true }
@@ -222,6 +222,7 @@ let accept_command store ~command_id ~request_id ~prompt =
                   [
                     ("commandId", `String command_id);
                     ("requestId", `String request_id);
+                    ("action", `String action);
                     ("text", `String prompt);
                   ]));
           { state = Accepted; duplicate = false })

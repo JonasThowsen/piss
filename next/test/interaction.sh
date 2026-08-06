@@ -107,6 +107,32 @@ ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id:
 assert ids and ids == sorted(set(ids)) and min(ids) > initial, ids
 PY
 
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"delivery-base","text":"run while delivery messages arrive"}' \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+sleep .1
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"delivery-steer","text":"steer this active run","action":"steer"}' \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"delivery-follow","text":"process this durable follow-up","action":"follow_up"}' \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-steer" and .payload.state == "completed")] | length' <<<"$events") == 1 ]] && break
+  sleep .02
+done
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == running ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "delivery-steer" and .payload.action == "steer")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "delivery-follow" and .payload.action == "follow_up")] | length' <<<"$events") == 1 ]]
+for _ in $(seq 1 400); do
+  events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-follow" and .payload.state == "completed")] | length' <<<"$events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-base" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-follow" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+
 curl -NsS --max-time 12 -H "Last-Event-ID: $resume_cursor" \
   "http://127.0.0.1:$port/api/v2/event-stream?after=0" \
   >"$state/cancel.stream" 2>"$state/cancel.stream.log" &
@@ -138,4 +164,4 @@ ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id:
 assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
 PY
 
-echo "interaction proof passed: resumable SSE, permission resolution, and cancellation"
+echo "interaction proof passed: resumable SSE, permissions, steer/follow-up delivery, and cancellation"

@@ -5,6 +5,7 @@ type request =
   | Recent_events of { limit : int }
   | New_session
   | Prompt of { command_id : string; text : string }
+  | Deliver of { command_id : string; text : string; action : string }
   | Cancel
   | Config_options
   | Set_config_option of { config_id : string; value : string }
@@ -76,6 +77,18 @@ let request_of_yojson json =
       else if text = "" then Error "prompt must not be empty"
       else if String.length text > 64 * 1024 then Error "prompt is too large"
       else Ok (Prompt { command_id; text })
+  | "deliver" ->
+      let* command_id = string_member "commandId" json in
+      let* text = string_member "text" json in
+      let* action = string_member "action" json in
+      if command_id = "" then Error "commandId must not be empty"
+      else if String.length command_id > 128 then Error "commandId is too long"
+      else if text = "" then Error "delivery text must not be empty"
+      else if String.length text > 64 * 1024 then
+        Error "delivery text is too large"
+      else if action <> "steer" && action <> "follow_up" then
+        Error "delivery action must be steer or follow_up"
+      else Ok (Deliver { command_id; text; action })
   | "cancel" -> Ok Cancel
   | "config_options" -> Ok Config_options
   | "set_config_option" ->
