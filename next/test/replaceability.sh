@@ -48,6 +48,7 @@ start_control() {
   local generation=$1
   "$control_exe" --port "$port" --worker-socket "$socket" \
     --public "$public_dir" --app-js "$app_js" --generation "$generation" \
+    --dev-bypass-auth \
     >"$control_log" 2>&1 &
   control_pid=$!
   wait_for_control

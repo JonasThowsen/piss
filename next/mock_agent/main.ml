@@ -20,6 +20,55 @@ let duration () =
   | Some value -> ( try max 1 (int_of_string value) with Failure _ -> 8)
   | None -> 8
 
+let request_permission ~id ~session_id =
+  let request_id = "permission-" ^ id in
+  write
+    (Acp.request ~id:request_id ~method_:"session/request_permission"
+       (`Assoc
+          [
+            ("sessionId", `String session_id);
+            ( "toolCall",
+              `Assoc
+                [
+                  ("toolCallId", `String ("tool-" ^ id));
+                  ("title", `String "Allow the stability proof");
+                  ("kind", `String "execute");
+                  ("status", `String "pending");
+                  ("rawInput", `Assoc [ ("command", `String "mock-proof") ]);
+                ] );
+            ( "options",
+              `List
+                [
+                  `Assoc
+                    [
+                      ("optionId", `String "allow-once");
+                      ("name", `String "Allow once");
+                      ("kind", `String "allow_once");
+                    ];
+                  `Assoc
+                    [
+                      ("optionId", `String "reject-once");
+                      ("name", `String "Reject");
+                      ("kind", `String "reject_once");
+                    ];
+                ] );
+          ]));
+  let response = input_line stdin |> Yojson.Safe.from_string in
+  match
+    Yojson.Safe.Util.(
+      response |> member "result" |> member "outcome" |> member "optionId")
+  with
+  | `String "allow-once" -> true
+  | _ -> false
+
+let cancel_pending () =
+  let readable, _, _ = Unix.select [ Unix.stdin ] [] [] 0. in
+  match readable with
+  | [] -> false
+  | _ ->
+      let json = input_line stdin |> Yojson.Safe.from_string in
+      Yojson.Safe.Util.member "method" json = `String "session/cancel"
+
 let run_prompt ~id ~session_id ~text =
   write
     (session_update ~session_id
@@ -30,84 +79,100 @@ let run_prompt ~id ~session_id ~text =
             ( "content",
               `Assoc [ ("type", `String "text"); ("text", `String text) ] );
           ]));
-  write
-    (session_update ~session_id
-       (`Assoc
-          [
-            ("sessionUpdate", `String "tool_call");
-            ("toolCallId", `String ("tool-" ^ id));
-            ("title", `String "Proving control-plane replaceability");
-            ("kind", `String "execute");
-            ("status", `String "in_progress");
-            ("rawInput", `Assoc [ ("durationSeconds", `Int (duration ())) ]);
-          ]));
-  for second = 1 to duration () do
-    Unix.sleepf 1.;
+  let allowed =
+    if String.starts_with ~prefix:"permission:" text then
+      request_permission ~id ~session_id
+    else true
+  in
+  if not allowed then
+    write (Acp.response ~id (`Assoc [ ("stopReason", `String "cancelled") ]))
+  else (
     write
       (session_update ~session_id
          (`Assoc
             [
-              ("sessionUpdate", `String "tool_call_update");
+              ("sessionUpdate", `String "tool_call");
               ("toolCallId", `String ("tool-" ^ id));
+              ("title", `String "Proving control-plane replaceability");
+              ("kind", `String "execute");
               ("status", `String "in_progress");
-              ( "content",
-                `List
-                  [
-                    `Assoc
-                      [
-                        ("type", `String "content");
-                        ( "content",
-                          `Assoc
-                            [
-                              ("type", `String "text");
-                              ( "text",
-                                `String
-                                  (Printf.sprintf "durable output %d/%d" second
-                                     (duration ())) );
-                            ] );
-                      ];
-                  ] );
-            ]))
-  done;
-  write
-    (session_update ~session_id
-       (`Assoc
-          [
-            ("sessionUpdate", `String "tool_call_update");
-            ("toolCallId", `String ("tool-" ^ id));
-            ("status", `String "completed");
-            ( "content",
-              `List
+              ("rawInput", `Assoc [ ("durationSeconds", `Int (duration ())) ]);
+            ]));
+    let cancelled = ref false in
+    let second = ref 1 in
+    while !second <= duration () && not !cancelled do
+      Unix.sleepf 1.;
+      if cancel_pending () then cancelled := true
+      else
+        write
+          (session_update ~session_id
+             (`Assoc
                 [
-                  `Assoc
-                    [
-                      ("type", `String "content");
-                      ( "content",
+                  ("sessionUpdate", `String "tool_call_update");
+                  ("toolCallId", `String ("tool-" ^ id));
+                  ("status", `String "in_progress");
+                  ( "content",
+                    `List
+                      [
                         `Assoc
                           [
-                            ("type", `String "text");
-                            ("text", `String "agent process stayed alive");
-                          ] );
-                    ];
-                ] );
-          ]));
-  write
-    (session_update ~session_id
-       (`Assoc
-          [
-            ("sessionUpdate", `String "agent_message_chunk");
-            ("messageId", `String ("agent-" ^ id));
-            ( "content",
-              `Assoc
-                [
-                  ("type", `String "text");
-                  ( "text",
-                    `String
-                      "The worker retained ownership while the control plane \
-                       was replaceable." );
-                ] );
-          ]));
-  write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))
+                            ("type", `String "content");
+                            ( "content",
+                              `Assoc
+                                [
+                                  ("type", `String "text");
+                                  ( "text",
+                                    `String
+                                      (Printf.sprintf "durable output %d/%d"
+                                         !second (duration ())) );
+                                ] );
+                          ];
+                      ] );
+                ]));
+      incr second
+    done;
+    if !cancelled then
+      write (Acp.response ~id (`Assoc [ ("stopReason", `String "cancelled") ]))
+    else (
+      write
+        (session_update ~session_id
+           (`Assoc
+              [
+                ("sessionUpdate", `String "tool_call_update");
+                ("toolCallId", `String ("tool-" ^ id));
+                ("status", `String "completed");
+                ( "content",
+                  `List
+                    [
+                      `Assoc
+                        [
+                          ("type", `String "content");
+                          ( "content",
+                            `Assoc
+                              [
+                                ("type", `String "text");
+                                ("text", `String "agent process stayed alive");
+                              ] );
+                        ];
+                    ] );
+              ]));
+      write
+        (session_update ~session_id
+           (`Assoc
+              [
+                ("sessionUpdate", `String "agent_message_chunk");
+                ("messageId", `String ("agent-" ^ id));
+                ( "content",
+                  `Assoc
+                    [
+                      ("type", `String "text");
+                      ( "text",
+                        `String
+                          "The worker retained ownership while the control \
+                           plane was replaceable." );
+                    ] );
+              ]));
+      write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))))
 
 let () =
   let session_id = "mock-acp-session" in

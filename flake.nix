@@ -1,10 +1,20 @@
 {
   description = "PISS — Pi sin sidecar";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    pi-acp-src = {
+      url = "github:svkozak/pi-acp";
+      flake = false;
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      pi-acp-src,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -34,6 +44,33 @@
           };
         in
         rec {
+          pi-acp = pkgs.buildNpmPackage {
+            pname = "pi-acp";
+            version = "0.0.33";
+            src = pi-acp-src;
+            npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            npmBuildScript = "build";
+            doCheck = false;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin $out/lib/pi-acp
+              cp dist/index.js package.json $out/lib/pi-acp/
+              npm prune --omit=dev --offline
+              cp -r node_modules $out/lib/pi-acp/node_modules
+              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/pi-acp \
+                --add-flags $out/lib/pi-acp/index.js
+              runHook postInstall
+            '';
+            meta = {
+              description = "ACP adapter for the Pi coding agent";
+              homepage = "https://github.com/svkozak/pi-acp";
+              license = nixpkgs.lib.licenses.mit;
+              mainProgram = "pi-acp";
+              platforms = systems;
+            };
+          };
+
           piss-next-native = pkgs.ocamlPackages.buildDunePackage {
             pname = "piss-next";
             version = "0.1.0-tracer";
@@ -312,7 +349,13 @@
             inherit system;
             modules = [
               self.nixosModules.next
-              { services.piss-next.enable = true; }
+              {
+                services.piss-next = {
+                  enable = true;
+                  allowedUsers = [ "owner@example.com" ];
+                  harness = "mock";
+                };
+              }
             ];
           };
         in

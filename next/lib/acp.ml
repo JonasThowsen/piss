@@ -36,9 +36,9 @@ let envelope_of_yojson json =
 
 let response_result ~expected_id json =
   match envelope_of_yojson json with
-  | Ok (Response { id; result = Some result; error = None })
-    when String.equal id expected_id ->
-      Ok result
+  | Ok (Response { id; result; error = None }) when String.equal id expected_id
+    ->
+      Ok (Option.value result ~default:`Null)
   | Ok (Response { id; error = Some error; _ }) when String.equal id expected_id
     ->
       let message =
@@ -63,8 +63,18 @@ let request ~id ~method_ params =
       ("params", params);
     ]
 
-let response ~id result =
-  `Assoc [ ("jsonrpc", `String "2.0"); ("id", `String id); ("result", result) ]
+let response_with_id ~id result =
+  `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
+
+let error_response_with_id ~id ~code ~message =
+  `Assoc
+    [
+      ("jsonrpc", `String "2.0");
+      ("id", id);
+      ("error", `Assoc [ ("code", `Int code); ("message", `String message) ]);
+    ]
+
+let response ~id result = response_with_id ~id:(`String id) result
 
 let notification ~method_ params =
   `Assoc
@@ -90,6 +100,19 @@ let initialize_request =
 let new_session_request ~cwd =
   request ~id:"session-new" ~method_:"session/new"
     (`Assoc [ ("cwd", `String cwd); ("mcpServers", `List []) ])
+
+let load_session_request ~session_id ~cwd =
+  request ~id:"session-load" ~method_:"session/load"
+    (`Assoc
+       [
+         ("sessionId", `String session_id);
+         ("cwd", `String cwd);
+         ("mcpServers", `List []);
+       ])
+
+let cancel_notification ~session_id =
+  notification ~method_:"session/cancel"
+    (`Assoc [ ("sessionId", `String session_id) ])
 
 let prompt_request ~command_id ~session_id ~text =
   request ~id:command_id ~method_:"session/prompt"

@@ -137,6 +137,7 @@ let test_stable_state_decoding () =
         Dispatched;
         Acknowledged;
         Completed;
+        Cancelled;
         Ambiguous;
         Rejected;
       ]

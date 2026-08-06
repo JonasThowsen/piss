@@ -2,6 +2,8 @@ open Piss_core
 
 let max_frame_bytes = 1024 * 1024
 
+type pending_permission = { raw_id : Yojson.Safe.t; params : Yojson.Safe.t }
+
 let write_json sink json =
   Eio.Flow.copy_string (Yojson.Safe.to_string json ^ "\n") sink
 
@@ -16,8 +18,25 @@ let event_kind json =
       with
       | `String kind -> "acp." ^ kind
       | _ -> "acp.session_update")
+  | `String "session/request_permission" -> "acp.permission.requested"
   | `String method_ -> "acp.request." ^ method_
   | _ -> "acp.response"
+
+let option_is_offered params option_id =
+  match Yojson.Safe.Util.member "options" params with
+  | `List options ->
+      List.exists
+        (fun option ->
+          match Yojson.Safe.Util.member "optionId" option with
+          | `String value -> String.equal value option_id
+          | _ -> false)
+        options
+  | _ -> false
+
+let response_stop_reason json =
+  match Yojson.Safe.Util.(json |> member "result" |> member "stopReason") with
+  | `String value -> Some value
+  | _ -> None
 
 let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     ~harness_command ~harness_args =
@@ -43,58 +62,91 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   let harness_reader =
     Eio.Buf_read.of_flow harness_stdout ~max_size:max_frame_bytes
   in
-  write_json harness_stdin Acp.initialize_request;
-  let initialize_response = read_json harness_reader in
-  ignore (Store.append_event store ~kind:"acp.initialize" initialize_response);
-  let initialize_result =
-    match Acp.response_result ~expected_id:"initialize" initialize_response with
-    | Ok result -> result
-    | Error message -> raise (Failure message)
+  let outgoing = Eio.Stream.create 64 in
+  let pending_responses = Hashtbl.create 16 in
+  let running_commands : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+  let pending_permissions : (string, pending_permission) Hashtbl.t =
+    Hashtbl.create 8
   in
-  (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
-  | `Int 1 -> ()
-  | _ -> raise (Failure "ACP agent did not negotiate protocol version 1"));
-  write_json harness_stdin (Acp.new_session_request ~cwd:workspace);
-  let session_response = read_json harness_reader in
-  let session_result =
-    match Acp.response_result ~expected_id:"session-new" session_response with
-    | Ok result -> result
-    | Error message -> raise (Failure message)
+  let status = ref Domain.Starting in
+  let harness_session_id = ref "" in
+  let send json = Eio.Stream.add outgoing json in
+  let fail_pending message =
+    Hashtbl.iter
+      (fun _ resolver ->
+        ignore (Eio.Promise.try_resolve resolver (Error message)))
+      pending_responses;
+    Hashtbl.clear pending_responses
   in
-  let harness_session_id =
-    match Yojson.Safe.Util.member "sessionId" session_result with
-    | `String value -> value
-    | _ -> raise (Failure "ACP agent did not return a sessionId")
-  in
-  ignore (Store.append_event store ~kind:"acp.session.created" session_response);
-  let status = ref Domain.Idle in
-  let running_commands : (string, unit) Hashtbl.t = Hashtbl.create 16 in
+  Eio.Fiber.fork ~sw (fun () ->
+      while true do
+        Eio.Stream.take outgoing |> write_json harness_stdin
+      done);
   Eio.Fiber.fork ~sw (fun () ->
       try
         while true do
           let json = read_json harness_reader in
           ignore (Store.append_event store ~kind:(event_kind json) json);
           match Acp.envelope_of_yojson json with
-          | Ok (Acp.Response { id; error = None; _ })
-            when Hashtbl.mem running_commands id ->
-              Hashtbl.remove running_commands id;
-              Store.set_command_state store ~command_id:id Domain.Completed;
-              status := Domain.Idle
-          | Ok (Acp.Response { id; error = Some _; _ })
-            when Hashtbl.mem running_commands id ->
-              Hashtbl.remove running_commands id;
-              Store.set_command_state store ~command_id:id Domain.Rejected;
-              status := Domain.Idle
-          | _ -> ()
+          | Ok (Acp.Response { id; error; _ }) -> (
+              match Hashtbl.find_opt pending_responses id with
+              | Some resolver ->
+                  Hashtbl.remove pending_responses id;
+                  ignore (Eio.Promise.try_resolve resolver (Ok json))
+              | None when Hashtbl.mem running_commands id ->
+                  Hashtbl.remove running_commands id;
+                  let state =
+                    match (error, response_stop_reason json) with
+                    | Some _, _ -> Domain.Rejected
+                    | None, Some "cancelled" -> Domain.Cancelled
+                    | None, _ -> Domain.Completed
+                  in
+                  Store.set_command_state store ~command_id:id state;
+                  status :=
+                    if Hashtbl.length pending_permissions > 0 then
+                      Domain.Requires_action
+                    else Domain.Idle
+              | None -> ())
+          | Ok
+              (Acp.Request
+                 { id; method_ = "session/request_permission"; params }) ->
+              let raw_id = Yojson.Safe.Util.member "id" json in
+              Hashtbl.replace pending_permissions id { raw_id; params };
+              status := Domain.Requires_action
+          | Ok (Acp.Request { id; method_; _ }) ->
+              send
+                (Acp.error_response_with_id
+                   ~id:(Yojson.Safe.Util.member "id" json)
+                   ~code:(-32601)
+                   ~message:("unsupported ACP client method: " ^ method_));
+              ignore
+                (Store.append_event store ~kind:"acp.client_request.rejected"
+                   (`Assoc
+                      [ ("requestId", `String id); ("method", `String method_) ]))
+          | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
+              match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
+              | Some id when Hashtbl.mem pending_permissions id ->
+                  Hashtbl.remove pending_permissions id;
+                  ignore
+                    (Store.append_event store ~kind:"acp.permission.cancelled"
+                       (`Assoc [ ("requestId", `String id) ]));
+                  status :=
+                    if Hashtbl.length running_commands > 0 then Domain.Running
+                    else Domain.Idle
+              | _ -> ())
+          | Ok _ -> ()
+          | Error message -> raise (Failure message)
         done
       with
       | End_of_file ->
           status := Domain.Failed;
+          fail_pending "ACP harness disconnected";
           ignore
             (Store.append_event store ~kind:"harness.disconnected"
                (`Assoc [ ("harnessPid", `Int harness_pid) ]))
       | exn ->
           status := Domain.Failed;
+          fail_pending (Printexc.to_string exn);
           ignore
             (Store.append_event store ~kind:"harness.protocol_error"
                (`Assoc
@@ -103,6 +155,63 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                     ("error", `String (Printexc.to_string exn));
                   ]));
           raise exn);
+  let rpc_request ~id json =
+    if Hashtbl.mem pending_responses id then
+      Error ("duplicate in-flight ACP request: " ^ id)
+    else
+      let promise, resolver = Eio.Promise.create () in
+      Hashtbl.add pending_responses id resolver;
+      send json;
+      Eio.Promise.await promise
+  in
+  let require_rpc_result ~id json =
+    match rpc_request ~id json with
+    | Error message -> raise (Failure message)
+    | Ok response -> (
+        match Acp.response_result ~expected_id:id response with
+        | Ok result -> (result, response)
+        | Error message -> raise (Failure message))
+  in
+  let initialize_result, initialize_response =
+    require_rpc_result ~id:"initialize" Acp.initialize_request
+  in
+  ignore (Store.append_event store ~kind:"acp.initialize" initialize_response);
+  (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
+  | `Int 1 -> ()
+  | _ -> raise (Failure "ACP agent did not negotiate protocol version 1"));
+  let supports_load =
+    match
+      Yojson.Safe.Util.(
+        initialize_result |> member "agentCapabilities" |> member "loadSession")
+    with
+    | `Bool value -> value
+    | _ -> false
+  in
+  let session_id_from_agent =
+    match (Store.get_metadata store "acp_session_id", supports_load) with
+    | Some existing, true ->
+        let _, response =
+          require_rpc_result ~id:"session-load"
+            (Acp.load_session_request ~session_id:existing ~cwd:workspace)
+        in
+        ignore (Store.append_event store ~kind:"acp.session.loaded" response);
+        existing
+    | _ ->
+        let result, response =
+          require_rpc_result ~id:"session-new"
+            (Acp.new_session_request ~cwd:workspace)
+        in
+        let created =
+          match Yojson.Safe.Util.member "sessionId" result with
+          | `String value -> value
+          | _ -> raise (Failure "ACP agent did not return a sessionId")
+        in
+        Store.set_metadata store "acp_session_id" created;
+        ignore (Store.append_event store ~kind:"acp.session.created" response);
+        created
+  in
+  harness_session_id := session_id_from_agent;
+  status := Domain.Idle;
   let worker_snapshot () =
     Domain.
       {
@@ -123,7 +232,14 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
              [
                ("protocolVersion", `Int 1);
                ("workerId", `String worker_id);
-               ("capabilities", `List [ `String "events"; `String "prompt" ]);
+               ( "capabilities",
+                 `List
+                   [
+                     `String "events";
+                     `String "prompt";
+                     `String "cancel";
+                     `String "permission";
+                   ] );
              ])
     | Wire.Hello { protocol_version } ->
         Error
@@ -134,38 +250,86 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         let events = Store.list_events store ~after ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
     | Wire.Prompt { command_id; text } -> (
-        let accepted =
-          Store.accept_command store ~command_id ~request_id:command_id
-            ~prompt:text
-        in
-        if accepted.duplicate then
-          Ok
-            (`Assoc
-               [
-                 ("commandId", `String command_id);
-                 ( "state",
-                   `String (Domain.command_state_to_string accepted.state) );
-                 ("duplicate", `Bool true);
-               ])
-        else
-          try
-            status := Domain.Running;
-            Store.set_command_state store ~command_id Domain.Dispatched;
-            Hashtbl.replace running_commands command_id ();
-            write_json harness_stdin
-              (Acp.prompt_request ~command_id ~session_id:harness_session_id
-                 ~text);
+        match Store.find_command store command_id with
+        | Some state ->
             Ok
               (`Assoc
                  [
                    ("commandId", `String command_id);
-                   ("state", `String "dispatched");
-                   ("duplicate", `Bool false);
+                   ("state", `String (Domain.command_state_to_string state));
+                   ("duplicate", `Bool true);
                  ])
-          with exn ->
-            status := Domain.Failed;
-            Store.set_command_state store ~command_id Domain.Ambiguous;
-            Error (Printexc.to_string exn))
+        | None when Hashtbl.length running_commands > 0 ->
+            Error "the session already has an active prompt"
+        | None -> (
+            let accepted =
+              Store.accept_command store ~command_id ~request_id:command_id
+                ~prompt:text
+            in
+            try
+              status := Domain.Running;
+              Store.set_command_state store ~command_id Domain.Dispatched;
+              Hashtbl.replace running_commands command_id ();
+              send
+                (Acp.prompt_request ~command_id ~session_id:!harness_session_id
+                   ~text);
+              Ok
+                (`Assoc
+                   [
+                     ("commandId", `String command_id);
+                     ("state", `String "dispatched");
+                     ("duplicate", `Bool accepted.duplicate);
+                   ])
+            with exn ->
+              status := Domain.Failed;
+              Store.set_command_state store ~command_id Domain.Ambiguous;
+              Error (Printexc.to_string exn)))
+    | Wire.Cancel ->
+        if Hashtbl.length running_commands = 0 then
+          Error "the session has no active prompt"
+        else (
+          ignore
+            (Store.append_event store ~kind:"command.cancel.requested"
+               (`Assoc [ ("sessionId", `String !harness_session_id) ]));
+          send (Acp.cancel_notification ~session_id:!harness_session_id);
+          Ok (`Assoc [ ("state", `String "cancelling") ]))
+    | Wire.Permission { request_id; option_id } -> (
+        match Hashtbl.find_opt pending_permissions request_id with
+        | None -> Error "permission request is no longer pending"
+        | Some permission -> (
+            match option_id with
+            | Some selected
+              when not (option_is_offered permission.params selected) ->
+                Error "permission option was not offered by the agent"
+            | selected ->
+                let outcome =
+                  match selected with
+                  | Some option_id ->
+                      `Assoc
+                        [
+                          ("outcome", `String "selected");
+                          ("optionId", `String option_id);
+                        ]
+                  | None -> `Assoc [ ("outcome", `String "cancelled") ]
+                in
+                ignore
+                  (Store.append_event store ~kind:"acp.permission.resolved"
+                     (`Assoc
+                        [
+                          ("requestId", `String request_id);
+                          ( "optionId",
+                            Option.fold ~none:`Null
+                              ~some:(fun value -> `String value)
+                              selected );
+                        ]));
+                Hashtbl.remove pending_permissions request_id;
+                send
+                  (Acp.response_with_id ~id:permission.raw_id
+                     (`Assoc [ ("outcome", outcome) ]));
+                status :=
+                  if Hashtbl.length running_commands > 0 then Domain.Running
+                  else Domain.Idle;
+                Ok (`Assoc [ ("resolved", `Bool true) ])))
   in
   let handle_connection flow _address =
     let reader = Eio.Buf_read.of_flow flow ~max_size:max_frame_bytes in
