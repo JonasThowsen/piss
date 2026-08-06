@@ -74,7 +74,10 @@ let test_event_sequence () =
     second.sequence;
   let replay = Store.list_events store ~after:first.sequence ~limit:10 in
   Alcotest.(check int) "exclusive cursor" 1 (List.length replay);
-  Alcotest.(check string) "right event" "second" (List.hd replay).kind
+  Alcotest.(check string) "right event" "second" (List.hd replay).kind;
+  let recent = Store.list_recent_events store ~limit:1 in
+  Alcotest.(check int) "recent page size" 1 (List.length recent);
+  Alcotest.(check string) "recent event" "second" (List.hd recent).kind
 
 let test_wire_bounds () =
   let decode json = Wire.request_of_yojson (Yojson.Safe.from_string json) in

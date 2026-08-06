@@ -2,6 +2,7 @@ type request =
   | Hello of { protocol_version : int }
   | Snapshot
   | Events of { after : int64; limit : int }
+  | Recent_events of { limit : int }
   | Prompt of { command_id : string; text : string }
   | Cancel
   | Permission of { request_id : string; option_id : string option }
@@ -53,6 +54,10 @@ let request_of_yojson json =
       let* limit = int_member ~default:200 "limit" json in
       if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
       else Ok (Events { after; limit })
+  | "recent_events" ->
+      let* limit = int_member ~default:500 "limit" json in
+      if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
+      else Ok (Recent_events { limit })
   | "prompt" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
