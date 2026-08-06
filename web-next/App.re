@@ -46,7 +46,7 @@ external configChoices: configOption => array(configChoice) = "options";
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
 ];
 
 let getText: string => Js.Promise.t(string) = [%raw
@@ -84,6 +84,9 @@ let timelineAwayFromBottom: 'a => bool = [%raw
 ];
 let jumpTimelineToBottom: unit => unit = [%raw
   "() => { const timeline = document.getElementById('timeline'); if (timeline) timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' }); }"
+];
+let watchVisibleViewport: (unit, unit) => unit = [%raw
+  "() => { const sync = () => { const viewport = window.visualViewport; const height = viewport?.height || window.innerHeight; document.documentElement.style.setProperty('--app-height', `${height}px`); }; sync(); requestAnimationFrame(sync); const timer = setTimeout(sync, 250); window.addEventListener('resize', sync); window.addEventListener('pageshow', sync); window.visualViewport?.addEventListener('resize', sync); return () => { clearTimeout(timer); window.removeEventListener('resize', sync); window.removeEventListener('pageshow', sync); window.visualViewport?.removeEventListener('resize', sync); }; }"
 ];
 
 let preventDefault: React.Event.Form.t => unit = [%raw
@@ -470,7 +473,8 @@ module App = {
 
     React.useEffect0(() => {
       refresh();
-      None;
+      let stopWatchingViewport = watchVisibleViewport();
+      Some(stopWatchingViewport);
     });
 
     React.useEffect1(
@@ -1442,12 +1446,9 @@ module App = {
                             }
                             key={sessionId(session)}
                             onClick={_ => selectSession(sessionId(session))}>
-                            <i
-                              className={
-                                "session-dot status-"
-                                ++ sessionStatus(session)
-                              }
-                            />
+                            <i className="global-search-glyph">
+                              {icon("external")}
+                            </i>
                             <span>
                               <b> {React.string(sessionTitle(session))} </b>
                               <small>
