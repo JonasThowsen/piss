@@ -55,6 +55,13 @@ let parse_after uri =
       try Ok (Int64.of_string value)
       with Failure _ -> Error "after must be a non-negative integer")
 
+let parse_limit value =
+  try
+    let limit = int_of_string value in
+    if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
+    else Ok limit
+  with Failure _ -> Error "limit must be an integer"
+
 let read_body body =
   Eio.Buf_read.of_flow body ~max_size:max_body_bytes |> Eio.Buf_read.take_all
 
@@ -147,17 +154,32 @@ let handler ~net ~worker_socket ~public_dir ~app_js ~generation ~allowed_users
           | Ok snapshot -> respond_json snapshot
           | Error message -> error_json ~status:`Service_unavailable message)
       | `GET, "/api/v2/events" -> (
-          match parse_after uri with
+          let request =
+            match Uri.get_query_param uri "recent" with
+            | Some value -> (
+                match parse_limit value with
+                | Ok limit ->
+                    Ok
+                      (`Assoc
+                         [
+                           ("op", `String "recent_events"); ("limit", `Int limit);
+                         ])
+                | Error message -> Error message)
+            | None -> (
+                match parse_after uri with
+                | Ok after ->
+                    Ok
+                      (`Assoc
+                         [
+                           ("op", `String "events");
+                           ("after", `Intlit (Int64.to_string after));
+                           ("limit", `Int 200);
+                         ])
+                | Error message -> Error message)
+          in
+          match request with
           | Error message -> error_json message
-          | Ok after -> (
-              let request =
-                `Assoc
-                  [
-                    ("op", `String "events");
-                    ("after", `Intlit (Int64.to_string after));
-                    ("limit", `Int 200);
-                  ]
-              in
+          | Ok request -> (
               match worker_request net worker_socket request with
               | Ok events -> respond_json events
               | Error message -> error_json ~status:`Service_unavailable message

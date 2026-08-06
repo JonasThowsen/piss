@@ -272,6 +272,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Wire.Events { after; limit } ->
         let events = Store.list_events store ~after ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
+    | Wire.Recent_events { limit } ->
+        let events = Store.list_recent_events store ~limit in
+        Ok (`List (List.map Domain.event_to_yojson events))
     | Wire.Prompt { command_id; text } -> (
         match Store.find_command store command_id with
         | Some state ->

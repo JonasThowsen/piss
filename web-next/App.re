@@ -230,7 +230,7 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignore;
-      getText("/api/v2/events?after=0")
+      getText("/api/v2/events?recent=500")
       ->thenPromise(text => {
           setEventsJson(_ => text);
           Js.Promise.resolve();

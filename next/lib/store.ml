@@ -153,6 +153,31 @@ let list_events store ~after ~limit =
       in
       collect [])
 
+let list_recent_events store ~limit =
+  with_statement store.db
+    "SELECT sequence, kind, payload, created_at FROM events ORDER BY sequence \
+     DESC LIMIT ?" (fun statement ->
+      fail_rc "bind limit" (Sqlite3.bind_int statement 1 limit);
+      let rec collect events =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            let event =
+              {
+                sequence = Sqlite3.column_int64 statement 0;
+                kind = Sqlite3.column_text statement 1;
+                payload =
+                  Sqlite3.column_text statement 2 |> Yojson.Safe.from_string;
+                created_at = Sqlite3.column_double statement 3;
+              }
+            in
+            collect (event :: events)
+        | Sqlite3.Rc.DONE -> events
+        | rc ->
+            fail_rc "list recent events" rc;
+            events
+      in
+      collect [])
+
 let find_command store command_id =
   with_statement store.db "SELECT state FROM commands WHERE command_id = ?"
     (fun statement ->
