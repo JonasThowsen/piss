@@ -7,6 +7,7 @@ control_exe=$(realpath "${3:?control executable is required}")
 public_dir=$(realpath "${4:?public directory is required}")
 app_js=$(realpath "${5:?browser bundle is required}")
 workspace=$(realpath "${6:?workspace is required}")
+session_mcp_exe=$(realpath "${7:?session MCP executable is required}")
 port=${PISS_TEST_PORT:-$(python3 - <<'PY'
 import socket
 with socket.socket() as listener:
@@ -153,6 +154,40 @@ done
 command_completed "$first" first-command
 command_completed "$second" second-command
 
+first_token=$(tr -d '\n' <"$state/sessions/$first/broker-token")
+peer_body=$(jq -nc --arg target "$second" \
+  '{requestId:"peer-isolation",targetSessionId:$target,prompt:"review the isolation proof"}')
+peer_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$peer_body" \
+  "http://127.0.0.1:$port/api/v2/broker/ask")
+[[ $(jq -r .response <<<"$peer_response") == \
+  "The worker retained ownership while the control plane was replaceable." ]]
+[[ $(jq -r .duplicate <<<"$peer_response") == false ]]
+peer_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$peer_body" \
+  "http://127.0.0.1:$port/api/v2/broker/ask")
+[[ $(jq -r .duplicate <<<"$peer_duplicate") == true ]]
+mcp_input=$(jq -nc --arg target "$second" '[
+  {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
+  {jsonrpc:"2.0",id:2,method:"tools/list",params:{}},
+  {jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"piss_ask_session",arguments:{targetSessionId:$target,prompt:"answer the MCP collaboration proof"}}}
+] | .[]')
+mcp_output=$(printf '%s\n' "$mcp_input" | env \
+  PISS_BROKER_URL="http://127.0.0.1:$port" \
+  PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
+  "$session_mcp_exe")
+[[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
+  "piss_list_sessions,piss_ask_session" ]]
+[[ $(jq -r 'select(.id==3)|.result.content[0].text' <<<"$mcp_output") == \
+  "The worker retained ownership while the control plane was replaceable." ]]
+first_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$first")
+second_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$second")
+[[ $(jq '[.[]|select(.kind=="session.ask.sent" and .payload.requestId=="peer-isolation")]|length' <<<"$first_events") == 1 ]]
+[[ $(jq '[.[]|select(.kind=="session.ask.completed" and .payload.requestId=="peer-isolation")]|length' <<<"$first_events") == 1 ]]
+[[ $(jq '[.[]|select(.kind=="session.ask.received" and .payload.requestId=="peer-isolation")]|length' <<<"$second_events") == 1 ]]
+
 first_worker=$(cat "$root/supervisors/$first.child")
 second_worker=$(cat "$root/supervisors/$second.child")
 kill -9 "$first_worker"
@@ -166,13 +201,31 @@ done
 kill -0 "$second_worker"
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
 
+restart_peer_body=$(jq -nc --arg target "$second" \
+  '{requestId:"peer-control-restart",targetSessionId:$target,prompt:"finish while the control plane is replaced"}')
+curl -sS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$restart_peer_body" \
+  "http://127.0.0.1:$port/api/v2/broker/ask" \
+  >"$root/restart-peer-first.json" 2>/dev/null &
+restart_peer_pid=$!
+sleep .3
 old_control=$control_pid
 kill -9 "$control_pid"
 wait "$control_pid" 2>/dev/null || true
 control_pid=
+wait "$restart_peer_pid" 2>/dev/null || true
 start_control
 [[ "$control_pid" != "$old_control" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
+restart_peer_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$restart_peer_body" \
+  "http://127.0.0.1:$port/api/v2/broker/ask")
+[[ $(jq -r .response <<<"$restart_peer_response") == \
+  "The worker retained ownership while the control plane was replaceable." ]]
+[[ $(jq -r .duplicate <<<"$restart_peer_response") == true ]]
+second_events=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?recent=500&session=$second")
+[[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-c1674df3b5ab8ba8ea6b4a3cbf78d6d9")]|length' <<<"$second_events") == 1 ]]
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/sessions/$first/archive" >/dev/null

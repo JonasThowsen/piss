@@ -29,7 +29,8 @@ PISS owns:
 - user approvals and interactive requests;
 - engineering-workflow authority, progress, and operation receipts;
 - notifications, review, and managed browser capabilities;
-- mapping PISS sessions to harness-owned sessions.
+- mapping PISS sessions to harness-owned sessions;
+- durable, capability-authenticated request/reply between active sessions so any session can act as an orchestrator.
 
 A harness owns:
 
@@ -48,7 +49,7 @@ ACP owns the interoperable vocabulary between them:
 - permission and elicitation requests;
 - configurable models, modes, and reasoning levels.
 
-PISS-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. ACP wire messages are not the PISS persistence schema.
+PISS-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. The primary collaboration path is a PISS-provided MCP server with `piss_list_sessions` and `piss_ask_session`; this replaces a built-in reasoning loop with explicit composition between independently supervised harness sessions. ACP wire messages are not the PISS persistence schema.
 
 ## 3. Non-negotiable invariants
 

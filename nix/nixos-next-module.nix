@@ -8,6 +8,10 @@ self:
 let
   cfg = config.services.piss-next;
   nativePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-native;
+  controlPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-control;
+  workerPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-worker;
+  mockAgentPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-mock-agent;
+  sessionMcpPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-session-mcp;
   webPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-web;
   defaultAdapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
   defaultOpenCodePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode;
@@ -32,6 +36,7 @@ let
     export XDG_DATA_HOME="$session_state/data"
     export XDG_STATE_HOME="$session_state/xdg-state"
     harness="$(tr -d '\n' < "$session_state/harness")"
+    broker_token="$(tr -d '\n' < "$session_state/broker-token")"
     if [[ "$id" == "deployed-tracer" && -e "$state/worker.sqlite3" && ! -e "$session_state/worker.sqlite3" ]]; then
       for suffix in "" -wal -shm; do
         [[ ! -e "$state/worker.sqlite3$suffix" ]] || mv "$state/worker.sqlite3$suffix" "$session_state/worker.sqlite3$suffix"
@@ -47,18 +52,22 @@ let
         args=(--harness-arg acp)
         ;;
       mock)
-        command=${lib.escapeShellArg "${cfg.package}/bin/piss-mock-agent"}
+        command=${lib.escapeShellArg "${cfg.mockAgentPackage}/bin/piss-mock-agent"}
         args=()
         ;;
       *) echo "unsupported harness: $harness" >&2; exit 64 ;;
     esac
-    exec ${cfg.package}/bin/piss-session-worker \
+    exec ${cfg.workerPackage}/bin/piss-session-worker \
       --socket "$session_runtime/worker.sock" \
       --database "$session_state/worker.sqlite3" \
       --session "$id" \
       --worker "worker-$id" \
       --workspace ${lib.escapeShellArg cfg.workspace} \
       --harness "$command" \
+      --session-mcp ${cfg.sessionMcpPackage}/bin/piss-session-mcp \
+      --broker-url http://127.0.0.1:${toString cfg.port} \
+      --broker-token "$broker_token" \
+      --curl-command ${lib.getExe pkgs.curl} \
       "''${args[@]}"
   '';
 
@@ -144,7 +153,35 @@ in
       type = lib.types.package;
       default = nativePackage;
       defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.piss-next-native";
-      description = "OCaml control-plane, session-worker, and ACP mock-agent package.";
+      description = "Combined OCaml development package retained for compatibility.";
+    };
+
+    controlPackage = lib.mkOption {
+      type = lib.types.package;
+      default = controlPackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.piss-next-control";
+      description = "Replaceable OCaml control-plane package.";
+    };
+
+    workerPackage = lib.mkOption {
+      type = lib.types.package;
+      default = workerPackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.piss-next-worker";
+      description = "Stable independently supervised session-worker package.";
+    };
+
+    mockAgentPackage = lib.mkOption {
+      type = lib.types.package;
+      default = mockAgentPackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.piss-next-mock-agent";
+      description = "Deterministic ACP fixture package used by mock sessions.";
+    };
+
+    sessionMcpPackage = lib.mkOption {
+      type = lib.types.package;
+      default = sessionMcpPackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.piss-next-session-mcp";
+      description = "Harness-neutral MCP server for inter-session collaboration.";
     };
 
     webPackage = lib.mkOption {
@@ -200,6 +237,12 @@ in
       type = lib.types.port;
       default = 4318;
       description = "Loopback port for the replaceable OCaml control plane.";
+    };
+
+    maxActiveSessions = lib.mkOption {
+      type = lib.types.ints.between 1 256;
+      default = 32;
+      description = "Resource safety limit for concurrently active harness sessions.";
     };
 
     workspace = lib.mkOption {
@@ -267,10 +310,15 @@ in
       }
     ];
 
-    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
+    environment.systemPackages = [
+      cfg.controlPackage
+      cfg.workerPackage
+    ] ++ lib.optional cfg.tailscale.enable loginTool;
 
     systemd.user.services."piss-ocaml-worker@" = {
       description = "PISS OCaml independently supervised worker for session %i";
+      restartIfChanged = false;
+      stopIfChanged = false;
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
@@ -321,7 +369,7 @@ in
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [
-            "${cfg.package}/bin/pissd-next"
+            "${cfg.controlPackage}/bin/pissd-next"
             "--port"
             (toString cfg.port)
             "--registry"
@@ -344,12 +392,14 @@ in
             cfg.harness
             "--bootstrap-session"
             "deployed-tracer"
+            "--max-active-sessions"
+            (toString cfg.maxActiveSessions)
             "--public"
             "${cfg.webPackage}/share/piss-next/public"
             "--app-js"
             "${cfg.webPackage}/share/piss-next/public/app.js"
             "--generation"
-            (toString cfg.package)
+            (toString cfg.controlPackage)
           ]
           ++ lib.concatMap (user: [
             "--allowed-user"

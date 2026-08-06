@@ -2,7 +2,7 @@ open Piss_core
 
 let max_body_bytes = 128 * 1024
 let max_frame_bytes = 1024 * 1024
-let max_active_sessions = 32
+let default_max_active_sessions = 32
 
 type managed_workers = {
   registry : Registry.t;
@@ -12,6 +12,7 @@ type managed_workers = {
   stopper : string;
   available_harnesses : string list;
   default_harness : string;
+  max_active_sessions : int;
 }
 
 type workers = Fixed of string | Managed of managed_workers
@@ -174,17 +175,24 @@ let session_socket manager session_id =
     (Filename.concat manager.runtime_root session_id)
     "worker.sock"
 
-let write_session_spec manager (session : Registry.session) =
-  let directory = Filename.concat manager.state_root session.id in
-  mkdir_p directory;
-  let path = Filename.concat directory "harness" in
+let write_private_file path contents =
   let temporary = path ^ ".tmp" in
   let channel = open_out_bin temporary in
   Fun.protect
     ~finally:(fun () -> close_out_noerr channel)
-    (fun () -> output_string channel (session.harness ^ "\n"));
+    (fun () -> output_string channel contents);
   Unix.chmod temporary 0o600;
   Unix.rename temporary path
+
+let write_session_spec manager (session : Registry.session) =
+  let directory = Filename.concat manager.state_root session.id in
+  mkdir_p directory;
+  write_private_file
+    (Filename.concat directory "harness")
+    (session.harness ^ "\n");
+  write_private_file
+    (Filename.concat directory "broker-token")
+    (session.broker_token ^ "\n")
 
 let run_lifecycle executable session_id =
   if not (valid_session_id session_id) then Error "invalid session identity"
@@ -226,7 +234,7 @@ let worker_socket workers uri =
   | Managed manager ->
       let requested = Uri.get_query_param uri "session" in
       Result.map
-        (fun session -> session_socket manager session.Registry.id)
+        (fun (session : Registry.session) -> session_socket manager session.id)
         (active_session manager requested)
 
 let with_worker workers uri operation =
@@ -254,8 +262,8 @@ let session_summary net manager (session : Registry.session) =
 let create_managed_session manager harness =
   if not (List.exists (String.equal harness) manager.available_harnesses) then
     Error "requested harness is not available"
-  else if Registry.active_count manager.registry >= max_active_sessions then
-    Error "active session limit reached"
+  else if Registry.active_count manager.registry >= manager.max_active_sessions
+  then Error "active session limit reached"
   else
     let id = random_session_id () in
     let title =
@@ -294,8 +302,8 @@ let restore_managed_session manager id =
   | None -> Error "archived session not found"
   | Some { archived_at = None; _ } -> Error "session is already active"
   | Some session -> (
-      if Registry.active_count manager.registry >= max_active_sessions then
-        Error "active session limit reached"
+      if Registry.active_count manager.registry >= manager.max_active_sessions
+      then Error "active session limit reached"
       else if not (Registry.restore manager.registry id) then
         Error "session could not be restored"
       else
@@ -361,16 +369,19 @@ let authorized ~allowed_users ~dev_bypass request =
   | Some login -> List.exists (String.equal login) allowed_users
   | None -> false
 
+let valid_json_content request =
+  match request_header request "content-type" with
+  | Some content_type
+    when String.starts_with ~prefix:"application/json" content_type ->
+      Ok ()
+  | _ -> Error (`Unsupported_media_type, "content-type must be application/json")
+
 let valid_json_mutation ~dev_bypass request =
   if dev_bypass then Ok ()
   else
-    match request_header request "content-type" with
-    | None ->
-        Error (`Unsupported_media_type, "content-type must be application/json")
-    | Some content_type
-      when not (String.starts_with ~prefix:"application/json" content_type) ->
-        Error (`Unsupported_media_type, "content-type must be application/json")
-    | Some _ -> (
+    match valid_json_content request with
+    | Error _ as error -> error
+    | Ok () -> (
         match
           (request_header request "origin", request_header request "host")
         with
@@ -398,6 +409,100 @@ let safe_asset_path root resource =
         Some (Filename.concat (Filename.concat root "fonts") name, content_type)
   | _ -> None
 
+let peer_event net manager (session : Registry.session) ~kind ~request_id
+    ~peer_id ~text =
+  worker_request net
+    (session_socket manager session.id)
+    (`Assoc
+       [
+         ("op", `String "peer_event");
+         ("kind", `String kind);
+         ("requestId", `String request_id);
+         ("peerId", `String peer_id);
+         ("text", `String text);
+       ])
+
+let event_sequence event =
+  match Yojson.Safe.Util.member "sequence" event with
+  | `Int value -> Int64.of_int value
+  | `Intlit value -> Option.value ~default:0L (Int64.of_string_opt value)
+  | _ -> 0L
+
+let agent_chunk_text event =
+  let open Yojson.Safe.Util in
+  if member "kind" event <> `String "acp.agent_message_chunk" then ""
+  else
+    match
+      event |> member "payload" |> member "params" |> member "update"
+      |> member "content" |> member "text"
+    with
+    | `String value -> value
+    | _ -> ""
+
+let command_terminal_state command_id event =
+  let open Yojson.Safe.Util in
+  if member "kind" event <> `String "command.state" then None
+  else
+    let payload = member "payload" event in
+    match (member "commandId" payload, member "state" payload) with
+    | `String id, `String state when String.equal id command_id ->
+        if
+          List.exists (String.equal state)
+            [ "completed"; "cancelled"; "rejected"; "ambiguous" ]
+        then Some state
+        else None
+    | _ -> None
+
+let wait_for_peer_response ~net ~clock ~socket (request : Registry.peer_request)
+    =
+  let deadline = Unix.gettimeofday () +. 600. in
+  let rec loop cursor chunks =
+    if Unix.gettimeofday () >= deadline then Error "peer session timed out"
+    else
+      match
+        worker_request net socket
+          (`Assoc
+             [
+               ("op", `String "events");
+               ("after", `Intlit (Int64.to_string cursor));
+               ("limit", `Int 200);
+             ])
+      with
+      | Error message -> Error message
+      | Ok (`List events) -> (
+          let cursor =
+            List.fold_left
+              (fun latest event -> Int64.max latest (event_sequence event))
+              cursor events
+          in
+          let chunks =
+            List.fold_left
+              (fun collected event ->
+                let text = agent_chunk_text event in
+                if text = "" then collected else text :: collected)
+              chunks events
+          in
+          let terminal =
+            List.find_map (command_terminal_state request.command_id) events
+          in
+          match terminal with
+          | Some "completed" -> Ok (String.concat "" (List.rev chunks))
+          | Some state -> Error ("peer session ended as " ^ state)
+          | None ->
+              Eio.Time.sleep clock 0.25;
+              loop cursor chunks)
+      | Ok _ -> Error "peer worker returned an invalid event page"
+  in
+  loop request.start_sequence []
+
+let broker_source workers request =
+  match workers with
+  | Fixed _ -> None
+  | Managed manager -> (
+      match request_header request "x-piss-session-token" with
+      | Some token -> Registry.find_active_by_token manager.registry token
+      | None -> None)
+
 let serve_asset path content_type =
   try
     let channel = open_in_bin path in
@@ -418,13 +523,183 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
   let path = Uri.path uri in
   let method_ = Http.Request.meth request in
   try
+    let calling_session = broker_source workers request in
+    let is_broker_path = String.starts_with ~prefix:"/api/v2/broker/" path in
     if
       (not (String.equal path "/health"))
+      && Option.is_none calling_session
       && not (authorized ~allowed_users ~dev_bypass request)
-    then error_json ~status:`Unauthorized "Tailscale identity is not authorized"
+    then
+      error_json ~status:`Unauthorized
+        (if is_broker_path then "session broker token is not authorized"
+         else "Tailscale identity is not authorized")
     else
       let managed_response =
         match (workers, method_, path, session_action path) with
+        | Managed manager, `GET, "/api/v2/broker/sessions", _ ->
+            Some
+              (match calling_session with
+              | None -> error_json ~status:`Unauthorized "broker token required"
+              | Some caller ->
+                  Registry.list manager.registry ~include_archived:false
+                  |> List.map (fun (session : Registry.session) ->
+                      `Assoc
+                        [
+                          ("id", `String session.Registry.id);
+                          ("title", `String session.title);
+                          ("harness", `String session.harness);
+                          ("self", `Bool (String.equal caller.id session.id));
+                        ])
+                  |> fun sessions -> respond_json (`List sessions))
+        | Managed manager, `POST, "/api/v2/broker/ask", _ ->
+            Some
+              (match calling_session with
+              | None -> error_json ~status:`Unauthorized "broker token required"
+              | Some source -> (
+                  match valid_json_content request with
+                  | Error (status, message) -> error_json ~status message
+                  | Ok () -> (
+                      let json = read_body body |> Yojson.Safe.from_string in
+                      let open Yojson.Safe.Util in
+                      let request_id =
+                        json |> member "requestId" |> to_string
+                      in
+                      let target_id =
+                        json |> member "targetSessionId" |> to_string
+                      in
+                      let prompt = json |> member "prompt" |> to_string in
+                      if request_id = "" || String.length request_id > 100 then
+                        error_json
+                          "requestId must contain between 1 and 100 characters"
+                      else if prompt = "" || String.length prompt > 64 * 1024
+                      then
+                        error_json
+                          "prompt must contain between 1 and 65536 characters"
+                      else if String.equal source.id target_id then
+                        error_json "a session cannot ask itself"
+                      else
+                        match
+                          Registry.find_active manager.registry target_id
+                        with
+                        | None ->
+                            error_json ~status:`Conflict
+                              "target session is not active"
+                        | Some target -> (
+                            let command_id =
+                              "peer-" ^ Digest.to_hex (Digest.string request_id)
+                            in
+                            let existing =
+                              Registry.find_peer_request manager.registry
+                                request_id
+                            in
+                            match existing with
+                            | Some request
+                              when not
+                                     (String.equal request.source_id source.id
+                                     && String.equal request.target_id target.id
+                                     && String.equal request.prompt prompt) ->
+                                error_json ~status:`Conflict
+                                  "requestId belongs to a different peer \
+                                   request"
+                            | Some
+                                {
+                                  state = "completed";
+                                  response = Some response;
+                                  _;
+                                } ->
+                                respond_json
+                                  (`Assoc
+                                     [
+                                       ("requestId", `String request_id);
+                                       ("response", `String response);
+                                       ("duplicate", `Bool true);
+                                     ])
+                            | _ -> (
+                                let request, duplicate =
+                                  match existing with
+                                  | Some request -> (request, true)
+                                  | None ->
+                                      let start_sequence =
+                                        match
+                                          worker_request net
+                                            (session_socket manager target.id)
+                                            (`Assoc
+                                               [ ("op", `String "snapshot") ])
+                                        with
+                                        | Ok snapshot -> (
+                                            match
+                                              member "lastSequence" snapshot
+                                            with
+                                            | `Int value -> Int64.of_int value
+                                            | `Intlit value ->
+                                                Option.value ~default:0L
+                                                  (Int64.of_string_opt value)
+                                            | _ -> 0L)
+                                        | Error _ -> 0L
+                                      in
+                                      Registry.accept_peer_request
+                                        manager.registry ~id:request_id
+                                        ~source_id:source.id
+                                        ~target_id:target.id ~prompt ~command_id
+                                        ~start_sequence
+                                in
+                                if not duplicate then (
+                                  ignore
+                                    (peer_event net manager source
+                                       ~kind:"session.ask.sent" ~request_id
+                                       ~peer_id:target.id ~text:prompt);
+                                  ignore
+                                    (peer_event net manager target
+                                       ~kind:"session.ask.received" ~request_id
+                                       ~peer_id:source.id ~text:prompt));
+                                let target_prompt =
+                                  Printf.sprintf
+                                    "Inter-session request from %s (%s):\n\n\
+                                     %s\n\n\
+                                     Respond directly to the requesting \
+                                     session."
+                                    source.title source.id prompt
+                                in
+                                match
+                                  worker_request net
+                                    (session_socket manager target.id)
+                                    (`Assoc
+                                       [
+                                         ("op", `String "prompt");
+                                         ( "commandId",
+                                           `String request.command_id );
+                                         ("text", `String target_prompt);
+                                       ])
+                                with
+                                | Error message ->
+                                    error_json ~status:`Conflict message
+                                | Ok _ -> (
+                                    match
+                                      wait_for_peer_response ~net ~clock
+                                        ~socket:
+                                          (session_socket manager target.id)
+                                        request
+                                    with
+                                    | Error message ->
+                                        error_json ~status:`Service_unavailable
+                                          message
+                                    | Ok response ->
+                                        Registry.update_peer_request
+                                          manager.registry request.id
+                                          ~state:"completed"
+                                          ~response:(Some response);
+                                        ignore
+                                          (peer_event net manager source
+                                             ~kind:"session.ask.completed"
+                                             ~request_id ~peer_id:target.id
+                                             ~text:response);
+                                        respond_json
+                                          (`Assoc
+                                             [
+                                               ("requestId", `String request_id);
+                                               ("response", `String response);
+                                               ("duplicate", `Bool duplicate);
+                                             ])))))))
         | Managed manager, `GET, "/api/v2/sessions", _ ->
             let sessions =
               match Uri.get_query_param uri "archived" with
@@ -693,6 +968,7 @@ let () =
   let available_harnesses = ref [] in
   let default_harness = ref "pi" in
   let bootstrap_session = ref "deployed-tracer" in
+  let max_active_sessions = ref default_max_active_sessions in
   let public_dir = ref "web-next/public" in
   let app_js = ref "_build/default/web-next/app.js" in
   let generation = ref "development" in
@@ -727,6 +1003,9 @@ let () =
       ( "--bootstrap-session",
         Arg.Set_string bootstrap_session,
         "Initial session identity for an empty registry" );
+      ( "--max-active-sessions",
+        Arg.Set_int max_active_sessions,
+        "Configured active session resource limit" );
       ("--public", Arg.Set_string public_dir, "Browser public directory");
       ("--app-js", Arg.Set_string app_js, "Melange application module");
       ( "--generation",
@@ -743,6 +1022,8 @@ let () =
     "pissd-next";
   if !allowed_users = [] && not !dev_bypass then
     raise (Arg.Bad "at least one --allowed-user is required");
+  if !max_active_sessions < 1 || !max_active_sessions > 256 then
+    raise (Arg.Bad "--max-active-sessions must be between 1 and 256");
   let managed_arguments =
     [
       !registry_path;
@@ -771,6 +1052,7 @@ let () =
           stopper = !session_stopper;
           available_harnesses = available;
           default_harness = !default_harness;
+          max_active_sessions = !max_active_sessions;
         }
       in
       if Registry.active_count registry = 0 then

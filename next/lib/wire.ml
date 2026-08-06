@@ -7,6 +7,12 @@ type request =
   | Prompt of { command_id : string; text : string }
   | Cancel
   | Permission of { request_id : string; option_id : string option }
+  | Peer_event of {
+      kind : string;
+      request_id : string;
+      peer_id : string;
+      text : string;
+    }
 
 type response = (Yojson.Safe.t, string) result
 
@@ -69,6 +75,27 @@ let request_of_yojson json =
       else if String.length text > 64 * 1024 then Error "prompt is too large"
       else Ok (Prompt { command_id; text })
   | "cancel" -> Ok Cancel
+  | "peer_event" ->
+      let* kind = string_member "kind" json in
+      let* request_id = string_member "requestId" json in
+      let* peer_id = string_member "peerId" json in
+      let* text = string_member "text" json in
+      if
+        not
+          (List.exists (String.equal kind)
+             [
+               "session.ask.sent";
+               "session.ask.received";
+               "session.ask.completed";
+             ])
+      then Error "unsupported peer event kind"
+      else if request_id = "" || String.length request_id > 128 then
+        Error "requestId must contain between 1 and 128 characters"
+      else if peer_id = "" || String.length peer_id > 64 then
+        Error "peerId must contain between 1 and 64 characters"
+      else if String.length text > 64 * 1024 then
+        Error "peer event text is too long"
+      else Ok (Peer_event { kind; request_id; peer_id; text })
   | "permission" ->
       let* request_id = string_member "requestId" json in
       let option_id =

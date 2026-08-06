@@ -99,10 +99,85 @@
             checkInputs = [ pkgs.ocamlPackages.alcotest ];
             doCheck = true;
             meta = {
-              description = "OCaml PISS control plane, session worker, and ACP tracer";
+              description = "Combined OCaml PISS development and test package";
               homepage = "https://github.com/JonasThowsen/piss";
               license = nixpkgs.lib.licenses.mit;
               platforms = systems;
+            };
+          };
+
+          piss-next-control = pkgs.ocamlPackages.buildDunePackage {
+            pname = "piss-next";
+            version = "0.1.0-control-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./LICENSE
+              ./next/lib
+              ./next/control
+            ];
+            propagatedBuildInputs = piss-next-native.propagatedBuildInputs;
+            doCheck = false;
+            meta = piss-next-native.meta // {
+              description = "Replaceable OCaml PISS control plane";
+              mainProgram = "pissd-next";
+            };
+          };
+
+          piss-next-worker = pkgs.ocamlPackages.buildDunePackage {
+            pname = "piss-next";
+            version = "0.1.0-worker-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./LICENSE
+              ./next/lib
+              ./next/worker
+            ];
+            propagatedBuildInputs = piss-next-native.propagatedBuildInputs;
+            doCheck = false;
+            meta = piss-next-native.meta // {
+              description = "Independently supervised OCaml PISS session worker";
+              mainProgram = "piss-session-worker";
+            };
+          };
+
+          piss-next-session-mcp = pkgs.ocamlPackages.buildDunePackage {
+            pname = "piss-next";
+            version = "0.1.0-session-mcp-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./LICENSE
+              ./next/session_mcp
+            ];
+            propagatedBuildInputs = [ pkgs.ocamlPackages.yojson ];
+            doCheck = false;
+            meta = piss-next-native.meta // {
+              description = "Harness-neutral MCP server for PISS session collaboration";
+              mainProgram = "piss-session-mcp";
+            };
+          };
+
+          piss-next-mock-agent = pkgs.ocamlPackages.buildDunePackage {
+            pname = "piss-next";
+            version = "0.1.0-mock-agent-tracer";
+            src = source [
+              ./.ocamlformat
+              ./dune-project
+              ./piss-next.opam
+              ./LICENSE
+              ./next/lib
+              ./next/mock_agent
+            ];
+            propagatedBuildInputs = piss-next-native.propagatedBuildInputs;
+            doCheck = false;
+            meta = piss-next-native.meta // {
+              description = "Deterministic ACP fixture for PISS integration tests";
+              mainProgram = "piss-mock-agent";
             };
           };
 
@@ -381,6 +456,10 @@
         in
         {
           piss-next-native = self.packages.${system}.piss-next-native;
+          piss-next-control = self.packages.${system}.piss-next-control;
+          piss-next-worker = self.packages.${system}.piss-next-worker;
+          piss-next-mock-agent = self.packages.${system}.piss-next-mock-agent;
+          piss-next-session-mcp = self.packages.${system}.piss-next-session-mcp;
           piss-next-web = self.packages.${system}.piss-next-web;
           nixos-module =
             assert
