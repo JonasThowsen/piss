@@ -235,6 +235,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   in
   harness_session_id := session_id_from_agent;
   status := Domain.Idle;
+  let sessions_created_since_start = ref 0 in
   let worker_snapshot () =
     Domain.
       {
@@ -275,6 +276,26 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Wire.Recent_events { limit } ->
         let events = Store.list_recent_events store ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
+    | Wire.New_session ->
+        if
+          Hashtbl.length running_commands > 0
+          || Hashtbl.length pending_permissions > 0
+        then Error "the active session must be idle before creating another"
+        else if !sessions_created_since_start >= 4 then
+          (* TODO(tracer): Replace this in-adapter cap with one independently
+             supervised worker per durable session before exposing unbounded
+             session creation. pi-acp retains a Pi process for every session. *)
+          Error "restart the worker before creating more than four sessions"
+        else (
+          status := Domain.Starting;
+          let created = create_session () in
+          harness_session_id := created;
+          incr sessions_created_since_start;
+          ignore
+            (Store.append_event store ~kind:"timeline.reset"
+               (`Assoc [ ("acpSessionId", `String created) ]));
+          status := Domain.Idle;
+          Ok (`Assoc [ ("sessionId", `String created) ]))
     | Wire.Prompt { command_id; text } -> (
         match Store.find_command store command_id with
         | Some state ->

@@ -10,12 +10,16 @@ let
   nativePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-native;
   webPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-next-web;
   defaultAdapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
+  defaultOpenCodePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode;
   serviceStateName = "piss-ocaml";
   harnessCommand =
     if cfg.harness == "pi" then
       "${cfg.adapterPackage}/bin/pi-acp"
+    else if cfg.harness == "opencode" then
+      "${cfg.opencodePackage}/bin/opencode"
     else
       "${cfg.package}/bin/piss-mock-agent";
+  harnessArgs = lib.optionals (cfg.harness == "opencode") [ "acp" ];
   runtimeDirectory = "%t/${serviceStateName}";
   tailscaleStateName = cfg.tailscale.stateName;
   tailscaleSocket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
@@ -103,9 +107,17 @@ in
       description = "Pinned Pi ACP adapter package.";
     };
 
+    opencodePackage = lib.mkOption {
+      type = lib.types.package;
+      default = defaultOpenCodePackage;
+      defaultText = lib.literalExpression "inputs.piss-ocaml.packages.\${system}.opencode";
+      description = "Pinned OpenCode package with its native ACP server.";
+    };
+
     harness = lib.mkOption {
       type = lib.types.enum [
         "pi"
+        "opencode"
         "mock"
       ];
       default = "pi";
@@ -209,21 +221,27 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          "${cfg.package}/bin/piss-session-worker"
-          "--socket"
-          "${runtimeDirectory}/worker.sock"
-          "--database"
-          "%S/${serviceStateName}/worker.sqlite3"
-          "--session"
-          "deployed-tracer"
-          "--worker"
-          "deployed-worker"
-          "--workspace"
-          cfg.workspace
-          "--harness"
-          harnessCommand
-        ];
+        ExecStart = lib.escapeShellArgs (
+          [
+            "${cfg.package}/bin/piss-session-worker"
+            "--socket"
+            "${runtimeDirectory}/worker.sock"
+            "--database"
+            "%S/${serviceStateName}/worker.sqlite3"
+            "--session"
+            "deployed-tracer"
+            "--worker"
+            "deployed-worker"
+            "--workspace"
+            cfg.workspace
+            "--harness"
+            harnessCommand
+          ]
+          ++ lib.concatMap (argument: [
+            "--harness-arg"
+            argument
+          ]) harnessArgs
+        );
         EnvironmentFile = cfg.environmentFiles;
         Restart = "on-failure";
         RestartSec = 2;
@@ -241,6 +259,11 @@ in
           "%S/${serviceStateName}"
           "-%h/.pi"
           cfg.workspace
+        ]
+        ++ lib.optionals (cfg.harness == "opencode") [
+          "-%h/.cache"
+          "-%h/.config/opencode"
+          "-%h/.local/share"
         ];
         LockPersonality = true;
         RestrictAddressFamilies = [

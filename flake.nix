@@ -7,6 +7,10 @@
       url = "github:svkozak/pi-acp";
       flake = false;
     };
+    opencode-src = {
+      url = "github:anomalyco/opencode/f51665191af10f1e4e0512af3708e9c2c58ecb8d";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +18,7 @@
       self,
       nixpkgs,
       pi-acp-src,
+      opencode-src,
     }:
     let
       systems = [
@@ -44,6 +49,8 @@
           };
         in
         rec {
+          opencode = opencode-src.packages.${system}.opencode;
+
           pi-acp = pkgs.buildNpmPackage {
             pname = "pi-acp";
             version = "0.0.33";
@@ -358,6 +365,19 @@
               }
             ];
           };
+          opencodeModuleEvaluation = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.next
+              {
+                services.piss-next = {
+                  enable = true;
+                  allowedUsers = [ "owner@example.com" ];
+                  harness = "opencode";
+                };
+              }
+            ];
+          };
         in
         {
           piss-next-native = self.packages.${system}.piss-next-native;
@@ -380,6 +400,8 @@
             assert
               nextModuleEvaluation.config.systemd.user.services.piss-ocaml-worker.serviceConfig.Restart
               == "on-failure";
+            assert nixpkgs.lib.hasInfix "--harness-arg acp"
+              opencodeModuleEvaluation.config.systemd.user.services.piss-ocaml-worker.serviceConfig.ExecStart;
             pkgs.runCommand "piss-next-nixos-module-check" { } "touch $out";
         }
       );

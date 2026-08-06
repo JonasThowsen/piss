@@ -62,6 +62,8 @@ let projectTimeline: string => array(timelineItem) = [%raw
     let events;
     try { events = JSON.parse(text); } catch (_) { return []; }
     if (!Array.isArray(events)) return [];
+    const resetIndex = events.findLastIndex(event => event.kind === 'timeline.reset');
+    if (resetIndex >= 0) events = events.slice(resetIndex + 1);
     const items = [];
     const messages = new Map();
     const tools = new Map();
@@ -285,6 +287,26 @@ module App = {
       };
     };
 
+    let newSession = _ =>
+      if (!running && !submitting) {
+        setSubmitting(_ => true);
+        setNotice(_ => "Creating a fresh ACP session...");
+        postText("/api/v2/session/new", "{}")
+        ->thenPromise(_ => {
+            setEventsJson(_ => "[]");
+            setNotice(_ => "Fresh session ready.");
+            setSubmitting(_ => false);
+            refresh();
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setNotice(_ => errorMessage(error));
+            setSubmitting(_ => false);
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
     let cancel = _ => {
       setNotice(_ => "Cancellation requested...");
       postText("/api/v2/cancel", "{}")
@@ -366,6 +388,14 @@ module App = {
               <dd> {React.int(snapshotSequence(snapshot))} </dd>
             </div>
           </dl>
+          <button
+            className="new-session-action"
+            type_="button"
+            disabled={running || submitting}
+            onClick=newSession>
+            <span> {React.string("New conversation")} </span>
+            <b> {React.string(fromCodePoint(0x002b))} </b>
+          </button>
           <div className="boundary-note">
             <span> {React.string("REPLACEABLE CONTROL")} </span>
             <p>

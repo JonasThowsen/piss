@@ -43,6 +43,11 @@ for _ in $(seq 1 300); do
   sleep .02
 done
 
+curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/session/new" >/dev/null
+initial_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+[[ $(jq '[.[] | select(.kind == "timeline.reset")] | length' <<<"$initial_events") == 1 ]]
+
 curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"permission-command","text":"permission: test the decision path"}' \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
