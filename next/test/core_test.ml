@@ -54,7 +54,35 @@ let test_session_registry () =
   Alcotest.(check bool)
     "restore changes state" true
     (Registry.restore registry "s-one");
-  Alcotest.(check int) "two active again" 2 (Registry.active_count registry)
+  Alcotest.(check int) "two active again" 2 (Registry.active_count registry);
+  let one = Option.get (Registry.find_active registry "s-one") in
+  let two = Option.get (Registry.find_active registry "s-two") in
+  Alcotest.(check bool)
+    "broker tokens are unique" true
+    (one.broker_token <> "" && two.broker_token <> ""
+    && one.broker_token <> two.broker_token);
+  Alcotest.(check string)
+    "token identifies active session" "s-one"
+    (Option.get (Registry.find_active_by_token registry one.broker_token)).id;
+  let request, duplicate =
+    Registry.accept_peer_request registry ~id:"peer-one" ~source_id:one.id
+      ~target_id:two.id ~prompt:"review this" ~command_id:"peer-command"
+      ~start_sequence:7L
+  in
+  Alcotest.(check bool) "first peer request is new" false duplicate;
+  Alcotest.(check int64) "peer cursor retained" 7L request.start_sequence;
+  let _, duplicate =
+    Registry.accept_peer_request registry ~id:"peer-one" ~source_id:one.id
+      ~target_id:two.id ~prompt:"review this" ~command_id:"peer-command"
+      ~start_sequence:99L
+  in
+  Alcotest.(check bool) "peer request deduplicates" true duplicate;
+  Registry.update_peer_request registry "peer-one" ~state:"completed"
+    ~response:(Some "reviewed");
+  let completed = Option.get (Registry.find_peer_request registry "peer-one") in
+  Alcotest.(check string)
+    "peer response retained" "reviewed"
+    (Option.get completed.response)
 
 let test_command_deduplication () =
   with_store @@ fun store ->

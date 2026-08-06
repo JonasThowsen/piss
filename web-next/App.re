@@ -147,12 +147,26 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
     for (const event of events) {
       const payload = event.payload || {};
       const update = payload.params?.update || {};
-      if (event.kind === 'command.accepted' && payload.text && !acpUserTexts.has(payload.text)) {
+      if (event.kind === 'session.ask.sent' || event.kind === 'session.ask.received' || event.kind === 'session.ask.completed') {
+        const direction = event.kind === 'session.ask.sent' ? 'Asked' : event.kind === 'session.ask.received' ? 'Request from' : 'Response from';
+        items.push({
+          id: `${event.kind}-${payload.requestId || event.sequence}`,
+          role: 'peer',
+          title: `${direction} ${payload.peerId || 'session'}`,
+          text: payload.text || '',
+          status: event.kind === 'session.ask.completed' ? 'completed' : '',
+          options: [],
+          sequence: event.sequence
+        });
+        currentAgent = null;
+      } else if (event.kind === 'command.accepted' && payload.text && !acpUserTexts.has(payload.text)) {
         const item = { id: payload.commandId || `user-${event.sequence}`, role: 'user', title: 'You', text: payload.text, status: '', options: [], sequence: event.sequence };
         items.push(item);
         currentAgent = null;
       } else if (event.kind === 'acp.user_message_chunk' || event.kind === 'acp.agent_message_chunk') {
         const role = event.kind === 'acp.user_message_chunk' ? 'user' : 'agent';
+        const chunkText = contentText(update.content);
+        if (role === 'user' && chunkText.startsWith('Inter-session request from ')) continue;
         const id = update.messageId || (role === 'agent' && currentAgent ? currentAgent.id : `${role}-${event.sequence}`);
         let item = messages.get(id);
         if (!item) {
@@ -160,7 +174,7 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
           messages.set(id, item);
           items.push(item);
         }
-        item.text += contentText(update.content);
+        item.text += chunkText;
         if (role === 'agent') currentAgent = item;
       } else if (event.kind === 'acp.tool_call') {
         currentAgent = null;

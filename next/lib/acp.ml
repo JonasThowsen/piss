@@ -97,17 +97,51 @@ let initialize_request =
              ] );
        ])
 
-let new_session_request ~cwd =
-  request ~id:"session-new" ~method_:"session/new"
-    (`Assoc [ ("cwd", `String cwd); ("mcpServers", `List []) ])
+let mcp_servers ~command ~session_id ~broker_url ~broker_token ~curl_command =
+  if command = "" then `List []
+  else
+    `List
+      [
+        `Assoc
+          [
+            ("name", `String "piss-sessions");
+            ("command", `String command);
+            ("args", `List []);
+            ( "env",
+              `List
+                (List.map
+                   (fun (name, value) ->
+                     `Assoc [ ("name", `String name); ("value", `String value) ])
+                   [
+                     ("PISS_SESSION_ID", session_id);
+                     ("PISS_BROKER_URL", broker_url);
+                     ("PISS_SESSION_TOKEN", broker_token);
+                     ("PISS_CURL", curl_command);
+                   ]) );
+          ];
+      ]
 
-let load_session_request ~session_id ~cwd =
+let new_session_request ~cwd ~session_id ~mcp_command ~broker_url ~broker_token
+    ~curl_command =
+  request ~id:"session-new" ~method_:"session/new"
+    (`Assoc
+       [
+         ("cwd", `String cwd);
+         ( "mcpServers",
+           mcp_servers ~command:mcp_command ~session_id ~broker_url
+             ~broker_token ~curl_command );
+       ])
+
+let load_session_request ~session_id ~cwd ~piss_session_id ~mcp_command
+    ~broker_url ~broker_token ~curl_command =
   request ~id:"session-load" ~method_:"session/load"
     (`Assoc
        [
          ("sessionId", `String session_id);
          ("cwd", `String cwd);
-         ("mcpServers", `List []);
+         ( "mcpServers",
+           mcp_servers ~command:mcp_command ~session_id:piss_session_id
+             ~broker_url ~broker_token ~curl_command );
        ])
 
 let cancel_notification ~session_id =

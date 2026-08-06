@@ -18,6 +18,10 @@ piss-session-worker@<session> (independent systemd unit + SQLite WAL)
         | bidirectional ACP v1 JSON-RPC over stdio
         v
 pi-acp + Pi  OR  opencode acp (selected per session)
+        |
+        | PISS-provided MCP tools + capability-authenticated broker
+        v
+other independently supervised PISS sessions
 ```
 
 The mock ACP agent remains only as a deterministic integration-test fixture.
@@ -34,9 +38,10 @@ The deployed Reason application provides:
 - permission decisions for ACP agents that request them;
 - active-turn cancellation;
 - worker, adapter, and event-sequence telemetry;
-- automatic reconnection to the durable timeline.
+- automatic reconnection to the durable timeline;
+- harness-neutral agent collaboration through `piss_list_sessions` and `piss_ask_session` MCP tools.
 
-The NixOS module runs the control plane separately from dynamic `piss-ocaml-worker@<session>.service` instances. The durable registry records active and archived sessions, while each active session owns a Unix socket, SQLite ledger, ACP adapter, and systemd restart policy. Updating or restarting `piss-ocaml.service` idempotently starts missing workers without restarting healthy ones. If a worker itself restarts, it uses ACP `session/load` when supported to reattach to its harness session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
+The NixOS module builds the control plane, session worker, browser, and collaboration MCP server as separate immutable Nix closures. It runs the control plane separately from dynamic `piss-ocaml-worker@<session>.service` instances. Worker templates set `restartIfChanged = false` and `stopIfChanged = false`, so existing workers retain their current executable generation through PISS updates and unrelated NixOS rebuilds; newly created or independently restarted workers adopt the current generation. The durable registry records active and archived sessions, while each active session owns a Unix socket, SQLite ledger, ACP adapter, and systemd restart policy. Updating or restarting `piss-ocaml.service` idempotently starts missing workers without restarting healthy ones. If a worker itself restarts, it uses ACP `session/load` when supported to reattach to its harness session and replay conversation history. A stale or missing adapter mapping fails visibly and falls back to a new ACP session rather than entering a restart loop.
 
 ## Security boundary
 
@@ -112,7 +117,7 @@ Open <http://127.0.0.1:4318>.
 
 ## Durability semantics
 
-The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, unique command/request IDs, and monotonic event sequences.
+The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, unique command/request IDs, and monotonic event sequences. The registry also durably records inter-session request identities, source/target sessions, target command IDs, replay cursors, states, and responses.
 
 A command is committed before it is written to the ACP agent. Duplicate command IDs return the existing state and are never dispatched again. A write failure after acceptance becomes `ambiguous`; an interrupted worker reconciles accepted/dispatched commands to `ambiguous` instead of silently retrying consequential work. Completed, cancelled, rejected, and ambiguous outcomes are explicit.
 
@@ -121,7 +126,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 ## Deliberate current limitations
 
 - Each session allows one prompt turn at a time; independent sessions can run concurrently.
-- Active sessions are capped at 32. Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
+- Active sessions have a configurable resource cap (`maxActiveSessions`, 32 by default and at most 256). Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
 - Pi and OpenCode are selectable per session. The bootstrap default remains Pi.
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one browser connection; a worker-side wait/fanout primitive is deferred until multiple simultaneous observers per session are needed.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
@@ -130,7 +135,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 
 ## Next production slices
 
-1. Split the control and worker Nix artifacts so a control/web-only deployment cannot change the worker unit closure or trigger session-worker restarts.
-2. Add per-session names, workspace selection from a fixed allowlist, and configuration controls.
+1. Add per-session names, workspace selection from a fixed allowlist, and configuration controls so orchestrators can address stable human-readable roles.
+2. Add asynchronous inbox/send primitives beside synchronous `ask`, with bounded fan-out and explicit cancellation.
 3. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
 4. Port one complete PISS workflow through the real authority and receipt model.

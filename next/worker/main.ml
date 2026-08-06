@@ -39,7 +39,8 @@ let response_stop_reason json =
   | _ -> None
 
 let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
-    ~harness_command ~harness_args =
+    ~harness_command ~harness_args ~session_mcp ~broker_url ~broker_token
+    ~curl_command =
   let store =
     Store.open_ ~path:database_path ~session_id:(Domain.Session_id session_id)
       ~worker_id:(Domain.Worker_id worker_id)
@@ -202,7 +203,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   let create_session () =
     let result, response =
       require_rpc_result ~id:"session-new"
-        (Acp.new_session_request ~cwd:workspace)
+        (Acp.new_session_request ~cwd:workspace ~session_id
+           ~mcp_command:session_mcp ~broker_url ~broker_token ~curl_command)
     in
     let created =
       match Yojson.Safe.Util.member "sessionId" result with
@@ -218,7 +220,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Some existing, true -> (
         match
           rpc_request ~id:"session-load"
-            (Acp.load_session_request ~session_id:existing ~cwd:workspace)
+            (Acp.load_session_request ~session_id:existing ~cwd:workspace
+               ~piss_session_id:session_id ~mcp_command:session_mcp ~broker_url
+               ~broker_token ~curl_command)
         with
         | Ok response -> (
             match Acp.response_result ~expected_id:"session-load" response with
@@ -353,6 +357,17 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                (`Assoc [ ("sessionId", `String !harness_session_id) ]));
           send (Acp.cancel_notification ~session_id:!harness_session_id);
           Ok (`Assoc [ ("state", `String "cancelling") ]))
+    | Wire.Peer_event { kind; request_id; peer_id; text } ->
+        let event =
+          Store.append_event store ~kind
+            (`Assoc
+               [
+                 ("requestId", `String request_id);
+                 ("peerId", `String peer_id);
+                 ("text", `String text);
+               ])
+        in
+        Ok (Domain.event_to_yojson event)
     | Wire.Permission { request_id; option_id } -> (
         match Hashtbl.find_opt pending_permissions request_id with
         | None -> Error "permission request is no longer pending"
@@ -445,6 +460,10 @@ let () =
   let workspace = ref (Sys.getcwd ()) in
   let harness_command = ref "piss-mock-agent" in
   let harness_args = ref [] in
+  let session_mcp = ref "" in
+  let broker_url = ref "http://127.0.0.1:4318" in
+  let broker_token = ref "" in
+  let curl_command = ref "curl" in
   Arg.parse
     [
       ("--socket", Arg.Set_string socket_path, "Worker Unix socket path");
@@ -458,6 +477,10 @@ let () =
       ( "--harness-arg",
         Arg.String (fun value -> harness_args := value :: !harness_args),
         "Fixed ACP harness argument (repeatable)" );
+      ("--session-mcp", Arg.Set_string session_mcp, "PISS session MCP server");
+      ("--broker-url", Arg.Set_string broker_url, "Loopback session broker URL");
+      ("--broker-token", Arg.Set_string broker_token, "Session broker token");
+      ("--curl-command", Arg.Set_string curl_command, "Fixed curl executable");
     ]
     (fun value -> raise (Arg.Bad ("unexpected argument: " ^ value)))
     "piss-session-worker";
@@ -467,3 +490,5 @@ let () =
   run ~env ~socket_path:!socket_path ~database_path:!database_path
     ~session_id:!session_id ~worker_id:!worker_id ~workspace:!workspace
     ~harness_command:!harness_command ~harness_args:(List.rev !harness_args)
+    ~session_mcp:!session_mcp ~broker_url:!broker_url
+    ~broker_token:!broker_token ~curl_command:!curl_command

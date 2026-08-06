@@ -29,6 +29,7 @@
   ../worker/main.exe
   ../mock_agent/main.exe
   ../control/main.exe
+  ../session_mcp/main.exe
   ../../web-next/app.js
   (source_tree ../../web-next/public))
  (action
@@ -40,7 +41,8 @@
    %{dep:../control/main.exe}
    %{workspace_root}/web-next/public
    %{dep:../../web-next/app.js}
-   %{workspace_root})))
+   %{workspace_root}
+   %{dep:../session_mcp/main.exe})))
 
 (rule
  (alias replaceability-test)
