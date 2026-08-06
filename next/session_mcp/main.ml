@@ -115,6 +115,30 @@ let tool_result ?(is_error = false) text =
       ("isError", `Bool is_error);
     ]
 
+let peer_input_schema =
+  `Assoc
+    [
+      ("type", `String "object");
+      ( "properties",
+        `Assoc
+          [
+            ( "targetSessionId",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("description", `String "Target PISS session ID");
+                ] );
+            ( "prompt",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("description", `String "Work request for the target agent");
+                ] );
+          ] );
+      ("required", `List [ `String "targetSessionId"; `String "prompt" ]);
+      ("additionalProperties", `Bool false);
+    ]
+
 let tools =
   `List
     [
@@ -141,6 +165,27 @@ let tools =
               "Ask another active PISS session to perform one durable turn and \
                return its response. Use piss_list_sessions first to choose the \
                target." );
+          ("inputSchema", peer_input_schema);
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_send_session");
+          ( "description",
+            `String
+              "Send work to another PISS session without waiting. Returns a \
+               durable request ID for later collection, enabling parallel \
+               fan-out." );
+          ("inputSchema", peer_input_schema);
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_collect_responses");
+          ( "description",
+            `String
+              "Listen for completion of asynchronous session requests. Wait \
+               for any response or all responses, and return captured outputs \
+               plus pending request IDs. To keep listening after waitFor=any, \
+               call again with the returned pendingRequestIds." );
           ( "inputSchema",
             `Assoc
               [
@@ -148,28 +193,55 @@ let tools =
                 ( "properties",
                   `Assoc
                     [
-                      ( "targetSessionId",
+                      ( "requestIds",
                         `Assoc
                           [
-                            ("type", `String "string");
-                            ("description", `String "Target PISS session ID");
+                            ("type", `String "array");
+                            ("items", `Assoc [ ("type", `String "string") ]);
+                            ("minItems", `Int 1);
+                            ("maxItems", `Int 64);
                           ] );
-                      ( "prompt",
+                      ( "waitFor",
                         `Assoc
                           [
                             ("type", `String "string");
-                            ( "description",
-                              `String "Work request for the target agent" );
+                            ("enum", `List [ `String "any"; `String "all" ]);
+                            ("default", `String "all");
+                          ] );
+                      ( "timeoutSeconds",
+                        `Assoc
+                          [
+                            ("type", `String "number");
+                            ("minimum", `Int 0);
+                            ("maximum", `Int 600);
+                            ("default", `Int 600);
                           ] );
                     ] );
-                ( "required",
-                  `List [ `String "targetSessionId"; `String "prompt" ] );
+                ("required", `List [ `String "requestIds" ]);
                 ("additionalProperties", `Bool false);
               ] );
         ];
     ]
 
 let member name json = Yojson.Safe.Util.member name json
+
+let peer_request_body arguments =
+  let target =
+    match member "targetSessionId" arguments with
+    | `String value -> value
+    | _ -> failwith "targetSessionId must be a string"
+  in
+  let prompt =
+    match member "prompt" arguments with
+    | `String value -> value
+    | _ -> failwith "prompt must be a string"
+  in
+  `Assoc
+    [
+      ("requestId", `String (random_request_id ()));
+      ("targetSessionId", `String target);
+      ("prompt", `String prompt);
+    ]
 
 let call_tool params =
   let name = member "name" params in
@@ -179,28 +251,18 @@ let call_tool params =
       curl "/api/v2/broker/sessions"
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_ask_session" -> (
-      let target =
-        match member "targetSessionId" arguments with
-        | `String value -> value
-        | _ -> failwith "targetSessionId must be a string"
-      in
-      let prompt =
-        match member "prompt" arguments with
-        | `String value -> value
-        | _ -> failwith "prompt must be a string"
-      in
-      let body =
-        `Assoc
-          [
-            ("requestId", `String (random_request_id ()));
-            ("targetSessionId", `String target);
-            ("prompt", `String prompt);
-          ]
-      in
+      let body = peer_request_body arguments in
       let response = retry_broker (fun () -> curl ~body "/api/v2/broker/ask") in
       match member "response" response with
       | `String value -> tool_result value
       | _ -> failwith "session broker returned no response")
+  | `String "piss_send_session" ->
+      let body = peer_request_body arguments in
+      retry_broker (fun () -> curl ~body "/api/v2/broker/send")
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_collect_responses" ->
+      retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/collect")
+      |> Yojson.Safe.pretty_to_string |> tool_result
   | `String value -> failwith ("unknown tool: " ^ value)
   | _ -> failwith "tool name must be a string"
 

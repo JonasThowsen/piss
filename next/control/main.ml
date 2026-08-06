@@ -453,47 +453,275 @@ let command_terminal_state command_id event =
         else None
     | _ -> None
 
-let wait_for_peer_response ~net ~clock ~socket (request : Registry.peer_request)
-    =
-  let deadline = Unix.gettimeofday () +. 600. in
-  let rec loop cursor chunks =
-    if Unix.gettimeofday () >= deadline then Error "peer session timed out"
-    else
-      match
-        worker_request net socket
-          (`Assoc
-             [
-               ("op", `String "events");
-               ("after", `Intlit (Int64.to_string cursor));
-               ("limit", `Int 200);
-             ])
-      with
-      | Error message -> Error message
-      | Ok (`List events) -> (
-          let cursor =
-            List.fold_left
-              (fun latest event -> Int64.max latest (event_sequence event))
-              cursor events
-          in
-          let chunks =
-            List.fold_left
-              (fun collected event ->
-                let text = agent_chunk_text event in
-                if text = "" then collected else text :: collected)
-              chunks events
-          in
-          let terminal =
-            List.find_map (command_terminal_state request.command_id) events
-          in
-          match terminal with
-          | Some "completed" -> Ok (String.concat "" (List.rev chunks))
-          | Some state -> Error ("peer session ended as " ^ state)
-          | None ->
-              Eio.Time.sleep clock 0.25;
-              loop cursor chunks)
-      | Ok _ -> Error "peer worker returned an invalid event page"
+type peer_observation =
+  | Peer_pending
+  | Peer_completed of string
+  | Peer_failed of string
+
+let is_command_accepted command_id event =
+  let open Yojson.Safe.Util in
+  if member "kind" event <> `String "command.accepted" then false
+  else member "commandId" (member "payload" event) = `String command_id
+
+let inspect_peer_response ~net ~socket (request : Registry.peer_request) =
+  let rec pages cursor chunks command_seen =
+    match
+      worker_request net socket
+        (`Assoc
+           [
+             ("op", `String "events");
+             ("after", `Intlit (Int64.to_string cursor));
+             ("limit", `Int 200);
+           ])
+    with
+    | Error _ -> Peer_pending
+    | Ok (`List events) -> (
+        let cursor =
+          List.fold_left
+            (fun latest event -> Int64.max latest (event_sequence event))
+            cursor events
+        in
+        let command_seen, chunks =
+          List.fold_left
+            (fun (seen, collected) event ->
+              let seen = seen || is_command_accepted request.command_id event in
+              let text = if seen then agent_chunk_text event else "" in
+              (seen, if text = "" then collected else text :: collected))
+            (command_seen, chunks) events
+        in
+        let terminal =
+          List.find_map (command_terminal_state request.command_id) events
+        in
+        match terminal with
+        | Some "completed" ->
+            Peer_completed (String.concat "" (List.rev chunks))
+        | Some state -> Peer_failed ("peer session ended as " ^ state)
+        | None when List.length events = 200 -> pages cursor chunks command_seen
+        | None -> Peer_pending)
+    | Ok _ -> Peer_failed "peer worker returned an invalid event page"
   in
-  loop request.start_sequence []
+  pages request.start_sequence [] false
+
+let target_sequence net manager (target : Registry.session) =
+  match
+    worker_request net
+      (session_socket manager target.id)
+      (`Assoc [ ("op", `String "snapshot") ])
+  with
+  | Ok snapshot -> (
+      match Yojson.Safe.Util.member "lastSequence" snapshot with
+      | `Int value -> Int64.of_int value
+      | `Intlit value -> Option.value ~default:0L (Int64.of_string_opt value)
+      | _ -> 0L)
+  | Error _ -> 0L
+
+let dispatch_peer_request ~net manager ~(source : Registry.session)
+    ~(target : Registry.session) (request : Registry.peer_request) =
+  if String.equal request.state "completed" then Ok request
+  else
+    let was_new = String.equal request.state "accepted" in
+    let request, dispatch_transition =
+      if List.mem request.state [ "accepted"; "queued" ] then (
+        Registry.mark_peer_dispatching manager.registry request.id
+          ~start_sequence:(target_sequence net manager target);
+        ( Option.get (Registry.find_peer_request manager.registry request.id),
+          true ))
+      else (request, false)
+    in
+    let target_prompt =
+      Printf.sprintf
+        "Inter-session request from %s (%s):\n\n\
+         %s\n\n\
+         Respond directly to the requesting session."
+        source.title source.id request.prompt
+    in
+    match
+      worker_request net
+        (session_socket manager target.id)
+        (`Assoc
+           [
+             ("op", `String "prompt");
+             ("commandId", `String request.command_id);
+             ("text", `String target_prompt);
+           ])
+    with
+    | Error message ->
+        Registry.update_peer_request manager.registry request.id ~state:"queued"
+          ~response:None;
+        if was_new then
+          ignore
+            (peer_event net manager source ~kind:"session.ask.queued"
+               ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
+        Error message
+    | Ok _ ->
+        Registry.update_peer_request manager.registry request.id
+          ~state:"dispatched" ~response:None;
+        if dispatch_transition then (
+          ignore
+            (peer_event net manager source ~kind:"session.ask.dispatched"
+               ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
+          ignore
+            (peer_event net manager target ~kind:"session.ask.received"
+               ~request_id:request.id ~peer_id:source.id ~text:request.prompt));
+        Ok (Option.get (Registry.find_peer_request manager.registry request.id))
+
+let complete_peer_observation ~net manager ~(source : Registry.session)
+    (request : Registry.peer_request) observation =
+  match observation with
+  | Peer_completed response ->
+      if Registry.complete_peer_request manager.registry request.id response
+      then
+        ignore
+          (peer_event net manager source ~kind:"session.ask.completed"
+             ~request_id:request.id ~peer_id:request.target_id ~text:response);
+      Peer_completed response
+  | Peer_failed message ->
+      Registry.update_peer_request manager.registry request.id ~state:"failed"
+        ~response:(Some message);
+      ignore
+        (peer_event net manager source ~kind:"session.ask.failed"
+           ~request_id:request.id ~peer_id:request.target_id ~text:message);
+      Peer_failed message
+  | observation -> observation
+
+let reconcile_peer_request ~net manager ~(source : Registry.session)
+    (request : Registry.peer_request) =
+  match request.state with
+  | "completed" -> Peer_completed (Option.value ~default:"" request.response)
+  | "failed" ->
+      Peer_failed (Option.value ~default:"peer request failed" request.response)
+  | _ -> (
+      match Registry.find_active manager.registry request.target_id with
+      | None ->
+          complete_peer_observation ~net manager ~source request
+            (Peer_failed "target session is not active")
+      | Some target -> (
+          match dispatch_peer_request ~net manager ~source ~target request with
+          | Error _ -> Peer_pending
+          | Ok dispatched ->
+              inspect_peer_response ~net
+                ~socket:(session_socket manager target.id)
+                dispatched
+              |> complete_peer_observation ~net manager ~source dispatched))
+
+let wait_for_peer_response ~net ~clock manager ~(source : Registry.session)
+    request =
+  let deadline = Unix.gettimeofday () +. 600. in
+  let rec loop () =
+    match reconcile_peer_request ~net manager ~source request with
+    | Peer_pending when Unix.gettimeofday () < deadline ->
+        Eio.Time.sleep clock 0.25;
+        loop ()
+    | Peer_pending -> Error "peer session timed out"
+    | Peer_completed response -> Ok response
+    | Peer_failed message -> Error message
+  in
+  loop ()
+
+let accept_peer_json ~net manager ~(source : Registry.session) json =
+  let open Yojson.Safe.Util in
+  let request_id = json |> member "requestId" |> to_string in
+  let target_id = json |> member "targetSessionId" |> to_string in
+  let prompt = json |> member "prompt" |> to_string in
+  if request_id = "" || String.length request_id > 100 then
+    Error "requestId must contain between 1 and 100 characters"
+  else if prompt = "" || String.length prompt > 64 * 1024 then
+    Error "prompt must contain between 1 and 65536 characters"
+  else if String.equal source.id target_id then
+    Error "a session cannot ask itself"
+  else
+    match Registry.find_active manager.registry target_id with
+    | None -> Error "target session is not active"
+    | Some target -> (
+        let command_id = "peer-" ^ Digest.to_hex (Digest.string request_id) in
+        let existing = Registry.find_peer_request manager.registry request_id in
+        match existing with
+        | Some request
+          when not
+                 (String.equal request.source_id source.id
+                 && String.equal request.target_id target.id
+                 && String.equal request.prompt prompt) ->
+            Error "requestId belongs to a different peer request"
+        | Some request -> Ok (request, true)
+        | None ->
+            let request, _ =
+              Registry.accept_peer_request manager.registry ~id:request_id
+                ~source_id:source.id ~target_id:target.id ~prompt ~command_id
+                ~start_sequence:0L
+            in
+            ignore
+              (peer_event net manager source ~kind:"session.ask.sent"
+                 ~request_id ~peer_id:target.id ~text:prompt);
+            Ok (request, false))
+
+let send_peer_request ~net manager ~(source : Registry.session) json =
+  match accept_peer_json ~net manager ~source json with
+  | Error message -> Error message
+  | Ok (request, duplicate) ->
+      let request =
+        match Registry.find_active manager.registry request.target_id with
+        | None -> request
+        | Some target -> (
+            match
+              dispatch_peer_request ~net manager ~source ~target request
+            with
+            | Ok dispatched -> dispatched
+            | Error _ ->
+                Option.get
+                  (Registry.find_peer_request manager.registry request.id))
+      in
+      Ok (request, duplicate)
+
+let peer_request_json (request : Registry.peer_request) =
+  `Assoc
+    [
+      ("requestId", `String request.id);
+      ("targetSessionId", `String request.target_id);
+      ("state", `String request.state);
+      ( "response",
+        Option.fold ~none:`Null
+          ~some:(fun value -> `String value)
+          request.response );
+    ]
+
+let collect_peer_requests ~net ~clock manager ~(source : Registry.session)
+    ~request_ids ~wait_for ~timeout =
+  let deadline = Unix.gettimeofday () +. timeout in
+  let selected_requests () =
+    List.map
+      (fun id ->
+        match Registry.find_peer_request manager.registry id with
+        | Some request when String.equal request.source_id source.id -> request
+        | Some _ ->
+            raise (Invalid_argument "peer request belongs to another session")
+        | None -> raise (Invalid_argument ("unknown peer request: " ^ id)))
+      request_ids
+  in
+  let rec listen () =
+    let requests = selected_requests () in
+    List.iter
+      (fun request ->
+        ignore (reconcile_peer_request ~net manager ~source request))
+      requests;
+    let requests = selected_requests () in
+    let finished, pending =
+      List.partition
+        (fun (request : Registry.peer_request) ->
+          List.exists (String.equal request.state) [ "completed"; "failed" ])
+        requests
+    in
+    let ready =
+      match wait_for with
+      | "any" -> finished <> []
+      | "all" -> pending = []
+      | _ -> raise (Invalid_argument "waitFor must be 'any' or 'all'")
+    in
+    if ready || Unix.gettimeofday () >= deadline then (finished, pending)
+    else (
+      Eio.Time.sleep clock 0.25;
+      listen ())
+  in
+  listen ()
 
 let broker_source workers request =
   match workers with
@@ -551,6 +779,25 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                           ("self", `Bool (String.equal caller.id session.id));
                         ])
                   |> fun sessions -> respond_json (`List sessions))
+        | Managed manager, `POST, "/api/v2/broker/send", _ ->
+            Some
+              (match calling_session with
+              | None -> error_json ~status:`Unauthorized "broker token required"
+              | Some source -> (
+                  match valid_json_content request with
+                  | Error (status, message) -> error_json ~status message
+                  | Ok () -> (
+                      let json = read_body body |> Yojson.Safe.from_string in
+                      match send_peer_request ~net manager ~source json with
+                      | Error message -> error_json ~status:`Conflict message
+                      | Ok (peer_request, duplicate) ->
+                          respond_json ~status:`Accepted
+                            (`Assoc
+                               [
+                                 ("requestId", `String peer_request.id);
+                                 ("state", `String peer_request.state);
+                                 ("duplicate", `Bool duplicate);
+                               ]))))
         | Managed manager, `POST, "/api/v2/broker/ask", _ ->
             Some
               (match calling_session with
@@ -560,146 +807,73 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                   | Error (status, message) -> error_json ~status message
                   | Ok () -> (
                       let json = read_body body |> Yojson.Safe.from_string in
+                      match send_peer_request ~net manager ~source json with
+                      | Error message -> error_json ~status:`Conflict message
+                      | Ok (peer_request, duplicate) -> (
+                          match
+                            wait_for_peer_response ~net ~clock manager ~source
+                              peer_request
+                          with
+                          | Error message ->
+                              error_json ~status:`Service_unavailable message
+                          | Ok response ->
+                              respond_json
+                                (`Assoc
+                                   [
+                                     ("requestId", `String peer_request.id);
+                                     ("response", `String response);
+                                     ("duplicate", `Bool duplicate);
+                                   ])))))
+        | Managed manager, `POST, "/api/v2/broker/collect", _ ->
+            Some
+              (match calling_session with
+              | None -> error_json ~status:`Unauthorized "broker token required"
+              | Some source -> (
+                  match valid_json_content request with
+                  | Error (status, message) -> error_json ~status message
+                  | Ok () ->
+                      let json = read_body body |> Yojson.Safe.from_string in
                       let open Yojson.Safe.Util in
-                      let request_id =
-                        json |> member "requestId" |> to_string
+                      let request_ids =
+                        json |> member "requestIds" |> to_list
+                        |> List.map to_string
+                        |> List.sort_uniq String.compare
                       in
-                      let target_id =
-                        json |> member "targetSessionId" |> to_string
+                      let wait_for =
+                        match member "waitFor" json with
+                        | `String value -> value
+                        | _ -> "all"
                       in
-                      let prompt = json |> member "prompt" |> to_string in
-                      if request_id = "" || String.length request_id > 100 then
+                      let timeout =
+                        match member "timeoutSeconds" json with
+                        | `Int value -> float_of_int value
+                        | `Float value -> value
+                        | _ -> 600.
+                      in
+                      if request_ids = [] || List.length request_ids > 64 then
                         error_json
-                          "requestId must contain between 1 and 100 characters"
-                      else if prompt = "" || String.length prompt > 64 * 1024
-                      then
-                        error_json
-                          "prompt must contain between 1 and 65536 characters"
-                      else if String.equal source.id target_id then
-                        error_json "a session cannot ask itself"
+                          "requestIds must contain between 1 and 64 identities"
+                      else if timeout < 0. || timeout > 600. then
+                        error_json "timeoutSeconds must be between 0 and 600"
+                      else if not (List.mem wait_for [ "any"; "all" ]) then
+                        error_json "waitFor must be 'any' or 'all'"
                       else
-                        match
-                          Registry.find_active manager.registry target_id
-                        with
-                        | None ->
-                            error_json ~status:`Conflict
-                              "target session is not active"
-                        | Some target -> (
-                            let command_id =
-                              "peer-" ^ Digest.to_hex (Digest.string request_id)
-                            in
-                            let existing =
-                              Registry.find_peer_request manager.registry
-                                request_id
-                            in
-                            match existing with
-                            | Some request
-                              when not
-                                     (String.equal request.source_id source.id
-                                     && String.equal request.target_id target.id
-                                     && String.equal request.prompt prompt) ->
-                                error_json ~status:`Conflict
-                                  "requestId belongs to a different peer \
-                                   request"
-                            | Some
-                                {
-                                  state = "completed";
-                                  response = Some response;
-                                  _;
-                                } ->
-                                respond_json
-                                  (`Assoc
-                                     [
-                                       ("requestId", `String request_id);
-                                       ("response", `String response);
-                                       ("duplicate", `Bool true);
-                                     ])
-                            | _ -> (
-                                let request, duplicate =
-                                  match existing with
-                                  | Some request -> (request, true)
-                                  | None ->
-                                      let start_sequence =
-                                        match
-                                          worker_request net
-                                            (session_socket manager target.id)
-                                            (`Assoc
-                                               [ ("op", `String "snapshot") ])
-                                        with
-                                        | Ok snapshot -> (
-                                            match
-                                              member "lastSequence" snapshot
-                                            with
-                                            | `Int value -> Int64.of_int value
-                                            | `Intlit value ->
-                                                Option.value ~default:0L
-                                                  (Int64.of_string_opt value)
-                                            | _ -> 0L)
-                                        | Error _ -> 0L
-                                      in
-                                      Registry.accept_peer_request
-                                        manager.registry ~id:request_id
-                                        ~source_id:source.id
-                                        ~target_id:target.id ~prompt ~command_id
-                                        ~start_sequence
-                                in
-                                if not duplicate then (
-                                  ignore
-                                    (peer_event net manager source
-                                       ~kind:"session.ask.sent" ~request_id
-                                       ~peer_id:target.id ~text:prompt);
-                                  ignore
-                                    (peer_event net manager target
-                                       ~kind:"session.ask.received" ~request_id
-                                       ~peer_id:source.id ~text:prompt));
-                                let target_prompt =
-                                  Printf.sprintf
-                                    "Inter-session request from %s (%s):\n\n\
-                                     %s\n\n\
-                                     Respond directly to the requesting \
-                                     session."
-                                    source.title source.id prompt
-                                in
-                                match
-                                  worker_request net
-                                    (session_socket manager target.id)
-                                    (`Assoc
-                                       [
-                                         ("op", `String "prompt");
-                                         ( "commandId",
-                                           `String request.command_id );
-                                         ("text", `String target_prompt);
-                                       ])
-                                with
-                                | Error message ->
-                                    error_json ~status:`Conflict message
-                                | Ok _ -> (
-                                    match
-                                      wait_for_peer_response ~net ~clock
-                                        ~socket:
-                                          (session_socket manager target.id)
-                                        request
-                                    with
-                                    | Error message ->
-                                        error_json ~status:`Service_unavailable
-                                          message
-                                    | Ok response ->
-                                        Registry.update_peer_request
-                                          manager.registry request.id
-                                          ~state:"completed"
-                                          ~response:(Some response);
-                                        ignore
-                                          (peer_event net manager source
-                                             ~kind:"session.ask.completed"
-                                             ~request_id ~peer_id:target.id
-                                             ~text:response);
-                                        respond_json
-                                          (`Assoc
-                                             [
-                                               ("requestId", `String request_id);
-                                               ("response", `String response);
-                                               ("duplicate", `Bool duplicate);
-                                             ])))))))
+                        let finished, pending =
+                          collect_peer_requests ~net ~clock manager ~source
+                            ~request_ids ~wait_for ~timeout
+                        in
+                        respond_json
+                          (`Assoc
+                             [
+                               ( "responses",
+                                 `List (List.map peer_request_json finished) );
+                               ( "pendingRequestIds",
+                                 `List
+                                   (List.map
+                                      (fun request ->
+                                        `String request.Registry.id)
+                                      pending) );
+                             ])))
         | Managed manager, `GET, "/api/v2/sessions", _ ->
             let sessions =
               match Uri.get_query_param uri "archived" with
@@ -955,6 +1129,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
       error_json ~status:`Request_entity_too_large "request body is too large"
   | Yojson.Json_error message -> error_json ("invalid JSON: " ^ message)
   | Yojson.Safe.Util.Type_error (message, _) -> error_json message
+  | Invalid_argument message -> error_json message
   | exn -> error_json ~status:`Internal_server_error (Printexc.to_string exn)
 
 let () =

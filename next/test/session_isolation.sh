@@ -138,8 +138,10 @@ wait_session_count 1
 first=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id')
 second=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"harness":"opencode"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
-[[ "$first" != "$second" ]]
-wait_session_count 2
+third=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"harness":"pi"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
+[[ "$first" != "$second" && "$first" != "$third" && "$second" != "$third" ]]
+wait_session_count 3
 
 curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"commandId":"first-command","text":"work in first"}' \
@@ -167,19 +169,45 @@ peer_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
   -H "x-piss-session-token: $first_token" --data "$peer_body" \
   "http://127.0.0.1:$port/api/v2/broker/ask")
 [[ $(jq -r .duplicate <<<"$peer_duplicate") == true ]]
-mcp_input=$(jq -nc --arg target "$second" '[
+mcp_input=$(jq -nc --arg second "$second" --arg third "$third" '[
   {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
   {jsonrpc:"2.0",id:2,method:"tools/list",params:{}},
-  {jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"piss_ask_session",arguments:{targetSessionId:$target,prompt:"answer the MCP collaboration proof"}}}
+  {jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"piss_send_session",arguments:{targetSessionId:$second,prompt:"answer the first fan-out request"}}},
+  {jsonrpc:"2.0",id:4,method:"tools/call",params:{name:"piss_send_session",arguments:{targetSessionId:$third,prompt:"answer the second fan-out request"}}}
 ] | .[]')
+fanout_started=$(date +%s%3N)
 mcp_output=$(printf '%s\n' "$mcp_input" | env \
   PISS_BROKER_URL="http://127.0.0.1:$port" \
   PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
   "$session_mcp_exe")
 [[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
-  "piss_list_sessions,piss_ask_session" ]]
-[[ $(jq -r 'select(.id==3)|.result.content[0].text' <<<"$mcp_output") == \
-  "The worker retained ownership while the control plane was replaceable." ]]
+  "piss_list_sessions,piss_ask_session,piss_send_session,piss_collect_responses" ]]
+first_async=$(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
+second_async=$(jq -r 'select(.id==4)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
+collect_any_input=$(jq -nc --arg first "$first_async" --arg second "$second_async" '[
+  {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
+  {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_collect_responses",arguments:{requestIds:[$first,$second],waitFor:"any",timeoutSeconds:10}}}
+] | .[]')
+collect_any_output=$(printf '%s\n' "$collect_any_input" | env \
+  PISS_BROKER_URL="http://127.0.0.1:$port" \
+  PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
+  "$session_mcp_exe")
+collect_any_json=$(jq -r 'select(.id==2)|.result.content[0].text|fromjson' <<<"$collect_any_output")
+[[ $(jq '.responses|length >= 1' <<<"$collect_any_json") == true ]]
+collect_all_input=$(jq -nc --arg first "$first_async" --arg second "$second_async" '[
+  {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
+  {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_collect_responses",arguments:{requestIds:[$first,$second],waitFor:"all",timeoutSeconds:10}}}
+] | .[]')
+collect_all_output=$(printf '%s\n' "$collect_all_input" | env \
+  PISS_BROKER_URL="http://127.0.0.1:$port" \
+  PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
+  "$session_mcp_exe")
+fanout_elapsed=$(( $(date +%s%3N) - fanout_started ))
+collect_json=$(jq -r 'select(.id==2)|.result.content[0].text|fromjson' <<<"$collect_all_output")
+[[ $(jq '.responses|length' <<<"$collect_json") == 2 ]]
+[[ $(jq '.pendingRequestIds|length' <<<"$collect_json") == 0 ]]
+[[ $(jq '[.responses[].response|select(.=="The worker retained ownership while the control plane was replaceable.")]|length' <<<"$collect_json") == 2 ]]
+[[ "$fanout_elapsed" -lt 3800 ]]
 first_events=$(curl -fsS \
   "http://127.0.0.1:$port/api/v2/events?recent=500&session=$first")
 second_events=$(curl -fsS \
@@ -229,8 +257,9 @@ second_events=$(curl -fsS \
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/sessions/$first/archive" >/dev/null
-wait_session_count 1
-[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id') == "$second" ]]
+wait_session_count 2
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq --arg id "$second" 'any(.[]; .id==$id)') == true ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq --arg id "$third" 'any(.[]; .id==$id)') == true ]]
 [[ -f "$state/sessions/$first/worker.sqlite3" ]]
 archived=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true")
 [[ $(jq -r '.[0].id' <<<"$archived") == "$first" ]]
@@ -244,7 +273,7 @@ PY
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/sessions/$first/restore" >/dev/null
-wait_session_count 2
+wait_session_count 3
 restored_worker=$(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .workerPid)
 [[ "$restored_worker" != "$replacement" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
@@ -258,5 +287,5 @@ PY
 [[ "$ledger_after_restore" -ge "$ledger_before_restore" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 0 ]]
 
-printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s control=%s->%s\n' \
-  "$first_worker" "$replacement" "$restored_worker" "$second_worker" "$old_control" "$control_pid"
+printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s third=%s fanout_ms=%s control=%s->%s\n' \
+  "$first_worker" "$replacement" "$restored_worker" "$second_worker" "$third" "$fanout_elapsed" "$old_control" "$control_pid"
