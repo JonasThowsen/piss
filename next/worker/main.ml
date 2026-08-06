@@ -187,28 +187,51 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | `Bool value -> value
     | _ -> false
   in
+  let create_session () =
+    let result, response =
+      require_rpc_result ~id:"session-new"
+        (Acp.new_session_request ~cwd:workspace)
+    in
+    let created =
+      match Yojson.Safe.Util.member "sessionId" result with
+      | `String value -> value
+      | _ -> raise (Failure "ACP agent did not return a sessionId")
+    in
+    Store.set_metadata store "acp_session_id" created;
+    ignore (Store.append_event store ~kind:"acp.session.created" response);
+    created
+  in
   let session_id_from_agent =
     match (Store.get_metadata store "acp_session_id", supports_load) with
-    | Some existing, true ->
-        let _, response =
-          require_rpc_result ~id:"session-load"
+    | Some existing, true -> (
+        match
+          rpc_request ~id:"session-load"
             (Acp.load_session_request ~session_id:existing ~cwd:workspace)
-        in
-        ignore (Store.append_event store ~kind:"acp.session.loaded" response);
-        existing
-    | _ ->
-        let result, response =
-          require_rpc_result ~id:"session-new"
-            (Acp.new_session_request ~cwd:workspace)
-        in
-        let created =
-          match Yojson.Safe.Util.member "sessionId" result with
-          | `String value -> value
-          | _ -> raise (Failure "ACP agent did not return a sessionId")
-        in
-        Store.set_metadata store "acp_session_id" created;
-        ignore (Store.append_event store ~kind:"acp.session.created" response);
-        created
+        with
+        | Ok response -> (
+            match Acp.response_result ~expected_id:"session-load" response with
+            | Ok _ ->
+                ignore
+                  (Store.append_event store ~kind:"acp.session.loaded" response);
+                existing
+            | Error message ->
+                ignore
+                  (Store.append_event store ~kind:"acp.session.load_failed"
+                     (`Assoc
+                        [
+                          ("sessionId", `String existing);
+                          ("error", `String message);
+                        ]));
+                create_session ())
+        | Error message ->
+            ignore
+              (Store.append_event store ~kind:"acp.session.load_failed"
+                 (`Assoc
+                    [
+                      ("sessionId", `String existing); ("error", `String message);
+                    ]));
+            create_session ())
+    | _ -> create_session ()
   in
   harness_session_id := session_id_from_agent;
   status := Domain.Idle;
