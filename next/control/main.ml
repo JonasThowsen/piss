@@ -13,6 +13,7 @@ type managed_workers = {
   available_harnesses : string list;
   default_harness : string;
   default_workspace_id : string;
+  workspace_discovery_roots : string list;
   max_active_sessions : int;
 }
 
@@ -42,6 +43,88 @@ let event_stream_headers =
     (("content-type", "text/event-stream; charset=utf-8")
     :: ("x-accel-buffering", "no")
     :: security_headers)
+
+let path_within ~root path =
+  String.equal root path
+  ||
+  let prefix = if String.ends_with ~suffix:"/" root then root else root ^ "/" in
+  String.starts_with ~prefix path
+
+let canonical_directory path =
+  try
+    let canonical = Unix.realpath path in
+    if (Unix.stat canonical).st_kind = Unix.S_DIR then Some canonical else None
+  with Unix.Unix_error _ -> None
+
+let workspace_name path =
+  let name = String.trim (Filename.basename path) in
+  if name <> "" && String.length name <= 120 then name else "Workspace"
+
+let workspace_id_for_path path =
+  "workspace-" ^ Digest.to_hex (Digest.string path)
+
+let ignored_directory name =
+  (String.length name > 0 && name.[0] = '.')
+  || List.mem name [ "node_modules"; "result"; "dist"; "_build" ]
+
+let search_workspace_directories roots query =
+  let terms =
+    String.lowercase_ascii (String.trim query)
+    |> String.split_on_char ' '
+    |> List.filter (fun value -> value <> "")
+  in
+  let contains value term =
+    let value_length = String.length value
+    and term_length = String.length term in
+    let rec loop index =
+      if index + term_length > value_length then false
+      else if String.sub value index term_length = term then true
+      else loop (index + 1)
+    in
+    term_length = 0 || loop 0
+  in
+  let matches path =
+    let value = String.lowercase_ascii path in
+    List.for_all (contains value) terms
+  in
+  let max_depth = if terms = [] then 1 else 6 in
+  let seen = Hashtbl.create 512 in
+  let results = ref [] in
+  let visited = ref 0 in
+  let rec scan root path depth =
+    if !visited < 5000 && depth <= max_depth then (
+      incr visited;
+      match canonical_directory path with
+      | None -> ()
+      | Some canonical
+        when (not (path_within ~root canonical)) || Hashtbl.mem seen canonical
+        ->
+          ()
+      | Some canonical -> (
+          Hashtbl.add seen canonical ();
+          if matches canonical && List.length !results < 60 then
+            results := canonical :: !results;
+          if depth < max_depth then
+            try
+              let entries = Sys.readdir canonical in
+              Array.sort String.compare entries;
+              entries
+              |> Array.iter (fun name ->
+                  if not (ignored_directory name) then
+                    let child = Filename.concat canonical name in
+                    try
+                      if (Unix.lstat child).st_kind = Unix.S_DIR then
+                        scan root child (depth + 1)
+                    with Unix.Unix_error _ -> ())
+            with Sys_error _ -> ()))
+  in
+  List.iter
+    (fun root ->
+      match canonical_directory root with
+      | Some root -> scan root root 0
+      | None -> ())
+    roots;
+  List.rev !results
 
 let respond_json ?(status = `OK) json =
   Cohttp_eio.Server.respond_string ~status ~headers:json_headers
@@ -1078,6 +1161,56 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               ( Registry.list_workspaces manager.registry
               |> List.map Registry.workspace_to_yojson
               |> fun workspaces -> respond_json (`List workspaces) )
+        | Managed manager, `GET, "/api/v2/workspace-directories", _ ->
+            let query =
+              Uri.get_query_param uri "query" |> Option.value ~default:""
+            in
+            Some
+              ( search_workspace_directories manager.workspace_discovery_roots
+                  query
+              |> List.map (fun path ->
+                  `Assoc
+                    [
+                      ("path", `String path);
+                      ("name", `String (workspace_name path));
+                    ])
+              |> fun directories -> respond_json (`List directories) )
+        | Managed manager, `POST, "/api/v2/workspaces", _ ->
+            Some
+              (match valid_json_mutation ~dev_bypass request with
+              | Error (status, message) -> error_json ~status message
+              | Ok () -> (
+                  let json = read_body body |> Yojson.Safe.from_string in
+                  let open Yojson.Safe.Util in
+                  let requested_path =
+                    match member "path" json with
+                    | `String value -> value
+                    | _ -> ""
+                  in
+                  match canonical_directory requested_path with
+                  | None -> error_json "Choose an existing local directory"
+                  | Some path
+                    when not
+                           (List.exists
+                              (fun root -> path_within ~root path)
+                              manager.workspace_discovery_roots) ->
+                      error_json ~status:`Forbidden
+                        "Directory is outside the approved local roots"
+                  | Some path ->
+                      let workspace =
+                        match
+                          Registry.find_workspace_by_root manager.registry path
+                        with
+                        | Some workspace -> workspace
+                        | None ->
+                            let id = workspace_id_for_path path in
+                            Registry.upsert_workspace manager.registry ~id
+                              ~name:(workspace_name path) ~root:path;
+                            Option.get
+                              (Registry.find_workspace manager.registry id)
+                      in
+                      respond_json ~status:`Created
+                        (Registry.workspace_to_yojson workspace)))
         | Managed manager, `GET, "/api/v2/sessions", _ ->
             let sessions =
               match Uri.get_query_param uri "archived" with
@@ -1383,6 +1516,7 @@ let () =
   let available_harnesses = ref [] in
   let default_harness = ref "pi" in
   let workspace_specs = ref [] in
+  let workspace_discovery_roots = ref [] in
   let bootstrap_session = ref "deployed-tracer" in
   let max_active_sessions = ref default_max_active_sessions in
   let public_dir = ref "web-next/public" in
@@ -1419,6 +1553,11 @@ let () =
       ( "--workspace-spec",
         Arg.String (fun value -> workspace_specs := value :: !workspace_specs),
         "Allowlisted workspace encoded as id|name|absolute-path (repeatable)" );
+      ( "--workspace-discovery-root",
+        Arg.String
+          (fun value ->
+            workspace_discovery_roots := value :: !workspace_discovery_roots),
+        "Local root available to the workspace directory picker (repeatable)" );
       ( "--bootstrap-session",
         Arg.Set_string bootstrap_session,
         "Initial session identity for an empty registry" );
@@ -1494,6 +1633,9 @@ let () =
           available_harnesses = available;
           default_harness = !default_harness;
           default_workspace_id;
+          workspace_discovery_roots =
+            List.rev !workspace_discovery_roots
+            |> List.filter_map canonical_directory;
           max_active_sessions = !max_active_sessions;
         }
       in

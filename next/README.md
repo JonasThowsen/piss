@@ -30,7 +30,7 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
-- durable allowlisted workspaces with current-style responsive navigation;
+- durable allowlisted workspaces with current-style responsive navigation and a bounded local-directory picker rooted only in Nix-approved discovery paths;
 - named Pi/OpenCode session creation, renaming, switching, archival, and restoration;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - an arbitrary prompt composer with Ctrl/Cmd+Enter dispatch;

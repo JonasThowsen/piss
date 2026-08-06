@@ -32,6 +32,10 @@ let
     "${workspace.id}|${workspace.name}|${workspace.path}"
   ]) workspaceEntries;
   workspacePaths = map (workspace: workspace.path) workspaceEntries;
+  workspaceDiscoveryArguments = lib.concatMap (path: [
+    "--workspace-discovery-root"
+    path
+  ]) cfg.workspaceDiscoveryRoots;
 
   workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
     set -euo pipefail
@@ -275,6 +279,12 @@ in
       });
     };
 
+    workspaceDiscoveryRoots = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Local directory roots available to the workspace picker.";
+    };
+
     allowedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -311,6 +321,10 @@ in
       {
         assertion = lib.all (workspace: lib.hasPrefix "/" workspace.path) workspaceEntries;
         message = "services.piss-next workspace paths must be absolute";
+      }
+      {
+        assertion = lib.all (path: lib.hasPrefix "/" path) cfg.workspaceDiscoveryRoots;
+        message = "services.piss-next.workspaceDiscoveryRoots entries must be absolute";
       }
       {
         assertion = lib.all (workspace: !(lib.hasInfix "|" workspace.id || lib.hasInfix "|" workspace.name || lib.hasInfix "|" workspace.path)) workspaceEntries;
@@ -367,7 +381,7 @@ in
         ReadWritePaths = [
           "%S/${serviceStateName}/sessions/%i"
           "-%h/.pi"
-        ] ++ workspacePaths;
+        ] ++ workspacePaths ++ cfg.workspaceDiscoveryRoots;
         LockPersonality = true;
         RestrictAddressFamilies = [
           "AF_INET"
@@ -429,6 +443,7 @@ in
             (toString cfg.controlPackage)
           ]
           ++ workspaceArguments
+          ++ workspaceDiscoveryArguments
           ++ lib.concatMap (user: [
             "--allowed-user"
             user
