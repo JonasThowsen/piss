@@ -9,6 +9,7 @@ let supported_image_mime_types =
 type request =
   | Hello of { protocol_version : int }
   | Snapshot
+  | Prepare_upgrade of { generation : string }
   | Events of { after : int64; limit : int }
   | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
@@ -157,6 +158,13 @@ let request_of_yojson json =
       let* protocol_version = int_member "protocolVersion" json in
       Ok (Hello { protocol_version })
   | "snapshot" -> Ok Snapshot
+  | "prepare_upgrade" ->
+      let* generation = string_member "generation" json in
+      if generation = "" || String.length generation > 256 then
+        Error "generation must contain between 1 and 256 characters"
+      else if String.contains generation '\000' then
+        Error "generation must not contain NUL"
+      else Ok (Prepare_upgrade { generation })
   | "events" ->
       let* after = int64_member ~default:0L "after" json in
       let* limit = int_member ~default:200 "limit" json in

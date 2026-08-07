@@ -308,12 +308,13 @@ Unlike the current system, activation does not wait for agents to become idle.
 
 ### 9.3 Worker
 
-Workers are never bulk-upgraded. A worker upgrade is session-scoped:
+Workers are never stopped as a bulk activation side effect. A worker upgrade is session-scoped and eventually automatic by default:
 
-- idle workers may be replaced after persisting a resumable boundary;
-- running workers keep their existing generation;
+- an idle worker atomically enters a bounded drain lease, durably records its target generation, rejects racing mutations, and is replaced independently;
+- the replacement restores the ACP session when supported and durably completes the upgrade receipt before the upgrader advances;
+- running workers keep their existing generation until a later idle check;
 - protocol compatibility allows old workers to reconnect to new `pissd`;
-- incompatible workers remain supervised and visible but reject new mutations until a safe migration is available.
+- legacy or incompatible workers that cannot acknowledge safe preparation remain supervised and visible rather than being restarted through a race.
 
 ## 10. Security boundary
 

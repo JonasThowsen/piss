@@ -490,6 +490,10 @@
             assert
               nextModuleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
               == "on-failure";
+            assert nextModuleEvaluation.config.services.piss-next.autoUpgradeIdleWorkers;
+            assert
+              nextModuleEvaluation.config.systemd.user.timers.piss-ocaml-worker-upgrade.timerConfig.OnUnitActiveSec
+              == "1min";
             assert nixpkgs.lib.hasInfix "--available-harness opencode"
               nextModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
             assert nixpkgs.lib.hasInfix "--default-harness opencode"
@@ -502,11 +506,16 @@
                 nixpkgs.lib.splitString " "
                   opencodeModuleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ExecStart
               );
+              upgradeRunner =
+                nextModuleEvaluation.config.systemd.user.services.piss-ocaml-worker-upgrade.serviceConfig.ExecStart;
             in
             pkgs.runCommand "piss-next-nixos-module-check" { } ''
               grep -F -- '/run/secrets/opencode-auth.json' ${opencodeWorkerRunner}
               grep -F -- 'configured OpenCode authentication file is missing' ${opencodeWorkerRunner}
               grep -F -- 'configured OpenCode authentication file must contain a JSON object' ${opencodeWorkerRunner}
+              grep -F -- '--generation' ${opencodeWorkerRunner}
+              grep -F -- 'prepare_upgrade' ${upgradeRunner}
+              grep -F -- 'systemctl --user restart' ${upgradeRunner}
               touch $out
             '';
         }
