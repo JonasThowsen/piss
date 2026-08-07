@@ -106,6 +106,9 @@ let initialize db =
     "CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY,name TEXT NOT \
      NULL,root TEXT NOT NULL UNIQUE,created_at REAL NOT NULL)";
   exec db
+    "CREATE TABLE IF NOT EXISTS workspace_removals (id TEXT PRIMARY KEY, \
+     removed_at REAL NOT NULL)";
+  exec db
     "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY,title TEXT NOT \
      NULL,harness TEXT NOT NULL CHECK(harness IN \
      ('pi','opencode','mock')),created_at REAL NOT NULL,archived_at \
@@ -200,7 +203,7 @@ let workspace_of_statement statement =
     created_at = Sqlite3.column_double statement 3;
   }
 
-let upsert_workspace registry ~id ~name ~root =
+let write_workspace registry ~id ~name ~root =
   with_statement registry.db
     "INSERT INTO workspaces(id,name,root,created_at) VALUES (?,?,?,?) ON \
      CONFLICT(id) DO UPDATE SET name=excluded.name,root=excluded.root"
@@ -210,6 +213,27 @@ let upsert_workspace registry ~id ~name ~root =
       bind_text statement 3 root;
       bind_float statement 4 (Unix.gettimeofday ());
       expect_done "upsert workspace" statement)
+
+let upsert_workspace registry ~id ~name ~root =
+  with_statement registry.db "DELETE FROM workspace_removals WHERE id = ?"
+    (fun statement ->
+      bind_text statement 1 id;
+      expect_done "clear workspace removal" statement);
+  write_workspace registry ~id ~name ~root
+
+let configure_workspace registry ~id ~name ~root =
+  let removed =
+    with_statement registry.db "SELECT 1 FROM workspace_removals WHERE id = ?"
+      (fun statement ->
+        bind_text statement 1 id;
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW -> true
+        | Sqlite3.Rc.DONE -> false
+        | rc ->
+            fail_rc "inspect workspace removal" rc;
+            true)
+  in
+  if not removed then write_workspace registry ~id ~name ~root
 
 let find_workspace_by_root registry root =
   with_statement registry.db
@@ -249,6 +273,31 @@ let find_workspace registry id =
       | rc ->
           fail_rc "find workspace" rc;
           None)
+
+let workspace_session_count registry id =
+  with_statement registry.db
+    "SELECT COUNT(*) FROM sessions WHERE workspace_id = ?" (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Int64.to_int (Sqlite3.column_int64 statement 0)
+      | rc ->
+          fail_rc "count workspace sessions" rc;
+          0)
+
+let remove_workspace registry id =
+  transaction registry (fun () ->
+      with_statement registry.db
+        "INSERT INTO workspace_removals(id,removed_at) VALUES (?,?) ON \
+         CONFLICT(id) DO UPDATE SET removed_at=excluded.removed_at"
+        (fun statement ->
+          bind_text statement 1 id;
+          bind_float statement 2 (Unix.gettimeofday ());
+          expect_done "record workspace removal" statement);
+      with_statement registry.db "DELETE FROM workspaces WHERE id = ?"
+        (fun statement ->
+          bind_text statement 1 id;
+          expect_done "remove workspace" statement);
+      Sqlite3.changes registry.db > 0)
 
 let assign_unscoped_sessions registry workspace_id =
   with_statement registry.db

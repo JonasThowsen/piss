@@ -12,7 +12,7 @@ type managed_workers = {
   stopper : string;
   available_harnesses : string list;
   default_harness : string;
-  default_workspace_id : string;
+  mutable default_workspace_id : string;
   workspace_discovery_roots : string list;
   max_active_sessions : int;
 }
@@ -417,6 +417,12 @@ let restore_managed_session manager id =
           Error (Printexc.to_string exn))
 
 type session_action = Archive of string | Restore of string | Rename of string
+
+let workspace_delete path =
+  match String.split_on_char '/' path with
+  | [ ""; "api"; "v2"; "workspaces"; id; "delete" ] when valid_session_id id ->
+      Some id
+  | _ -> None
 
 let session_action path =
   match String.split_on_char '/' path with
@@ -1167,6 +1173,43 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               ( Registry.list_workspaces manager.registry
               |> List.map Registry.workspace_to_yojson
               |> fun workspaces -> respond_json (`List workspaces) )
+        | Managed manager, `POST, _, _
+          when Option.is_some (workspace_delete path) ->
+            Some
+              (match valid_json_mutation ~dev_bypass request with
+              | Error (status, message) -> error_json ~status message
+              | Ok () -> (
+                  ignore (read_body body);
+                  let id = Option.get (workspace_delete path) in
+                  match Registry.find_workspace manager.registry id with
+                  | None -> error_json ~status:`Not_found "workspace not found"
+                  | Some workspace ->
+                      let session_count =
+                        Registry.workspace_session_count manager.registry id
+                      in
+                      if session_count > 0 then
+                        error_json ~status:`Conflict
+                          (Printf.sprintf
+                             "Delete %d %s first, including archived sessions"
+                             session_count
+                             (if session_count = 1 then "session"
+                              else "sessions"))
+                      else if
+                        not (Registry.remove_workspace manager.registry id)
+                      then
+                        error_json ~status:`Conflict "workspace was not removed"
+                      else (
+                        (if String.equal manager.default_workspace_id id then
+                           match Registry.list_workspaces manager.registry with
+                           | replacement :: _ ->
+                               manager.default_workspace_id <- replacement.id
+                           | [] -> ());
+                        respond_json
+                          (`Assoc
+                             [
+                               ("removed", `Bool true);
+                               ("id", `String workspace.id);
+                             ]))))
         | Managed manager, `GET, "/api/v2/workspace-directories", _ ->
             let query =
               Uri.get_query_param uri "query" |> Option.value ~default:""
@@ -1686,9 +1729,17 @@ let () =
         raise (Arg.Bad "--workspace-spec is required");
       List.iter
         (fun (id, name, root) ->
-          Registry.upsert_workspace registry ~id ~name ~root)
+          Registry.configure_workspace registry ~id ~name ~root)
         configured_workspaces;
-      let default_workspace_id, _, _ = List.hd configured_workspaces in
+      let configured_default_id, _, _ = List.hd configured_workspaces in
+      let default_workspace_id =
+        match Registry.find_workspace registry configured_default_id with
+        | Some workspace -> workspace.id
+        | None -> (
+            match Registry.list_workspaces registry with
+            | workspace :: _ -> workspace.id
+            | [] -> configured_default_id)
+      in
       Registry.assign_unscoped_sessions registry default_workspace_id;
       let available = List.rev !available_harnesses in
       if available = [] then raise (Arg.Bad "--available-harness is required");
@@ -1710,7 +1761,11 @@ let () =
           max_active_sessions = !max_active_sessions;
         }
       in
-      if Registry.list registry ~include_archived:true = [] then
+      if
+        Registry.list registry ~include_archived:true = []
+        && Option.is_some
+             (Registry.find_workspace registry default_workspace_id)
+      then
         ignore
           (Registry.insert registry ~id:!bootstrap_session
              ~title:"Pi / deployed" ~harness:!default_harness

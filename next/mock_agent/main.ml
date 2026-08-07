@@ -273,8 +273,19 @@ let rec run_prompt ~id ~session_id ~text =
                       ("type", `String "text");
                       ( "text",
                         `String
-                          "The worker retained ownership while the control \
-                           plane was replaceable." );
+                          (if String.starts_with ~prefix:"markdown:" text then
+                             "## Copy proof\n\n\
+                              This **message** contains `inline code` and a \
+                              link to [ACP](https://agentclientprotocol.com).\n\n\
+                              - first item\n\
+                              - second item\n\n\
+                              ```ocaml\n\
+                              let durable = true\n\
+                              ```\n\n\
+                              > Copy this quoted block directly."
+                           else
+                             "The worker retained ownership while the control \
+                              plane was replaceable.") );
                     ] );
               ]));
       write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))));
