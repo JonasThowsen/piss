@@ -63,6 +63,11 @@ let
 
   workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
     set -euo pipefail
+    # The systemd user manager inherits XDG_STATE_HOME et al. from
+    # previous worker runs, which causes `state` to be derived from a
+    # session-specific path instead of the canonical root. Wipe them
+    # so this script always rebuilds them from a known base.
+    unset XDG_STATE_HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME
     id="''${1:?session id required}"
     [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || { echo "invalid session id" >&2; exit 64; }
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/${serviceStateName}"
