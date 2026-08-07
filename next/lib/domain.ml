@@ -20,6 +20,13 @@ type worker_status =
   | Stopped
   | Failed
 
+type image_input = {
+  mime_type : string;
+  data : string;
+  name : string;
+  size : int;
+}
+
 type event = {
   sequence : int64;
   kind : string;

@@ -157,13 +157,22 @@ let cancel_notification ~session_id =
   notification ~method_:"session/cancel"
     (`Assoc [ ("sessionId", `String session_id) ])
 
-let prompt_request ~delivery ~command_id ~session_id ~text =
-  let fields =
+let image_content (image : Domain.image_input) =
+  `Assoc
     [
-      ("sessionId", `String session_id);
-      ( "prompt",
-        `List [ `Assoc [ ("type", `String "text"); ("text", `String text) ] ] );
+      ("type", `String "image");
+      ("mimeType", `String image.mime_type);
+      ("data", `String image.data);
     ]
+
+let prompt_request ~delivery ~command_id ~session_id ~text ~images =
+  let prompt =
+    (if text = "" then []
+     else [ `Assoc [ ("type", `String "text"); ("text", `String text) ] ])
+    @ List.map image_content images
+  in
+  let fields =
+    [ ("sessionId", `String session_id); ("prompt", `List prompt) ]
   in
   let fields =
     match delivery with
@@ -173,3 +182,36 @@ let prompt_request ~delivery ~command_id ~session_id ~text =
         :: fields
   in
   request ~id:command_id ~method_:"session/prompt" (`Assoc fields)
+
+let replace_assoc name value fields =
+  (name, value) :: List.remove_assoc name fields
+
+let redact_user_image_data json =
+  match json with
+  | `Assoc json_fields -> (
+      match List.assoc_opt "params" json_fields with
+      | Some (`Assoc params_fields) -> (
+          match List.assoc_opt "update" params_fields with
+          | Some (`Assoc update_fields)
+            when List.assoc_opt "sessionUpdate" update_fields
+                 = Some (`String "user_message_chunk") -> (
+              match List.assoc_opt "content" update_fields with
+              | Some (`Assoc content_fields)
+                when List.assoc_opt "type" content_fields
+                     = Some (`String "image") ->
+                  let redacted_content =
+                    `Assoc (replace_assoc "data" (`String "") content_fields)
+                  in
+                  let redacted_update =
+                    `Assoc
+                      (replace_assoc "content" redacted_content update_fields)
+                  in
+                  let redacted_params =
+                    `Assoc
+                      (replace_assoc "update" redacted_update params_fields)
+                  in
+                  `Assoc (replace_assoc "params" redacted_params json_fields)
+              | _ -> json)
+          | _ -> json)
+      | _ -> json)
+  | _ -> json

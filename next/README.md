@@ -33,7 +33,7 @@ The deployed Reason application provides:
 - durable allowlisted workspaces with current-style responsive navigation, safe removal of empty workspace registrations, and a bounded local-directory picker rooted only in Nix-approved discovery paths;
 - named Pi/OpenCode session creation, renaming, switching, archival, and restoration through an active/archived session search;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
-- a current-workbench composer with Enter/Ctrl/Cmd dispatch plus ACP-backed model and thinking selectors; unsupported agent options remain visibly disabled instead of disappearing;
+- a current-workbench composer with Enter/Ctrl/Cmd dispatch, pasted or file-selected image attachments, and ACP-backed model and thinking selectors; image previews are removable before send, input is bounded to four PNG/JPEG/GIF/WebP files and 10 MiB total, and unsupported agent capabilities remain visibly disabled instead of disappearing;
 - paginated durable history plus streamed assistant messages over resumable server-sent events, with scroll-preserving older-page loading;
 - safe Markdown message rendering with whole-message and per-block clipboard actions for prose, lists, quotes, and fenced code;
 - artifact-aware tool cards for commands, file locations, ACP diffs, images, resources, and terminal references;
@@ -55,7 +55,7 @@ The deployed control plane:
 - requires an allowlisted `Tailscale-User-Login` for every route except `/health`;
 - requires same-origin JSON mutations;
 - uses a restrictive content security policy and denies framing;
-- bounds HTTP bodies, worker frames, prompts, event pages, command IDs, and retained state;
+- bounds HTTP bodies, worker frames, prompts, image count/types/decoded bytes, event pages, command IDs, and retained state;
 - starts only fixed harness commands from the NixOS service definition;
 - passes model credentials and the SSH agent only to the worker service.
 

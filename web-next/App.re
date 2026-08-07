@@ -10,6 +10,8 @@ type directoryCandidate;
 type configOption;
 type configChoice;
 type outboxItem;
+type composerImage;
+type browserFile;
 type disposer = unit => unit;
 
 [@mel.get] external itemId: timelineItem => string = "id";
@@ -22,6 +24,9 @@ let itemKind: timelineItem => string = [%raw
 ];
 let itemArtifacts: timelineItem => array(artifactItem) = [%raw
   "item => Array.isArray(item.artifacts) ? item.artifacts : []"
+];
+let itemImageCount: timelineItem => int = [%raw
+  "item => Number.isInteger(item.imageCount) ? item.imageCount : 0"
 ];
 let itemLocations: timelineItem => array(artifactItem) = [%raw
   "item => Array.isArray(item.locations) ? item.locations : []"
@@ -41,6 +46,9 @@ external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external snapshotWorkerPid: sessionSnapshot => int = "workerPid";
 [@mel.get] external snapshotHarnessPid: sessionSnapshot => int = "harnessPid";
 [@mel.get] external snapshotSequence: sessionSnapshot => int = "lastSequence";
+let snapshotAcceptsImages: sessionSnapshot => bool = [%raw
+  "snapshot => snapshot?.acceptsImages === true"
+];
 [@mel.get] external sessionId: sessionSummary => string = "id";
 [@mel.get] external sessionTitle: sessionSummary => string = "title";
 [@mel.get] external sessionHarness: sessionSummary => string = "harness";
@@ -64,11 +72,15 @@ external configChoices: configOption => array(configChoice) = "options";
 [@mel.get] external outboxAction: outboxItem => string = "action";
 [@mel.get] external outboxText: outboxItem => string = "text";
 [@mel.get] external outboxState: outboxItem => string = "state";
+[@mel.get] external imageId: composerImage => string = "id";
+[@mel.get] external imageName: composerImage => string = "name";
+[@mel.get] external imagePreview: composerImage => string = "preview";
+[@mel.get] external imageSize: composerImage => int = "size";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], copy: [['rect',{width:14,height:14,x:8,y:8,rx:2,ry:2}],['path',{d:'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'}]], trash: [['path',{d:'M3 6h18'}],['path',{d:'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'}],['path',{d:'M19 6l-1 14c0 1-1 2-2 2H8c-1 0-2-1-2-2L5 6'}],['path',{d:'M10 11v6'}],['path',{d:'M14 11v6'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], copy: [['rect',{width:14,height:14,x:8,y:8,rx:2,ry:2}],['path',{d:'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'}]], trash: [['path',{d:'M3 6h18'}],['path',{d:'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'}],['path',{d:'M19 6l-1 14c0 1-1 2-2 2H8c-1 0-2-1-2-2L5 6'}],['path',{d:'M10 11v6'}],['path',{d:'M14 11v6'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]], image: [['rect',{width:18,height:18,x:3,y:3,rx:2,ry:2}],['circle',{cx:9,cy:9,r:2}],['path',{d:'m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
 ];
 
 let copyToClipboard: string => Js.Promise.t(unit) = [%raw
@@ -181,6 +193,56 @@ let confirmRename: string => option(string) = [%raw
 
 let clearPrompt: unit => unit = [%raw
   "() => { const field = document.getElementById('prompt-input'); if (field) { field.value = ''; field.focus(); } }"
+];
+let openImagePicker: unit => unit = [%raw
+  "() => document.getElementById('composer-image-input')?.click()"
+];
+let clearImagePicker: unit => unit = [%raw
+  "() => { const input = document.getElementById('composer-image-input'); if (input) input.value = ''; }"
+];
+let imageFilesFromInput: 'a => array(browserFile) = [%raw
+  "event => { const files = Array.from(event.currentTarget?.files || []); if (event.currentTarget) event.currentTarget.value = ''; return files; }"
+];
+let imageFilesFromPaste: 'a => array(browserFile) = [%raw
+  "event => Array.from(event.clipboardData?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean)"
+];
+let readComposerImages:
+  (array(browserFile), array(composerImage)) =>
+  Js.Promise.t(array(composerImage)) = [%raw
+  {|(files, current) => new Promise(async (resolve, reject) => {
+      const selected = Array.from(files || []);
+      if (!selected.length) { resolve(current); return; }
+      if (current.length + selected.length > 4) { reject(new Error('At most four images may be attached')); return; }
+      const supported = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+      const unsupported = selected.find(file => !supported.has(file.type));
+      if (unsupported) { reject(new Error(`Unsupported image type: ${unsupported.type || unsupported.name}`)); return; }
+      const total = current.reduce((sum, image) => sum + image.size, 0) + selected.reduce((sum, file) => sum + file.size, 0);
+      if (total > 10 * 1024 * 1024) { reject(new Error('Image attachments exceed the 10 MiB limit')); return; }
+      try {
+        const additions = await Promise.all(selected.map(file => new Promise((resolveFile, rejectFile) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (typeof reader.result !== 'string') { rejectFile(new Error('Could not read image')); return; }
+            const comma = reader.result.indexOf(',');
+            if (comma < 0) { rejectFile(new Error('Could not read image')); return; }
+            resolveFile({ id: crypto.randomUUID?.() || `image-${Date.now()}-${Math.random()}`, mimeType: file.type, data: reader.result.slice(comma + 1), name: file.name || 'Pasted image', preview: reader.result, size: file.size });
+          };
+          reader.onerror = () => rejectFile(reader.error || new Error('Could not read image'));
+          reader.readAsDataURL(file);
+        })));
+        resolve([...current, ...additions]);
+      } catch (error) { reject(error); }
+    })|}
+];
+let imagesJson: array(composerImage) => Js.Json.t = [%raw
+  "images => images.map(({ mimeType, data, name }) => ({ mimeType, data, name }))"
+];
+let removeComposerImage:
+  (array(composerImage), string) => array(composerImage) = [%raw
+  "(images, id) => images.filter(image => image.id !== id)"
+];
+let formatImageSize: int => string = [%raw
+  "size => size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`"
 ];
 let eventValue: 'a => string = [%raw
   "event => event.currentTarget?.value || ''"
@@ -381,6 +443,9 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       .filter(event => event.kind === 'acp.user_message_chunk')
       .map(event => event.payload?.params?.update?.content?.text)
       .filter(Boolean));
+    const acceptedImageTexts = new Set(events
+      .filter(event => event.kind === 'command.accepted' && (event.payload?.imageCount || 0) > 0)
+      .map(event => event.payload?.text || ''));
     let currentAgent = null;
     const contentText = content => {
       if (!content) return '';
@@ -426,15 +491,15 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
           sequence: event.sequence
         });
         currentAgent = null;
-      } else if (event.kind === 'command.accepted' && payload.text && !acpUserTexts.has(payload.text)) {
-        const isWake = payload.text.startsWith('PISS durable collaboration wake-up.');
-        const item = { id: payload.commandId || `user-${event.sequence}`, role: isWake ? 'peer' : 'user', title: isWake ? 'PISS wake-up' : 'You', text: payload.text, status: '', options: [], sequence: event.sequence };
+      } else if (event.kind === 'command.accepted' && (payload.text || payload.imageCount > 0) && (!acpUserTexts.has(payload.text) || payload.imageCount > 0)) {
+        const isWake = (payload.text || '').startsWith('PISS durable collaboration wake-up.');
+        const item = { id: payload.commandId || `user-${event.sequence}`, role: isWake ? 'peer' : 'user', title: isWake ? 'PISS wake-up' : 'You', text: payload.text || '', imageCount: payload.imageCount || 0, status: '', options: [], sequence: event.sequence };
         items.push(item);
         currentAgent = null;
       } else if (event.kind === 'acp.user_message_chunk' || event.kind === 'acp.agent_message_chunk') {
         const role = event.kind === 'acp.user_message_chunk' ? 'user' : 'agent';
         const chunkText = contentText(update.content);
-        if (role === 'user' && chunkText.startsWith('Inter-session request from ')) continue;
+        if (role === 'user' && (update.content?.type === 'image' || chunkText.startsWith('Inter-session request from ') || acceptedImageTexts.has(chunkText))) continue;
         const id = update.messageId || (role === 'agent' && currentAgent ? currentAgent.id : `${role}-${event.sequence}`);
         const isWake = role === 'user' && chunkText.startsWith('PISS durable collaboration wake-up.');
         let item = messages.get(id);
@@ -574,6 +639,20 @@ module TimelineItem = {
                  {renderMarkdown(text, itemId(item), onCopy, copyFeedback)
                   ->React.array}
                </div>}
+      {itemImageCount(item) == 0
+         ? React.null
+         : <div className="message-images">
+             {icon("image")}
+             <span>
+               {React.string(
+                  string_of_int(itemImageCount(item))
+                  ++ (
+                    itemImageCount(item) == 1
+                      ? " image attached" : " images attached"
+                  ),
+                )}
+             </span>
+           </div>}
       {Array.length(itemLocations(item)) == 0
          ? React.null
          : <div className="artifact-locations">
@@ -731,6 +810,9 @@ module App = {
     let (notice, setNotice) =
       React.useState(() => "Connecting to the durable worker...");
     let (submitting, setSubmitting) = React.useState(() => false);
+    let (images, setImages) = React.useState(() => [||]);
+    let (imageSelectionPending, setImageSelectionPending) =
+      React.useState(() => false);
 
     let refreshSession = id =>
       if (id != "") {
@@ -797,6 +879,16 @@ module App = {
       let stopWatchingViewport = watchVisibleViewport();
       Some(stopWatchingViewport);
     });
+
+    React.useEffect1(
+      () => {
+        setImages(_ => [||]);
+        setImageSelectionPending(_ => false);
+        clearImagePicker();
+        None;
+      },
+      [|activeSessionId|],
+    );
 
     React.useEffect1(
       () =>
@@ -888,10 +980,40 @@ module App = {
         ->ignore;
       };
 
+    let selectImages = files =>
+      if (Array.length(files) > 0
+          && snapshotAcceptsImages(snapshot)
+          && !imageSelectionPending
+          && !submitting) {
+        setImageSelectionPending(_ => true);
+        setNotice(_ => "Preparing image attachments...");
+        readComposerImages(files, images)
+        ->thenPromise(nextImages => {
+            setImages(_ => nextImages);
+            setImageSelectionPending(_ => false);
+            setNotice(_ =>
+              string_of_int(Array.length(nextImages))
+              ++ (
+                Array.length(nextImages) == 1
+                  ? " image ready to send." : " images ready to send."
+              )
+            );
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setImageSelectionPending(_ => false);
+            setNotice(_ => errorMessage(error));
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
     let submitPrompt = event => {
       preventDefault(event);
       let text = promptValue();
-      if (text != "" && !submitting) {
+      if ((text != "" || Array.length(images) > 0)
+          && !imageSelectionPending
+          && !submitting) {
         let action = running ? delivery : "prompt";
         setSubmitting(_ => true);
         setNotice(_ =>
@@ -906,11 +1028,14 @@ module App = {
           jsonBody([|
             ("commandId", Js.Json.string(commandId)),
             ("text", Js.Json.string(text)),
+            ("images", imagesJson(images)),
             ("action", Js.Json.string(action)),
           |]);
         postText(sessionUrl("/api/v2/commands", activeSessionId), body)
         ->thenPromise(_ => {
             clearPrompt();
+            setImages(_ => [||]);
+            clearImagePicker();
             setNotice(_ =>
               action == "steer"
                 ? "Steering message delivered."
@@ -1739,6 +1864,57 @@ module App = {
                : React.null}
             <p className="notice" role="status"> {React.string(notice)} </p>
             <form className="composer" onSubmit=submitPrompt>
+              <input
+                id="composer-image-input"
+                className="composer-image-input"
+                type_="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple=true
+                tabIndex=(-1)
+                ariaHidden=true
+                onChange={event => selectImages(imageFilesFromInput(event))}
+              />
+              {Array.length(images) == 0
+                 ? React.null
+                 : <section
+                     className="composer-images"
+                     role="list"
+                     ariaLabel="Image attachments">
+                     {Array.map(
+                        image =>
+                          <figure role="listitem" key={imageId(image)}>
+                            <img
+                              src={imagePreview(image)}
+                              alt={imageName(image)}
+                            />
+                            <button
+                              type_="button"
+                              ariaLabel={"Remove " ++ imageName(image)}
+                              title={"Remove " ++ imageName(image)}
+                              onClick={_ => {
+                                setImages(current =>
+                                  removeComposerImage(
+                                    current,
+                                    imageId(image),
+                                  )
+                                );
+                                setNotice(_ => "Image removed.");
+                              }}>
+                              {icon("x")}
+                            </button>
+                            <figcaption>
+                              <b> {React.string(imageName(image))} </b>
+                              <small>
+                                {React.string(
+                                   formatImageSize(imageSize(image)),
+                                 )}
+                              </small>
+                            </figcaption>
+                          </figure>,
+                        images,
+                      )
+                      ->React.array}
+                   </section>}
               <textarea
                 id="prompt-input"
                 name="prompt"
@@ -1746,9 +1922,13 @@ module App = {
                 maxLength=65536
                 ariaLabel="Message agent"
                 disabled={
-                  submitting || activeSessionId == "" || workerUnavailable
+                  submitting
+                  || imageSelectionPending
+                  || activeSessionId == ""
+                  || workerUnavailable
                 }
                 onKeyDown=composerKeyDown
+                onPaste={event => selectImages(imageFilesFromPaste(event))}
                 placeholder={
                   activeSessionId == ""
                     ? "Create or select a session"
@@ -1763,10 +1943,25 @@ module App = {
                 <div className="composer-insertions">
                   <button
                     type_="button"
-                    disabled=true
-                    title="Image attachments are coming next"
-                    ariaLabel="Attach images">
-                    {icon("plus")}
+                    disabled={
+                      submitting
+                      || imageSelectionPending
+                      || activeSessionId == ""
+                      || workerUnavailable
+                      || !snapshotAcceptsImages(snapshot)
+                    }
+                    title={
+                      snapshotAcceptsImages(snapshot)
+                        ? "Attach up to four images"
+                        : "This agent does not accept image prompts"
+                    }
+                    ariaLabel={
+                      imageSelectionPending
+                        ? "Preparing images" : "Attach images"
+                    }
+                    onClick={_ => openImagePicker()}>
+                    {imageSelectionPending
+                       ? React.string("...") : icon("plus")}
                   </button>
                   <button
                     type_="button"
@@ -1992,7 +2187,10 @@ module App = {
                   className="send-action"
                   type_="submit"
                   disabled={
-                    submitting || activeSessionId == "" || workerUnavailable
+                    submitting
+                    || imageSelectionPending
+                    || activeSessionId == ""
+                    || workerUnavailable
                   }
                   ariaLabel={
                     running

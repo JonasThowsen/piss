@@ -54,7 +54,24 @@ updated_config=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"configId":"thought_level","value":"high"}' \
   "http://127.0.0.1:$port/api/v2/config-options")
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$updated_config") == high ]]
-[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue') == high ]]
+snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
+[[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$snapshot") == high ]]
+[[ $(jq -r '.acceptsImages' <<<"$snapshot") == true ]]
+image_data=R0lGODlhAQABAAAAACw=
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"bad-image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}' \
+  "http://127.0.0.1:$port/api/v2/commands") == 400 ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "{\"commandId\":\"image-command\",\"text\":\"Inspect this pasted image\",\"images\":[{\"mimeType\":\"image/gif\",\"data\":\"$image_data\",\"name\":\"proof.gif\"}]}" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  image_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "image-command" and .payload.state == "completed")] | length' <<<"$image_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "image-command" and .payload.imageCount == 1 and .payload.images[0].mimeType == "image/gif" and .payload.images[0].size == 14)] | length' <<<"$image_events") == 1 ]]
+[[ $(jq --arg data "$image_data" '[.[] | select(tostring | contains($data))] | length' <<<"$image_events") == 0 ]]
+[[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk" and .payload.params.update.content.text == "Received 1 image attachment.")] | length' <<<"$image_events") == 1 ]]
 initial_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "timeline.reset")] | length' <<<"$initial_events") == 1 ]]
 initial_cursor=$(jq '[.[].sequence] | max // 0' <<<"$initial_events")
@@ -87,7 +104,7 @@ sleep 3
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "acp.permission.resolved")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "permission-command" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
-[[ $(jq '[.[] | select(.kind == "acp.tool_call_update" and any(.payload.params.update.content[]?; .type == "diff") and any(.payload.params.update.content[]?; .type == "terminal") and any(.payload.params.update.content[]?; .content.type == "image") and any(.payload.params.update.content[]?; .content.type == "resource") and .payload.params.update.locations[0].path == "/workspace/mock-proof.txt")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.tool_call_update" and .payload.params.update.toolCallId == "tool-permission-command" and any(.payload.params.update.content[]?; .type == "diff") and any(.payload.params.update.content[]?; .type == "terminal") and any(.payload.params.update.content[]?; .content.type == "image") and any(.payload.params.update.content[]?; .content.type == "resource") and .payload.params.update.locations[0].path == "/workspace/mock-proof.txt")] | length' <<<"$events") == 1 ]]
 for _ in $(seq 1 100); do
   grep -q '"commandId":"permission-command","state":"completed"' \
     "$state/permission.stream" 2>/dev/null && break
@@ -165,4 +182,4 @@ ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id:
 assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
 PY
 
-echo "interaction proof passed: resumable SSE, permissions, steer/follow-up delivery, and cancellation"
+echo "interaction proof passed: typed image prompts, resumable SSE, permissions, steer/follow-up delivery, and cancellation"
