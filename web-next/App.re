@@ -296,9 +296,15 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       if (content.type === 'content') return contentText(content.content);
       return '';
     };
+    const classifyKind = update => {
+      const kind = update.kind || 'other';
+      const command = typeof update.rawInput?.command === 'string' ? update.rawInput.command : '';
+      const label = `${update.title || ''} ${command}`;
+      return kind === 'execute' && /(^|\s|\/)(test|tests|pytest|runtest|jest|vitest)(\s|$)/i.test(label) ? 'test' : kind;
+    };
     const describeInput = (kind, input) => {
       if (!input || typeof input !== 'object') return '';
-      if (kind === 'execute' && typeof input.command === 'string') return input.command;
+      if (['execute', 'test'].includes(kind) && typeof input.command === 'string') return input.command;
       if (['read', 'edit', 'delete', 'move'].includes(kind) && typeof input.path === 'string') return input.path;
       if (kind === 'search' && typeof (input.query || input.pattern) === 'string') return input.query || input.pattern;
       return Object.keys(input).length ? JSON.stringify(input, null, 2) : '';
@@ -350,7 +356,7 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       } else if (event.kind === 'acp.tool_call') {
         currentAgent = null;
         const id = update.toolCallId || `tool-${event.sequence}`;
-        const kind = update.kind || 'other';
+        const kind = classifyKind(update);
         const artifacts = Array.isArray(update.content) ? update.content.map(contentArtifact).filter(Boolean) : [];
         const item = {
           id,
@@ -374,7 +380,7 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
           tools.set(id, item);
           items.push(item);
         }
-        if (update.kind) item.kind = update.kind;
+        if (update.kind || update.rawInput || update.title) item.kind = classifyKind({ ...update, kind: update.kind || item.kind });
         if (update.title) item.title = update.title;
         if (update.status) item.status = update.status;
         if (update.rawInput) item.text = describeInput(item.kind, update.rawInput);
@@ -382,6 +388,8 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
         const content = Array.isArray(update.content) ? update.content : [];
         const addition = content.map(contentText).filter(Boolean).join('\n');
         if (addition) item.text = item.text ? `${item.text}\n${addition}` : addition;
+        if (!addition && update.rawOutput && typeof update.rawOutput === 'object') { const output = JSON.stringify(update.rawOutput, null, 2); if (output !== '{}') item.text = item.text ? `${item.text}\n${output}` : output; }
+        if (item.kind === 'test') { const passed = item.text.match(/(\d+)\s+(?:tests?\s+)?passed/i)?.[1]; const failed = item.text.match(/(\d+)\s+(?:tests?\s+)?failed/i)?.[1]; if (passed || failed) item.title = `Test run · ${passed || '0'} passed${failed ? ` / ${failed} failed` : ''}`; }
         item.artifacts.push(...content.map(contentArtifact).filter(Boolean));
       } else if (event.kind === 'acp.permission.requested') {
         const id = String(payload.id ?? event.sequence);
