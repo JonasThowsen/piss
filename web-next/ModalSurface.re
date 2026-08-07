@@ -23,8 +23,9 @@ let backdrop = [%cx {|
   width: 100%;
   height: 100vh;
   display: grid;
-  place-items: center;
-  padding: 18px;
+  align-items: start;
+  justify-items: stretch;
+  padding: min(2vh, 12px) 0 12px 0;
   background: #20231f6b;
   @media (max-width: 760px) {
     padding: 0;
@@ -34,7 +35,8 @@ let backdrop = [%cx {|
 let popup = [%cx {|
   position: relative;
   width: min(580px, 100%);
-  max-height: min(760px, calc(100vh - 28px));
+  align-self: start;
+  max-height: min(760px, calc(100vh - 24px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--line-strong);
@@ -59,6 +61,7 @@ let header = [%cx {|
   padding: 16px 20px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
+  flex: none;
   @media (max-width: 760px) {
     padding: 12px 14px;
   }
@@ -84,6 +87,7 @@ let footer = [%cx {|
   padding: 12px 20px;
   border-top: 1px solid var(--line);
   background: var(--surface);
+  flex: none;
   @media (max-width: 760px) {
     padding: 12px 14px;
   }
@@ -100,6 +104,7 @@ let closeButton = [%cx {|
   background: var(--panel);
   color: var(--muted);
   cursor: pointer;
+  flex: none;
   &:hover:not(:disabled) {
     background: var(--soft);
     color: var(--text);
