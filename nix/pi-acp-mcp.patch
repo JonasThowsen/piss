@@ -1,0 +1,170 @@
+diff -ruN pi-acp-mcp-base/src/acp/agent.ts pi-acp-mcp-work/src/acp/agent.ts
+--- pi-acp-mcp-base/src/acp/agent.ts	2026-08-07 11:12:26.069690408 +0200
++++ pi-acp-mcp-work/src/acp/agent.ts	2026-08-07 11:29:16.138392602 +0200
+@@ -201,7 +201,8 @@
+         proc = await PiRpcProcess.spawn({
+           cwd,
+           sessionPath: stored.sessionFile,
+-          piCommand: process.env.PI_ACP_PI_COMMAND
++          piCommand: process.env.PI_ACP_PI_COMMAND,
++          ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {})
+         })
+       } catch (e: any) {
+         if (e?.name === 'PiRpcSpawnError') {
+@@ -279,7 +280,8 @@
+     const fileCommands = loadSlashCommands(params.cwd)
+     const enableSkillCommands = getEnableSkillCommands(params.cwd)
+ 
+-    // Pi doesn't support mcpServers, but we accept and store.
++    // Pi's MCP adapter reads a generated, session-private config translated
++    // from the ACP session setup payload.
+     const session = await this.sessions.create({
+       cwd: params.cwd,
+       mcpServers: params.mcpServers,
+diff -ruN pi-acp-mcp-base/src/acp/session.ts pi-acp-mcp-work/src/acp/session.ts
+--- pi-acp-mcp-base/src/acp/session.ts	1970-01-01 01:00:01.000000000 +0100
++++ pi-acp-mcp-work/src/acp/session.ts	2026-08-07 11:13:31.926689872 +0200
+@@ -191,7 +191,8 @@
+     try {
+       proc = await PiRpcProcess.spawn({
+         cwd: params.cwd,
+-        piCommand: params.piCommand
++        piCommand: params.piCommand,
++        mcpServers: params.mcpServers
+       })
+     } catch (e) {
+       if (e instanceof PiRpcSpawnError) {
+diff -ruN pi-acp-mcp-base/src/pi-rpc/process.ts pi-acp-mcp-work/src/pi-rpc/process.ts
+--- pi-acp-mcp-base/src/pi-rpc/process.ts	2026-08-07 11:12:26.069450035 +0200
++++ pi-acp-mcp-work/src/pi-rpc/process.ts	2026-08-07 11:27:38.171699080 +0200
+@@ -1,4 +1,7 @@
+ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
++import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
++import { homedir, tmpdir } from 'node:os'
++import { join } from 'node:path'
+ import * as readline from 'node:readline'
+ import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
+ 
+@@ -75,6 +78,66 @@
+   piCommand?: string
+   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
+   sessionPath?: string
++  /** ACP-provided MCP servers translated for Pi's MCP adapter extension. */
++  mcpServers?: unknown[]
++}
++
++type GeneratedMcpConfig = { path: string; cleanup: () => void }
++
++function mcpEnvironment(value: unknown): Record<string, string> {
++  if (!Array.isArray(value)) return {}
++  return Object.fromEntries(value.flatMap(item => {
++    const entry = item as { name?: unknown; value?: unknown }
++    return typeof entry?.name === 'string' && typeof entry?.value === 'string'
++      ? [[entry.name, entry.value]]
++      : []
++  }))
++}
++
++function generateMcpConfig(mcpServers: unknown[] | undefined): GeneratedMcpConfig | undefined {
++  const translated: Record<string, unknown> = {}
++  for (const value of mcpServers ?? []) {
++    const server = value as { name?: unknown; command?: unknown; args?: unknown; env?: unknown }
++    if (typeof server?.name !== 'string' || typeof server?.command !== 'string') continue
++    translated[server.name] = {
++      command: server.command,
++      args: Array.isArray(server.args) ? server.args.filter(arg => typeof arg === 'string') : [],
++      env: mcpEnvironment(server.env)
++    }
++  }
++  if (Object.keys(translated).length === 0) return undefined
++
++  const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent')
++  const existingPath = join(agentDir, 'mcp.json')
++  let existing: Record<string, unknown> = {}
++  try {
++    const parsed = JSON.parse(readFileSync(existingPath, 'utf8'))
++    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed
++  } catch {
++    // A missing or malformed optional Pi config must not suppress ACP-provided servers.
++  }
++  const existingServers = existing.mcpServers
++  const merged = {
++    ...existing,
++    mcpServers: {
++      ...(existingServers && typeof existingServers === 'object' && !Array.isArray(existingServers)
++        ? existingServers as Record<string, unknown>
++        : {}),
++      ...translated
++    }
++  }
++  const directory = mkdtempSync(join(tmpdir(), 'pi-acp-mcp-'))
++  const path = join(directory, 'mcp.json')
++  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 })
++  let cleaned = false
++  const cleanup = () => {
++    if (cleaned) return
++    cleaned = true
++    process.off('exit', cleanup)
++    rmSync(directory, { recursive: true, force: true })
++  }
++  process.once('exit', cleanup)
++  return { path, cleanup }
+ }
+ 
+ export class PiRpcProcess {
+@@ -82,9 +145,11 @@
+   private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
+   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
+   private readonly preludeLines: string[] = []
++  private readonly cleanupMcpConfig?: () => void
+ 
+-  private constructor(child: ChildProcessWithoutNullStreams) {
++  private constructor(child: ChildProcessWithoutNullStreams, cleanupMcpConfig?: () => void) {
+     this.child = child
++    this.cleanupMcpConfig = cleanupMcpConfig
+ 
+     const rl = readline.createInterface({ input: child.stdout })
+     rl.on('line', line => {
+@@ -116,6 +181,7 @@
+     })
+ 
+     child.on('exit', (code, signal) => {
++      this.cleanupMcpConfig?.()
+       const err = new Error(`pi process exited (code=${code}, signal=${signal})`)
+       for (const [, p] of this.pending) p.reject(err)
+       this.pending.clear()
+@@ -137,6 +203,8 @@
+     // (e.g. MCP extensions, prompt templates for workflows).
+     const args = ['--mode', 'rpc', '--no-themes']
+     if (params.sessionPath) args.push('--session', params.sessionPath)
++    const mcpConfig = generateMcpConfig(params.mcpServers)
++    if (mcpConfig) args.push('--mcp-config', mcpConfig.path)
+ 
+     const child = spawn(cmd, args, {
+       cwd: params.cwd,
+@@ -166,6 +234,7 @@
+         child.once('error', onError)
+       })
+     } catch (e: any) {
++      mcpConfig?.cleanup()
+       const code = typeof e?.code === 'string' ? e.code : undefined
+       if (code === 'ENOENT') {
+         throw new PiRpcSpawnError(
+@@ -185,7 +254,7 @@
+       // leave stderr untouched; ACP clients may capture it.
+     })
+ 
+-    const proc = new PiRpcProcess(child)
++    const proc = new PiRpcProcess(child, mcpConfig?.cleanup)
+ 
+     // Best-effort handshake.
+     // Important: pi may emit a get_state response pointing at a sessionFile in a directory
+@@ -219,6 +288,8 @@
+       this.child.kill(signal as any)
+     } catch {
+       // ignore
++    } finally {
++      this.cleanupMcpConfig?.()
+     }
+   }
+ 
