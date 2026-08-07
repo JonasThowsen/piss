@@ -384,17 +384,14 @@ let create_managed_session manager ~harness ~workspace_id ~title =
       Error (Printexc.to_string exn)
 
 let archive_managed_session manager id =
-  if Registry.active_count manager.registry <= 1 then
-    Error "at least one active session must remain"
-  else
-    match Registry.find_active manager.registry id with
-    | None -> Error "active session not found"
-    | Some _ -> (
-        match run_lifecycle manager.stopper id with
-        | Error message -> Error message
-        | Ok () ->
-            if Registry.archive manager.registry id then Ok ()
-            else Error "session was already archived")
+  match Registry.find_active manager.registry id with
+  | None -> Error "active session not found"
+  | Some _ -> (
+      match run_lifecycle manager.stopper id with
+      | Error message -> Error message
+      | Ok () ->
+          if Registry.archive manager.registry id then Ok ()
+          else Error "session was already archived")
 
 let restore_managed_session manager id =
   (* TODO(tracer): Persist started/completed lifecycle receipts before replacing
@@ -1686,7 +1683,7 @@ let () =
           max_active_sessions = !max_active_sessions;
         }
       in
-      if Registry.active_count registry = 0 then
+      if Registry.list registry ~include_archived:true = [] then
         ignore
           (Registry.insert registry ~id:!bootstrap_session
              ~title:"Pi / deployed" ~harness:!default_harness

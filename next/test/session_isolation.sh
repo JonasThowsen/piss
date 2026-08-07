@@ -364,5 +364,22 @@ PY
 [[ "$ledger_after_restore" -ge "$ledger_before_restore" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 0 ]]
 
-printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s third=%s fanout_ms=%s control=%s->%s\n' \
+# Archiving the final active session is valid, and an empty registry must remain
+# empty when the replaceable control plane starts again.
+for id in "$first" "$second" "$third"; do
+  curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+    "http://127.0.0.1:$port/api/v2/sessions/$id/archive" >/dev/null
+done
+wait_session_count 0
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 3 ]]
+empty_control=$control_pid
+kill "$control_pid"
+wait "$control_pid" 2>/dev/null || true
+control_pid=
+start_control
+[[ "$control_pid" != "$empty_control" ]]
+wait_session_count 0
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 3 ]]
+
+printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s third=%s fanout_ms=%s control=%s->%s final_archive=preserved\n' \
   "$first_worker" "$replacement" "$restored_worker" "$second_worker" "$third" "$fanout_elapsed" "$old_control" "$control_pid"
