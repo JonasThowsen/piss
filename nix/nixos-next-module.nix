@@ -652,6 +652,36 @@ in
       };
     };
 
+    systemd.user.services.piss-ocaml-watchdog = {
+      description = "Ensure PISS OCaml control plane is running";
+      after = [ "piss-ocaml.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${lib.getExe' pkgs.systemd "systemctl"} --user start piss-ocaml.service";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        LockPersonality = true;
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.timers.piss-ocaml-watchdog = {
+      description = "Periodically confirm PISS OCaml control plane";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "1min";
+        Persistent = true;
+        Unit = "piss-ocaml-watchdog.service";
+      };
+    };
+
     systemd.user.services.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
       description = "Upgrade idle PISS workers to the current immutable generation";
       after = [ "piss-ocaml.service" ];
