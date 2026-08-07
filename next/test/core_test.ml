@@ -63,8 +63,15 @@ let test_session_registry () =
     "one archived session" 1
     (List.length (Registry.list_archived registry));
   Alcotest.(check bool)
-    "restore changes state" true
+    "last active session can be archived" true
+    (Registry.archive registry "s-two");
+  Alcotest.(check int) "no active sessions" 0 (Registry.active_count registry);
+  Alcotest.(check bool)
+    "first restore changes state" true
     (Registry.restore registry "s-one");
+  Alcotest.(check bool)
+    "second restore changes state" true
+    (Registry.restore registry "s-two");
   Alcotest.(check int) "two active again" 2 (Registry.active_count registry);
   Alcotest.(check bool)
     "rename changes title" true

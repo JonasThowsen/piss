@@ -129,7 +129,7 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 ## Deliberate current limitations
 
 - Each session allows one prompt turn at a time; independent sessions can run concurrently.
-- Active sessions have a configurable resource cap (`maxActiveSessions`, 32 by default and at most 256). Archival stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger.
+- Active sessions have a configurable resource cap (`maxActiveSessions`, 32 by default and at most 256). Archival—including archiving the final active session—stops the worker and retains its registry row and ledger; restoration relaunches the same session identity and ledger. An intentionally empty active-session set remains empty across control-plane restarts.
 - Pi and OpenCode are selectable per session. The bootstrap default remains Pi. Every session is bound to one Nix-allowlisted workspace, written into its immutable owner-only worker specification.
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one browser connection; a worker-side wait/fanout primitive is deferred until multiple simultaneous observers per session are needed.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.

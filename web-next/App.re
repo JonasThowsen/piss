@@ -463,6 +463,16 @@ module App = {
           if (selected != activeSessionId) {
             setActiveSessionId(_ => selected);
             setEventsJson(_ => "[]");
+            if (selected == "") {
+              setSessionJson(_ =>
+                "{\"status\":\"offline\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
+              );
+              setConfigOptionsJson(_ => "[]");
+              setConfigMenu(_ => "");
+              setNotice(_ =>
+                "No active sessions. Create one from a workspace to continue."
+              );
+            };
           };
           refreshSession(selected);
           Js.Promise.resolve();
@@ -677,6 +687,11 @@ module App = {
             if (id == activeSessionId) {
               setActiveSessionId(_ => "");
               setEventsJson(_ => "[]");
+              setSessionJson(_ =>
+                "{\"status\":\"offline\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
+              );
+              setConfigOptionsJson(_ => "[]");
+              setConfigMenu(_ => "");
             };
             setArchiveTargetId(_ => "");
             setSessionMenuId(_ => "");
@@ -1147,12 +1162,16 @@ module App = {
                           </span>
                           <h3>
                             {React.string(
-                               "Give the worker something real to do.",
+                               activeSessionId == ""
+                                 ? "No active sessions."
+                                 : "Give the worker something real to do.",
                              )}
                           </h3>
                           <p>
                             {React.string(
-                               "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                               activeSessionId == ""
+                                 ? "Create a session from a workspace to start a new durable agent."
+                                 : "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
                              )}
                           </p>
                         </div>
@@ -1231,12 +1250,14 @@ module App = {
                 rows=2
                 maxLength=65536
                 ariaLabel="Message agent"
-                disabled=submitting
+                disabled={submitting || activeSessionId == ""}
                 onKeyDown=composerKeyDown
                 placeholder={
-                  running
-                    ? "Message Pi while it works..."
-                    : "Message agent / commands @ files"
+                  activeSessionId == ""
+                    ? "Create or select a session"
+                    : running
+                        ? "Message Pi while it works..."
+                        : "Message agent / commands @ files"
                 }
               />
               <div className="composer-footer">
@@ -1441,7 +1462,7 @@ module App = {
                 <button
                   className="send-action"
                   type_="submit"
-                  disabled=submitting
+                  disabled={submitting || activeSessionId == ""}
                   ariaLabel={
                     running
                       ? delivery == "steer" ? "Steer Pi" : "Queue follow-up"
