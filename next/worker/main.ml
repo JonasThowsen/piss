@@ -77,6 +77,25 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
   let upgrade_deadline = ref 0. in
   let harness_session_id = ref "" in
   let config_options = ref (`List []) in
+  let selected_config_values () =
+    match !config_options with
+    | `List options ->
+        `Assoc
+          (List.filter_map
+             (fun option ->
+               match
+                 ( Yojson.Safe.Util.member "id" option,
+                   Yojson.Safe.Util.member "currentValue" option )
+               with
+               | `String id, `String value -> Some (id, `String value)
+               | _ -> None)
+             options)
+    | _ -> `Assoc []
+  in
+  let persist_config_values () =
+    Store.set_metadata store "config_option_values"
+      (Yojson.Safe.to_string (selected_config_values ()))
+  in
   let send json = Eio.Stream.add outgoing json in
   let fail_pending message =
     Hashtbl.iter
@@ -278,6 +297,75 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
     | _ -> create_session ()
   in
   harness_session_id := session_id_from_agent;
+  let persisted_config_values =
+    match Store.get_metadata store "config_option_values" with
+    | None -> []
+    | Some encoded -> (
+        try
+          match Yojson.Safe.from_string encoded with
+          | `Assoc values ->
+              List.filter_map
+                (function id, `String value -> Some (id, value) | _ -> None)
+                values
+          | _ -> []
+        with Yojson.Json_error _ -> [])
+  in
+  let config_restore_priority (id, _) = if id = "model" then 0 else 1 in
+  persisted_config_values
+  |> List.stable_sort (fun left right ->
+      Int.compare (config_restore_priority left) (config_restore_priority right))
+  |> List.iter (fun (config_id, value) ->
+      let current_value =
+        match !config_options with
+        | `List options ->
+            List.find_map
+              (fun option ->
+                match
+                  ( Yojson.Safe.Util.member "id" option,
+                    Yojson.Safe.Util.member "currentValue" option )
+                with
+                | `String id, `String current when id = config_id ->
+                    Some current
+                | _ -> None)
+              options
+        | _ -> None
+      in
+      match current_value with
+      | None -> ()
+      | Some current when current = value -> ()
+      | Some _ -> (
+          let id =
+            "config-restore-"
+            ^ Digest.to_hex
+                (Digest.string
+                   (config_id ^ "\000" ^ value ^ "\000" ^ generation))
+          in
+          try
+            let result, response =
+              require_rpc_result ~id
+                (Acp.set_config_option_request ~id
+                   ~session_id:!harness_session_id ~config_id ~value)
+            in
+            (match Yojson.Safe.Util.member "configOptions" result with
+            | `List _ as options -> config_options := options
+            | _ -> ());
+            ignore
+              (Store.append_event store ~kind:"acp.config_option.restored"
+                 (`Assoc
+                    [
+                      ("configId", `String config_id);
+                      ("value", `String value);
+                      ("response", response);
+                    ]))
+          with exn ->
+            ignore
+              (Store.append_event store ~kind:"acp.config_option.restore_failed"
+                 (`Assoc
+                    [
+                      ("configId", `String config_id);
+                      ("value", `String value);
+                      ("error", `String (Printexc.to_string exn));
+                    ]))));
   status := Domain.Idle;
   let previous_generation = Store.get_metadata store "worker_generation" in
   Store.set_metadata store "worker_generation" generation;
@@ -382,6 +470,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
         else (
           upgrade_target := Some target;
           upgrade_deadline := Unix.gettimeofday () +. 30.;
+          persist_config_values ();
           Store.set_metadata store "pending_worker_upgrade" target;
           let event =
             Store.append_event store ~kind:"worker.upgrade.prepared"
@@ -543,6 +632,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
           (match Yojson.Safe.Util.member "configOptions" result with
           | `List _ as options -> config_options := options
           | _ -> ());
+          persist_config_values ();
           ignore
             (Store.append_event store ~kind:"acp.config_option.changed" response);
           Ok (`Assoc [ ("configOptions", !config_options) ])

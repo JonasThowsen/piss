@@ -140,6 +140,12 @@ duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
 
 events_after_duplicate=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "command.accepted")] | length' <<<"$events_after_duplicate") == 1 ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"configId":"model","value":"mock/deep"}' \
+  "http://127.0.0.1:$port/api/v2/config-options" >/dev/null
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"configId":"thought_level","value":"high"}' \
+  "http://127.0.0.1:$port/api/v2/config-options" >/dev/null
 
 prepared=$(python3 - "$socket" <<'PY'
 import json, socket, sys
@@ -176,8 +182,12 @@ replacement_snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
 [[ $(jq -r .workerPid <<<"$replacement_snapshot") != "$old_worker_pid" ]]
 [[ $(jq -r .workerGeneration <<<"$replacement_snapshot") == worker-generation-two ]]
 [[ $(jq -r .status <<<"$replacement_snapshot") == idle ]]
+[[ $(jq -r '.configOptions[]|select(.category=="model")|.currentValue' <<<"$replacement_snapshot") == mock/deep ]]
+[[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$replacement_snapshot") == high ]]
 upgrade_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "worker.upgrade.prepared" and .payload.toGeneration == "worker-generation-two")] | length' <<<"$upgrade_events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "worker.upgrade.completed" and .payload.fromGeneration == "worker-generation-one" and .payload.toGeneration == "worker-generation-two")] | length' <<<"$upgrade_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.config_option.restored" and .payload.configId == "model" and .payload.value == "mock/deep")] | length' <<<"$upgrade_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.config_option.restored" and .payload.configId == "thought_level" and .payload.value == "high")] | length' <<<"$upgrade_events") == 1 ]]
 
-echo "replaceability proof passed: control replaced without worker interruption; idle worker then upgraded with receipts"
+echo "replaceability proof passed: control replacement, idle worker upgrade receipts, and restored ACP configuration"
