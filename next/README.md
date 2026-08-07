@@ -31,11 +31,11 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 The deployed Reason application provides:
 
 - durable allowlisted workspaces with current-style responsive navigation and a bounded local-directory picker rooted only in Nix-approved discovery paths;
-- named Pi/OpenCode session creation, renaming, switching, archival, and restoration;
+- named Pi/OpenCode session creation, renaming, switching, archival, and restoration through an active/archived session search;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - a current-workbench composer with Enter/Ctrl/Cmd dispatch plus ACP-backed model and thinking selectors;
-- streamed assistant messages over resumable server-sent events;
-- structured tool-call cards and output;
+- paginated durable history plus streamed assistant messages over resumable server-sent events, with scroll-preserving older-page loading;
+- artifact-aware tool cards for commands, file locations, ACP diffs, images, resources, and terminal references;
 - permission decisions for ACP agents that request them;
 - durable active-turn steering and queued follow-up messages, with a replayable outgoing-message tray and isolated cancellation;
 - worker, adapter, and event-sequence telemetry;
@@ -83,7 +83,7 @@ nix build .#piss-next-web
 nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-`@interaction-test` proves monotonic SSE delivery, `Last-Event-ID` resumption without duplicates, permission validation/resolution, and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, resumes SSE from the last received event ID, and verifies unchanged worker/harness PIDs, gap-free replay, and exactly-once command completion. `@session-isolation-test` creates two durable sessions, runs both concurrently, kills and observes replacement of one worker without changing the other, replaces the control plane, archives one session, restores it under the same identity, and verifies its ledger and completed timeline remain intact.
+`@interaction-test` proves monotonic SSE delivery, `Last-Event-ID` resumption without duplicates, artifact-bearing ACP tool updates, permission validation/resolution, and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, resumes SSE from the last received event ID, and verifies unchanged worker/harness PIDs, gap-free replay, and exactly-once command completion. `@session-isolation-test` creates three durable sessions, runs them concurrently, kills and observes replacement of one worker without changing the others, replaces the control plane, archives and restores a session under the same identity, pages backward through its ledger, and verifies that archiving every session remains stable across another control replacement.
 
 A real-harness smoke has exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages and may now run simultaneously; `services.piss-next.harness` selects only the bootstrap default.
 
@@ -124,7 +124,7 @@ The worker database uses WAL, `synchronous=FULL`, foreign keys, a busy timeout, 
 
 A command is committed before it is written to the ACP agent. Duplicate command IDs return the existing state and are never dispatched again. A write failure after acceptance becomes `ambiguous`; an interrupted worker reconciles accepted/dispatched commands to `ambiguous` instead of silently retrying consequential work. Completed, cancelled, rejected, and ambiguous outcomes are explicit.
 
-The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the oldest 512 events are compacted while SQLite's autoincrement sequence remains monotonic. The browser loads the newest bounded page once, then follows the selected session over SSE. Every frame carries the durable sequence as its event ID, so native `Last-Event-ID` reconnection resumes strictly after the last received event without duplicates. ACP `session/load` remains the source for full harness conversation replay after worker replacement.
+The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the oldest 512 events are compacted while SQLite's autoincrement sequence remains monotonic. The browser loads the newest bounded page, can page backward with an exclusive `before` cursor while preserving its scroll anchor, and follows the selected session over SSE at the same time. Pages and live frames are merged by durable sequence without gaps or duplicates. Every SSE frame carries that sequence as its event ID, so native `Last-Event-ID` reconnection resumes strictly after the last received event. ACP `session/load` remains the source for full harness conversation replay after worker replacement.
 
 ## Deliberate current limitations
 

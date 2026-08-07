@@ -312,6 +312,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Wire.Events { after; limit } ->
         let events = Store.list_events store ~after ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
+    | Wire.Events_before { before; limit } ->
+        let events = Store.list_events_before store ~before ~limit in
+        Ok (`List (List.map Domain.event_to_yojson events))
     | Wire.Recent_events { limit } ->
         let events = Store.list_recent_events store ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))

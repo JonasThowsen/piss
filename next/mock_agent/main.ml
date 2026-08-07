@@ -185,6 +185,15 @@ let rec run_prompt ~id ~session_id ~text =
                 ("sessionUpdate", `String "tool_call_update");
                 ("toolCallId", `String ("tool-" ^ id));
                 ("status", `String "completed");
+                ( "locations",
+                  `List
+                    [
+                      `Assoc
+                        [
+                          ("path", `String "/workspace/mock-proof.txt");
+                          ("line", `Int 1);
+                        ];
+                    ] );
                 ( "content",
                   `List
                     [
@@ -197,6 +206,13 @@ let rec run_prompt ~id ~session_id ~text =
                                 ("type", `String "text");
                                 ("text", `String "agent process stayed alive");
                               ] );
+                        ];
+                      `Assoc
+                        [
+                          ("type", `String "diff");
+                          ("path", `String "/workspace/mock-proof.txt");
+                          ("oldText", `String "before\n");
+                          ("newText", `String "after\n");
                         ];
                     ] );
               ]));

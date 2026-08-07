@@ -2,6 +2,7 @@ type request =
   | Hello of { protocol_version : int }
   | Snapshot
   | Events of { after : int64; limit : int }
+  | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
   | New_session
   | Prompt of { command_id : string; text : string }
@@ -64,6 +65,13 @@ let request_of_yojson json =
       let* limit = int_member ~default:200 "limit" json in
       if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
       else Ok (Events { after; limit })
+  | "events_before" ->
+      let* before = int64_member "before" json in
+      let* limit = int_member ~default:200 "limit" json in
+      if before <= 0L then Error "before must be a positive integer"
+      else if limit < 1 || limit > 500 then
+        Error "limit must be between 1 and 500"
+      else Ok (Events_before { before; limit })
   | "recent_events" ->
       let* limit = int_member ~default:500 "limit" json in
       if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"

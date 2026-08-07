@@ -231,13 +231,22 @@ let test_event_sequence () =
   Alcotest.(check string) "right event" "second" (List.hd replay).kind;
   let recent = Store.list_recent_events store ~limit:1 in
   Alcotest.(check int) "recent page size" 1 (List.length recent);
-  Alcotest.(check string) "recent event" "second" (List.hd recent).kind
+  Alcotest.(check string) "recent event" "second" (List.hd recent).kind;
+  let older =
+    Store.list_events_before store ~before:second.sequence ~limit:10
+  in
+  Alcotest.(check int) "older page size" 1 (List.length older);
+  Alcotest.(check string)
+    "older page remains ascending" "first" (List.hd older).kind
 
 let test_wire_bounds () =
   let decode json = Wire.request_of_yojson (Yojson.Safe.from_string json) in
   (match decode {|{"op":"events","after":0,"limit":501}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized event page was accepted");
+  (match decode {|{"op":"events_before","before":0,"limit":200}|} with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "non-positive before cursor was accepted");
   (match decode {|{"op":"unknown"}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unknown worker operation was accepted");
