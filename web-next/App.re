@@ -90,26 +90,44 @@ let icon: string => React.element = [%raw
 ];
 
 let copyToClipboard: string => Js.Promise.t(unit) = [%raw
-  {|text => new Promise(async (resolve, reject) => {
+  {|async text => {
     if (navigator.clipboard?.writeText) {
-      try { await navigator.clipboard.writeText(text); resolve(); return; } catch (_) {}
+      try { await navigator.clipboard.writeText(text); return; } catch (_) {}
     }
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const selection = previous && 'selectionStart' in previous
+      ? { start: previous.selectionStart, end: previous.selectionEnd }
+      : null;
     const field = document.createElement('textarea');
     field.value = text;
     field.readOnly = true;
-    field.style.position = 'fixed';
-    field.style.opacity = '0';
+    field.setAttribute('aria-hidden', 'true');
+    Object.assign(field.style, { position: 'fixed', top: '0', left: '-9999px', opacity: '0' });
     document.body.append(field);
-    field.select();
-    const copied = document.execCommand('copy');
-    field.remove();
-    previous?.focus();
-    copied ? resolve() : reject(new Error('Clipboard access was denied'));
-  })|}
+    let copied = false;
+    try {
+      field.focus({ preventScroll: true });
+      field.select();
+      copied = document.execCommand('copy');
+    } finally {
+      field.remove();
+      previous?.focus({ preventScroll: true });
+      if (selection) previous.setSelectionRange(selection.start, selection.end);
+    }
+    if (!copied) throw new Error('Clipboard access was denied');
+  }|}
 ];
 let scheduleCopyReset: ((string => string) => unit, string) => unit = [%raw
-  "(setFeedback, key) => setTimeout(() => setFeedback(current => current === key ? '' : current), 1800)"
+  {|(setFeedback, key) => {
+    globalThis.__pissCopyTimers ||= new WeakMap();
+    const previous = globalThis.__pissCopyTimers.get(setFeedback);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      setFeedback(current => current === key || current === `error:${key}` ? '' : current);
+      globalThis.__pissCopyTimers.delete(setFeedback);
+    }, 1800);
+    globalThis.__pissCopyTimers.set(setFeedback, timer);
+  }|}
 ];
 let renderMarkdown:
   (string, string, (string, string) => unit, string) => array(React.element) = [%raw
@@ -131,7 +149,7 @@ let renderMarkdown:
         if (cursor < value.length) parts.push(value.slice(cursor));
         return parts;
       };
-      const copyButton = (key, value, label) => React.createElement('button', { type: 'button', className: `markdown-copy ${feedback === key ? 'copied' : ''}`, onClick: () => onCopy(key, value), 'aria-label': `${feedback === key ? 'Copied' : 'Copy'} ${label}` }, feedback === key ? checkGlyph() : copyGlyph(), React.createElement('b', null, feedback === key ? 'Copied' : 'Copy'));
+      const copyButton = (key, value, label) => { const copied = feedback === key; const failed = feedback === `error:${key}`; return React.createElement('button', { type: 'button', className: `markdown-copy ${copied ? 'copied' : failed ? 'failed' : ''}`, onClick: () => onCopy(key, value), 'aria-label': `${copied ? 'Copied' : failed ? 'Copy failed' : 'Copy'} ${label}` }, copied ? checkGlyph() : copyGlyph(), React.createElement('b', null, copied ? 'Copied' : failed ? 'Failed' : 'Copy')); };
       const blocks = [];
       const addPlain = source => {
         for (const raw of source.split(/\n{2,}/)) {
@@ -144,7 +162,7 @@ let renderMarkdown:
           else if (/^#{1,4}\s+/.test(value)) { const mark = value.match(/^(#{1,4})\s+([\s\S]*)$/); const level = Math.min(4, mark[1].length + 2); content = React.createElement(`h${level}`, null, ...inline(mark[2], key)); }
           else if (lines.every(line => /^>\s?/.test(line))) content = React.createElement('blockquote', null, ...inline(lines.map(line => line.replace(/^>\s?/, '')).join('\n'), key));
           else content = React.createElement('p', null, ...lines.flatMap((line, i) => i === 0 ? inline(line, `${key}-${i}`) : [React.createElement('br', { key: `${key}-br-${i}` }), ...inline(line, `${key}-${i}`)]));
-          blocks.push(React.createElement('section', { className: 'markdown-block markdown-text-block', key }, copyButton(key, value, 'text block'), content));
+          blocks.push(React.createElement('section', { className: 'markdown-block markdown-text-block', key }, content));
         }
       };
       const fence = /```([^\n`]*)\n([\s\S]*?)```/g;
@@ -342,11 +360,49 @@ let eventValue: 'a => string = [%raw
 ];
 let eventKey: 'a => string = [%raw "event => event.key || ''"];
 let preventAnyDefault: 'a => unit = [%raw "event => event.preventDefault()"];
-let timelineAwayFromBottom: 'a => bool = [%raw
-  "event => event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight > 80"
+let updateTimelineFollowFromScroll: 'a => bool = [%raw
+  {|event => {
+    const timeline = event.currentTarget;
+    const away = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight > 80;
+    timeline.dataset.follow = away ? 'false' : 'true';
+    return away;
+  }|}
 ];
 let jumpTimelineToBottom: unit => unit = [%raw
-  "() => { const timeline = document.getElementById('timeline'); if (timeline) timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' }); }"
+  {|() => {
+    const timeline = document.getElementById('timeline');
+    if (!timeline) return;
+    timeline.dataset.follow = 'true';
+    timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'auto' });
+  }|}
+];
+let resetTimelineFollow: unit => unit = [%raw
+  {|() => requestAnimationFrame(() => {
+    const timeline = document.getElementById('timeline');
+    if (!timeline) return;
+    timeline.dataset.follow = 'true';
+    timeline.scrollTop = timeline.scrollHeight;
+  })|}
+];
+let installTimelineFollower: unit => disposer = [%raw
+  {|() => {
+    const timeline = document.getElementById('timeline');
+    const stream = timeline?.querySelector('.timeline-stream');
+    if (!timeline || !stream) return () => {};
+    let frame = 0;
+    const follow = () => {
+      if (timeline.dataset.follow === 'false') return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+    };
+    const mutations = new MutationObserver(follow);
+    mutations.observe(stream, { childList: true, subtree: true, characterData: true });
+    const resize = new ResizeObserver(follow);
+    resize.observe(stream);
+    timeline.dataset.follow = 'true';
+    follow();
+    return () => { cancelAnimationFrame(frame); mutations.disconnect(); resize.disconnect(); };
+  }|}
 ];
 let searchShortcutLabel: unit => string = [%raw
   "() => /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'"
@@ -374,7 +430,7 @@ let isRejectOption: string => bool = [%raw
   "value => value.includes('reject')"
 ];
 let scrollTimeline: unit => unit = [%raw
-  "() => requestAnimationFrame(() => { const timeline = document.getElementById('timeline'); if (!timeline) return; const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 280; if (nearBottom || !timeline.dataset.seen) { timeline.scrollTop = timeline.scrollHeight; timeline.dataset.seen = 'true'; } })"
+  "() => requestAnimationFrame(() => { const timeline = document.getElementById('timeline'); if (timeline && timeline.dataset.follow !== 'false') timeline.scrollTop = timeline.scrollHeight; })"
 ];
 let composerKeyDown: React.Event.Keyboard.t => unit = [%raw
   "event => { if (event.key === 'Enter' && !event.shiftKey && (event.metaKey || event.ctrlKey || !matchMedia('(max-width: 760px)').matches)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }"
@@ -465,8 +521,33 @@ let settledNotice: string => string = [%raw
 let mergeSessionSnapshot: (string, string, string) => string = [%raw
   "(sessionsText, id, snapshotText) => { try { const sessions = JSON.parse(sessionsText); const snapshot = JSON.parse(snapshotText); if (!Array.isArray(sessions)) return sessionsText; return JSON.stringify(sessions.map(session => session.id === id ? { ...session, ...snapshot } : session)); } catch (_) { return sessionsText; } }"
 ];
-let appendEvent: (string, string) => string = [%raw
-  "(eventsText, eventText) => { try { const events = JSON.parse(eventsText); const event = JSON.parse(eventText); if (!Array.isArray(events) || !Number.isSafeInteger(event.sequence)) return eventsText; const next = events.filter(existing => existing.sequence !== event.sequence); next.push(event); next.sort((a, b) => a.sequence - b.sequence); return JSON.stringify(next.slice(-4096)); } catch (_) { return eventsText; } }"
+let queueTimelineEvent: ((string => string) => unit, string) => unit = [%raw
+  {|(setEvents, eventText) => {
+    globalThis.__pissTimelineEventQueue ||= [];
+    globalThis.__pissTimelineEventQueue.push(eventText);
+    if (globalThis.__pissTimelineEventTimer) return;
+    globalThis.__pissTimelineEventTimer = setTimeout(() => {
+      const batch = globalThis.__pissTimelineEventQueue.splice(0);
+      globalThis.__pissTimelineEventTimer = null;
+      setEvents(current => {
+        try {
+          const bySequence = new Map(JSON.parse(current).filter(event => Number.isSafeInteger(event.sequence)).map(event => [event.sequence, event]));
+          for (const text of batch) {
+            const event = JSON.parse(text);
+            if (Number.isSafeInteger(event.sequence)) bySequence.set(event.sequence, event);
+          }
+          return JSON.stringify([...bySequence.values()].sort((left, right) => left.sequence - right.sequence).slice(-4096));
+        } catch (_) { return current; }
+      });
+    }, 40);
+  }|}
+];
+let cancelQueuedTimelineEvents: unit => unit = [%raw
+  {|() => {
+    if (globalThis.__pissTimelineEventTimer) clearTimeout(globalThis.__pissTimelineEventTimer);
+    globalThis.__pissTimelineEventTimer = null;
+    globalThis.__pissTimelineEventQueue = [];
+  }|}
 ];
 let eventPageLength: string => int = [%raw
   "text => { try { const events = JSON.parse(text); return Array.isArray(events) ? events.length : 0; } catch (_) { return 0; } }"
@@ -679,54 +760,44 @@ let catchPromise = (promise, callback) =>
 let ignorePromise = promise =>
   promise->catchPromise(_ => Js.Promise.resolve())->ignore;
 
-module TimelineItem = {
+module CopyButton = {
   [@react.component]
-  let make = (~item, ~onPermission, ~onCopy, ~copyFeedback) => {
-    let role = itemRole(item);
-    let status = itemStatus(item);
-    let kind = itemKind(item);
-    let text = itemText(item);
-    let copyable =
-      text != "" && (role == "agent" || role == "peer" || role == "tool");
-    <article className={"timeline-item timeline-" ++ role}>
-      <div className="message-meta">
-        <span className="message-role">
-          {React.string(itemTitle(item))}
-        </span>
-        <span className="message-classification">
-          {copyable
-             ? <button
-                 className={
-                   "timeline-copy "
-                   ++ (copyFeedback == itemId(item) ? "copied" : "")
-                 }
-                 type_="button"
-                 ariaLabel={
-                   copyFeedback == itemId(item)
-                     ? "Copied message" : "Copy message"
-                 }
-                 onClick={_ => onCopy(itemId(item), text)}>
-                 {copyFeedback == itemId(item)
-                    ? icon("check") : icon("copy")}
-                 <b>
-                   {React.string(
-                      copyFeedback == itemId(item) ? "Copied" : "Copy",
-                    )}
-                 </b>
-               </button>
-             : React.null}
-          {role == "tool" && kind != ""
-             ? <span className={"artifact-kind kind-" ++ kind}>
-                 {React.string(kind)}
-               </span>
-             : React.null}
-          {status == ""
-             ? React.null
-             : <span className={"message-status status-" ++ status}>
-                 {React.string(status)}
-               </span>}
-        </span>
-      </div>
+  let make = (~copyKey, ~label, ~text, ~onCopy, ~feedback) => {
+    let copied = feedback == copyKey;
+    let failed = feedback == "error:" ++ copyKey;
+    <button
+      className={
+        "timeline-copy " ++ (copied ? "copied" : failed ? "failed" : "")
+      }
+      type_="button"
+      ariaLabel={
+        copied
+          ? "Copied " ++ label
+          : failed ? "Copy failed " ++ label : "Copy " ++ label
+      }
+      onClick={_ => onCopy(copyKey, text)}>
+      {copied ? icon("check") : icon("copy")}
+      <b> {React.string(copied ? "Copied" : failed ? "Failed" : "Copy")} </b>
+    </button>;
+  };
+};
+
+module TimelineContents = {
+  [@react.component]
+  let make =
+      (~item, ~role, ~text, ~onPermission, ~onCopy, ~copyFeedback, ~toolCopy) =>
+    <div className="timeline-contents">
+      {toolCopy && text != ""
+         ? <div className="tool-copy-row">
+             <CopyButton
+               copyKey={itemId(item)}
+               label="tool output"
+               text
+               onCopy
+               feedback=copyFeedback
+             />
+           </div>
+         : React.null}
       {text == ""
          ? React.null
          : role == "tool"
@@ -822,7 +893,7 @@ module TimelineItem = {
          itemArtifacts(item),
        )
        ->React.array}
-      {role == "permission" && status == "pending"
+      {role == "permission" && itemStatus(item) == "pending"
          ? <div className="permission-actions">
              {Array.map(
                 option =>
@@ -850,7 +921,99 @@ module TimelineItem = {
              </button>
            </div>
          : React.null}
-    </article>;
+    </div>;
+};
+
+module TimelineItem = {
+  [@react.component]
+  let make = (~item, ~onPermission) => {
+    let role = itemRole(item);
+    let status = itemStatus(item);
+    let kind = itemKind(item);
+    let text = itemText(item);
+    let copyable = text != "" && (role == "agent" || role == "peer");
+    let (copyFeedback, setCopyFeedback) = React.useState(() => "");
+    let copyText = (key, value) => {
+      copyToClipboard(value)
+      ->thenPromise(_ => {
+          setCopyFeedback(_ => key);
+          scheduleCopyReset(setCopyFeedback, key);
+          Js.Promise.resolve();
+        })
+      ->catchPromise(_ => {
+          let failedKey = "error:" ++ key;
+          setCopyFeedback(_ => failedKey);
+          scheduleCopyReset(setCopyFeedback, key);
+          Js.Promise.resolve();
+        })
+      ->ignore;
+    };
+    role == "tool"
+      ? <article className="timeline-item timeline-tool">
+          <details className="tool-disclosure">
+            <summary>
+              <span className="tool-disclosure-icon">
+                {icon("chevron")}
+              </span>
+              <span className="message-role">
+                {React.string(itemTitle(item))}
+              </span>
+              <span className="message-classification">
+                {kind == ""
+                   ? React.null
+                   : <span className={"artifact-kind kind-" ++ kind}>
+                       {React.string(kind)}
+                     </span>}
+                {status == ""
+                   ? React.null
+                   : <span className={"message-status status-" ++ status}>
+                       {React.string(status)}
+                     </span>}
+              </span>
+            </summary>
+            <TimelineContents
+              item
+              role
+              text
+              onPermission
+              onCopy=copyText
+              copyFeedback
+              toolCopy=true
+            />
+          </details>
+        </article>
+      : <article className={"timeline-item timeline-" ++ role}>
+          <div className="message-meta">
+            <span className="message-role">
+              {React.string(itemTitle(item))}
+            </span>
+            <span className="message-classification">
+              {copyable
+                 ? <CopyButton
+                     copyKey={itemId(item)}
+                     label="message"
+                     text
+                     onCopy=copyText
+                     feedback=copyFeedback
+                   />
+                 : React.null}
+              {status == ""
+                 ? React.null
+                 : <span className={"message-status status-" ++ status}>
+                     {React.string(status)}
+                   </span>}
+            </span>
+          </div>
+          <TimelineContents
+            item
+            role
+            text
+            onPermission
+            onCopy=copyText
+            copyFeedback
+            toolCopy=false
+          />
+        </article>;
   };
 };
 
@@ -899,7 +1062,6 @@ module App = {
       React.useState(() => "");
     let (removeWorkspaceError, setRemoveWorkspaceError) =
       React.useState(() => "");
-    let (copyFeedback, setCopyFeedback) = React.useState(() => "");
     let (archiveTargetId, setArchiveTargetId) = React.useState(() => "");
     let (archiveTargetTitle, setArchiveTargetTitle) =
       React.useState(() => "");
@@ -984,6 +1146,9 @@ module App = {
 
     React.useEffect1(
       () => {
+        cancelQueuedTimelineEvents();
+        resetTimelineFollow();
+        setShowJumpToBottom(_ => false);
         setImages(_ => [||]);
         setImageSelectionPending(_ => false);
         setMentionActive(_ => None);
@@ -1008,34 +1173,50 @@ module App = {
             connectEventStream(
               activeSessionId,
               text => {
+                cancelQueuedTimelineEvents();
                 setEventsJson(_ => text);
                 setHasOlderEvents(_ => eventPageLength(text) >= 500);
                 scrollTimeline();
               },
               event => {
-                setEventsJson(current => appendEvent(current, event));
+                queueTimelineEvent(setEventsJson, event);
                 if (eventChangesRuntime(event)) {
                   refreshSession(activeSessionId);
                 };
                 if (eventCompletesTurn(event)) {
                   setNotice(_ => "");
                 };
-                scrollTimeline();
               },
               () => refreshSession(activeSessionId),
               () => setNotice(_ => "Event stream reconnecting..."),
             );
-          Some(close);
+          Some(
+            () => {
+              close();
+              cancelQueuedTimelineEvents();
+            },
+          );
         },
       [|activeSessionId|],
+    );
+
+    React.useEffect1(
+      () => activeView == "agent" ? Some(installTimelineFollower()) : None,
+      [|activeView|],
     );
 
     let snapshot = parseSnapshot(sessionJson);
     let status = snapshotStatus(snapshot);
     let running = status == "running" || status == "requires_action";
     let workerUnavailable = status == "offline" || status == "connecting";
-    let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
-    let outbox = projectOutbox(eventsJson);
+    let agentName = snapshotAgentName(snapshot);
+    let timeline =
+      React.useMemo2(
+        () => projectTimeline(eventsJson, agentName),
+        (eventsJson, agentName),
+      );
+    let outbox =
+      React.useMemo1(() => projectOutbox(eventsJson), [|eventsJson|]);
     let sessions = parseSessions(sessionsJson);
     let archivedSessions = parseSessions(archivedSessionsJson);
     let workspaces = parseWorkspaces(workspacesJson);
@@ -1159,7 +1340,8 @@ module App = {
           when activeMentionKey(active) == activeMentionKey(current) =>
         ()
       | (Some(active), _) => searchMention(active)
-      | (None, _) => dismissMention()
+      | (None, None) => ()
+      | (None, Some(_)) => dismissMention()
       };
 
     let chooseMention = mention =>
@@ -1390,20 +1572,6 @@ module App = {
           })
         ->ignore;
       };
-
-    let copyTimelineText = (key, text) => {
-      copyToClipboard(text)
-      ->thenPromise(_ => {
-          setCopyFeedback(_ => key);
-          scheduleCopyReset(setCopyFeedback, key);
-          Js.Promise.resolve();
-        })
-      ->catchPromise(error => {
-          setNotice(_ => errorMessage(error));
-          Js.Promise.resolve();
-        })
-      ->ignore;
-    };
 
     let removeWorkspace = id =>
       if (!submitting && id != "") {
@@ -1953,8 +2121,10 @@ module App = {
                    tabIndex=0
                    ariaLive="polite"
                    onScroll={event => {
-                     let away = timelineAwayFromBottom(event);
-                     setShowJumpToBottom(_ => away);
+                     let away = updateTimelineFollowFromScroll(event);
+                     setShowJumpToBottom(current =>
+                       current == away ? current : away
+                     );
                    }}>
                    <div className="timeline-stream">
                      {hasOlderEvents
@@ -1996,8 +2166,6 @@ module App = {
                                 key={itemId(item)}
                                 item
                                 onPermission=resolvePermission
-                                onCopy=copyTimelineText
-                                copyFeedback
                               />,
                             timeline,
                           )

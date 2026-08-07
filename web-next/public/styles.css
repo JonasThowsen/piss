@@ -145,7 +145,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .timeline-user { width: min(700px, 88%); margin-left: auto; border-color: #cedbd1; border-left-color: var(--accent); background: var(--accent-soft); }
 .timeline-agent { border-left-color: var(--blue); }
 .timeline-peer { border-left-color: var(--blue); background: #f3f7fa; }
-.timeline-tool { width: min(830px, calc(100% - 20px)); margin-left: 20px; border-left-color: var(--working); background: var(--surface); }
+.timeline-tool { width: min(830px, calc(100% - 20px)); margin-left: 20px; padding: 0; border-left-color: var(--working); background: var(--surface); }
+.tool-disclosure > summary { min-height: 46px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 0 14px; list-style: none; cursor: pointer; }
+.tool-disclosure > summary::-webkit-details-marker { display: none; }
+.tool-disclosure > summary:hover { background: rgba(49, 92, 70, .045); }
+.tool-disclosure-icon { height: 18px; display: grid; place-items: center; color: var(--muted); rotate: -90deg; transition-property: rotate, color; transition-duration: 120ms; transition-timing-function: ease-out; }
+.tool-disclosure[open] .tool-disclosure-icon { color: var(--accent); rotate: 0deg; }
+.tool-disclosure-icon svg { width: 15px; height: 15px; stroke-width: 1.8; }
+.tool-disclosure > .timeline-contents { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.tool-copy-row { display: flex; justify-content: flex-end; padding-top: 8px; }
+.tool-copy-row + .message-body { margin-top: 2px; }
 .timeline-permission { border: 1px solid #d5b67e; border-left: 3px solid var(--working); background: #fff9ed; }
 .message-meta { display: flex; justify-content: space-between; gap: 12px; }
 .message-role { font: 600 10px/1 var(--sans); color: var(--text); }
@@ -153,6 +162,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .timeline-copy, .markdown-copy { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; transition-property: border-color, background-color, color, scale; transition-duration: 120ms; transition-timing-function: ease-out; }
 .timeline-copy:hover, .markdown-copy:hover { border-color: var(--line); background: var(--surface); color: var(--accent); }
 .timeline-copy.copied, .markdown-copy.copied { border-color: #8fa99a; background: var(--accent-soft); color: var(--accent); }
+.timeline-copy.failed, .markdown-copy.failed { border-color: #d7aaa5; background: #fff1ef; color: var(--danger); }
 .timeline-copy svg, .markdown-copy svg { width: 14px; height: 14px; }
 .timeline-copy b, .markdown-copy b { font: 600 9px/1 var(--sans); }
 .message-status, .artifact-kind { color: var(--muted); font: 9px/1 var(--mono); }
@@ -166,10 +176,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .markdown-body { overflow: visible; max-height: none; font: 14px/1.7 var(--sans); }
 .markdown-block { position: relative; margin: 0 0 13px; }
 .markdown-block:last-child { margin-bottom: 0; }
-.markdown-text-block { padding-right: 40px; }
-.markdown-text-block > .markdown-copy { position: absolute; top: -4px; right: 0; width: 32px; padding: 0; opacity: 0; }
-.markdown-text-block:hover > .markdown-copy, .markdown-text-block > .markdown-copy:focus-visible, .markdown-text-block > .markdown-copy.copied { opacity: 1; }
-.markdown-text-block > .markdown-copy b { display: none; }
+.markdown-text-block { padding-right: 0; }
 .markdown-body p, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6, .markdown-body blockquote { margin: 0; white-space: pre-wrap; }
 .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { font-weight: 680; line-height: 1.3; }
 .markdown-body h3 { font-size: 19px; }
@@ -256,8 +263,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   .conversation-heading .eyebrow, .sequence-label { display: none; }
   .timeline { padding: 20px 12px 28px; }
   .timeline-item { padding: 15px; }
+  .timeline-tool { padding: 0; }
   .timeline-user { width: 92%; }
-  .markdown-text-block > .markdown-copy { opacity: 1; }
   .artifact-diff-columns { grid-template-columns: 1fr; }
   .artifact-diff-columns section + section { border-left: 0; border-top: 1px solid var(--line); }
   .empty-state h3 { font-size: 28px; }
