@@ -1025,6 +1025,8 @@ module App = {
         "{\"status\":\"connecting\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
+    let (eventsLoaded, setEventsLoaded) = React.useState(() => false);
+    let (eventsLoadError, setEventsLoadError) = React.useState(() => "");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
     let (archivedSessionsJson, setArchivedSessionsJson) =
       React.useState(() => "[]");
@@ -1170,12 +1172,16 @@ module App = {
         if (activeSessionId == "") {
           None;
         } else {
+          setEventsLoaded(_ => false);
+          setEventsLoadError(_ => "");
           let close =
             connectEventStream(
               activeSessionId,
               text => {
                 cancelQueuedTimelineEvents();
                 setEventsJson(_ => text);
+                setEventsLoaded(_ => true);
+                setEventsLoadError(_ => "");
                 setHasOlderEvents(_ => eventPageLength(text) >= 500);
                 scrollTimeline();
               },
@@ -1189,7 +1195,10 @@ module App = {
                 };
               },
               () => refreshSession(activeSessionId),
-              () => setNotice(_ => "Event stream reconnecting..."),
+              () => {
+                setEventsLoadError(_ => "Event stream is reconnecting…");
+                setNotice(_ => "Event stream reconnecting...");
+              },
             );
           Some(
             () => {
@@ -1507,6 +1516,8 @@ module App = {
     let selectSession = id => {
       setActiveSessionId(_ => id);
       setEventsJson(_ => "[]");
+      setEventsLoaded(_ => false);
+      setEventsLoadError(_ => "");
       setHasOlderEvents(_ => false);
       setLoadingOlderEvents(_ => false);
       setConfigOptionsJson(_ => "[]");
@@ -2141,29 +2152,39 @@ module App = {
                              )}
                           </button>
                         : React.null}
-                     {Array.length(timeline) == 0
-                        ? <div className="empty-state">
-                            <span>
-                              {React.string(fromCodePoint(0x2198))}
-                            </span>
-                            <h3>
-                              {React.string(
-                                 activeSessionId == ""
-                                   ? "No active sessions."
-                                   : "Give the worker something real to do.",
-                               )}
-                            </h3>
-                            <p>
-                              {React.string(
-                                 activeSessionId == ""
-                                   ? "Create a session from a workspace to start a new durable agent."
-                                   : "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
-                               )}
-                            </p>
-                          </div>
-                        : Array.map(
-                            item =>
-                              <TimelineItem
+                      {Array.length(timeline) == 0
+                         ? <div className="empty-state">
+                             <span>
+                               {React.string(
+                                  !eventsLoaded
+                                    ? fromCodePoint(0x23F3)
+                                    : fromCodePoint(0x2198),
+                                )}
+                             </span>
+                             <h3>
+                               {React.string(
+                                  activeSessionId == ""
+                                    ? "No active sessions."
+                                    : !eventsLoaded
+                                      ? eventsLoadError == ""
+                                        ? "Loading session activity…"
+                                        : eventsLoadError
+                                      : "Give the worker something real to do.",
+                                )}
+                             </h3>
+                             <p>
+                               {React.string(
+                                  activeSessionId == ""
+                                    ? "Create a session from a workspace to start a new durable agent."
+                                    : !eventsLoaded
+                                      ? "Waiting for the worker to publish its first events."
+                                      : "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                                )}
+                             </p>
+                           </div>
+                         : Array.map(
+                             item =>
+                               <TimelineItem
                                 key={itemId(item)}
                                 item
                                 onPermission=resolvePermission
@@ -2689,7 +2710,6 @@ module App = {
       </section>
       {searchOpen
          ? <ModalSurface
-             className="global-search"
              ariaLabel="Search sessions"
              onClose={_ => {
                setSearchOpen(_ => false);
