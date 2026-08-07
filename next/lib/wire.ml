@@ -1,3 +1,11 @@
+open Domain
+
+let max_prompt_images = 4
+let max_prompt_image_bytes = 10 * 1024 * 1024
+
+let supported_image_mime_types =
+  [ "image/png"; "image/jpeg"; "image/gif"; "image/webp" ]
+
 type request =
   | Hello of { protocol_version : int }
   | Snapshot
@@ -5,8 +13,13 @@ type request =
   | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
   | New_session
-  | Prompt of { command_id : string; text : string }
-  | Deliver of { command_id : string; text : string; action : string }
+  | Prompt of { command_id : string; text : string; images : image_input list }
+  | Deliver of {
+      command_id : string;
+      text : string;
+      images : image_input list;
+      action : string;
+    }
   | Cancel
   | Config_options
   | Set_config_option of { config_id : string; value : string }
@@ -53,6 +66,90 @@ let int64_member ?default name json =
 
 let ( let* ) = Result.bind
 
+let is_base64_character = function
+  | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '+' | '/' -> true
+  | _ -> false
+
+let decoded_base64_size data =
+  let length = String.length data in
+  if length = 0 || length mod 4 <> 0 then Error "image data must be base64"
+  else
+    let padding =
+      if length >= 2 && data.[length - 2] = '=' then 2
+      else if data.[length - 1] = '=' then 1
+      else 0
+    in
+    let payload_length = length - padding in
+    let rec valid index =
+      if index = payload_length then true
+      else if is_base64_character data.[index] then valid (index + 1)
+      else false
+    in
+    let rec valid_padding index =
+      if index = length then true
+      else if data.[index] = '=' then valid_padding (index + 1)
+      else false
+    in
+    if not (valid 0 && valid_padding payload_length) then
+      Error "image data must be base64"
+    else Ok ((length / 4 * 3) - padding)
+
+let image_of_yojson json =
+  let* mime_type = string_member "mimeType" json in
+  let* data = string_member "data" json in
+  let name =
+    match member "name" json with
+    | `String value when value <> "" -> value
+    | _ -> "Pasted image"
+  in
+  if not (List.exists (String.equal mime_type) supported_image_mime_types) then
+    Error ("unsupported image type: " ^ mime_type)
+  else if String.length name > 255 || String.contains name '\000' then
+    Error "image name is invalid"
+  else
+    let* size = decoded_base64_size data in
+    Ok { mime_type; data; name; size }
+
+let images_member json =
+  match member "images" json with
+  | `Null -> Ok []
+  | `List values ->
+      if List.length values > max_prompt_images then
+        Error "at most four images may be attached"
+      else
+        let rec collect total images = function
+          | [] -> Ok (List.rev images)
+          | value :: remaining ->
+              let* image = image_of_yojson value in
+              let total = total + image.size in
+              if total > max_prompt_image_bytes then
+                Error "image attachments exceed the 10 MiB limit"
+              else collect total (image :: images) remaining
+        in
+        collect 0 [] values
+  | _ -> Error "images must be an array"
+
+let image_to_yojson image =
+  `Assoc
+    [
+      ("mimeType", `String image.mime_type);
+      ("data", `String image.data);
+      ("name", `String image.name);
+    ]
+
+let image_metadata_to_yojson image =
+  `Assoc
+    [
+      ("mimeType", `String image.mime_type);
+      ("name", `String image.name);
+      ("size", `Int image.size);
+    ]
+
+let validate_prompt ~empty_message ~text ~images =
+  if text = "" && images = [] then Error empty_message
+  else if String.length text > 64 * 1024 then Error "prompt is too large"
+  else Ok ()
+
 let request_of_yojson json =
   let* operation = string_member "op" json in
   match operation with
@@ -80,23 +177,31 @@ let request_of_yojson json =
   | "prompt" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
+      let* images = images_member json in
       if command_id = "" then Error "commandId must not be empty"
       else if String.length command_id > 128 then Error "commandId is too long"
-      else if text = "" then Error "prompt must not be empty"
-      else if String.length text > 64 * 1024 then Error "prompt is too large"
-      else Ok (Prompt { command_id; text })
+      else
+        let* () =
+          validate_prompt ~empty_message:"prompt must contain text or an image"
+            ~text ~images
+        in
+        Ok (Prompt { command_id; text; images })
   | "deliver" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
+      let* images = images_member json in
       let* action = string_member "action" json in
       if command_id = "" then Error "commandId must not be empty"
       else if String.length command_id > 128 then Error "commandId is too long"
-      else if text = "" then Error "delivery text must not be empty"
-      else if String.length text > 64 * 1024 then
-        Error "delivery text is too large"
       else if action <> "steer" && action <> "follow_up" then
         Error "delivery action must be steer or follow_up"
-      else Ok (Deliver { command_id; text; action })
+      else
+        let* () =
+          validate_prompt
+            ~empty_message:"delivery must contain text or an image" ~text
+            ~images
+        in
+        Ok (Deliver { command_id; text; images; action })
   | "cancel" -> Ok Cancel
   | "config_options" -> Ok Config_options
   | "set_config_option" ->

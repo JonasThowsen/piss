@@ -1,7 +1,7 @@
 open Piss_core
 
-let max_body_bytes = 128 * 1024
-let max_frame_bytes = 1024 * 1024
+let max_body_bytes = 16 * 1024 * 1024
+let max_frame_bytes = 16 * 1024 * 1024
 let default_max_active_sessions = 32
 
 type managed_workers = {
@@ -1511,43 +1511,39 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
                   let open Yojson.Safe.Util in
-                  let command_id = json |> member "commandId" |> to_string in
-                  let text = json |> member "text" |> to_string in
                   let action =
                     match json |> member "action" with
                     | `String value -> value
                     | _ -> "prompt"
                   in
-                  if command_id = "" || String.length command_id > 128 then
-                    error_json
-                      "commandId must contain between 1 and 128 characters"
-                  else if text = "" || String.length text > 64 * 1024 then
-                    error_json
-                      "text must contain between 1 and 65536 characters"
-                  else if
-                    action <> "prompt" && action <> "steer"
-                    && action <> "follow_up"
-                  then error_json "action must be prompt, steer, or follow_up"
-                  else
-                    match
-                      with_worker workers uri (fun socket ->
-                          worker_request net socket
-                            (`Assoc
-                               ([
-                                  ( "op",
-                                    `String
-                                      (if action = "prompt" then "prompt"
-                                       else "deliver") );
-                                  ("commandId", `String command_id);
-                                  ("text", `String text);
-                                ]
-                               @
-                               if action = "prompt" then []
-                               else [ ("action", `String action) ])))
-                    with
-                    | Ok result -> respond_json ~status:`Accepted result
-                    | Error message ->
-                        error_json ~status:`Service_unavailable message))
+                  let worker_json =
+                    `Assoc
+                      ([
+                         ( "op",
+                           `String
+                             (if action = "prompt" then "prompt" else "deliver")
+                         );
+                         ("commandId", json |> member "commandId");
+                         ("text", json |> member "text");
+                         ( "images",
+                           match json |> member "images" with
+                           | `Null -> `List []
+                           | value -> value );
+                       ]
+                      @
+                      if action = "prompt" then []
+                      else [ ("action", `String action) ])
+                  in
+                  match Wire.request_of_yojson worker_json with
+                  | Error message -> error_json message
+                  | Ok _ -> (
+                      match
+                        with_worker workers uri (fun socket ->
+                            worker_request net socket worker_json)
+                      with
+                      | Ok result -> respond_json ~status:`Accepted result
+                      | Error message ->
+                          error_json ~status:`Service_unavailable message)))
           | `POST, "/api/v2/cancel" -> (
               match valid_json_mutation ~dev_bypass request with
               | Error (status, message) -> error_json ~status message

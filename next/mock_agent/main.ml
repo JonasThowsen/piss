@@ -61,15 +61,52 @@ let request_permission ~id ~session_id =
   | `String "allow-once" -> true
   | _ -> false
 
-let prompt_text params =
-  match Yojson.Safe.Util.(params |> member "prompt" |> to_list) with
-  | first :: _ -> (
-      match Yojson.Safe.Util.member "text" first with
-      | `String value -> value
-      | _ -> "")
-  | [] -> ""
+let prompt_contents params =
+  match Yojson.Safe.Util.member "prompt" params with
+  | `List contents -> contents
+  | _ -> []
 
-let pending_prompts : (string * string) Queue.t = Queue.create ()
+let prompt_text params =
+  prompt_contents params
+  |> List.find_map (fun content ->
+      match
+        ( Yojson.Safe.Util.member "type" content,
+          Yojson.Safe.Util.member "text" content )
+      with
+      | `String "text", `String value -> Some value
+      | _ -> None)
+  |> Option.value ~default:""
+
+let prompt_images params =
+  prompt_contents params
+  |> List.filter (fun content ->
+      Yojson.Safe.Util.member "type" content = `String "image")
+
+let write_user_prompt ~id ~session_id ~text ~images =
+  if text <> "" then
+    write
+      (session_update ~session_id
+         (`Assoc
+            [
+              ("sessionUpdate", `String "user_message_chunk");
+              ("messageId", `String ("user-" ^ id));
+              ( "content",
+                `Assoc [ ("type", `String "text"); ("text", `String text) ] );
+            ]));
+  List.iter
+    (fun content ->
+      write
+        (session_update ~session_id
+           (`Assoc
+              [
+                ("sessionUpdate", `String "user_message_chunk");
+                ("messageId", `String ("user-" ^ id));
+                ("content", content);
+              ])))
+    images
+
+let pending_prompts : (string * string * Yojson.Safe.t list) Queue.t =
+  Queue.create ()
 
 let poll_pending ~session_id () =
   let readable, _, _ = Unix.select [ Unix.stdin ] [] [] 0. in
@@ -84,44 +121,27 @@ let poll_pending ~session_id () =
         let id = response_id json in
         let params = Yojson.Safe.Util.member "params" json in
         let text = prompt_text params in
+        let images = prompt_images params in
         let delivery =
           Yojson.Safe.Util.(
             params |> member "_meta" |> member "piss" |> member "delivery")
         in
         match delivery with
         | `String "steer" ->
-            write
-              (session_update ~session_id
-                 (`Assoc
-                    [
-                      ("sessionUpdate", `String "user_message_chunk");
-                      ("messageId", `String ("user-" ^ id));
-                      ( "content",
-                        `Assoc
-                          [ ("type", `String "text"); ("text", `String text) ]
-                      );
-                    ]));
+            write_user_prompt ~id ~session_id ~text ~images;
             write
               (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]));
             false
         | `String "follow_up" ->
-            Queue.add (id, text) pending_prompts;
+            Queue.add (id, text, images) pending_prompts;
             false
         | _ ->
-            Queue.add (id, text) pending_prompts;
+            Queue.add (id, text, images) pending_prompts;
             false)
       else false
 
-let rec run_prompt ~id ~session_id ~text =
-  write
-    (session_update ~session_id
-       (`Assoc
-          [
-            ("sessionUpdate", `String "user_message_chunk");
-            ("messageId", `String ("user-" ^ id));
-            ( "content",
-              `Assoc [ ("type", `String "text"); ("text", `String text) ] );
-          ]));
+let rec run_prompt ~id ~session_id ~text ~images =
+  write_user_prompt ~id ~session_id ~text ~images;
   let allowed =
     if String.starts_with ~prefix:"permission:" text then
       request_permission ~id ~session_id
@@ -273,7 +293,12 @@ let rec run_prompt ~id ~session_id ~text =
                       ("type", `String "text");
                       ( "text",
                         `String
-                          (if String.starts_with ~prefix:"markdown:" text then
+                          (if images <> [] then
+                             Printf.sprintf "Received %d image attachment%s."
+                               (List.length images)
+                               (if List.length images = 1 then "" else "s")
+                           else if String.starts_with ~prefix:"markdown:" text
+                           then
                              "## Copy proof\n\n\
                               This **message** contains `inline code` and a \
                               link to [ACP](https://agentclientprotocol.com).\n\n\
@@ -290,8 +315,8 @@ let rec run_prompt ~id ~session_id ~text =
               ]));
       write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))));
   if not (Queue.is_empty pending_prompts) then
-    let next_id, next_text = Queue.take pending_prompts in
-    run_prompt ~id:next_id ~session_id ~text:next_text
+    let next_id, next_text, next_images = Queue.take pending_prompts in
+    run_prompt ~id:next_id ~session_id ~text:next_text ~images:next_images
 
 let config_options ~model ~thinking =
   `List
@@ -357,7 +382,7 @@ let () =
                         [
                           ("loadSession", `Bool false);
                           ( "promptCapabilities",
-                            `Assoc [ ("image", `Bool false) ] );
+                            `Assoc [ ("image", `Bool true) ] );
                         ] );
                     ( "agentInfo",
                       `Assoc
@@ -395,7 +420,8 @@ let () =
       | "session/prompt" ->
           let params = Yojson.Safe.Util.member "params" json in
           let text = prompt_text params in
-          run_prompt ~id ~session_id ~text
+          let images = prompt_images params in
+          run_prompt ~id ~session_id ~text ~images
       | "session/cancel" -> ()
       | _ ->
           write

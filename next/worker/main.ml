@@ -1,6 +1,6 @@
 open Piss_core
 
-let max_frame_bytes = 1024 * 1024
+let max_frame_bytes = 16 * 1024 * 1024
 
 type pending_permission = { raw_id : Yojson.Safe.t; params : Yojson.Safe.t }
 
@@ -90,7 +90,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
       try
         while true do
           let json = read_json harness_reader in
-          ignore (Store.append_event store ~kind:(event_kind json) json);
+          let durable_json = Acp.redact_user_image_data json in
+          ignore (Store.append_event store ~kind:(event_kind json) durable_json);
           match Acp.envelope_of_yojson json with
           | Ok (Acp.Response { id; error; _ }) -> (
               match Hashtbl.find_opt pending_responses id with
@@ -208,6 +209,16 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | `Bool value -> value
     | _ -> false
   in
+  let supports_images =
+    match
+      Yojson.Safe.Util.(
+        initialize_result |> member "agentCapabilities"
+        |> member "promptCapabilities"
+        |> member "image")
+    with
+    | `Bool value -> value
+    | _ -> false
+  in
   let create_session () =
     let result, response =
       require_rpc_result ~id:"session-new"
@@ -289,15 +300,17 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                ("workerId", `String worker_id);
                ( "capabilities",
                  `List
-                   [
-                     `String "events";
-                     `String "prompt";
-                     `String "steer";
-                     `String "follow_up";
-                     `String "cancel";
-                     `String "permission";
-                     `String "config_options";
-                   ] );
+                   ([
+                      `String "events";
+                      `String "prompt";
+                      `String "steer";
+                      `String "follow_up";
+                      `String "cancel";
+                      `String "permission";
+                      `String "config_options";
+                    ]
+                   @ if supports_images then [ `String "image_prompt" ] else []
+                   ) );
              ])
     | Wire.Hello { protocol_version } ->
         Error
@@ -307,7 +320,11 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         let snapshot = Domain.snapshot_to_yojson (worker_snapshot ()) in
         match snapshot with
         | `Assoc fields ->
-            Ok (`Assoc (("configOptions", !config_options) :: fields))
+            Ok
+              (`Assoc
+                 (("acceptsImages", `Bool supports_images)
+                 :: ("configOptions", !config_options)
+                 :: fields))
         | _ -> assert false)
     | Wire.Events { after; limit } ->
         let events = Store.list_events store ~after ~limit in
@@ -338,7 +355,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                (`Assoc [ ("acpSessionId", `String created) ]));
           status := Domain.Idle;
           Ok (`Assoc [ ("sessionId", `String created) ]))
-    | Wire.Prompt { command_id; text } -> (
+    | Wire.Prompt { images; _ } when images <> [] && not supports_images ->
+        Error "the ACP agent does not accept image prompts"
+    | Wire.Prompt { command_id; text; images } -> (
         match Store.find_command store command_id with
         | Some state ->
             Ok
@@ -351,9 +370,13 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         | None when Hashtbl.length running_commands > 0 ->
             Error "the session already has an active prompt"
         | None -> (
+            let image_metadata =
+              List.map Wire.image_metadata_to_yojson images
+            in
+            let content = `List (List.map Wire.image_to_yojson images) in
             let accepted =
-              Store.accept_command store ~command_id ~request_id:command_id
-                ~prompt:text
+              Store.accept_command store ~content ~images:image_metadata
+                ~command_id ~request_id:command_id ~prompt:text
             in
             try
               status := Domain.Running;
@@ -361,7 +384,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               Hashtbl.replace running_commands command_id ();
               send
                 (Acp.prompt_request ~delivery:None ~command_id
-                   ~session_id:!harness_session_id ~text);
+                   ~session_id:!harness_session_id ~text ~images);
+              Store.clear_command_content store ~command_id;
               Ok
                 (`Assoc
                    [
@@ -373,7 +397,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               status := Domain.Failed;
               Store.set_command_state store ~command_id Domain.Ambiguous;
               Error (Printexc.to_string exn)))
-    | Wire.Deliver { command_id; text; action } -> (
+    | Wire.Deliver { images; _ } when images <> [] && not supports_images ->
+        Error "the ACP agent does not accept image prompts"
+    | Wire.Deliver { command_id; text; images; action } -> (
         match Store.find_command store command_id with
         | Some state ->
             Ok
@@ -386,9 +412,13 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         | None when Hashtbl.length running_commands = 0 ->
             Error (action ^ " is only available during an active prompt")
         | None -> (
+            let image_metadata =
+              List.map Wire.image_metadata_to_yojson images
+            in
+            let content = `List (List.map Wire.image_to_yojson images) in
             let accepted =
-              Store.accept_command ~action store ~command_id
-                ~request_id:command_id ~prompt:text
+              Store.accept_command ~action ~content ~images:image_metadata store
+                ~command_id ~request_id:command_id ~prompt:text
             in
             try
               status := Domain.Running;
@@ -396,7 +426,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               Hashtbl.replace running_commands command_id ();
               send
                 (Acp.prompt_request ~delivery:(Some action) ~command_id
-                   ~session_id:!harness_session_id ~text);
+                   ~session_id:!harness_session_id ~text ~images);
+              Store.clear_command_content store ~command_id;
               Ok
                 (`Assoc
                    [

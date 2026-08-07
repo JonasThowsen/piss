@@ -172,9 +172,29 @@ let test_session_registry () =
 
 let test_command_deduplication () =
   with_store @@ fun store ->
+  let content =
+    `List
+      [
+        `Assoc
+          [
+            ("mimeType", `String "image/png");
+            ("data", `String "durable-image-data");
+          ];
+      ]
+  in
+  let images =
+    [
+      `Assoc
+        [
+          ("mimeType", `String "image/png");
+          ("name", `String "proof.png");
+          ("size", `Int 12);
+        ];
+    ]
+  in
   let first =
-    Store.accept_command store ~command_id:"command-1" ~request_id:"command-1"
-      ~prompt:"do the thing"
+    Store.accept_command ~content ~images store ~command_id:"command-1"
+      ~request_id:"command-1" ~prompt:"do the thing"
   in
   let duplicate =
     Store.accept_command store ~command_id:"command-1" ~request_id:"command-1"
@@ -184,7 +204,52 @@ let test_command_deduplication () =
   Alcotest.(check bool) "second delivery is duplicate" true duplicate.duplicate;
   Alcotest.(check string)
     "durable state is returned" "accepted"
-    (Domain.command_state_to_string duplicate.state)
+    (Domain.command_state_to_string duplicate.state);
+  Alcotest.(check (option string))
+    "image content is durable before dispatch"
+    (Some (Yojson.Safe.to_string content))
+    (Store.command_content store "command-1");
+  let accepted_event = Store.list_events store ~after:0L ~limit:10 |> List.hd in
+  Alcotest.(check int)
+    "event retains bounded image metadata" 1
+    Yojson.Safe.Util.(accepted_event.payload |> member "imageCount" |> to_int);
+  Store.clear_command_content store ~command_id:"command-1";
+  Alcotest.(check (option string))
+    "large content is scrubbed after dispatch" (Some "[]")
+    (Store.command_content store "command-1")
+
+let test_command_content_migration () =
+  let path = Filename.temp_file "piss-worker-legacy-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let db = Sqlite3.db_open path in
+      let rc =
+        Sqlite3.exec db
+          "CREATE TABLE commands (command_id TEXT PRIMARY KEY, request_id TEXT \
+           NOT NULL UNIQUE, prompt TEXT NOT NULL, state TEXT NOT NULL, \
+           created_at REAL NOT NULL, updated_at REAL NOT NULL)"
+      in
+      Alcotest.(check bool)
+        "legacy schema created" true (Sqlite3.Rc.is_success rc);
+      Alcotest.(check bool) "legacy database closed" true (Sqlite3.db_close db);
+      let store =
+        Store.open_ ~path ~session_id:(Domain.Session_id "session")
+          ~worker_id:(Domain.Worker_id "worker")
+      in
+      Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
+      ignore
+        (Store.accept_command
+           ~content:(`List [ `String "image" ])
+           store ~command_id:"migrated" ~request_id:"migrated" ~prompt:"");
+      Alcotest.(check (option string))
+        "content column added transactionally" (Some {|["image"]|})
+        (Store.command_content store "migrated"))
 
 let test_event_retention_compacts () =
   with_store @@ fun store ->
@@ -275,6 +340,46 @@ let test_wire_bounds () =
    with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unknown delivery action was accepted");
+  (match
+     decode
+       {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/gif","data":"R0lGODlhAQABAAAAACw=","name":"proof.gif"}]}|}
+   with
+  | Ok (Wire.Prompt { text = ""; images = [ image ]; _ }) ->
+      Alcotest.(check int) "decoded image bytes" 14 image.size
+  | Ok _ -> Alcotest.fail "image-only prompt decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  (match
+     decode
+       {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "unsupported image type was accepted");
+  (match
+     decode
+       {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/png","data":"not base64","name":"broken.png"}]}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "malformed base64 was accepted");
+  let image =
+    `Assoc
+      [
+        ("mimeType", `String "image/png");
+        ("data", `String "aW1hZ2U=");
+        ("name", `String "proof.png");
+      ]
+  in
+  let too_many_images =
+    `Assoc
+      [
+        ("op", `String "prompt");
+        ("commandId", `String "too-many-images");
+        ("text", `String "");
+        ("images", `List (List.init 5 (fun _ -> image)));
+      ]
+  in
+  (match Wire.request_of_yojson too_many_images with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "more than four images were accepted");
   let oversized = String.make ((64 * 1024) + 1) 'x' in
   let prompt =
     `Assoc
@@ -287,6 +392,73 @@ let test_wire_bounds () =
   match Wire.request_of_yojson prompt with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized prompt was accepted"
+
+let test_acp_image_prompt () =
+  let image =
+    Domain.
+      {
+        mime_type = "image/png";
+        data = "aW1hZ2U=";
+        name = "proof.png";
+        size = 5;
+      }
+  in
+  let request =
+    Acp.prompt_request ~delivery:None ~command_id:"image-command"
+      ~session_id:"session" ~text:"Inspect this" ~images:[ image ]
+  in
+  let prompt =
+    Yojson.Safe.Util.(request |> member "params" |> member "prompt")
+  in
+  match prompt with
+  | `List
+      [
+        `Assoc [ ("type", `String "text"); ("text", `String "Inspect this") ];
+        `Assoc fields;
+      ] ->
+      Alcotest.(check (option string))
+        "ACP image MIME type" (Some "image/png")
+        (Option.bind
+           (List.assoc_opt "mimeType" fields)
+           Yojson.Safe.Util.to_string_option);
+      Alcotest.(check (option string))
+        "ACP image data" (Some "aW1hZ2U=")
+        (Option.bind
+           (List.assoc_opt "data" fields)
+           Yojson.Safe.Util.to_string_option)
+  | _ -> Alcotest.fail "ACP prompt did not contain text followed by an image"
+
+let test_acp_image_redaction () =
+  let response = Acp.response ~id:"done" (`Assoc []) in
+  Alcotest.(check string)
+    "responses are unchanged"
+    (Yojson.Safe.to_string response)
+    (Acp.redact_user_image_data response |> Yojson.Safe.to_string);
+  let update =
+    Acp.notification ~method_:"session/update"
+      (`Assoc
+        [
+          ("sessionId", `String "session");
+          ( "update",
+            `Assoc
+              [
+                ("sessionUpdate", `String "user_message_chunk");
+                ( "content",
+                  `Assoc
+                    [
+                      ("type", `String "image");
+                      ("mimeType", `String "image/png");
+                      ("data", `String "large-base64-payload");
+                    ] );
+              ] );
+        ])
+  in
+  let redacted = Acp.redact_user_image_data update in
+  Alcotest.(check string)
+    "durable user image payload is scrubbed" ""
+    Yojson.Safe.Util.(
+      redacted |> member "params" |> member "update" |> member "content"
+      |> member "data" |> to_string)
 
 let test_acp_error_response () =
   let response =
@@ -340,6 +512,8 @@ let () =
         [
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
+          Alcotest.test_case "legacy command schema migrates" `Quick
+            test_command_content_migration;
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
           Alcotest.test_case "event retention compacts" `Quick
             test_event_retention_compacts;
@@ -353,6 +527,10 @@ let () =
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
           Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;
+          Alcotest.test_case "ACP image prompts are typed" `Quick
+            test_acp_image_prompt;
+          Alcotest.test_case "ACP image echoes are bounded" `Quick
+            test_acp_image_redaction;
           Alcotest.test_case "ACP errors fail closed" `Quick
             test_acp_error_response;
         ] );

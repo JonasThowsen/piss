@@ -36,6 +36,21 @@ let expect_done operation statement =
   | Sqlite3.Rc.DONE -> ()
   | rc -> fail_rc operation rc
 
+let table_has_column db table column =
+  with_statement db
+    ("PRAGMA table_info(" ^ table ^ ")")
+    (fun statement ->
+      let rec search () =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            String.equal (Sqlite3.column_text statement 1) column || search ()
+        | Sqlite3.Rc.DONE -> false
+        | rc ->
+            fail_rc "inspect table columns" rc;
+            false
+      in
+      search ())
+
 let initialize db =
   exec db "PRAGMA journal_mode=WAL";
   exec db "PRAGMA synchronous=FULL";
@@ -46,8 +61,11 @@ let initialize db =
      NULL)";
   exec db
     "CREATE TABLE IF NOT EXISTS commands (command_id TEXT PRIMARY \
-     KEY,request_id TEXT NOT NULL UNIQUE,prompt TEXT NOT NULL,state TEXT NOT \
-     NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL)";
+     KEY,request_id TEXT NOT NULL UNIQUE,prompt TEXT NOT NULL,content TEXT NOT \
+     NULL DEFAULT '[]',state TEXT NOT NULL,created_at REAL NOT NULL,updated_at \
+     REAL NOT NULL)";
+  if not (table_has_column db "commands" "content") then
+    exec db "ALTER TABLE commands ADD COLUMN content TEXT NOT NULL DEFAULT '[]'";
   exec db
     "CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY \
      AUTOINCREMENT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at REAL \
@@ -220,7 +238,8 @@ let find_command store command_id =
           fail_rc "find command" rc;
           None)
 
-let accept_command ?(action = "prompt") store ~command_id ~request_id ~prompt =
+let accept_command ?(action = "prompt") ?(content = `List []) ?(images = [])
+    store ~command_id ~request_id ~prompt =
   transaction store (fun () ->
       match find_command store command_id with
       | Some state -> { state; duplicate = true }
@@ -233,14 +252,15 @@ let accept_command ?(action = "prompt") store ~command_id ~request_id ~prompt =
                     max_retained_commands));
           let now = Unix.gettimeofday () in
           with_statement store.db
-            "INSERT INTO commands(command_id, request_id, prompt, state, \
-             created_at, updated_at) VALUES (?, ?, ?, 'accepted', ?, ?)"
-            (fun statement ->
+            "INSERT INTO commands(command_id, request_id, prompt, content, \
+             state, created_at, updated_at) VALUES (?, ?, ?, ?, 'accepted', ?, \
+             ?)" (fun statement ->
               bind_text statement 1 command_id;
               bind_text statement 2 request_id;
               bind_text statement 3 prompt;
-              bind_float statement 4 now;
+              bind_text statement 4 (Yojson.Safe.to_string content);
               bind_float statement 5 now;
+              bind_float statement 6 now;
               expect_done "accept command" statement);
           ignore
             (append_event store ~kind:"command.accepted"
@@ -250,8 +270,27 @@ let accept_command ?(action = "prompt") store ~command_id ~request_id ~prompt =
                     ("requestId", `String request_id);
                     ("action", `String action);
                     ("text", `String prompt);
+                    ("imageCount", `Int (List.length images));
+                    ("images", `List images);
                   ]));
           { state = Accepted; duplicate = false })
+
+let command_content store command_id =
+  with_statement store.db "SELECT content FROM commands WHERE command_id = ?"
+    (fun statement ->
+      bind_text statement 1 command_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (Sqlite3.column_text statement 0)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "read command content" rc;
+          None)
+
+let clear_command_content store ~command_id =
+  with_statement store.db
+    "UPDATE commands SET content = '[]' WHERE command_id = ?" (fun statement ->
+      bind_text statement 1 command_id;
+      expect_done "clear command content" statement)
 
 let update_command_state store ~command_id state =
   with_statement store.db
@@ -265,6 +304,10 @@ let update_command_state store ~command_id state =
 let set_command_state store ~command_id state =
   transaction store (fun () ->
       update_command_state store ~command_id state;
+      (match state with
+      | Completed | Cancelled | Ambiguous | Rejected ->
+          clear_command_content store ~command_id
+      | Received | Accepted | Dispatched | Acknowledged -> ());
       ignore
         (append_event store ~kind:"command.state"
            (`Assoc
@@ -293,6 +336,7 @@ let reconcile_incomplete_commands store =
       List.iter
         (fun command_id ->
           update_command_state store ~command_id Ambiguous;
+          clear_command_content store ~command_id;
           ignore
             (append_event store ~kind:"command.reconciled"
                (`Assoc
