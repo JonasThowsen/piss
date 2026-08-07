@@ -1364,6 +1364,24 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Ok snapshot -> respond_json snapshot
               | Error message -> error_json ~status:`Service_unavailable message
               )
+          | `GET, "/api/v2/file-mentions" -> (
+              let query =
+                Uri.get_query_param uri "query" |> Option.value ~default:""
+              in
+              let request =
+                `Assoc
+                  [ ("op", `String "file_search"); ("query", `String query) ]
+              in
+              match Wire.request_of_yojson request with
+              | Error message -> error_json message
+              | Ok _ -> (
+                  match
+                    with_worker workers uri (fun socket ->
+                        worker_request net socket request)
+                  with
+                  | Ok mentions -> respond_json mentions
+                  | Error message ->
+                      error_json ~status:`Service_unavailable message))
           | `GET, "/api/v2/config-options" -> (
               match
                 with_worker workers uri (fun socket ->
@@ -1527,6 +1545,10 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                          ("text", json |> member "text");
                          ( "images",
                            match json |> member "images" with
+                           | `Null -> `List []
+                           | value -> value );
+                         ( "resources",
+                           match json |> member "resources" with
                            | `Null -> `List []
                            | value -> value );
                        ]

@@ -12,6 +12,8 @@ type configChoice;
 type outboxItem;
 type composerImage;
 type browserFile;
+type fileMention;
+type activeMention;
 type disposer = unit => unit;
 
 [@mel.get] external itemId: timelineItem => string = "id";
@@ -76,11 +78,15 @@ external configChoices: configOption => array(configChoice) = "options";
 [@mel.get] external imageName: composerImage => string = "name";
 [@mel.get] external imagePreview: composerImage => string = "preview";
 [@mel.get] external imageSize: composerImage => int = "size";
+[@mel.get] external mentionPath: fileMention => string = "path";
+[@mel.get] external mentionName: fileMention => string = "name";
+[@mel.get] external mentionKind: fileMention => string = "kind";
+[@mel.get] external activeMentionQuery: activeMention => string = "query";
 
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], copy: [['rect',{width:14,height:14,x:8,y:8,rx:2,ry:2}],['path',{d:'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'}]], trash: [['path',{d:'M3 6h18'}],['path',{d:'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'}],['path',{d:'M19 6l-1 14c0 1-1 2-2 2H8c-1 0-2-1-2-2L5 6'}],['path',{d:'M10 11v6'}],['path',{d:'M14 11v6'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]], image: [['rect',{width:18,height:18,x:3,y:3,rx:2,ry:2}],['circle',{cx:9,cy:9,r:2}],['path',{d:'m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], copy: [['rect',{width:14,height:14,x:8,y:8,rx:2,ry:2}],['path',{d:'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'}]], trash: [['path',{d:'M3 6h18'}],['path',{d:'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'}],['path',{d:'M19 6l-1 14c0 1-1 2-2 2H8c-1 0-2-1-2-2L5 6'}],['path',{d:'M10 11v6'}],['path',{d:'M14 11v6'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]], image: [['rect',{width:18,height:18,x:3,y:3,rx:2,ry:2}],['circle',{cx:9,cy:9,r:2}],['path',{d:'m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'}]], file: [['path',{d:'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z'}],['polyline',{points:'14 2 14 8 20 8'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
 ];
 
 let copyToClipboard: string => Js.Promise.t(unit) = [%raw
@@ -184,6 +190,93 @@ let errorMessage: Js.Promise.error => string = [%raw
 let promptValue: unit => string = [%raw
   "() => document.getElementById('prompt-input')?.value?.trim() || ''"
 ];
+let activeMentionFromEvent: 'a => option(activeMention) = [%raw
+  {|event => {
+    const field = event.currentTarget;
+    const text = field?.value || '';
+    const cursor = field?.selectionStart ?? text.length;
+    if (Date.now() < (globalThis.__pissSuppressMentionUntil || 0)) return undefined;
+    const completed = globalThis.__pissCompletedMention;
+    if (completed?.text === text && completed.cursor === cursor) return undefined;
+    globalThis.__pissCompletedMention = null;
+    const lineStart = text.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1;
+    const match = text.slice(lineStart, cursor).match(/(?:^|[ \t])(@(?:"[^"]*|[^\s]*))$/);
+    const prefix = match?.[1];
+    if (!prefix) return undefined;
+    return { query: prefix.startsWith('@"') ? prefix.slice(2) : prefix.slice(1), start: cursor - prefix.length, end: cursor };
+  }|}
+];
+let activeMentionKey: activeMention => string = [%raw
+  "active => `${active.start}:${active.end}:${active.query}`"
+];
+let insertMentionTrigger: unit => option(activeMention) = [%raw
+  {|() => {
+    const field = document.getElementById('prompt-input');
+    if (!field) return undefined;
+    const text = field.value || '';
+    const start = field.selectionStart ?? text.length;
+    const end = field.selectionEnd ?? start;
+    const separator = start > 0 && !/[ \t\n]/.test(text[start - 1] || '') ? ' ' : '';
+    globalThis.__pissCompletedMention = null;
+    field.value = `${text.slice(0, start)}${separator}@${text.slice(end)}`;
+    const cursor = start + separator.length + 1;
+    field.focus();
+    field.setSelectionRange(cursor, cursor);
+    return { query: '', start: cursor - 1, end: cursor };
+  }|}
+];
+let applyFileMention: (activeMention, string) => bool = [%raw
+  {|(active, path) => {
+    const field = document.getElementById('prompt-input');
+    if (!field || !field.value.slice(active.start, active.end).startsWith('@')) return false;
+    const value = /\s/u.test(path) ? `@"${path}"` : `@${path}`;
+    field.value = `${field.value.slice(0, active.start)}${value}${field.value.slice(active.end)}`;
+    const cursor = active.start + value.length;
+    globalThis.__pissCompletedMention = { text: field.value, cursor };
+    globalThis.__pissSuppressMentionUntil = Date.now() + 100;
+    requestAnimationFrame(() => { field.focus(); field.setSelectionRange(cursor, cursor); });
+    return true;
+  }|}
+];
+let addMentionResource:
+  (array(fileMention), fileMention) => array(fileMention) = [%raw
+  "(resources, mention) => resources.some(current => current.path === mention.path) ? resources : [...resources, mention]"
+];
+let resourcesJson: (string, array(fileMention)) => Js.Json.t = [%raw
+  {|(text, resources) => {
+    const seen = new Set();
+    return resources.filter(resource => {
+      const token = /\s/u.test(resource.path) ? `@"${resource.path}"` : `@${resource.path}`;
+      if (!text.includes(token) || seen.has(resource.path)) return false;
+      seen.add(resource.path);
+      return true;
+    }).map(resource => ({ path: resource.path }));
+  }|}
+];
+let requestFileMentions: (string, string) => Js.Promise.t(string) = [%raw
+  {|(sessionId, query) => {
+    const current = (globalThis.__pissMentionGeneration || 0) + 1;
+    globalThis.__pissMentionGeneration = current;
+    globalThis.__pissMentionController?.abort();
+    const controller = new AbortController();
+    globalThis.__pissMentionController = controller;
+    return fetch(`/api/v2/file-mentions?session=${encodeURIComponent(sessionId)}&query=${encodeURIComponent(query)}`, { signal: controller.signal }).then(async response => {
+      const text = await response.text();
+      if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+      if (current !== globalThis.__pissMentionGeneration) throw new DOMException('Stale file search', 'AbortError');
+      return text;
+    });
+  }|}
+];
+let cancelFileMentionSearch: unit => unit = [%raw
+  "() => { globalThis.__pissMentionGeneration = (globalThis.__pissMentionGeneration || 0) + 1; globalThis.__pissMentionController?.abort(); globalThis.__pissMentionController = null; }"
+];
+let isAbortError: Js.Promise.error => bool = [%raw
+  "error => error?.name === 'AbortError'"
+];
+let nextMentionIndex: (int, int, int) => int = [%raw
+  "(current, count, direction) => count <= 0 ? 0 : (current + direction + count) % count"
+];
 let fieldValue: string => string = [%raw
   "id => document.getElementById(id)?.value?.trim() || ''"
 ];
@@ -192,7 +285,7 @@ let confirmRename: string => option(string) = [%raw
 ];
 
 let clearPrompt: unit => unit = [%raw
-  "() => { const field = document.getElementById('prompt-input'); if (field) { field.value = ''; field.focus(); } }"
+  "() => { globalThis.__pissCompletedMention = null; const field = document.getElementById('prompt-input'); if (field) { field.value = ''; field.focus(); } }"
 ];
 let openImagePicker: unit => unit = [%raw
   "() => document.getElementById('composer-image-input')?.click()"
@@ -300,6 +393,9 @@ let parseDirectories: string => array(directoryCandidate) = [%raw
   "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
 ];
 let parseConfigOptions: string => array(configOption) = [%raw
+  "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
+];
+let parseFileMentions: string => array(fileMention) = [%raw
   "text => { try { const value = JSON.parse(text); return Array.isArray(value) ? value : []; } catch (_) { return []; } }"
 ];
 let configOptionsFromSnapshot: string => string = [%raw
@@ -499,7 +595,7 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       } else if (event.kind === 'acp.user_message_chunk' || event.kind === 'acp.agent_message_chunk') {
         const role = event.kind === 'acp.user_message_chunk' ? 'user' : 'agent';
         const chunkText = contentText(update.content);
-        if (role === 'user' && (update.content?.type === 'image' || chunkText.startsWith('Inter-session request from ') || acceptedImageTexts.has(chunkText))) continue;
+        if (role === 'user' && (update.content?.type !== 'text' || chunkText.startsWith('Inter-session request from ') || acceptedImageTexts.has(chunkText))) continue;
         const id = update.messageId || (role === 'agent' && currentAgent ? currentAgent.id : `${role}-${event.sequence}`);
         const isWake = role === 'user' && chunkText.startsWith('PISS durable collaboration wake-up.');
         let item = messages.get(id);
@@ -813,6 +909,12 @@ module App = {
     let (images, setImages) = React.useState(() => [||]);
     let (imageSelectionPending, setImageSelectionPending) =
       React.useState(() => false);
+    let (mentionActive, setMentionActive) = React.useState(() => None);
+    let (mentionsJson, setMentionsJson) = React.useState(() => "[]");
+    let (mentionResources, setMentionResources) = React.useState(() => [||]);
+    let (mentionLoading, setMentionLoading) = React.useState(() => false);
+    let (mentionError, setMentionError) = React.useState(() => "");
+    let (mentionHighlighted, setMentionHighlighted) = React.useState(() => 0);
 
     let refreshSession = id =>
       if (id != "") {
@@ -884,6 +986,13 @@ module App = {
       () => {
         setImages(_ => [||]);
         setImageSelectionPending(_ => false);
+        setMentionActive(_ => None);
+        setMentionsJson(_ => "[]");
+        setMentionResources(_ => [||]);
+        setMentionLoading(_ => false);
+        setMentionError(_ => "");
+        setMentionHighlighted(_ => 0);
+        cancelFileMentionSearch();
         clearImagePicker();
         None;
       },
@@ -931,6 +1040,7 @@ module App = {
     let archivedSessions = parseSessions(archivedSessionsJson);
     let workspaces = parseWorkspaces(workspacesJson);
     let configOptions = parseConfigOptions(configOptionsJson);
+    let mentions = parseFileMentions(mentionsJson);
     let modelOption = findConfigOption(configOptions, "model");
     let thinkingOption = findConfigOption(configOptions, "thought_level");
     let searchResults =
@@ -1008,6 +1118,91 @@ module App = {
         ->ignore;
       };
 
+    let dismissMention = () => {
+      cancelFileMentionSearch();
+      setMentionActive(_ => None);
+      setMentionsJson(_ => "[]");
+      setMentionLoading(_ => false);
+      setMentionError(_ => "");
+      setMentionHighlighted(_ => 0);
+    };
+
+    let searchMention = active =>
+      if (activeSessionId == ""
+          || String.length(activeMentionQuery(active)) > 200) {
+        dismissMention();
+      } else {
+        setMentionActive(_ => Some(active));
+        setMentionsJson(_ => "[]");
+        setMentionLoading(_ => true);
+        setMentionError(_ => "");
+        setMentionHighlighted(_ => 0);
+        requestFileMentions(activeSessionId, activeMentionQuery(active))
+        ->thenPromise(text => {
+            setMentionsJson(_ => text);
+            setMentionLoading(_ => false);
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            if (!isAbortError(error)) {
+              setMentionLoading(_ => false);
+              setMentionError(_ => errorMessage(error));
+            };
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
+    let updateMentionFromEvent = event =>
+      switch (activeMentionFromEvent(event), mentionActive) {
+      | (Some(active), Some(current))
+          when activeMentionKey(active) == activeMentionKey(current) =>
+        ()
+      | (Some(active), _) => searchMention(active)
+      | (None, _) => dismissMention()
+      };
+
+    let chooseMention = mention =>
+      switch (mentionActive) {
+      | Some(active) =>
+        if (applyFileMention(active, mentionPath(mention))) {
+          setMentionResources(current =>
+            addMentionResource(current, mention)
+          );
+          dismissMention();
+        }
+      | None => ()
+      };
+
+    let handleComposerKeyDown = event =>
+      switch (mentionActive) {
+      | Some(_) =>
+        switch (eventKey(event)) {
+        | "ArrowDown" =>
+          preventAnyDefault(event);
+          setMentionHighlighted(current =>
+            nextMentionIndex(current, Array.length(mentions), 1)
+          );
+        | "ArrowUp" =>
+          preventAnyDefault(event);
+          setMentionHighlighted(current =>
+            nextMentionIndex(current, Array.length(mentions), -1)
+          );
+        | "Enter" =>
+          preventAnyDefault(event);
+          if (Array.length(mentions) > 0) {
+            chooseMention(
+              mentions[min(mentionHighlighted, Array.length(mentions) - 1)],
+            );
+          };
+        | "Escape" =>
+          preventAnyDefault(event);
+          dismissMention();
+        | _ => composerKeyDown(event)
+        }
+      | None => composerKeyDown(event)
+      };
+
     let submitPrompt = event => {
       preventDefault(event);
       let text = promptValue();
@@ -1029,12 +1224,15 @@ module App = {
             ("commandId", Js.Json.string(commandId)),
             ("text", Js.Json.string(text)),
             ("images", imagesJson(images)),
+            ("resources", resourcesJson(text, mentionResources)),
             ("action", Js.Json.string(action)),
           |]);
         postText(sessionUrl("/api/v2/commands", activeSessionId), body)
         ->thenPromise(_ => {
             clearPrompt();
             setImages(_ => [||]);
+            setMentionResources(_ => [||]);
+            dismissMention();
             clearImagePicker();
             setNotice(_ =>
               action == "steer"
@@ -1915,19 +2113,97 @@ module App = {
                       )
                       ->React.array}
                    </section>}
+              {switch (mentionActive) {
+               | None => React.null
+               | Some(_) =>
+                 <section
+                   id="file-mention-options"
+                   className="file-mention-menu"
+                   role={Array.length(mentions) > 0 ? "listbox" : "status"}
+                   ariaLabel="Workspace files"
+                   ariaLive="polite">
+                   <header>
+                     <span> {React.string("Workspace files")} </span>
+                     <small>
+                       {React.string(
+                          mentionLoading
+                            ? "Searching…"
+                            : string_of_int(Array.length(mentions))
+                              ++ " matches",
+                        )}
+                     </small>
+                   </header>
+                   {mentionLoading
+                      ? <p className="file-mention-state">
+                          {React.string("Searching files…")}
+                        </p>
+                      : mentionError != ""
+                          ? <p className="file-mention-state error">
+                              {React.string(mentionError)}
+                            </p>
+                          : Array.length(mentions) == 0
+                              ? <p className="file-mention-state">
+                                  {React.string("No matching files")}
+                                </p>
+                              : Array.mapi(
+                                  (index, mention) =>
+                                    <button
+                                      id={
+                                        "file-mention-"
+                                        ++ string_of_int(index)
+                                      }
+                                      className={
+                                        index == mentionHighlighted
+                                          ? "active" : ""
+                                      }
+                                      type_="button"
+                                      role="option"
+                                      ariaSelected={
+                                        index == mentionHighlighted
+                                      }
+                                      key={mentionPath(mention)}
+                                      onMouseDown=preventAnyDefault
+                                      onMouseEnter={_ =>
+                                        setMentionHighlighted(_ => index)
+                                      }
+                                      onClick={_ => chooseMention(mention)}>
+                                      <i> {icon("file")} </i>
+                                      <span>
+                                        <b>
+                                          {React.string(mentionName(mention))}
+                                        </b>
+                                        <small>
+                                          {React.string(mentionPath(mention))}
+                                        </small>
+                                      </span>
+                                    </button>,
+                                  mentions,
+                                )
+                                ->React.array}
+                 </section>
+               }}
               <textarea
                 id="prompt-input"
                 name="prompt"
                 rows=2
                 maxLength=65536
                 ariaLabel="Message agent"
+                ariaControls="file-mention-options"
+                ariaExpanded={Option.is_some(mentionActive)}
+                ariaActivedescendant={
+                  Option.is_some(mentionActive) && Array.length(mentions) > 0
+                    ? "file-mention-" ++ string_of_int(mentionHighlighted)
+                    : ""
+                }
                 disabled={
                   submitting
                   || imageSelectionPending
                   || activeSessionId == ""
                   || workerUnavailable
                 }
-                onKeyDown=composerKeyDown
+                onInput=updateMentionFromEvent
+                onSelect=updateMentionFromEvent
+                onKeyDown=handleComposerKeyDown
                 onPaste={event => selectImages(imageFilesFromPaste(event))}
                 placeholder={
                   activeSessionId == ""
@@ -1965,9 +2241,20 @@ module App = {
                   </button>
                   <button
                     type_="button"
-                    disabled=true
-                    title="File mentions are coming next"
-                    ariaLabel="Mention a file">
+                    disabled={
+                      submitting
+                      || imageSelectionPending
+                      || activeSessionId == ""
+                      || workerUnavailable
+                    }
+                    title="Mention a workspace file"
+                    ariaLabel="Mention a workspace file"
+                    onClick={_ =>
+                      switch (insertMentionTrigger()) {
+                      | Some(active) => searchMention(active)
+                      | None => ()
+                      }
+                    }>
                     {icon("at")}
                   </button>
                 </div>

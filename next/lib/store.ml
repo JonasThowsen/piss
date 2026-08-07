@@ -239,7 +239,7 @@ let find_command store command_id =
           None)
 
 let accept_command ?(action = "prompt") ?(content = `List []) ?(images = [])
-    store ~command_id ~request_id ~prompt =
+    ?(resources = []) store ~command_id ~request_id ~prompt =
   transaction store (fun () ->
       match find_command store command_id with
       | Some state -> { state; duplicate = true }
@@ -272,6 +272,8 @@ let accept_command ?(action = "prompt") ?(content = `List []) ?(images = [])
                     ("text", `String prompt);
                     ("imageCount", `Int (List.length images));
                     ("images", `List images);
+                    ("resourceCount", `Int (List.length resources));
+                    ("resources", `List resources);
                   ]));
           { state = Accepted; duplicate = false })
 

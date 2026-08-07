@@ -13,12 +13,19 @@ type request =
   | Events of { after : int64; limit : int }
   | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
+  | File_search of { query : string }
   | New_session
-  | Prompt of { command_id : string; text : string; images : image_input list }
+  | Prompt of {
+      command_id : string;
+      text : string;
+      images : image_input list;
+      resources : resource_input list;
+    }
   | Deliver of {
       command_id : string;
       text : string;
       images : image_input list;
+      resources : resource_input list;
       action : string;
     }
   | Cancel
@@ -146,8 +153,39 @@ let image_metadata_to_yojson image =
       ("size", `Int image.size);
     ]
 
-let validate_prompt ~empty_message ~text ~images =
-  if text = "" && images = [] then Error empty_message
+let resource_of_yojson json =
+  let* path = string_member "path" json in
+  if path = "" || String.length path > Workspace_files.max_path_bytes then
+    Error "resource path must contain between 1 and 16384 characters"
+  else if not (Workspace_files.valid_relative_path path) then
+    Error "resource path must be canonical and workspace-relative"
+  else Ok { path }
+
+let resources_member json =
+  match member "resources" json with
+  | `Null -> Ok []
+  | `List values ->
+      if List.length values > 16 then
+        Error "at most sixteen files may be mentioned"
+      else
+        let rec collect resources = function
+          | [] -> Ok (List.rev resources)
+          | value :: remaining ->
+              let* resource = resource_of_yojson value in
+              if
+                List.exists
+                  (fun current -> current.path = resource.path)
+                  resources
+              then collect resources remaining
+              else collect (resource :: resources) remaining
+        in
+        collect [] values
+  | _ -> Error "resources must be an array"
+
+let resource_to_yojson resource = `Assoc [ ("path", `String resource.path) ]
+
+let validate_prompt ~empty_message ~text ~images ~resources =
+  if text = "" && images = [] && resources = [] then Error empty_message
   else if String.length text > 64 * 1024 then Error "prompt is too large"
   else Ok ()
 
@@ -181,23 +219,32 @@ let request_of_yojson json =
       let* limit = int_member ~default:500 "limit" json in
       if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
       else Ok (Recent_events { limit })
+  | "file_search" ->
+      let* query = string_member "query" json in
+      if String.length query > 200 then Error "file mention query is too long"
+      else if String.contains query '\000' then
+        Error "file mention query must not contain NUL"
+      else Ok (File_search { query })
   | "new_session" -> Ok New_session
   | "prompt" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
       let* images = images_member json in
+      let* resources = resources_member json in
       if command_id = "" then Error "commandId must not be empty"
       else if String.length command_id > 128 then Error "commandId is too long"
       else
         let* () =
-          validate_prompt ~empty_message:"prompt must contain text or an image"
-            ~text ~images
+          validate_prompt
+            ~empty_message:"prompt must contain text, an image, or a resource"
+            ~text ~images ~resources
         in
-        Ok (Prompt { command_id; text; images })
+        Ok (Prompt { command_id; text; images; resources })
   | "deliver" ->
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
       let* images = images_member json in
+      let* resources = resources_member json in
       let* action = string_member "action" json in
       if command_id = "" then Error "commandId must not be empty"
       else if String.length command_id > 128 then Error "commandId is too long"
@@ -206,10 +253,10 @@ let request_of_yojson json =
       else
         let* () =
           validate_prompt
-            ~empty_message:"delivery must contain text or an image" ~text
-            ~images
+            ~empty_message:"delivery must contain text, an image, or a resource"
+            ~text ~images ~resources
         in
-        Ok (Deliver { command_id; text; images; action })
+        Ok (Deliver { command_id; text; images; resources; action })
   | "cancel" -> Ok Cancel
   | "config_options" -> Ok Config_options
   | "set_config_option" ->

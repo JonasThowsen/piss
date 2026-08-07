@@ -27,6 +27,8 @@ type image_input = {
   size : int;
 }
 
+type resource_input = { path : string }
+
 type event = {
   sequence : int64;
   kind : string;

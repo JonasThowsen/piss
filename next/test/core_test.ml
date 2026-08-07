@@ -31,6 +31,35 @@ let with_registry f =
         ~finally:(fun () -> Registry.close registry)
         (fun () -> f registry))
 
+let write_file path contents =
+  let channel = open_out_bin path in
+  Fun.protect
+    ~finally:(fun () -> close_out_noerr channel)
+    (fun () -> output_string channel contents)
+
+let rec remove_tree path =
+  try
+    match (Unix.lstat path).st_kind with
+    | Unix.S_DIR ->
+        Sys.readdir path
+        |> Array.iter (fun name -> remove_tree (Filename.concat path name));
+        Unix.rmdir path
+    | Unix.S_REG | Unix.S_CHR | Unix.S_BLK | Unix.S_LNK | Unix.S_FIFO
+    | Unix.S_SOCK ->
+        Unix.unlink path
+  with Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+
+let with_workspace f =
+  let parent = Filename.temp_file "piss-workspace-" "" in
+  Sys.remove parent;
+  Unix.mkdir parent 0o700;
+  Fun.protect
+    ~finally:(fun () -> remove_tree parent)
+    (fun () ->
+      let root = Filename.concat parent "workspace" in
+      Unix.mkdir root 0o700;
+      f ~parent ~root)
+
 let test_session_registry () =
   with_registry @@ fun registry ->
   Registry.upsert_workspace registry ~id:"workspace-one" ~name:"Workspace one"
@@ -387,6 +416,23 @@ let test_wire_bounds () =
   (match Wire.request_of_yojson too_many_images with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "more than four images were accepted");
+  (match
+     decode
+       {|{"op":"prompt","commandId":"escape","text":"inspect","resources":[{"path":"../outside.txt"}]}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "traversing resource path was accepted");
+  (match decode {|{"op":"file_search","query":"App"}|} with
+  | Ok (Wire.File_search { query = "App" }) -> ()
+  | Ok _ -> Alcotest.fail "file search decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  let oversized_query = String.make 201 'q' in
+  let search =
+    `Assoc [ ("op", `String "file_search"); ("query", `String oversized_query) ]
+  in
+  (match Wire.request_of_yojson search with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "oversized file search query was accepted");
   let oversized = String.make ((64 * 1024) + 1) 'x' in
   let prompt =
     `Assoc
@@ -400,6 +446,76 @@ let test_wire_bounds () =
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized prompt was accepted"
 
+let test_workspace_file_mentions () =
+  with_workspace @@ fun ~parent ~root ->
+  let web = Filename.concat root "web-next" in
+  Unix.mkdir web 0o700;
+  let app = Filename.concat web "App.re" in
+  write_file app "let durable = true\n";
+  let outside = Filename.concat parent "outside.txt" in
+  write_file outside "secret\n";
+  Unix.symlink outside (Filename.concat root "escape.txt");
+  Unix.mkfifo (Filename.concat root "special.pipe") 0o600;
+  let mentions =
+    match Workspace_files.search ~root ~query:"App" with
+    | Ok mentions -> mentions
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check (list string))
+    "search returns canonical workspace-relative regular files"
+    [ "web-next/App.re" ]
+    (List.map
+       (fun (mention : Workspace_files.mention) -> mention.path)
+       mentions);
+  let all =
+    match Workspace_files.search ~root ~query:"" with
+    | Ok mentions -> mentions
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool)
+    "escaping symlinks and special files are not exposed" true
+    (List.for_all
+       (fun (mention : Workspace_files.mention) ->
+         mention.path <> "escape.txt" && mention.path <> "special.pipe")
+       all);
+  let resource =
+    match Workspace_files.resolve_resource ~root "web-next/App.re" with
+    | Ok resource -> resource
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check string)
+    "resource keeps relative display name" "web-next/App.re" resource.name;
+  Alcotest.(check bool)
+    "resource uses an absolute file URI" true
+    (String.starts_with ~prefix:"file:///" resource.uri);
+  List.iter
+    (fun path ->
+      match Workspace_files.resolve_resource ~root path with
+      | Error _ -> ()
+      | Ok _ -> Alcotest.failf "unsafe resource path was accepted: %s" path)
+    [ "../outside.txt"; "escape.txt"; "special.pipe" ];
+  let request =
+    Acp.prompt_request ~delivery:None ~command_id:"resource-command"
+      ~session_id:"session" ~text:"Inspect @web-next/App.re" ~images:[]
+      ~resources:[ resource ]
+  in
+  let prompt =
+    Yojson.Safe.Util.(request |> member "params" |> member "prompt")
+  in
+  match prompt with
+  | `List [ `Assoc _; `Assoc fields ] ->
+      Alcotest.(check (option string))
+        "ACP resource link type" (Some "resource_link")
+        (Option.bind
+           (List.assoc_opt "type" fields)
+           Yojson.Safe.Util.to_string_option);
+      Alcotest.(check (option string))
+        "ACP resource link name" (Some "web-next/App.re")
+        (Option.bind
+           (List.assoc_opt "name" fields)
+           Yojson.Safe.Util.to_string_option)
+  | _ -> Alcotest.fail "ACP prompt did not contain text and a resource link"
+
 let test_acp_image_prompt () =
   let image =
     Domain.
@@ -412,7 +528,7 @@ let test_acp_image_prompt () =
   in
   let request =
     Acp.prompt_request ~delivery:None ~command_id:"image-command"
-      ~session_id:"session" ~text:"Inspect this" ~images:[ image ]
+      ~session_id:"session" ~text:"Inspect this" ~images:[ image ] ~resources:[]
   in
   let prompt =
     Yojson.Safe.Util.(request |> member "params" |> member "prompt")
@@ -534,6 +650,8 @@ let () =
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
           Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;
+          Alcotest.test_case "workspace file mentions are bounded" `Quick
+            test_workspace_file_mentions;
           Alcotest.test_case "ACP image prompts are typed" `Quick
             test_acp_image_prompt;
           Alcotest.test_case "ACP image echoes are bounded" `Quick
