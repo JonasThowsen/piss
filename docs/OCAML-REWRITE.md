@@ -310,8 +310,8 @@ Unlike the current system, activation does not wait for agents to become idle.
 
 Workers are never stopped as a bulk activation side effect. A worker upgrade is session-scoped and eventually automatic by default:
 
-- an idle worker atomically enters a bounded drain lease, durably records its target generation, rejects racing mutations, and is replaced independently;
-- the replacement restores the ACP session when supported and durably completes the upgrade receipt before the upgrader advances;
+- an idle worker atomically enters a bounded drain lease, durably records its target generation and selected ACP configuration, rejects racing mutations, and is replaced independently;
+- the replacement restores the ACP session and selected configuration when supported and durably completes the upgrade receipt before the upgrader advances;
 - running workers keep their existing generation until a later idle check;
 - protocol compatibility allows old workers to reconnect to new `pissd`;
 - legacy or incompatible workers that cannot acknowledge safe preparation remain supervised and visible rather than being restarted through a race.
