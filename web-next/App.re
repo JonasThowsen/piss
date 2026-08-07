@@ -253,9 +253,11 @@ let connectEventStream:
   {|(id, onInitial, onEvent, onOpen, onError) => {
     let closed = false;
     let source = null;
-    const close = () => { closed = true; if (source) source.close(); };
-    fetch(`/api/v2/events?recent=500&session=${encodeURIComponent(id)}`)
-      .then(async response => {
+    let retryTimer = null;
+    const close = () => { closed = true; if (retryTimer) clearTimeout(retryTimer); if (source) source.close(); };
+    const connect = async () => {
+      try {
+        const response = await fetch(`/api/v2/events?recent=500&session=${encodeURIComponent(id)}`);
         const text = await response.text();
         if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
         if (closed) return;
@@ -268,8 +270,11 @@ let connectEventStream:
         source.onmessage = event => { if (!closed) onEvent(event.data); };
         source.onopen = () => { if (!closed) onOpen(); };
         source.onerror = () => { if (!closed) onError(); };
-      })
-      .catch(() => { if (!closed) onError(); });
+      } catch (_) {
+        if (!closed) { onError(); retryTimer = setTimeout(connect, 500); }
+      }
+    };
+    connect();
     return close;
   }|}
 ];
@@ -704,6 +709,7 @@ module App = {
     let snapshot = parseSnapshot(sessionJson);
     let status = snapshotStatus(snapshot);
     let running = status == "running" || status == "requires_action";
+    let workerUnavailable = status == "offline" || status == "connecting";
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let outbox = projectOutbox(eventsJson);
     let sessions = parseSessions(sessionsJson);
@@ -807,12 +813,21 @@ module App = {
           postText("/api/v2/sessions", body)
           ->thenPromise(text => {
               let selected = createdSessionId(text);
-              setActiveSessionId(_ => selected);
-              setEventsJson(_ => "[]");
               setNotice(_ => "Isolated session worker is starting.");
+              waitForSession(selected)
+              ->thenPromise(_ => Js.Promise.resolve(selected));
+            })
+          ->thenPromise(selected => {
               setSubmitting(_ => false);
               setCreatorOpen(_ => false);
               setDrawerOpen(_ => false);
+              setActiveSessionId(_ => selected);
+              setEventsJson(_ => "[]");
+              setHasOlderEvents(_ => false);
+              setLoadingOlderEvents(_ => false);
+              setConfigOptionsJson(_ => "[]");
+              setConfigMenu(_ => "");
+              setShowJumpToBottom(_ => false);
               refreshSession(selected);
               refresh();
               Js.Promise.resolve();
@@ -1508,14 +1523,18 @@ module App = {
                 rows=2
                 maxLength=65536
                 ariaLabel="Message agent"
-                disabled={submitting || activeSessionId == ""}
+                disabled={
+                  submitting || activeSessionId == "" || workerUnavailable
+                }
                 onKeyDown=composerKeyDown
                 placeholder={
                   activeSessionId == ""
                     ? "Create or select a session"
-                    : running
-                        ? "Message Pi while it works..."
-                        : "Message agent / commands @ files"
+                    : workerUnavailable
+                        ? "Connecting to the session worker..."
+                        : running
+                            ? "Message Pi while it works..."
+                            : "Message agent / commands @ files"
                 }
               />
               <div className="composer-footer">
@@ -1540,13 +1559,28 @@ module App = {
                   role="group"
                   ariaLabel="Model configuration">
                   {switch (modelOption) {
-                   | None => React.null
+                   | None =>
+                     activeSessionId == ""
+                       ? React.null
+                       : <div className="config-control">
+                           <button
+                             className="composer-config-trigger model"
+                             type_="button"
+                             disabled=true
+                             ariaLabel="Model unavailable"
+                             title="This agent has not exposed a model option through ACP">
+                             <span>
+                               <small> {React.string("MODEL")} </small>
+                               <b> {React.string("Not available")} </b>
+                             </span>
+                           </button>
+                         </div>
                    | Some(option) =>
                      <div className="config-control">
                        <button
                          className="composer-config-trigger model"
                          type_="button"
-                         disabled={running || submitting}
+                         disabled={running || submitting || workerUnavailable}
                          ariaExpanded={configMenu == "model"}
                          ariaLabel={"Model: " ++ configCurrentName(option)}
                          onClick={_ =>
@@ -1637,13 +1671,28 @@ module App = {
                      </div>
                    }}
                   {switch (thinkingOption) {
-                   | None => React.null
+                   | None =>
+                     activeSessionId == ""
+                       ? React.null
+                       : <div className="config-control">
+                           <button
+                             className="composer-config-trigger thinking"
+                             type_="button"
+                             disabled=true
+                             ariaLabel="Thinking unavailable"
+                             title="This agent has not exposed a thinking option through ACP">
+                             <span>
+                               <small> {React.string("THINKING")} </small>
+                               <b> {React.string("Unavailable")} </b>
+                             </span>
+                           </button>
+                         </div>
                    | Some(option) =>
                      <div className="config-control">
                        <button
                          className="composer-config-trigger thinking"
                          type_="button"
-                         disabled={running || submitting}
+                         disabled={running || submitting || workerUnavailable}
                          ariaExpanded={configMenu == "thinking"}
                          ariaLabel={"Thinking: " ++ configCurrentName(option)}
                          onClick={_ =>
@@ -1720,7 +1769,9 @@ module App = {
                 <button
                   className="send-action"
                   type_="submit"
-                  disabled={submitting || activeSessionId == ""}
+                  disabled={
+                    submitting || activeSessionId == "" || workerUnavailable
+                  }
                   ariaLabel={
                     running
                       ? delivery == "steer" ? "Steer Pi" : "Queue follow-up"

@@ -92,7 +92,19 @@ let
     set -euo pipefail
     id="''${1:?session id required}"
     [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
-    exec ${lib.getExe' pkgs.systemd "systemctl"} --user start "piss-ocaml-worker@$id.service"
+    unit="piss-ocaml-worker@$id.service"
+    socket="''${XDG_RUNTIME_DIR:?}/piss-ocaml/sessions/$id/worker.sock"
+    ${lib.getExe' pkgs.systemd "systemctl"} --user start "$unit"
+    for _ in $(seq 1 200); do
+      [[ -S "$socket" ]] && exit 0
+      ${lib.getExe' pkgs.systemd "systemctl"} --user is-active --quiet "$unit" || {
+        ${lib.getExe' pkgs.systemd "systemctl"} --user status "$unit" --no-pager >&2 || true
+        exit 1
+      }
+      sleep .05
+    done
+    echo "worker socket did not become ready: $socket" >&2
+    exit 1
   '';
 
   stopWorker = pkgs.writeShellScript "piss-ocaml-stop-session" ''

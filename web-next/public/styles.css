@@ -283,6 +283,7 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .composer-config-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
 .composer-config-trigger:hover:not(:disabled) { color: var(--text); }
 .composer-config-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.composer-config-trigger.thinking:disabled { max-width: 105px; }
 .composer-config-menu { position: absolute; z-index: 80; right: 0; bottom: calc(100% + 9px); max-height: min(420px, calc(var(--app-height, 100dvh) - 24px)); overflow-y: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: 0 15px 42px rgba(32, 35, 31, .2); }
 .composer-config-menu.model-menu { width: min(370px, calc(100vw - 20px)); }
 .composer-config-menu.thinking-menu { width: min(210px, calc(100vw - 20px)); }
