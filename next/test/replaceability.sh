@@ -61,6 +61,7 @@ PISS_MOCK_DURATION=4 "$worker_exe" \
   --database "$database" \
   --session replaceability-session \
   --worker replaceability-worker \
+  --generation worker-generation-one \
   --workspace "$workspace" \
   --harness "$agent_exe" \
   >"$worker_log" 2>&1 &
@@ -140,4 +141,43 @@ duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
 events_after_duplicate=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "command.accepted")] | length' <<<"$events_after_duplicate") == 1 ]]
 
-echo "replaceability proof passed: control plane replaced; worker=$worker_pid harness=$harness_pid"
+prepared=$(python3 - "$socket" <<'PY'
+import json, socket, sys
+connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.connect(sys.argv[1])
+stream = connection.makefile("rwb", buffering=0)
+def exchange(value):
+    stream.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+    envelope = json.loads(stream.readline())
+    assert envelope["ok"], envelope
+    return envelope["result"]
+exchange({"op":"hello","protocolVersion":1})
+print(json.dumps(exchange({"op":"prepare_upgrade","generation":"worker-generation-two"})))
+PY
+)
+[[ $(jq -r .ready <<<"$prepared") == true ]]
+old_worker_pid=$worker_pid
+kill "$worker_pid" "$harness_pid" 2>/dev/null || true
+wait "$worker_pid" 2>/dev/null || true
+worker_pid=
+rm -f "$socket"
+PISS_MOCK_DURATION=4 "$worker_exe" \
+  --socket "$socket" \
+  --database "$database" \
+  --session replaceability-session \
+  --worker replaceability-worker \
+  --generation worker-generation-two \
+  --workspace "$workspace" \
+  --harness "$agent_exe" \
+  >"$worker_log" 2>&1 &
+worker_pid=$!
+wait_for_worker
+replacement_snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
+[[ $(jq -r .workerPid <<<"$replacement_snapshot") != "$old_worker_pid" ]]
+[[ $(jq -r .workerGeneration <<<"$replacement_snapshot") == worker-generation-two ]]
+[[ $(jq -r .status <<<"$replacement_snapshot") == idle ]]
+upgrade_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+[[ $(jq '[.[] | select(.kind == "worker.upgrade.prepared" and .payload.toGeneration == "worker-generation-two")] | length' <<<"$upgrade_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "worker.upgrade.completed" and .payload.fromGeneration == "worker-generation-one" and .payload.toGeneration == "worker-generation-two")] | length' <<<"$upgrade_events") == 1 ]]
+
+echo "replaceability proof passed: control replaced without worker interruption; idle worker then upgraded with receipts"

@@ -40,6 +40,26 @@ let
     "--workspace-discovery-root"
     path
   ]) cfg.workspaceDiscoveryRoots;
+  workerGeneration = builtins.hashString "sha256" (
+    lib.concatStringsSep "\n" (
+      map toString [
+        cfg.workerPackage
+        cfg.adapterPackage
+        cfg.opencodePackage
+        cfg.mockAgentPackage
+        cfg.sessionMcpPackage
+      ]
+      ++ [
+        cfg.piCommand
+        (if cfg.opencodeAuthFile == null then "" else cfg.opencodeAuthFile)
+        (if cfg.sshAgentSocket == null then "" else cfg.sshAgentSocket)
+        (toString cfg.port)
+        (builtins.toJSON cfg.environmentFiles)
+        (builtins.toJSON workspacePaths)
+        (builtins.toJSON cfg.workspaceDiscoveryRoots)
+      ]
+    )
+  );
 
   workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
     set -euo pipefail
@@ -104,6 +124,7 @@ let
       --database "$session_state/worker.sqlite3" \
       --session "$id" \
       --worker "worker-$id" \
+      --generation ${lib.escapeShellArg workerGeneration} \
       --workspace "$workspace" \
       --harness "$command" \
       --session-mcp ${cfg.sessionMcpPackage}/bin/piss-session-mcp \
@@ -137,6 +158,85 @@ let
     id="''${1:?session id required}"
     [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
     exec ${lib.getExe' pkgs.systemd "systemctl"} --user stop "piss-ocaml-worker@$id.service"
+  '';
+
+  workerUpgradeClient = pkgs.writeText "piss-worker-upgrade-client.py" ''
+    import json
+    import socket
+    import sys
+
+    socket_path, operation = sys.argv[1:3]
+    request = {"op": operation}
+    if operation == "prepare_upgrade":
+        request["generation"] = sys.argv[3]
+
+    def receive(connection):
+        line = bytearray()
+        while not line.endswith(b"\n"):
+            chunk = connection.recv(min(65536, 16 * 1024 * 1024 + 1 - len(line)))
+            if not chunk:
+                raise RuntimeError("worker closed before returning a frame")
+            line.extend(chunk)
+            if len(line) > 16 * 1024 * 1024:
+                raise RuntimeError("worker returned an oversized frame")
+        envelope = json.loads(line)
+        if not envelope.get("ok"):
+            raise RuntimeError(envelope.get("error", "worker request failed"))
+        return envelope.get("result")
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(5)
+    connection.connect(socket_path)
+    connection.sendall(b'{"op":"hello","protocolVersion":1}\n')
+    receive(connection)
+    connection.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
+    print(json.dumps(receive(connection), separators=(",", ":")))
+  '';
+
+  upgradeIdleWorkers = pkgs.writeShellScript "piss-ocaml-upgrade-idle-workers" ''
+    set -euo pipefail
+    runtime_root="''${XDG_RUNTIME_DIR:?}/${serviceStateName}"
+    [[ -d "$runtime_root" ]] || exit 0
+    target=${lib.escapeShellArg workerGeneration}
+    systemctl=${lib.getExe' pkgs.systemd "systemctl"}
+    client=${lib.getExe pkgs.python3}
+    jq=${lib.getExe pkgs.jq}
+
+    while read -r unit _; do
+      [[ -n "$unit" ]] || continue
+      id="''${unit#piss-ocaml-worker@}"
+      id="''${id%.service}"
+      [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || continue
+      socket="$runtime_root/sessions/$id/worker.sock"
+      [[ -S "$socket" ]] || continue
+      snapshot="$($client ${workerUpgradeClient} "$socket" snapshot 2>/dev/null)" || continue
+      current="$(printf '%s' "$snapshot" | $jq -r '.workerGeneration // ""')"
+      [[ "$current" != "$target" ]] || continue
+      status="$(printf '%s' "$snapshot" | $jq -r '.status // "offline"')"
+      [[ "$status" == idle ]] || continue
+      prepared="$($client ${workerUpgradeClient} "$socket" prepare_upgrade "$target" 2>/dev/null)" || {
+        echo "worker $id uses a legacy generation without safe upgrade preparation; leaving it running" >&2
+        continue
+      }
+      [[ "$(printf '%s' "$prepared" | $jq -r '.ready // false')" == true ]] || continue
+      echo "upgrading idle PISS worker $id from $current to $target"
+      $systemctl --user restart "$unit"
+      ready=false
+      for _ in $(seq 1 300); do
+        if [[ -S "$socket" ]]; then
+          replacement="$($client ${workerUpgradeClient} "$socket" snapshot 2>/dev/null)" || replacement=""
+          if [[ "$(printf '%s' "$replacement" | $jq -r '.workerGeneration // ""')" == "$target" ]]; then
+            ready=true
+            break
+          fi
+        fi
+        sleep .05
+      done
+      [[ "$ready" == true ]] || {
+        echo "upgraded worker did not become ready: $id" >&2
+        exit 1
+      }
+    done < <($systemctl --user list-units --type=service --state=running --no-legend --plain 'piss-ocaml-worker@*.service')
   '';
   tailscaleStateName = cfg.tailscale.stateName;
   tailscaleSocket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
@@ -308,6 +408,22 @@ in
       type = lib.types.ints.between 1 256;
       default = 32;
       description = "Resource safety limit for concurrently active harness sessions.";
+    };
+
+    autoUpgradeIdleWorkers = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Automatically move active session workers to the current immutable
+        generation after each worker atomically confirms that it is idle.
+      '';
+    };
+
+    workerUpgradeInterval = lib.mkOption {
+      type = lib.types.str;
+      default = "1min";
+      example = "30s";
+      description = "systemd time span between idle-worker upgrade checks.";
     };
 
     workspace = lib.mkOption {
@@ -533,6 +649,36 @@ in
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.services.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
+      description = "Upgrade idle PISS workers to the current immutable generation";
+      after = [ "piss-ocaml.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = upgradeIdleWorkers;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.timers.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
+      description = "Periodically upgrade idle PISS workers";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = cfg.workerUpgradeInterval;
+        Persistent = true;
+        Unit = "piss-ocaml-worker-upgrade.service";
       };
     };
 

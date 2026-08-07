@@ -26,6 +26,7 @@ trap cleanup EXIT
 PISS_MOCK_DURATION=2 "$worker_exe" \
   --socket "$state/worker.sock" --database "$state/worker.sqlite3" \
   --session interaction-session --worker interaction-worker \
+  --generation interaction-generation \
   --workspace "$workspace" --harness "$agent_exe" \
   >"$state/worker.log" 2>&1 &
 worker_pid=$!
@@ -182,4 +183,28 @@ ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id:
 assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
 PY
 
-echo "interaction proof passed: typed image prompts, resumable SSE, permissions, steer/follow-up delivery, and cancellation"
+snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
+[[ $(jq -r .workerGeneration <<<"$snapshot") == interaction-generation ]]
+prepared=$(python3 - "$state/worker.sock" <<'PY'
+import json, socket, sys
+connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.connect(sys.argv[1])
+stream = connection.makefile("rwb", buffering=0)
+def exchange(value):
+    stream.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+    envelope = json.loads(stream.readline())
+    assert envelope["ok"], envelope
+    return envelope["result"]
+exchange({"op":"hello","protocolVersion":1})
+print(json.dumps(exchange({"op":"prepare_upgrade","generation":"interaction-next"})))
+PY
+)
+[[ $(jq -r .ready <<<"$prepared") == true ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .upgradePending) == true ]]
+events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+[[ $(jq '[.[] | select(.kind == "worker.upgrade.prepared" and .payload.fromGeneration == "interaction-generation" and .payload.toGeneration == "interaction-next")] | length' <<<"$events") == 1 ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  --data '{"commandId":"upgrade-race","text":"must not enter a draining worker"}' \
+  "http://127.0.0.1:$port/api/v2/commands") == 503 ]]
+
+echo "interaction proof passed: images, SSE, permissions, delivery, cancellation, and atomic idle-upgrade drain"

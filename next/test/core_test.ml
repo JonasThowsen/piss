@@ -334,6 +334,13 @@ let test_wire_bounds () =
   (match decode {|{"op":"unknown"}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unknown worker operation was accepted");
+  (match decode {|{"op":"prepare_upgrade","generation":"worker-v2"}|} with
+  | Ok (Wire.Prepare_upgrade { generation = "worker-v2" }) -> ()
+  | Ok _ -> Alcotest.fail "upgrade preparation decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  (match decode {|{"op":"prepare_upgrade","generation":""}|} with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "empty upgrade generation was accepted");
   (match
      decode
        {|{"op":"deliver","commandId":"delivery","text":"message","action":"later"}|}
@@ -437,21 +444,21 @@ let test_acp_image_redaction () =
   let update =
     Acp.notification ~method_:"session/update"
       (`Assoc
-        [
-          ("sessionId", `String "session");
-          ( "update",
-            `Assoc
-              [
-                ("sessionUpdate", `String "user_message_chunk");
-                ( "content",
-                  `Assoc
-                    [
-                      ("type", `String "image");
-                      ("mimeType", `String "image/png");
-                      ("data", `String "large-base64-payload");
-                    ] );
-              ] );
-        ])
+         [
+           ("sessionId", `String "session");
+           ( "update",
+             `Assoc
+               [
+                 ("sessionUpdate", `String "user_message_chunk");
+                 ( "content",
+                   `Assoc
+                     [
+                       ("type", `String "image");
+                       ("mimeType", `String "image/png");
+                       ("data", `String "large-base64-payload");
+                     ] );
+               ] );
+         ])
   in
   let redacted = Acp.redact_user_image_data update in
   Alcotest.(check string)

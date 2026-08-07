@@ -38,9 +38,9 @@ let response_stop_reason json =
   | `String value -> Some value
   | _ -> None
 
-let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
-    ~harness_command ~harness_args ~session_mcp ~broker_url ~broker_token
-    ~curl_command =
+let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
+    ~workspace ~harness_command ~harness_args ~session_mcp ~broker_url
+    ~broker_token ~curl_command =
   let store =
     Store.open_ ~path:database_path ~session_id:(Domain.Session_id session_id)
       ~worker_id:(Domain.Worker_id worker_id)
@@ -71,7 +71,10 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   let pending_permissions : (string, pending_permission) Hashtbl.t =
     Hashtbl.create 8
   in
+  let configuration_changes = ref 0 in
   let status = ref Domain.Starting in
+  let upgrade_target = ref None in
+  let upgrade_deadline = ref 0. in
   let harness_session_id = ref "" in
   let config_options = ref (`List []) in
   let send json = Eio.Stream.add outgoing json in
@@ -276,7 +279,39 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
   in
   harness_session_id := session_id_from_agent;
   status := Domain.Idle;
+  let previous_generation = Store.get_metadata store "worker_generation" in
+  Store.set_metadata store "worker_generation" generation;
+  (match Store.get_metadata store "pending_worker_upgrade" with
+  | Some target when String.equal target generation ->
+      ignore
+        (Store.append_event store ~kind:"worker.upgrade.completed"
+           (`Assoc
+              [
+                ( "fromGeneration",
+                  Option.fold ~none:`Null
+                    ~some:(fun value -> `String value)
+                    previous_generation );
+                ("toGeneration", `String generation);
+                ("workerPid", `Int (Unix.getpid ()));
+              ]));
+      Store.set_metadata store "pending_worker_upgrade" ""
+  | _ -> ());
   let sessions_created_since_start = ref 0 in
+  let refresh_upgrade_lease () =
+    match !upgrade_target with
+    | Some target when Unix.gettimeofday () >= !upgrade_deadline ->
+        upgrade_target := None;
+        upgrade_deadline := 0.;
+        Store.set_metadata store "pending_worker_upgrade" "";
+        ignore
+          (Store.append_event store ~kind:"worker.upgrade.expired"
+             (`Assoc [ ("targetGeneration", `String target) ]))
+    | _ -> ()
+  in
+  let upgrade_preparing () =
+    refresh_upgrade_lease ();
+    Option.is_some !upgrade_target
+  in
   let worker_snapshot () =
     Domain.
       {
@@ -322,10 +357,50 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
         | `Assoc fields ->
             Ok
               (`Assoc
-                 (("acceptsImages", `Bool supports_images)
+                 (("workerGeneration", `String generation)
+                 :: ("upgradePending", `Bool (upgrade_preparing ()))
+                 :: ("acceptsImages", `Bool supports_images)
                  :: ("configOptions", !config_options)
                  :: fields))
         | _ -> assert false)
+    | Wire.Prepare_upgrade { generation = target }
+      when String.equal target generation ->
+        Ok
+          (`Assoc
+             [
+               ("ready", `Bool false);
+               ("alreadyCurrent", `Bool true);
+               ("generation", `String generation);
+             ])
+    | Wire.Prepare_upgrade { generation = target } ->
+        refresh_upgrade_lease ();
+        if
+          Hashtbl.length running_commands > 0
+          || Hashtbl.length pending_permissions > 0
+          || !configuration_changes > 0 || !status <> Domain.Idle
+        then Error "worker is not idle and cannot prepare for upgrade"
+        else (
+          upgrade_target := Some target;
+          upgrade_deadline := Unix.gettimeofday () +. 30.;
+          Store.set_metadata store "pending_worker_upgrade" target;
+          let event =
+            Store.append_event store ~kind:"worker.upgrade.prepared"
+              (`Assoc
+                 [
+                   ("fromGeneration", `String generation);
+                   ("toGeneration", `String target);
+                   ("leaseSeconds", `Int 30);
+                 ])
+          in
+          Ok
+            (`Assoc
+               [
+                 ("ready", `Bool true);
+                 ("alreadyCurrent", `Bool false);
+                 ("generation", `String generation);
+                 ("targetGeneration", `String target);
+                 ("sequence", `Intlit (Int64.to_string event.sequence));
+               ]))
     | Wire.Events { after; limit } ->
         let events = Store.list_events store ~after ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
@@ -335,6 +410,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
     | Wire.Recent_events { limit } ->
         let events = Store.list_recent_events store ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
+    | Wire.Config_options -> Ok !config_options
+    | _ when upgrade_preparing () ->
+        Error "worker is preparing for an immutable generation upgrade"
     | Wire.New_session ->
         if
           Hashtbl.length running_commands > 0
@@ -440,7 +518,6 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
               status := Domain.Failed;
               Store.set_command_state store ~command_id Domain.Ambiguous;
               Error (Printexc.to_string exn)))
-    | Wire.Config_options -> Ok !config_options
     | Wire.Set_config_option { config_id; value } ->
         if
           Hashtbl.length running_commands > 0
@@ -455,9 +532,13 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~workspace
                    ^ string_of_float (Unix.gettimeofday ())))
           in
           let result, response =
-            require_rpc_result ~id
-              (Acp.set_config_option_request ~id ~session_id:!harness_session_id
-                 ~config_id ~value)
+            incr configuration_changes;
+            Fun.protect
+              ~finally:(fun () -> decr configuration_changes)
+              (fun () ->
+                require_rpc_result ~id
+                  (Acp.set_config_option_request ~id
+                     ~session_id:!harness_session_id ~config_id ~value))
           in
           (match Yojson.Safe.Util.member "configOptions" result with
           | `List _ as options -> config_options := options
@@ -574,6 +655,7 @@ let () =
   let database_path = ref "" in
   let session_id = ref "tracer-session" in
   let worker_id = ref "tracer-worker" in
+  let generation = ref "development" in
   let workspace = ref (Sys.getcwd ()) in
   let harness_command = ref "piss-mock-agent" in
   let harness_args = ref [] in
@@ -587,6 +669,7 @@ let () =
       ("--database", Arg.Set_string database_path, "Worker SQLite database path");
       ("--session", Arg.Set_string session_id, "PISS session ID");
       ("--worker", Arg.Set_string worker_id, "Worker ID");
+      ("--generation", Arg.Set_string generation, "Immutable worker generation");
       ("--workspace", Arg.Set_string workspace, "Authorized workspace");
       ( "--harness",
         Arg.Set_string harness_command,
@@ -605,7 +688,8 @@ let () =
   if !database_path = "" then raise (Arg.Bad "--database is required");
   Eio_main.run @@ fun env ->
   run ~env ~socket_path:!socket_path ~database_path:!database_path
-    ~session_id:!session_id ~worker_id:!worker_id ~workspace:!workspace
-    ~harness_command:!harness_command ~harness_args:(List.rev !harness_args)
-    ~session_mcp:!session_mcp ~broker_url:!broker_url
-    ~broker_token:!broker_token ~curl_command:!curl_command
+    ~session_id:!session_id ~worker_id:!worker_id ~generation:!generation
+    ~workspace:!workspace ~harness_command:!harness_command
+    ~harness_args:(List.rev !harness_args) ~session_mcp:!session_mcp
+    ~broker_url:!broker_url ~broker_token:!broker_token
+    ~curl_command:!curl_command
