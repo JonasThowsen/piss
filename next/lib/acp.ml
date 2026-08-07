@@ -165,10 +165,24 @@ let image_content (image : Domain.image_input) =
       ("data", `String image.data);
     ]
 
-let prompt_request ~delivery ~command_id ~session_id ~text ~images =
+let resource_link_content (resource : Workspace_files.resource) =
+  `Assoc
+    ([
+       ("type", `String "resource_link");
+       ("uri", `String resource.uri);
+       ("name", `String resource.name);
+       ("size", `Int resource.size);
+     ]
+    @
+    match resource.mime_type with
+    | Some value -> [ ("mimeType", `String value) ]
+    | None -> [])
+
+let prompt_request ~delivery ~command_id ~session_id ~text ~images ~resources =
   let prompt =
     (if text = "" then []
      else [ `Assoc [ ("type", `String "text"); ("text", `String text) ] ])
+    @ List.map resource_link_content resources
     @ List.map image_content images
   in
   let fields =

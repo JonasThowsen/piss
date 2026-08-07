@@ -41,6 +41,9 @@ let response_stop_reason json =
 let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
     ~workspace ~harness_command ~harness_args ~session_mcp ~broker_url
     ~broker_token ~curl_command =
+  let workspace = Unix.realpath workspace in
+  if (Unix.stat workspace).st_kind <> Unix.S_DIR then
+    failwith "authorized workspace is not a directory";
   let store =
     Store.open_ ~path:database_path ~session_id:(Domain.Session_id session_id)
       ~worker_id:(Domain.Worker_id worker_id)
@@ -413,6 +416,70 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
         last_sequence = Store.last_sequence store;
       }
   in
+  let resolve_resources resources =
+    List.fold_left
+      (fun resolved (resource : Domain.resource_input) ->
+        Result.bind resolved (fun resources ->
+            Workspace_files.resolve_resource ~root:workspace resource.path
+            |> Result.map (fun value -> value :: resources)))
+      (Ok []) resources
+    |> Result.map List.rev
+  in
+  let resource_metadata (resource : Workspace_files.resource) =
+    `Assoc
+      ([
+         ("path", `String resource.path);
+         ("name", `String resource.name);
+         ("size", `Int resource.size);
+       ]
+      @
+      match resource.mime_type with
+      | Some value -> [ ("mimeType", `String value) ]
+      | None -> [])
+  in
+  let dispatch_prompt ?action ~command_id ~text ~images ~resources () =
+    match resolve_resources resources with
+    | Error message -> Error message
+    | Ok resolved_resources -> (
+        let image_metadata = List.map Wire.image_metadata_to_yojson images in
+        let resources_metadata =
+          List.map resource_metadata resolved_resources
+        in
+        let content =
+          `List
+            (List.map Wire.image_to_yojson images
+            @ List.map Wire.resource_to_yojson resources)
+        in
+        let accepted =
+          Store.accept_command ?action store ~content ~images:image_metadata
+            ~resources:resources_metadata ~command_id ~request_id:command_id
+            ~prompt:text
+        in
+        try
+          status := Domain.Running;
+          Store.set_command_state store ~command_id Domain.Dispatched;
+          Hashtbl.replace running_commands command_id ();
+          send
+            (Acp.prompt_request ~delivery:action ~command_id
+               ~session_id:!harness_session_id ~text ~images
+               ~resources:resolved_resources);
+          Store.clear_command_content store ~command_id;
+          Ok
+            (`Assoc
+               ([
+                  ("commandId", `String command_id);
+                  ("state", `String "dispatched");
+                  ("duplicate", `Bool accepted.duplicate);
+                ]
+               @
+               match action with
+               | Some value -> [ ("action", `String value) ]
+               | None -> []))
+        with exn ->
+          status := Domain.Failed;
+          Store.set_command_state store ~command_id Domain.Ambiguous;
+          Error (Printexc.to_string exn))
+  in
   let handle_request request =
     match request with
     | Wire.Hello { protocol_version = 1 } ->
@@ -499,6 +566,10 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
     | Wire.Recent_events { limit } ->
         let events = Store.list_recent_events store ~limit in
         Ok (`List (List.map Domain.event_to_yojson events))
+    | Wire.File_search { query } ->
+        Workspace_files.search ~root:workspace ~query
+        |> Result.map (fun mentions ->
+            `List (List.map Workspace_files.mention_to_yojson mentions))
     | Wire.Config_options -> Ok !config_options
     | _ when upgrade_preparing () ->
         Error "worker is preparing for an immutable generation upgrade"
@@ -524,7 +595,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
           Ok (`Assoc [ ("sessionId", `String created) ]))
     | Wire.Prompt { images; _ } when images <> [] && not supports_images ->
         Error "the ACP agent does not accept image prompts"
-    | Wire.Prompt { command_id; text; images } -> (
+    | Wire.Prompt { command_id; text; images; resources } -> (
         match Store.find_command store command_id with
         | Some state ->
             Ok
@@ -536,37 +607,10 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
                  ])
         | None when Hashtbl.length running_commands > 0 ->
             Error "the session already has an active prompt"
-        | None -> (
-            let image_metadata =
-              List.map Wire.image_metadata_to_yojson images
-            in
-            let content = `List (List.map Wire.image_to_yojson images) in
-            let accepted =
-              Store.accept_command store ~content ~images:image_metadata
-                ~command_id ~request_id:command_id ~prompt:text
-            in
-            try
-              status := Domain.Running;
-              Store.set_command_state store ~command_id Domain.Dispatched;
-              Hashtbl.replace running_commands command_id ();
-              send
-                (Acp.prompt_request ~delivery:None ~command_id
-                   ~session_id:!harness_session_id ~text ~images);
-              Store.clear_command_content store ~command_id;
-              Ok
-                (`Assoc
-                   [
-                     ("commandId", `String command_id);
-                     ("state", `String "dispatched");
-                     ("duplicate", `Bool accepted.duplicate);
-                   ])
-            with exn ->
-              status := Domain.Failed;
-              Store.set_command_state store ~command_id Domain.Ambiguous;
-              Error (Printexc.to_string exn)))
+        | None -> dispatch_prompt ~command_id ~text ~images ~resources ())
     | Wire.Deliver { images; _ } when images <> [] && not supports_images ->
         Error "the ACP agent does not accept image prompts"
-    | Wire.Deliver { command_id; text; images; action } -> (
+    | Wire.Deliver { command_id; text; images; resources; action } -> (
         match Store.find_command store command_id with
         | Some state ->
             Ok
@@ -578,35 +622,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
                  ])
         | None when Hashtbl.length running_commands = 0 ->
             Error (action ^ " is only available during an active prompt")
-        | None -> (
-            let image_metadata =
-              List.map Wire.image_metadata_to_yojson images
-            in
-            let content = `List (List.map Wire.image_to_yojson images) in
-            let accepted =
-              Store.accept_command ~action ~content ~images:image_metadata store
-                ~command_id ~request_id:command_id ~prompt:text
-            in
-            try
-              status := Domain.Running;
-              Store.set_command_state store ~command_id Domain.Dispatched;
-              Hashtbl.replace running_commands command_id ();
-              send
-                (Acp.prompt_request ~delivery:(Some action) ~command_id
-                   ~session_id:!harness_session_id ~text ~images);
-              Store.clear_command_content store ~command_id;
-              Ok
-                (`Assoc
-                   [
-                     ("commandId", `String command_id);
-                     ("state", `String "dispatched");
-                     ("action", `String action);
-                     ("duplicate", `Bool accepted.duplicate);
-                   ])
-            with exn ->
-              status := Domain.Failed;
-              Store.set_command_state store ~command_id Domain.Ambiguous;
-              Error (Printexc.to_string exn)))
+        | None ->
+            dispatch_prompt ~action ~command_id ~text ~images ~resources ())
     | Wire.Set_config_option { config_id; value } ->
         if
           Hashtbl.length running_commands > 0

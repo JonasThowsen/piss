@@ -147,6 +147,11 @@ curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/workspaces/configured-empty/delete" >/dev/null
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
 mkdir -p "$root/local-project"
+printf 'outside the selected session workspace\n' >"$root/local-project/OnlyOtherWorkspace.txt"
+first=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id')
+scoped_mentions=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/file-mentions?session=$first&query=OnlyOtherWorkspace")
+[[ $(jq 'length' <<<"$scoped_mentions") == 0 ]]
 directories=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspace-directories?query=local-project")
 [[ $(jq -r '.[0].path' <<<"$directories") == "$root/local-project" ]]
 registered=$(curl -fsS -X POST -H 'content-type: application/json' \
@@ -157,7 +162,6 @@ outside_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
   -H 'content-type: application/json' --data '{"path":"/tmp"}' \
   "http://127.0.0.1:$port/api/v2/workspaces")
 [[ "$outside_status" == 403 ]]
-first=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r '.[0].id')
 second=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"harness":"opencode","workspaceId":"test-workspace","title":"Review agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
 third=$(curl -fsS -X POST -H 'content-type: application/json' \

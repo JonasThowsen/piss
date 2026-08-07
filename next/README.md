@@ -33,7 +33,7 @@ The deployed Reason application provides:
 - durable allowlisted workspaces with current-style responsive navigation, safe removal of empty workspace registrations, and a bounded local-directory picker rooted only in Nix-approved discovery paths;
 - named Pi/OpenCode session creation, renaming, switching, archival, and restoration through an active/archived session search;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
-- a current-workbench composer with Enter/Ctrl/Cmd dispatch, pasted or file-selected image attachments, and ACP-backed model and thinking selectors; image previews are removable before send, input is bounded to four PNG/JPEG/GIF/WebP files and 10 MiB total, and unsupported agent capabilities remain visibly disabled instead of disappearing;
+- a current-workbench composer with Enter/Ctrl/Cmd dispatch, workspace-scoped `@` file mentions, pasted or file-selected image attachments, and ACP-backed model and thinking selectors; mention search is bounded, excludes symlinks and special files, preserves cursor-local surrounding text, and submits canonical relative files as baseline ACP `resource_link` blocks; image previews are removable before send, input is bounded to four PNG/JPEG/GIF/WebP files and 10 MiB total, and unsupported optional agent capabilities remain visibly disabled instead of disappearing;
 - paginated durable history plus streamed assistant messages over resumable server-sent events, with scroll-preserving older-page loading;
 - safe Markdown message rendering with whole-message and per-block clipboard actions for prose, lists, quotes, and fenced code;
 - artifact-aware tool cards for commands, file locations, ACP diffs, images, resources, and terminal references;
@@ -73,6 +73,7 @@ npm ci
 dune build @all @web-bundle
 dune runtest
 dune build @interaction-test
+dune build @mention-browser-test
 dune build @replaceability-test
 dune build @session-isolation-test
 ```
@@ -86,7 +87,7 @@ nix build .#piss-next-web
 nix build .#checks.x86_64-linux.piss-next-nixos-module
 ```
 
-`@interaction-test` proves monotonic SSE delivery, `Last-Event-ID` resumption without duplicates, artifact-bearing ACP tool updates, permission validation/resolution, and prompt cancellation against the deterministic ACP fixture. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, resumes SSE from the last received event ID, and verifies unchanged worker/harness PIDs, gap-free replay, and exactly-once command completion. `@session-isolation-test` creates three durable sessions, runs them concurrently, kills and observes replacement of one worker without changing the others, replaces the control plane, archives and restores a session under the same identity, pages backward through its ledger, and verifies that archiving every session remains stable across another control replacement.
+`@interaction-test` proves bounded workspace file search, typed ACP resource-link and image delivery, monotonic SSE delivery, `Last-Event-ID` resumption without duplicates, artifact-bearing ACP tool updates, permission validation/resolution, and prompt cancellation against the deterministic ACP fixture. `@mention-browser-test` exercises cursor-local mention insertion, arrow navigation, Enter, Escape, touch selection, accessibility snapshots, the submitted resource payload, and desktop/mobile console health in a production-style managed control plane. `@replaceability-test` dispatches a long-running tool, sends `SIGKILL` to `pissd-next`, starts a replacement generation, resumes SSE from the last received event ID, and verifies unchanged worker/harness PIDs, gap-free replay, and exactly-once command completion. `@session-isolation-test` creates three durable sessions, proves mention search cannot see another registered workspace, runs sessions concurrently, kills and observes replacement of one worker without changing the others, replaces the control plane, archives and restores a session under the same identity, pages backward through its ledger, and verifies that archiving every session remains stable across another control replacement.
 
 A real-harness smoke has exercised both pinned `pi-acp` and OpenCode's `opencode acp` command through the same OCaml worker/control protocol. Both are reproducible flake packages and may now run simultaneously; `services.piss-next.harness` selects only the bootstrap default. OpenCode workers retain private XDG directories. When `services.piss-next.opencodeAuthFile` names a runtime `auth.json`, the worker validates and copies a newer source into its private data directory before OpenCode starts; credentials therefore never enter the Nix store or process environment, while ACP model options reflect the authenticated account. The pinned Pi adapter translates ACP stdio `mcpServers` into a private, mode-`0600` Pi MCP configuration, merges the user's existing Pi MCP servers, and removes the generated file when the Pi process exits. This is required because upstream `pi-acp` otherwise stores ACP MCP metadata without exposing it to Pi's MCP adapter extension.
 
@@ -137,11 +138,12 @@ The event spool keeps a bounded rolling window. When it reaches 4,096 rows, the 
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one browser connection; a worker-side wait/fanout primitive is deferred until multiple simultaneous observers per session are needed.
 - Pi executes its own filesystem and terminal tools; ACP permission requests are rendered when the adapter emits them, but `pi-acp` currently uses them primarily for extension UI interactions.
 - Existing TypeScript PISS workflow metadata is not migrated.
-- Browser automation, workflow authority, reviews, notifications, and the rest of the TypeScript product remain outside this slice.
+- Managed browser capability, workflow authority, reviews, notifications, and the rest of the TypeScript product remain outside this slice.
 
 ## Next production slices
 
-1. Add per-session names, workspace selection from a fixed allowlist, and configuration controls so orchestrators can address stable human-readable roles.
-2. Add explicit cancellation and optional deadlines for asynchronous collaboration requests.
-3. Add explicit lifecycle operation receipts for create/archive/restore reconciliation.
-4. Port one complete PISS workflow through the real authority and receipt model.
+1. Project ACP `available_commands_update` into worker snapshots and add the capability-driven `/` command picker.
+2. Add durable per-session drafts and complete offline outbox recovery.
+3. Add explicit cancellation, deadlines, expiry, and administration for asynchronous collaboration requests.
+4. Add explicit lifecycle operation receipts and user-visible immutable worker generation/upgrade controls.
+5. Port bounded Changes/review functionality, then one complete PISS workflow through the real authority and receipt model.

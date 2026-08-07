@@ -45,6 +45,28 @@
    %{dep:../session_mcp/main.exe})))
 
 (rule
+ (alias mention-browser-test)
+ (deps
+  mention_browser.sh
+  mention_browser.mjs
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../../web-next/app.js
+  (source_tree ../../web-next/public))
+ (action
+  (run
+   bash
+   %{dep:mention_browser.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web-next/public
+   %{dep:../../web-next/app.js}
+   %{workspace_root}
+   %{dep:mention_browser.mjs})))
+
+(rule
  (alias replaceability-test)
  (deps
   replaceability.sh

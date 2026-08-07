@@ -82,7 +82,12 @@ let prompt_images params =
   |> List.filter (fun content ->
       Yojson.Safe.Util.member "type" content = `String "image")
 
-let write_user_prompt ~id ~session_id ~text ~images =
+let prompt_resources params =
+  prompt_contents params
+  |> List.filter (fun content ->
+      Yojson.Safe.Util.member "type" content = `String "resource_link")
+
+let write_user_prompt ~id ~session_id ~text ~images ~resources =
   if text <> "" then
     write
       (session_update ~session_id
@@ -103,9 +108,10 @@ let write_user_prompt ~id ~session_id ~text ~images =
                 ("messageId", `String ("user-" ^ id));
                 ("content", content);
               ])))
-    images
+    (resources @ images)
 
-let pending_prompts : (string * string * Yojson.Safe.t list) Queue.t =
+let pending_prompts :
+    (string * string * Yojson.Safe.t list * Yojson.Safe.t list) Queue.t =
   Queue.create ()
 
 let poll_pending ~session_id () =
@@ -122,26 +128,27 @@ let poll_pending ~session_id () =
         let params = Yojson.Safe.Util.member "params" json in
         let text = prompt_text params in
         let images = prompt_images params in
+        let resources = prompt_resources params in
         let delivery =
           Yojson.Safe.Util.(
             params |> member "_meta" |> member "piss" |> member "delivery")
         in
         match delivery with
         | `String "steer" ->
-            write_user_prompt ~id ~session_id ~text ~images;
+            write_user_prompt ~id ~session_id ~text ~images ~resources;
             write
               (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]));
             false
         | `String "follow_up" ->
-            Queue.add (id, text, images) pending_prompts;
+            Queue.add (id, text, images, resources) pending_prompts;
             false
         | _ ->
-            Queue.add (id, text, images) pending_prompts;
+            Queue.add (id, text, images, resources) pending_prompts;
             false)
       else false
 
-let rec run_prompt ~id ~session_id ~text ~images =
-  write_user_prompt ~id ~session_id ~text ~images;
+let rec run_prompt ~id ~session_id ~text ~images ~resources =
+  write_user_prompt ~id ~session_id ~text ~images ~resources;
   let allowed =
     if String.starts_with ~prefix:"permission:" text then
       request_permission ~id ~session_id
@@ -297,6 +304,18 @@ let rec run_prompt ~id ~session_id ~text ~images =
                              Printf.sprintf "Received %d image attachment%s."
                                (List.length images)
                                (if List.length images = 1 then "" else "s")
+                           else if resources <> [] then
+                             let paths =
+                               resources
+                               |> List.filter_map (fun resource ->
+                                   match
+                                     Yojson.Safe.Util.member "name" resource
+                                   with
+                                   | `String value -> Some value
+                                   | _ -> None)
+                               |> String.concat ", "
+                             in
+                             "Received typed resource link: " ^ paths ^ "."
                            else if String.starts_with ~prefix:"markdown:" text
                            then
                              "## Copy proof\n\n\
@@ -315,8 +334,11 @@ let rec run_prompt ~id ~session_id ~text ~images =
               ]));
       write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))));
   if not (Queue.is_empty pending_prompts) then
-    let next_id, next_text, next_images = Queue.take pending_prompts in
+    let next_id, next_text, next_images, next_resources =
+      Queue.take pending_prompts
+    in
     run_prompt ~id:next_id ~session_id ~text:next_text ~images:next_images
+      ~resources:next_resources
 
 let config_options ~model ~thinking =
   `List
@@ -421,7 +443,8 @@ let () =
           let params = Yojson.Safe.Util.member "params" json in
           let text = prompt_text params in
           let images = prompt_images params in
-          run_prompt ~id ~session_id ~text ~images
+          let resources = prompt_resources params in
+          run_prompt ~id ~session_id ~text ~images ~resources
       | "session/cancel" -> ()
       | _ ->
           write
