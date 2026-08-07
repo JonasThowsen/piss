@@ -55,11 +55,20 @@
             pname = "pi-acp";
             version = "0.0.33";
             src = pi-acp-src;
-            patches = [ ./nix/pi-acp-delivery.patch ];
+            patches = [
+              ./nix/pi-acp-delivery.patch
+              ./nix/pi-acp-mcp.patch
+            ];
             npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
             nativeBuildInputs = [ pkgs.makeWrapper ];
+            preBuild = "npm run typecheck";
             npmBuildScript = "build";
-            doCheck = false;
+            doCheck = true;
+            checkPhase = ''
+              runHook preCheck
+              npm test
+              runHook postCheck
+            '';
             installPhase = ''
               runHook preInstall
               mkdir -p $out/bin $out/lib/pi-acp
