@@ -1,6 +1,7 @@
 type requestInit;
 
 type timelineItem;
+type artifactItem;
 type permissionOption;
 type sessionSnapshot;
 type sessionSummary;
@@ -15,6 +16,21 @@ type outboxItem;
 [@mel.get] external itemTitle: timelineItem => string = "title";
 [@mel.get] external itemText: timelineItem => string = "text";
 [@mel.get] external itemStatus: timelineItem => string = "status";
+let itemKind: timelineItem => string = [%raw
+  "item => typeof item.kind === 'string' ? item.kind : ''"
+];
+let itemArtifacts: timelineItem => array(artifactItem) = [%raw
+  "item => Array.isArray(item.artifacts) ? item.artifacts : []"
+];
+let itemLocations: timelineItem => array(artifactItem) = [%raw
+  "item => Array.isArray(item.locations) ? item.locations : []"
+];
+[@mel.get] external artifactType: artifactItem => string = "type";
+[@mel.get] external artifactPath: artifactItem => string = "path";
+[@mel.get] external artifactText: artifactItem => string = "text";
+[@mel.get] external artifactOldText: artifactItem => string = "oldText";
+[@mel.get] external artifactNewText: artifactItem => string = "newText";
+[@mel.get] external artifactSource: artifactItem => string = "src";
 [@mel.get]
 external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external optionId: permissionOption => string = "optionId";
@@ -60,6 +76,21 @@ let getText: string => Js.Promise.t(string) = [%raw
 
 let postText: (string, string) => Js.Promise.t(string) = [%raw
   "(url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then(async response => { const text = await response.text(); if (!response.ok) throw new Error(text || `HTTP ${response.status}`); return text; })"
+];
+let waitForSession: string => Js.Promise.t(string) = [%raw
+  {|id => new Promise((resolve, reject) => {
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/v2/session?session=${encodeURIComponent(id)}`);
+        const text = await response.text();
+        if (response.ok) { resolve(text); return; }
+      } catch (_) {}
+      if (++attempts >= 40) { reject(new Error('Restored worker did not become ready')); return; }
+      setTimeout(poll, 250);
+    };
+    poll();
+  })|}
 ];
 
 let errorMessage: Js.Promise.error => string = [%raw
@@ -190,7 +221,22 @@ let mergeSessionSnapshot: (string, string, string) => string = [%raw
   "(sessionsText, id, snapshotText) => { try { const sessions = JSON.parse(sessionsText); const snapshot = JSON.parse(snapshotText); if (!Array.isArray(sessions)) return sessionsText; return JSON.stringify(sessions.map(session => session.id === id ? { ...session, ...snapshot } : session)); } catch (_) { return sessionsText; } }"
 ];
 let appendEvent: (string, string) => string = [%raw
-  "(eventsText, eventText) => { try { const events = JSON.parse(eventsText); const event = JSON.parse(eventText); if (!Array.isArray(events) || !Number.isSafeInteger(event.sequence)) return eventsText; const next = events.filter(existing => existing.sequence !== event.sequence); next.push(event); next.sort((a, b) => a.sequence - b.sequence); return JSON.stringify(next.slice(-500)); } catch (_) { return eventsText; } }"
+  "(eventsText, eventText) => { try { const events = JSON.parse(eventsText); const event = JSON.parse(eventText); if (!Array.isArray(events) || !Number.isSafeInteger(event.sequence)) return eventsText; const next = events.filter(existing => existing.sequence !== event.sequence); next.push(event); next.sort((a, b) => a.sequence - b.sequence); return JSON.stringify(next.slice(-4096)); } catch (_) { return eventsText; } }"
+];
+let eventPageLength: string => int = [%raw
+  "text => { try { const events = JSON.parse(text); return Array.isArray(events) ? events.length : 0; } catch (_) { return 0; } }"
+];
+let oldestEventSequence: string => int = [%raw
+  "text => { try { const events = JSON.parse(text); return Array.isArray(events) && events.length ? Math.min(...events.map(event => Number(event.sequence) || Number.MAX_SAFE_INTEGER)) : 0; } catch (_) { return 0; } }"
+];
+let prependEventPage: (string, string) => string = [%raw
+  "(eventsText, pageText) => { try { const events = JSON.parse(eventsText); const page = JSON.parse(pageText); if (!Array.isArray(events) || !Array.isArray(page)) return eventsText; const merged = new Map([...page, ...events].filter(event => Number.isSafeInteger(event.sequence)).map(event => [event.sequence, event])); return JSON.stringify([...merged.values()].sort((a, b) => a.sequence - b.sequence).slice(-4096)); } catch (_) { return eventsText; } }"
+];
+let timelineScrollHeight: unit => int = [%raw
+  "() => document.getElementById('timeline')?.scrollHeight || 0"
+];
+let preserveTimelineAfterPrepend: int => unit = [%raw
+  "height => requestAnimationFrame(() => { const timeline = document.getElementById('timeline'); if (timeline) timeline.scrollTop += timeline.scrollHeight - height; })"
 ];
 let eventChangesRuntime: string => bool = [%raw
   "text => { try { const kind = JSON.parse(text).kind || ''; return kind === 'command.state' || kind.startsWith('acp.permission.') || kind === 'acp.session.loaded' || kind === 'acp.session.load_failed'; } catch (_) { return false; } }"
@@ -250,6 +296,23 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       if (content.type === 'content') return contentText(content.content);
       return '';
     };
+    const describeInput = (kind, input) => {
+      if (!input || typeof input !== 'object') return '';
+      if (kind === 'execute' && typeof input.command === 'string') return input.command;
+      if (['read', 'edit', 'delete', 'move'].includes(kind) && typeof input.path === 'string') return input.path;
+      if (kind === 'search' && typeof (input.query || input.pattern) === 'string') return input.query || input.pattern;
+      return Object.keys(input).length ? JSON.stringify(input, null, 2) : '';
+    };
+    const contentArtifact = content => {
+      if (!content || typeof content !== 'object') return null;
+      if (content.type === 'diff' && typeof content.path === 'string') return { type: 'diff', path: content.path, oldText: content.oldText || '', newText: content.newText || '' };
+      if (content.type === 'terminal') return { type: 'terminal', path: content.terminalId || 'terminal', text: 'Live terminal output is retained by the agent.' };
+      const inner = content.type === 'content' ? content.content : content;
+      if (inner?.type === 'image' && typeof inner.data === 'string') return { type: 'image', path: inner.mimeType || 'image', src: `data:${inner.mimeType || 'image/png'};base64,${inner.data}`, text: 'Agent-produced image' };
+      if (inner?.type === 'resource' || inner?.resource) { const resource = inner.resource || inner; return { type: 'resource', path: resource.uri || resource.name || 'resource', text: resource.name || resource.description || '' }; }
+      return null;
+    };
+    const normalizeLocations = locations => Array.isArray(locations) ? locations.filter(location => typeof location?.path === 'string').map(location => ({ type: 'location', path: location.path, text: Number.isFinite(location.line) ? `line ${location.line}` : '' })) : [];
     for (const event of events) {
       const payload = event.payload || {};
       const update = payload.params?.update || {};
@@ -287,12 +350,17 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
       } else if (event.kind === 'acp.tool_call') {
         currentAgent = null;
         const id = update.toolCallId || `tool-${event.sequence}`;
+        const kind = update.kind || 'other';
+        const artifacts = Array.isArray(update.content) ? update.content.map(contentArtifact).filter(Boolean) : [];
         const item = {
           id,
           role: 'tool',
+          kind,
           title: update.title || 'Tool call',
-          text: update.rawInput ? JSON.stringify(update.rawInput, null, 2) : '',
+          text: describeInput(kind, update.rawInput),
           status: update.status || 'pending',
+          artifacts,
+          locations: normalizeLocations(update.locations),
           options: [],
           sequence: event.sequence
         };
@@ -302,14 +370,19 @@ let projectTimeline: (string, string) => array(timelineItem) = [%raw
         const id = update.toolCallId || `tool-${event.sequence}`;
         let item = tools.get(id);
         if (!item) {
-          item = { id, role: 'tool', title: 'Tool call', text: '', status: 'pending', options: [], sequence: event.sequence };
+          item = { id, role: 'tool', kind: update.kind || 'other', title: 'Tool call', text: '', status: 'pending', artifacts: [], locations: [], options: [], sequence: event.sequence };
           tools.set(id, item);
           items.push(item);
         }
+        if (update.kind) item.kind = update.kind;
         if (update.title) item.title = update.title;
         if (update.status) item.status = update.status;
-        const addition = Array.isArray(update.content) ? update.content.map(contentText).filter(Boolean).join('\n') : '';
+        if (update.rawInput) item.text = describeInput(item.kind, update.rawInput);
+        if (update.locations) item.locations = normalizeLocations(update.locations);
+        const content = Array.isArray(update.content) ? update.content : [];
+        const addition = content.map(contentText).filter(Boolean).join('\n');
         if (addition) item.text = item.text ? `${item.text}\n${addition}` : addition;
+        item.artifacts.push(...content.map(contentArtifact).filter(Boolean));
       } else if (event.kind === 'acp.permission.requested') {
         const id = String(payload.id ?? event.sequence);
         const params = payload.params || {};
@@ -350,22 +423,103 @@ module TimelineItem = {
   let make = (~item, ~onPermission) => {
     let role = itemRole(item);
     let status = itemStatus(item);
+    let kind = itemKind(item);
     <article className={"timeline-item timeline-" ++ role}>
       <div className="message-meta">
         <span className="message-role">
           {React.string(itemTitle(item))}
         </span>
-        {status == ""
-           ? React.null
-           : <span className={"message-status status-" ++ status}>
-               {React.string(status)}
-             </span>}
+        <span className="message-classification">
+          {role == "tool" && kind != ""
+             ? <span className={"artifact-kind kind-" ++ kind}>
+                 {React.string(kind)}
+               </span>
+             : React.null}
+          {status == ""
+             ? React.null
+             : <span className={"message-status status-" ++ status}>
+                 {React.string(status)}
+               </span>}
+        </span>
       </div>
       {itemText(item) == ""
          ? React.null
          : <pre className="message-body">
              {React.string(itemText(item))}
            </pre>}
+      {Array.length(itemLocations(item)) == 0
+         ? React.null
+         : <div className="artifact-locations">
+             {Array.map(
+                location =>
+                  <span key={artifactPath(location)}>
+                    {React.string(
+                       artifactPath(location)
+                       ++ (
+                         artifactText(location) == ""
+                           ? "" : " / " ++ artifactText(location)
+                       ),
+                     )}
+                  </span>,
+                itemLocations(item),
+              )
+              ->React.array}
+           </div>}
+      {Array.map(
+         artifact =>
+           switch (artifactType(artifact)) {
+           | "diff" =>
+             <details
+               className="artifact-card artifact-diff"
+               key={"diff-" ++ artifactPath(artifact)}>
+               <summary>
+                 <span> {React.string("FILE CHANGE")} </span>
+                 <b> {React.string(artifactPath(artifact))} </b>
+               </summary>
+               <div className="artifact-diff-columns">
+                 <section>
+                   <span> {React.string("BEFORE")} </span>
+                   <pre> {React.string(artifactOldText(artifact))} </pre>
+                 </section>
+                 <section>
+                   <span> {React.string("AFTER")} </span>
+                   <pre> {React.string(artifactNewText(artifact))} </pre>
+                 </section>
+               </div>
+             </details>
+           | "image" =>
+             <figure
+               className="artifact-card artifact-image"
+               key={"image-" ++ artifactPath(artifact)}>
+               <img
+                 src={artifactSource(artifact)}
+                 alt={artifactText(artifact)}
+               />
+               <figcaption>
+                 {React.string(artifactText(artifact))}
+               </figcaption>
+             </figure>
+           | "terminal" =>
+             <section
+               className="artifact-card artifact-terminal"
+               key={"terminal-" ++ artifactPath(artifact)}>
+               <span> {React.string("TERMINAL")} </span>
+               <b> {React.string(artifactPath(artifact))} </b>
+               <p> {React.string(artifactText(artifact))} </p>
+             </section>
+           | "resource" =>
+             <section
+               className="artifact-card artifact-resource"
+               key={"resource-" ++ artifactPath(artifact)}>
+               <span> {React.string("RESOURCE")} </span>
+               <b> {React.string(artifactPath(artifact))} </b>
+               <p> {React.string(artifactText(artifact))} </p>
+             </section>
+           | _ => React.null
+           },
+         itemArtifacts(item),
+       )
+       ->React.array}
       {role == "permission" && status == "pending"
          ? <div className="permission-actions">
              {Array.map(
@@ -407,6 +561,8 @@ module App = {
       );
     let (eventsJson, setEventsJson) = React.useState(() => "[]");
     let (sessionsJson, setSessionsJson) = React.useState(() => "[]");
+    let (archivedSessionsJson, setArchivedSessionsJson) =
+      React.useState(() => "[]");
     let (workspacesJson, setWorkspacesJson) = React.useState(() => "[]");
     let (configOptionsJson, setConfigOptionsJson) =
       React.useState(() => "[]");
@@ -417,7 +573,11 @@ module App = {
     let (drawerOpen, setDrawerOpen) = React.useState(() => false);
     let (searchOpen, setSearchOpen) = React.useState(() => false);
     let (searchQuery, setSearchQuery) = React.useState(() => "");
+    let (searchScope, setSearchScope) = React.useState(() => "active");
     let (showJumpToBottom, setShowJumpToBottom) = React.useState(() => false);
+    let (hasOlderEvents, setHasOlderEvents) = React.useState(() => false);
+    let (loadingOlderEvents, setLoadingOlderEvents) =
+      React.useState(() => false);
     let (creatorOpen, setCreatorOpen) = React.useState(() => false);
     let (creatorWorkspaceId, setCreatorWorkspaceId) =
       React.useState(() => "");
@@ -463,16 +623,16 @@ module App = {
           if (selected != activeSessionId) {
             setActiveSessionId(_ => selected);
             setEventsJson(_ => "[]");
-            if (selected == "") {
-              setSessionJson(_ =>
-                "{\"status\":\"offline\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
-              );
-              setConfigOptionsJson(_ => "[]");
-              setConfigMenu(_ => "");
-              setNotice(_ =>
-                "No active sessions. Create one from a workspace to continue."
-              );
-            };
+          };
+          if (selected == "") {
+            setSessionJson(_ =>
+              "{\"status\":\"offline\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
+            );
+            setConfigOptionsJson(_ => "[]");
+            setConfigMenu(_ => "");
+            setNotice(_ =>
+              "No active sessions. Create one from a workspace to continue."
+            );
           };
           refreshSession(selected);
           Js.Promise.resolve();
@@ -482,6 +642,12 @@ module App = {
           Js.Promise.resolve();
         })
       ->ignore;
+      getText("/api/v2/sessions?archived=true")
+      ->thenPromise(text => {
+          setArchivedSessionsJson(_ => text);
+          Js.Promise.resolve();
+        })
+      ->ignorePromise;
       getText("/api/v2/workspaces")
       ->thenPromise(text => {
           setWorkspacesJson(_ => text);
@@ -506,6 +672,7 @@ module App = {
               activeSessionId,
               text => {
                 setEventsJson(_ => text);
+                setHasOlderEvents(_ => eventPageLength(text) >= 500);
                 scrollTimeline();
               },
               event => {
@@ -532,11 +699,17 @@ module App = {
     let timeline = projectTimeline(eventsJson, snapshotAgentName(snapshot));
     let outbox = projectOutbox(eventsJson);
     let sessions = parseSessions(sessionsJson);
+    let archivedSessions = parseSessions(archivedSessionsJson);
     let workspaces = parseWorkspaces(workspacesJson);
     let configOptions = parseConfigOptions(configOptionsJson);
     let modelOption = findConfigOption(configOptions, "model");
     let thinkingOption = findConfigOption(configOptions, "thought_level");
-    let searchResults = searchSessions(sessions, workspaces, searchQuery);
+    let searchResults =
+      searchSessions(
+        searchScope == "archived" ? archivedSessions : sessions,
+        workspaces,
+        searchQuery,
+      );
 
     let applyConfig = (option, value) =>
       if (!running && !submitting) {
@@ -669,6 +842,8 @@ module App = {
     let selectSession = id => {
       setActiveSessionId(_ => id);
       setEventsJson(_ => "[]");
+      setHasOlderEvents(_ => false);
+      setLoadingOlderEvents(_ => false);
       setConfigOptionsJson(_ => "[]");
       setConfigMenu(_ => "");
       setNotice(_ => "Switching durable session...");
@@ -679,6 +854,30 @@ module App = {
       refreshSession(id);
     };
 
+    let restoreSession = id =>
+      if (!submitting && id != "") {
+        setSubmitting(_ => true);
+        setNotice(_ => "Restoring durable session...");
+        postText(restoreUrl(id), "{}")
+        ->thenPromise(_ => {
+            setNotice(_ => "Session restored; reconnecting its worker...");
+            waitForSession(id);
+          })
+        ->thenPromise(_ => {
+            setSubmitting(_ => false);
+            setSearchScope(_ => "active");
+            refresh();
+            selectSession(id);
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setNotice(_ => errorMessage(error));
+            setSubmitting(_ => false);
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
     let archiveSession = id =>
       if (!submitting && id != "") {
         setSubmitting(_ => true);
@@ -687,6 +886,8 @@ module App = {
             if (id == activeSessionId) {
               setActiveSessionId(_ => "");
               setEventsJson(_ => "[]");
+              setHasOlderEvents(_ => false);
+              setLoadingOlderEvents(_ => false);
               setSessionJson(_ =>
                 "{\"status\":\"offline\",\"agentName\":\"ACP agent\",\"workerPid\":0,\"harnessPid\":0,\"lastSequence\":0}"
               );
@@ -706,6 +907,39 @@ module App = {
             Js.Promise.resolve();
           })
         ->ignore;
+      };
+
+    let loadOlderEvents = _ =>
+      if (!loadingOlderEvents && hasOlderEvents && activeSessionId != "") {
+        let before = oldestEventSequence(eventsJson);
+        if (before <= 0) {
+          setHasOlderEvents(_ => false);
+        } else {
+          let previousHeight = timelineScrollHeight();
+          setLoadingOlderEvents(_ => true);
+          getText(
+            sessionUrl(
+              "/api/v2/events?before="
+              ++ string_of_int(before)
+              ++ "&limit=200",
+              activeSessionId,
+            ),
+          )
+          ->thenPromise(page => {
+              let count = eventPageLength(page);
+              setEventsJson(current => prependEventPage(current, page));
+              setHasOlderEvents(_ => count >= 200);
+              setLoadingOlderEvents(_ => false);
+              preserveTimelineAfterPrepend(previousHeight);
+              Js.Promise.resolve();
+            })
+          ->catchPromise(error => {
+              setNotice(_ => errorMessage(error));
+              setLoadingOlderEvents(_ => false);
+              Js.Promise.resolve();
+            })
+          ->ignore;
+        };
       };
 
     let searchDirectories = _ => {
@@ -823,6 +1057,9 @@ module App = {
           ariaExpanded=searchOpen
           onClick={_ => {
             setDrawerOpen(_ => false);
+            setSearchScope(_ =>
+              Array.length(sessions) == 0 ? "archived" : "active"
+            );
             setSearchOpen(_ => true);
           }}>
           {icon("search")}
@@ -1155,6 +1392,19 @@ module App = {
                      let away = timelineAwayFromBottom(event);
                      setShowJumpToBottom(_ => away);
                    }}>
+                   {hasOlderEvents
+                      ? <button
+                          className="load-earlier"
+                          type_="button"
+                          disabled=loadingOlderEvents
+                          onClick=loadOlderEvents>
+                          {React.string(
+                             loadingOlderEvents
+                               ? "LOADING EARLIER ACTIVITY..."
+                               : "LOAD EARLIER ACTIVITY",
+                           )}
+                        </button>
+                      : React.null}
                    {Array.length(timeline) == 0
                       ? <div className="empty-state">
                           <span>
@@ -1533,6 +1783,30 @@ module App = {
                    {icon("x")}
                  </button>
                </header>
+               <div
+                 className="global-search-scope"
+                 role="group"
+                 ariaLabel="Session state">
+                 <button
+                   className={searchScope == "active" ? "active" : ""}
+                   type_="button"
+                   ariaPressed={searchScope == "active" ? "true" : "false"}
+                   onClick={_ => setSearchScope(_ => "active")}>
+                   {React.string(
+                      "ACTIVE " ++ string_of_int(Array.length(sessions)),
+                    )}
+                 </button>
+                 <button
+                   className={searchScope == "archived" ? "active" : ""}
+                   type_="button"
+                   ariaPressed={searchScope == "archived" ? "true" : "false"}
+                   onClick={_ => setSearchScope(_ => "archived")}>
+                   {React.string(
+                      "ARCHIVED "
+                      ++ string_of_int(Array.length(archivedSessions)),
+                    )}
+                 </button>
+               </div>
                <div className="global-search-field">
                  {icon("search")}
                  <input
@@ -1552,7 +1826,9 @@ module App = {
                      | "Enter" =>
                        if (Array.length(searchResults) > 0) {
                          preventAnyDefault(event);
-                         selectSession(sessionId(searchResults[0]));
+                         searchScope == "archived"
+                           ? restoreSession(sessionId(searchResults[0]))
+                           : selectSession(sessionId(searchResults[0]));
                        }
                      | _ => ()
                      }
@@ -1582,9 +1858,17 @@ module App = {
                               sessionId(session) == activeSessionId
                             }
                             key={sessionId(session)}
-                            onClick={_ => selectSession(sessionId(session))}>
+                            disabled=submitting
+                            onClick={_ =>
+                              searchScope == "archived"
+                                ? restoreSession(sessionId(session))
+                                : selectSession(sessionId(session))
+                            }>
                             <i className="global-search-glyph">
-                              {icon("external")}
+                              {icon(
+                                 searchScope == "archived"
+                                   ? "archive" : "external",
+                               )}
                             </i>
                             <span>
                               <b> {React.string(sessionTitle(session))} </b>
@@ -1596,14 +1880,25 @@ module App = {
                                  )}
                               </small>
                             </span>
-                            <em> {React.string(sessionStatus(session))} </em>
+                            <em>
+                              {React.string(
+                                 searchScope == "archived"
+                                   ? submitting ? "restoring" : "restore"
+                                   : sessionStatus(session),
+                               )}
+                            </em>
                           </button>,
                         searchResults,
                       )
                       ->React.array}
                </div>
                <footer>
-                 <span> {React.string("ENTER TO OPEN")} </span>
+                 <span>
+                   {React.string(
+                      searchScope == "archived"
+                        ? "ENTER TO RESTORE" : "ENTER TO OPEN",
+                    )}
+                 </span>
                  <b>
                    {React.string(
                       string_of_int(Array.length(searchResults))

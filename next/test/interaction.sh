@@ -87,6 +87,7 @@ sleep 3
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "acp.permission.resolved")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "permission-command" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.tool_call_update" and any(.payload.params.update.content[]?; .type == "diff") and .payload.params.update.locations[0].path == "/workspace/mock-proof.txt")] | length' <<<"$events") == 1 ]]
 for _ in $(seq 1 100); do
   grep -q '"commandId":"permission-command","state":"completed"' \
     "$state/permission.stream" 2>/dev/null && break

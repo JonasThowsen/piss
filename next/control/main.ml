@@ -23,8 +23,8 @@ let security_headers =
   [
     ("cache-control", "no-store");
     ( "content-security-policy",
-      "default-src 'self'; connect-src 'self'; font-src 'self'; img-src \
-       'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; \
+      "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' \
+       data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; \
        base-uri 'none'; form-action 'none'" );
     ("referrer-policy", "no-referrer");
     ("x-content-type-options", "nosniff");
@@ -437,6 +437,15 @@ let parse_after uri =
   match Uri.get_query_param uri "after" with
   | None -> Ok 0L
   | Some value -> parse_non_negative_cursor value
+
+let parse_before uri =
+  match Uri.get_query_param uri "before" with
+  | None -> Error "before is required"
+  | Some value -> (
+      match parse_non_negative_cursor value with
+      | Ok cursor when cursor > 0L -> Ok cursor
+      | Ok _ -> Error "before must be a positive integer"
+      | Error _ as error -> error)
 
 let stream_after request uri =
   match parse_after uri with
@@ -1377,29 +1386,47 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                       Cohttp_eio.Server.respond ~status:`OK
                         ~headers:event_stream_headers ~body:stream ()))
           | `GET, "/api/v2/events" -> (
+              let requested_limit default =
+                match Uri.get_query_param uri "limit" with
+                | None -> Ok default
+                | Some value -> parse_limit value
+              in
               let request =
-                match Uri.get_query_param uri "recent" with
-                | Some value -> (
-                    match parse_limit value with
-                    | Ok limit ->
+                match Uri.get_query_param uri "before" with
+                | Some _ -> (
+                    match (parse_before uri, requested_limit 200) with
+                    | Ok before, Ok limit ->
                         Ok
                           (`Assoc
                              [
-                               ("op", `String "recent_events");
+                               ("op", `String "events_before");
+                               ("before", `Intlit (Int64.to_string before));
                                ("limit", `Int limit);
                              ])
-                    | Error message -> Error message)
+                    | Error message, _ | _, Error message -> Error message)
                 | None -> (
-                    match parse_after uri with
-                    | Ok after ->
-                        Ok
-                          (`Assoc
-                             [
-                               ("op", `String "events");
-                               ("after", `Intlit (Int64.to_string after));
-                               ("limit", `Int 200);
-                             ])
-                    | Error message -> Error message)
+                    match Uri.get_query_param uri "recent" with
+                    | Some value -> (
+                        match parse_limit value with
+                        | Ok limit ->
+                            Ok
+                              (`Assoc
+                                 [
+                                   ("op", `String "recent_events");
+                                   ("limit", `Int limit);
+                                 ])
+                        | Error message -> Error message)
+                    | None -> (
+                        match (parse_after uri, requested_limit 200) with
+                        | Ok after, Ok limit ->
+                            Ok
+                              (`Assoc
+                                 [
+                                   ("op", `String "events");
+                                   ("after", `Intlit (Int64.to_string after));
+                                   ("limit", `Int limit);
+                                 ])
+                        | Error message, _ | _, Error message -> Error message))
               in
               match request with
               | Error message -> error_json message

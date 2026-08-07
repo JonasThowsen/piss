@@ -363,6 +363,15 @@ PY
 )
 [[ "$ledger_after_restore" -ge "$ledger_before_restore" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 0 ]]
+recent_page=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?session=$first&recent=2")
+[[ $(jq 'length' <<<"$recent_page") == 2 ]]
+before=$(jq -r '.[0].sequence' <<<"$recent_page")
+older_page=$(curl -fsS \
+  "http://127.0.0.1:$port/api/v2/events?session=$first&before=$before&limit=2")
+[[ $(jq 'length' <<<"$older_page") == 2 ]]
+[[ $(jq -r '.[-1].sequence' <<<"$older_page") -lt "$before" ]]
+[[ $(jq -r '.[0].sequence' <<<"$older_page") -lt $(jq -r '.[-1].sequence' <<<"$older_page") ]]
 
 # Archiving the final active session is valid, and an empty registry must remain
 # empty when the replaceable control plane starts again.
