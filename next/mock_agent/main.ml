@@ -136,10 +136,15 @@ let rec run_prompt ~id ~session_id ~text =
             [
               ("sessionUpdate", `String "tool_call");
               ("toolCallId", `String ("tool-" ^ id));
-              ("title", `String "Proving control-plane replaceability");
+              ("title", `String "Running durability tests");
               ("kind", `String "execute");
               ("status", `String "in_progress");
-              ("rawInput", `Assoc [ ("durationSeconds", `Int (duration ())) ]);
+              ( "rawInput",
+                `Assoc
+                  [
+                    ("command", `String "dune runtest");
+                    ("durationSeconds", `Int (duration ()));
+                  ] );
             ]));
     let cancelled = ref false in
     let second = ref 1 in
@@ -204,7 +209,10 @@ let rec run_prompt ~id ~session_id ~text =
                             `Assoc
                               [
                                 ("type", `String "text");
-                                ("text", `String "agent process stayed alive");
+                                ( "text",
+                                  `String
+                                    "2 tests passed\nagent process stayed alive"
+                                );
                               ] );
                         ];
                       `Assoc
@@ -213,6 +221,43 @@ let rec run_prompt ~id ~session_id ~text =
                           ("path", `String "/workspace/mock-proof.txt");
                           ("oldText", `String "before\n");
                           ("newText", `String "after\n");
+                        ];
+                      `Assoc
+                        [
+                          ("type", `String "terminal");
+                          ("terminalId", `String "mock-terminal");
+                        ];
+                      `Assoc
+                        [
+                          ("type", `String "content");
+                          ( "content",
+                            `Assoc
+                              [
+                                ("type", `String "image");
+                                ("mimeType", `String "image/png");
+                                ( "data",
+                                  `String
+                                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                                );
+                              ] );
+                        ];
+                      `Assoc
+                        [
+                          ("type", `String "content");
+                          ( "content",
+                            `Assoc
+                              [
+                                ("type", `String "resource");
+                                ( "resource",
+                                  `Assoc
+                                    [
+                                      ( "uri",
+                                        `String
+                                          "file:///workspace/durability-report.md"
+                                      );
+                                      ("name", `String "Durability report");
+                                    ] );
+                              ] );
                         ];
                     ] );
               ]));
