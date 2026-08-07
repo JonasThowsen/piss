@@ -113,7 +113,7 @@ let renderMarkdown:
         if (cursor < value.length) parts.push(value.slice(cursor));
         return parts;
       };
-      const copyButton = (key, value, label) => React.createElement('button', { type: 'button', className: `markdown-copy ${feedback === key ? 'copied' : ''}`, onClick: () => onCopy(key, value), 'aria-label': `${feedback === key ? 'Copied' : 'Copy'} ${label}` }, feedback === key ? checkGlyph() : copyGlyph(), React.createElement('b', null, feedback === key ? 'COPIED' : 'COPY'));
+      const copyButton = (key, value, label) => React.createElement('button', { type: 'button', className: `markdown-copy ${feedback === key ? 'copied' : ''}`, onClick: () => onCopy(key, value), 'aria-label': `${feedback === key ? 'Copied' : 'Copy'} ${label}` }, feedback === key ? checkGlyph() : copyGlyph(), React.createElement('b', null, feedback === key ? 'Copied' : 'Copy'));
       const blocks = [];
       const addPlain = source => {
         for (const raw of source.split(/\n{2,}/)) {
@@ -133,7 +133,7 @@ let renderMarkdown:
       let cursor = 0, match;
       while ((match = fence.exec(text))) {
         addPlain(text.slice(cursor, match.index));
-        const language = match[1].trim() || 'TEXT'; const code = match[2].replace(/\n$/, ''); const index = blocks.length; const key = `${itemId}-block-${index}`;
+        const language = match[1].trim() || 'Text'; const code = match[2].replace(/\n$/, ''); const index = blocks.length; const key = `${itemId}-block-${index}`;
         blocks.push(React.createElement('section', { className: 'markdown-block markdown-code-block', key }, React.createElement('span', { className: 'markdown-code-language', 'aria-hidden': true }, language), copyButton(key, code, 'code block'), React.createElement('pre', null, React.createElement('code', null, code))));
         cursor = match.index + match[0].length;
       }
@@ -302,7 +302,7 @@ let createdSessionId: string => string = [%raw
   "text => { try { return JSON.parse(text).id || ''; } catch (_) { return ''; } }"
 ];
 let settledNotice: string => string = [%raw
-  "current => current === 'Connecting to the durable worker...' || current === 'Switching durable session...' || current === 'Isolated session worker is starting.' || current === 'Event stream reconnecting...' || current.startsWith('Eio.Io ') ? 'Durable event stream connected.' : current"
+  "current => current === 'Connecting to the durable worker...' || current === 'Switching durable session...' || current === 'Isolated session worker is starting.' || current === 'Event stream reconnecting...' || current.startsWith('Eio.Io ') ? '' : current"
 ];
 let mergeSessionSnapshot: (string, string, string) => string = [%raw
   "(sessionsText, id, snapshotText) => { try { const sessions = JSON.parse(sessionsText); const snapshot = JSON.parse(snapshotText); if (!Array.isArray(sessions)) return sessionsText; return JSON.stringify(sessions.map(session => session.id === id ? { ...session, ...snapshot } : session)); } catch (_) { return sessionsText; } }"
@@ -549,7 +549,7 @@ module TimelineItem = {
                     ? icon("check") : icon("copy")}
                  <b>
                    {React.string(
-                      copyFeedback == itemId(item) ? "COPIED" : "COPY",
+                      copyFeedback == itemId(item) ? "Copied" : "Copy",
                     )}
                  </b>
                </button>
@@ -600,16 +600,16 @@ module TimelineItem = {
                className="artifact-card artifact-diff"
                key={"diff-" ++ artifactPath(artifact)}>
                <summary>
-                 <span> {React.string("FILE CHANGE")} </span>
+                 <span> {React.string("File change")} </span>
                  <b> {React.string(artifactPath(artifact))} </b>
                </summary>
                <div className="artifact-diff-columns">
                  <section>
-                   <span> {React.string("BEFORE")} </span>
+                   <span> {React.string("Before")} </span>
                    <pre> {React.string(artifactOldText(artifact))} </pre>
                  </section>
                  <section>
-                   <span> {React.string("AFTER")} </span>
+                   <span> {React.string("After")} </span>
                    <pre> {React.string(artifactNewText(artifact))} </pre>
                  </section>
                </div>
@@ -630,7 +630,7 @@ module TimelineItem = {
              <section
                className="artifact-card artifact-terminal"
                key={"terminal-" ++ artifactPath(artifact)}>
-               <span> {React.string("TERMINAL")} </span>
+               <span> {React.string("Terminal")} </span>
                <b> {React.string(artifactPath(artifact))} </b>
                <p> {React.string(artifactText(artifact))} </p>
              </section>
@@ -638,7 +638,7 @@ module TimelineItem = {
              <section
                className="artifact-card artifact-resource"
                key={"resource-" ++ artifactPath(artifact)}>
-               <span> {React.string("RESOURCE")} </span>
+               <span> {React.string("Resource")} </span>
                <b> {React.string(artifactPath(artifact))} </b>
                <p> {React.string(artifactText(artifact))} </p>
              </section>
@@ -817,7 +817,7 @@ module App = {
                   refreshSession(activeSessionId);
                 };
                 if (eventCompletesTurn(event)) {
-                  setNotice(_ => "Durable event stream connected.");
+                  setNotice(_ => "");
                 };
                 scrollTimeline();
               },
@@ -1241,7 +1241,7 @@ module App = {
                )}
             </h1>
             <p className="eyebrow">
-              {React.string("DURABLE AGENT WORKBENCH")}
+              {React.string("Durable agent workbench")}
             </p>
           </div>
         </div>
@@ -1253,7 +1253,7 @@ module App = {
           ariaExpanded=searchOpen
           onClick={_ => openSearch()}>
           {icon("search")}
-          <span> {React.string("SEARCH SESSIONS")} </span>
+          <span> {React.string("Search sessions")} </span>
           <kbd> {React.string(searchShortcutLabel())} </kbd>
         </button>
         <div className={"connection-pill connection-" ++ status}>
@@ -1274,8 +1274,8 @@ module App = {
           className={"runtime-rail " ++ (drawerOpen ? "mobile-open" : "")}>
           <div className="rail-heading">
             <div>
-              <p className="eyebrow"> {React.string("WORKSPACES")} </p>
-              <h2> {React.string("Sessions")} </h2>
+              <h2> {React.string("Workspaces")} </h2>
+              <p> {React.string("Sessions grouped by project")} </p>
             </div>
             <button
               className="create-session-trigger"
@@ -1367,7 +1367,7 @@ module App = {
                                   setWorkspaceMenuId(_ => "");
                                 }}>
                                 {icon("trash")}
-                                {React.string("REMOVE")}
+                                {React.string("Remove workspace")}
                               </button>
                             </div>
                           : React.null}
@@ -1454,7 +1454,7 @@ module App = {
                                                   setSessionMenuId(_ => "");
                                                   renameSession(session);
                                                 }}>
-                                                {React.string("RENAME")}
+                                                {React.string("Rename")}
                                               </button>
                                               <button
                                                 className="danger"
@@ -1468,7 +1468,7 @@ module App = {
                                                   setSessionMenuId(_ => "");
                                                 }}>
                                                 {icon("archive")}
-                                                {React.string("ARCHIVE")}
+                                                {React.string("Archive")}
                                               </button>
                                             </div>
                                           : React.null}
@@ -1487,20 +1487,20 @@ module App = {
           </nav>
           <dl className="runtime-facts">
             <div>
-              <dt> {React.string("WORKER")} </dt>
+              <dt> {React.string("Worker")} </dt>
               <dd> {React.int(snapshotWorkerPid(snapshot))} </dd>
             </div>
             <div>
-              <dt> {React.string("HARNESS")} </dt>
+              <dt> {React.string("Harness")} </dt>
               <dd> {React.int(snapshotHarnessPid(snapshot))} </dd>
             </div>
             <div>
-              <dt> {React.string("EVENTS")} </dt>
+              <dt> {React.string("Events")} </dt>
               <dd> {React.int(snapshotSequence(snapshot))} </dd>
             </div>
           </dl>
           <div className="boundary-note">
-            <span> {React.string("REPLACEABLE CONTROL")} </span>
+            <span> {React.string("Replaceable control plane")} </span>
             <p>
               {React.string(
                  "This page may disappear. Session workers, harnesses, tools, and SQLite timelines continue independently.",
@@ -1538,7 +1538,7 @@ module App = {
                  role="tabpanel"
                  ariaLabel="Session details">
                  <header>
-                   <span> {React.string("SESSION DETAILS")} </span>
+                   <span> {React.string("Session details")} </span>
                    <h2>
                      {React.string(
                         sessionTitleById(sessions, activeSessionId),
@@ -1552,11 +1552,11 @@ module App = {
                  </header>
                  <dl>
                    <div>
-                     <dt> {React.string("STATUS")} </dt>
+                     <dt> {React.string("Status")} </dt>
                      <dd> {React.string(status)} </dd>
                    </div>
                    <div>
-                     <dt> {React.string("WORKSPACE")} </dt>
+                     <dt> {React.string("Workspace")} </dt>
                      <dd>
                        {React.string(
                           selectedWorkspaceName(
@@ -1568,7 +1568,7 @@ module App = {
                      </dd>
                    </div>
                    <div>
-                     <dt> {React.string("HARNESS")} </dt>
+                     <dt> {React.string("Harness")} </dt>
                      <dd>
                        {React.string(
                           sessionHarnessById(sessions, activeSessionId),
@@ -1576,30 +1576,30 @@ module App = {
                      </dd>
                    </div>
                    <div>
-                     <dt> {React.string("AGENT")} </dt>
+                     <dt> {React.string("Agent")} </dt>
                      <dd> {React.string(snapshotAgentName(snapshot))} </dd>
                    </div>
                    <div>
-                     <dt> {React.string("WORKER PID")} </dt>
+                     <dt> {React.string("Worker PID")} </dt>
                      <dd> {React.int(snapshotWorkerPid(snapshot))} </dd>
                    </div>
                    <div>
-                     <dt> {React.string("HARNESS PID")} </dt>
+                     <dt> {React.string("Harness PID")} </dt>
                      <dd> {React.int(snapshotHarnessPid(snapshot))} </dd>
                    </div>
                    <div>
-                     <dt> {React.string("EVENT SEQUENCE")} </dt>
+                     <dt> {React.string("Event sequence")} </dt>
                      <dd> {React.int(snapshotSequence(snapshot))} </dd>
                    </div>
                    <div>
-                     <dt> {React.string("SESSION ID")} </dt>
+                     <dt> {React.string("Session ID")} </dt>
                      <dd title=activeSessionId>
                        {React.string(activeSessionId)}
                      </dd>
                    </div>
                  </dl>
                  <section className="details-config">
-                   <h3> {React.string("ACP CONFIGURATION")} </h3>
+                   <h3> {React.string("ACP configuration")} </h3>
                    {Array.length(configOptions) == 0
                       ? <p>
                           {React.string(
@@ -1633,51 +1633,53 @@ module App = {
                      let away = timelineAwayFromBottom(event);
                      setShowJumpToBottom(_ => away);
                    }}>
-                   {hasOlderEvents
-                      ? <button
-                          className="load-earlier"
-                          type_="button"
-                          disabled=loadingOlderEvents
-                          onClick=loadOlderEvents>
-                          {React.string(
-                             loadingOlderEvents
-                               ? "LOADING EARLIER ACTIVITY..."
-                               : "LOAD EARLIER ACTIVITY",
-                           )}
-                        </button>
-                      : React.null}
-                   {Array.length(timeline) == 0
-                      ? <div className="empty-state">
-                          <span>
-                            {React.string(fromCodePoint(0x2198))}
-                          </span>
-                          <h3>
+                   <div className="timeline-stream">
+                     {hasOlderEvents
+                        ? <button
+                            className="load-earlier"
+                            type_="button"
+                            disabled=loadingOlderEvents
+                            onClick=loadOlderEvents>
                             {React.string(
-                               activeSessionId == ""
-                                 ? "No active sessions."
-                                 : "Give the worker something real to do.",
+                               loadingOlderEvents
+                                 ? "Loading earlier activity…"
+                                 : "Load earlier activity",
                              )}
-                          </h3>
-                          <p>
-                            {React.string(
-                               activeSessionId == ""
-                                 ? "Create a session from a workspace to start a new durable agent."
-                                 : "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
-                             )}
-                          </p>
-                        </div>
-                      : Array.map(
-                          item =>
-                            <TimelineItem
-                              key={itemId(item)}
-                              item
-                              onPermission=resolvePermission
-                              onCopy=copyTimelineText
-                              copyFeedback
-                            />,
-                          timeline,
-                        )
-                        ->React.array}
+                          </button>
+                        : React.null}
+                     {Array.length(timeline) == 0
+                        ? <div className="empty-state">
+                            <span>
+                              {React.string(fromCodePoint(0x2198))}
+                            </span>
+                            <h3>
+                              {React.string(
+                                 activeSessionId == ""
+                                   ? "No active sessions."
+                                   : "Give the worker something real to do.",
+                               )}
+                            </h3>
+                            <p>
+                              {React.string(
+                                 activeSessionId == ""
+                                   ? "Create a session from a workspace to start a new durable agent."
+                                   : "Ask the agent to inspect code, run tests, or implement a focused change. Output and tool calls stream back here.",
+                               )}
+                            </p>
+                          </div>
+                        : Array.map(
+                            item =>
+                              <TimelineItem
+                                key={itemId(item)}
+                                item
+                                onPermission=resolvePermission
+                                onCopy=copyTimelineText
+                                copyFeedback
+                              />,
+                            timeline,
+                          )
+                          ->React.array}
+                   </div>
                  </div>
                  {showJumpToBottom
                     ? <button
@@ -1699,7 +1701,7 @@ module App = {
                    ariaLabel="Outgoing messages"
                    ariaLive="polite">
                    <header>
-                     <span> {React.string("OUTGOING QUEUE")} </span>
+                     <span> {React.string("Outgoing queue")} </span>
                      <b>
                        {React.string(string_of_int(Array.length(outbox)))}
                      </b>
@@ -1715,15 +1717,15 @@ module App = {
                               <b>
                                 {React.string(
                                    outboxAction(item) == "follow_up"
-                                     ? "FOLLOW-UP" : "STEER",
+                                     ? "Follow-up" : "Steer",
                                  )}
                               </b>
                               <small>
                                 {React.string(
                                    outboxState(item) == "ambiguous"
-                                     ? "DELIVERY NEEDS REVIEW"
+                                     ? "Delivery needs review"
                                      : outboxAction(item) == "follow_up"
-                                         ? "QUEUED IN PI" : "SENDING TO PI",
+                                         ? "Queued in Pi" : "Sending to Pi",
                                  )}
                               </small>
                             </header>
@@ -1790,7 +1792,7 @@ module App = {
                              ariaLabel="Model unavailable"
                              title="This agent has not exposed a model option through ACP">
                              <span>
-                               <small> {React.string("MODEL")} </small>
+                               <small> {React.string("Model")} </small>
                                <b> {React.string("Not available")} </b>
                              </span>
                            </button>
@@ -1809,7 +1811,7 @@ module App = {
                            )
                          }>
                          <span>
-                           <small> {React.string("MODEL")} </small>
+                           <small> {React.string("Model")} </small>
                            <b> {React.string(configCurrentName(option))} </b>
                          </span>
                          {icon("chevron")}
@@ -1821,7 +1823,7 @@ module App = {
                               ariaLabel="Model options">
                               <header>
                                 <span>
-                                  {React.string("AVAILABLE MODELS")}
+                                  {React.string("Available models")}
                                 </span>
                                 <small>
                                   {React.int(
@@ -1877,8 +1879,8 @@ module App = {
                                      <em>
                                        {React.string(
                                           switch (thinkingOption) {
-                                          | Some(_) => "THINKING"
-                                          | None => "DIRECT"
+                                          | Some(_) => "Thinking"
+                                          | None => "Direct"
                                           },
                                         )}
                                      </em>
@@ -1902,7 +1904,7 @@ module App = {
                              ariaLabel="Thinking unavailable"
                              title="This agent has not exposed a thinking option through ACP">
                              <span>
-                               <small> {React.string("THINKING")} </small>
+                               <small> {React.string("Thinking")} </small>
                                <b> {React.string("Unavailable")} </b>
                              </span>
                            </button>
@@ -1921,7 +1923,7 @@ module App = {
                            )
                          }>
                          <span>
-                           <small> {React.string("THINKING")} </small>
+                           <small> {React.string("Thinking")} </small>
                            <b> {React.string(configCurrentName(option))} </b>
                          </span>
                          {icon("chevron")}
@@ -1933,9 +1935,9 @@ module App = {
                               ariaLabel="Thinking options">
                               <header>
                                 <span>
-                                  {React.string("THINKING LEVEL")}
+                                  {React.string("Thinking level")}
                                 </span>
-                                <small> {React.string("REASONING")} </small>
+                                <small> {React.string("Reasoning")} </small>
                               </header>
                               {Array.map(
                                  choice =>
@@ -2012,19 +2014,19 @@ module App = {
                        type_="button"
                        ariaPressed={delivery == "steer" ? "true" : "false"}
                        onClick={_ => setDelivery(_ => "steer")}>
-                       {React.string("STEER NEXT")}
+                       {React.string("Steer next")}
                      </button>
                      <button
                        className={delivery == "follow_up" ? "active" : ""}
                        type_="button"
                        ariaPressed={delivery == "follow_up" ? "true" : "false"}
                        onClick={_ => setDelivery(_ => "follow_up")}>
-                       {React.string("FOLLOW-UP")}
+                       {React.string("Follow-up")}
                      </button>
                    </div>
                    <button className="abort-run" type_="button" onClick=cancel>
                      <i />
-                     {React.string("ABORT RUN")}
+                     {React.string("Abort run")}
                    </button>
                  </div>
                : React.null}
@@ -2049,7 +2051,7 @@ module App = {
                ariaLabel="Search sessions">
                <header>
                  <div>
-                   <span> {React.string("SESSION SWITCHER")} </span>
+                   <span> {React.string("Session switcher")} </span>
                    <b> {React.string("Go to a session")} </b>
                  </div>
                  <button
@@ -2072,7 +2074,7 @@ module App = {
                    ariaPressed={searchScope == "active" ? "true" : "false"}
                    onClick={_ => setSearchScope(_ => "active")}>
                    {React.string(
-                      "ACTIVE " ++ string_of_int(Array.length(sessions)),
+                      "Active " ++ string_of_int(Array.length(sessions)),
                     )}
                  </button>
                  <button
@@ -2081,7 +2083,7 @@ module App = {
                    ariaPressed={searchScope == "archived" ? "true" : "false"}
                    onClick={_ => setSearchScope(_ => "archived")}>
                    {React.string(
-                      "ARCHIVED "
+                      "Archived "
                       ++ string_of_int(Array.length(archivedSessions)),
                     )}
                  </button>
@@ -2175,13 +2177,13 @@ module App = {
                  <span>
                    {React.string(
                       searchScope == "archived"
-                        ? "ENTER TO RESTORE" : "ENTER TO OPEN",
+                        ? "Enter to restore" : "Enter to open",
                     )}
                  </span>
                  <b>
                    {React.string(
                       string_of_int(Array.length(searchResults))
-                      ++ " SESSIONS",
+                      ++ " sessions",
                     )}
                  </b>
                </footer>
@@ -2193,7 +2195,7 @@ module App = {
              <form className="session-dialog" onSubmit=newSession>
                <header>
                  <div>
-                   <span> {React.string("NEW SESSION")} </span>
+                   <span> {React.string("New session")} </span>
                    <h2> {React.string("Start an agent")} </h2>
                  </div>
                  <button
@@ -2204,7 +2206,7 @@ module App = {
                  </button>
                </header>
                <label htmlFor="new-session-title">
-                 {React.string("NAME")}
+                 {React.string("Name")}
                </label>
                <input
                  id="new-session-title"
@@ -2222,7 +2224,7 @@ module App = {
                  </strong>
                </p>
                <label htmlFor="new-session-harness">
-                 {React.string("HARNESS")}
+                 {React.string("Harness")}
                </label>
                <select id="new-session-harness" name="harness">
                  <option value="pi"> {React.string("Pi")} </option>
@@ -2233,13 +2235,13 @@ module App = {
                <footer>
                  <button
                    type_="button" onClick={_ => setCreatorOpen(_ => false)}>
-                   {React.string("CANCEL")}
+                   {React.string("Cancel")}
                  </button>
                  <button
                    className="launch-session"
                    type_="submit"
                    disabled=submitting>
-                   {React.string(submitting ? "STARTING..." : "START SESSION")}
+                   {React.string(submitting ? "Starting…" : "Start session")}
                  </button>
                </footer>
              </form>
@@ -2252,7 +2254,7 @@ module App = {
                onSubmit=registerWorkspace>
                <header>
                  <div>
-                   <span> {React.string("ADD WORKSPACE")} </span>
+                   <span> {React.string("Add workspace")} </span>
                    <h2> {React.string("Choose a local directory")} </h2>
                  </div>
                  <button
@@ -2263,7 +2265,7 @@ module App = {
                  </button>
                </header>
                <label htmlFor="workspace-search">
-                 {React.string("SEARCH THIS COMPUTER")}
+                 {React.string("Search this computer")}
                </label>
                <div className="directory-search">
                  <input
@@ -2274,7 +2276,7 @@ module App = {
                  {icon("search")}
                </div>
                <span className="dialog-field-label">
-                 {React.string("DIRECTORY")}
+                 {React.string("Directory")}
                </span>
                <div
                  className="directory-options"
@@ -2311,13 +2313,13 @@ module App = {
                  <button
                    type_="button"
                    onClick={_ => setWorkspaceCreatorOpen(_ => false)}>
-                   {React.string("CANCEL")}
+                   {React.string("Cancel")}
                  </button>
                  <button
                    className="launch-session"
                    type_="submit"
                    disabled={submitting || selectedWorkspacePath == ""}>
-                   {React.string(submitting ? "ADDING..." : "ADD WORKSPACE")}
+                   {React.string(submitting ? "Adding…" : "Add workspace")}
                  </button>
                </footer>
              </form>
@@ -2332,7 +2334,7 @@ module App = {
                ariaLabel="Remove workspace">
                <header>
                  <div>
-                   <span> {React.string("REMOVE WORKSPACE")} </span>
+                   <span> {React.string("Remove workspace")} </span>
                    <h2>
                      {React.string("Remove " ++ removeWorkspaceName ++ "?")}
                    </h2>
@@ -2363,7 +2365,7 @@ module App = {
                    type_="button"
                    disabled=submitting
                    onClick={_ => setRemoveWorkspaceId(_ => "")}>
-                   {React.string("CANCEL")}
+                   {React.string("Cancel")}
                  </button>
                  <button
                    className="danger-action"
@@ -2371,7 +2373,7 @@ module App = {
                    disabled=submitting
                    onClick={_ => removeWorkspace(removeWorkspaceId)}>
                    {React.string(
-                      submitting ? "REMOVING..." : "REMOVE WORKSPACE",
+                      submitting ? "Removing…" : "Remove workspace",
                     )}
                  </button>
                </footer>
@@ -2387,7 +2389,7 @@ module App = {
                ariaLabel="Archive session">
                <header>
                  <div>
-                   <span> {React.string("ARCHIVE SESSION")} </span>
+                   <span> {React.string("Archive session")} </span>
                    <h2>
                      {React.string("Archive " ++ archiveTargetTitle ++ "?")}
                    </h2>
@@ -2407,7 +2409,7 @@ module App = {
                <footer>
                  <button
                    type_="button" onClick={_ => setArchiveTargetId(_ => "")}>
-                   {React.string("CANCEL")}
+                   {React.string("Cancel")}
                  </button>
                  <button
                    className="danger-action"
@@ -2415,7 +2417,7 @@ module App = {
                    disabled=submitting
                    onClick={_ => archiveSession(archiveTargetId)}>
                    {React.string(
-                      submitting ? "ARCHIVING..." : "ARCHIVE SESSION",
+                      submitting ? "Archiving…" : "Archive session",
                     )}
                  </button>
                </footer>
