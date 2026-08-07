@@ -2,6 +2,12 @@ open Piss_core
 
 let max_frame_bytes = 16 * 1024 * 1024
 
+(* Wall-clock budget for an open ACP command. When the harness stops
+   producing session/prompt responses for this long the worker declares
+   the command ambiguous and surfaces a `command.dispatch_timeout` event
+   so the UI is not stuck on a silently silent harness. *)
+let dispatch_timeout_seconds = 600.
+
 type pending_permission = { raw_id : Yojson.Safe.t; params : Yojson.Safe.t }
 
 let write_json sink json =
@@ -55,6 +61,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
   Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
   Eio.Switch.run @@ fun sw ->
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
   let harness_stdout, harness_stdout_sink = Eio.Process.pipe ~sw process_mgr in
   let harness_stdin_source, harness_stdin = Eio.Process.pipe ~sw process_mgr in
   let harness =
@@ -70,7 +77,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
   in
   let outgoing = Eio.Stream.create 64 in
   let pending_responses = Hashtbl.create 16 in
-  let running_commands : (string, unit) Hashtbl.t = Hashtbl.create 4 in
+  let running_commands : (string, float) Hashtbl.t = Hashtbl.create 4 in
   let pending_permissions : (string, pending_permission) Hashtbl.t =
     Hashtbl.create 8
   in
@@ -100,6 +107,44 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
       (Yojson.Safe.to_string (selected_config_values ()))
   in
   let send json = Eio.Stream.add outgoing json in
+  let expire_stuck_commands () =
+    let now = Unix.gettimeofday () in
+    let stuck =
+      Hashtbl.fold
+        (fun command_id dispatched_at acc ->
+          if now -. dispatched_at > dispatch_timeout_seconds then
+            (command_id, dispatched_at) :: acc
+          else acc)
+        running_commands []
+    in
+    List.iter
+      (fun (command_id, _) ->
+        let claimed =
+          Store.try_set_command_state_if_open store ~command_id
+            Domain.Ambiguous
+        in
+        Hashtbl.remove running_commands command_id;
+        if claimed then (
+          status :=
+            if Hashtbl.length pending_permissions > 0 then
+              Domain.Requires_action
+            else if Hashtbl.length running_commands > 0 then
+              Domain.Running
+            else Domain.Idle;
+          ignore
+            (Store.append_event store ~kind:"command.dispatch_timeout"
+               (`Assoc
+                  [
+                    ("commandId", `String command_id);
+                    ( "timeoutSeconds",
+                      `Float dispatch_timeout_seconds );
+                    ( "reason",
+                      `String
+                        "harness did not acknowledge the dispatched command \
+                         within the configured budget" );
+                  ]))))
+      stuck
+  in
   let fail_pending message =
     Hashtbl.iter
       (fun _ resolver ->
@@ -110,6 +155,11 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
   Eio.Fiber.fork ~sw (fun () ->
       while true do
         Eio.Stream.take outgoing |> write_json harness_stdin
+      done);
+  Eio.Fiber.fork ~sw (fun () ->
+      while true do
+        Eio.Time.sleep clock 5.0;
+        expire_stuck_commands ()
       done);
   Eio.Fiber.fork ~sw (fun () ->
       try
@@ -404,6 +454,17 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
     Option.is_some !upgrade_target
   in
   let worker_snapshot () =
+    let first_sequence = Store.first_retained_sequence store in
+    let last_sequence = Store.last_sequence store in
+    let retention_pruned =
+      last_sequence > 0L && first_sequence > 1L
+      ||
+      match Store.get_metadata store "retention_pruned" with
+      | Some value when String.equal value "true" -> true
+      | _ -> false
+    in
+    if retention_pruned then
+      Store.set_metadata store "retention_pruned" "true";
     Domain.
       {
         session_id = Session_id session_id;
@@ -413,7 +474,9 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
         harness_pid = Some harness_pid;
         agent_name;
         status = !status;
-        last_sequence = Store.last_sequence store;
+        first_sequence;
+        last_sequence;
+        retention_pruned;
       }
   in
   let resolve_resources resources =
@@ -458,7 +521,7 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
         try
           status := Domain.Running;
           Store.set_command_state store ~command_id Domain.Dispatched;
-          Hashtbl.replace running_commands command_id ();
+          Hashtbl.replace running_commands command_id (Unix.gettimeofday ());
           send
             (Acp.prompt_request ~delivery:action ~command_id
                ~session_id:!harness_session_id ~text ~images

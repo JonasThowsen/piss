@@ -44,7 +44,9 @@ type snapshot = {
   harness_pid : int option;
   agent_name : string;
   status : worker_status;
+  first_sequence : int64;
   last_sequence : int64;
+  retention_pruned : bool;
 }
 
 let command_state_to_string = function
@@ -99,5 +101,8 @@ let snapshot_to_yojson snapshot =
         match snapshot.harness_pid with Some pid -> `Int pid | None -> `Null );
       ("agentName", `String snapshot.agent_name);
       ("status", `String (worker_status_to_string snapshot.status));
+      ( "firstSequence",
+        `Intlit (Int64.to_string snapshot.first_sequence) );
       ("lastSequence", `Intlit (Int64.to_string snapshot.last_sequence));
+      ("retentionPruned", `Bool snapshot.retention_pruned);
     ]
