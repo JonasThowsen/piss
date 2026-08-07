@@ -1,21 +1,25 @@
 (melange.emit
  (target output)
  (alias web-next)
- (libraries reason-react)
- (modules app)
+ (libraries reason-react styled-ppx.melange)
+ (modules app ModalSurface)
  (preprocess
-  (pps melange.ppx reason-react-ppx))
+  (pps styled-ppx melange.ppx reason-react-ppx))
  (module_systems es6))
 
 (rule
  (alias web-bundle)
  (target app.js)
- (deps output/web-next/App.js)
+ (deps
+  (glob_files_rec output/web-next/*.js)
+  (glob_files_rec output/node_modules/styled-ppx.melange/*.js))
  (action
-  (run
-   esbuild
-   %{dep:output/web-next/App.js}
-   --bundle
-   --format=esm
-   --minify
-   --outfile=%{target})))
+  (with-stdout-to %{target}
+   (run esbuild
+     %{dep:output/web-next/App.js}
+     --bundle
+     --format=esm
+     --minify
+     --resolve-extensions=.js
+     --main-fields=browser
+     --outfile=%{target}))))

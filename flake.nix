@@ -44,12 +44,85 @@
           '';
           common = {
             version = "0.1.0";
-            npmDepsHash = "sha256-AMohshQsdsjF4hK3/bWly258P2eOGLXuJI/jytGaqTw=";
+            npmDepsHash = "sha256-Lj8tLSsPsBO1+OLa+uMR9hFl0c77zGS0VBoW5viOXbI=";
             npmDepsFetcherVersion = 2;
           };
         in
         rec {
           opencode = opencode-src.packages.${system}.opencode;
+
+          styled-ppx = pkgs.ocamlPackages.buildDunePackage {
+            pname = "styled-ppx";
+            version = "0.61.0";
+            src = pkgs.fetchurl {
+              url = "https://github.com/davesnx/styled-ppx/releases/download/0.61.0/styled-ppx-0.61.0.tbz";
+              sha256 = "sha256-xuuncOnpu5ACvz91n5nrzsbXtBMsbCrVYohsiLaDm6s=";
+            };
+            nativeBuildInputs = with pkgs.ocamlPackages; [
+              menhir
+              melange
+              reason
+              pkgs.buildPackages.coreutils
+            ];
+            propagatedBuildInputs = with pkgs.ocamlPackages; [
+              reason
+              melange
+              sedlex
+              ppx_deriving
+              ppx_deriving_yojson
+              ppxlib
+              yojson
+              menhir
+              reason-react
+            ];
+            dontStrip = true;
+            doCheck = false;
+            prePatch = ''
+              # Strip the parts of the source tree that pull in server-reason-react,
+              # which is not packaged in nixpkgs; we only need the Melange runtime
+              # and the ppx rewriter for the PISS browser shell.
+              rm -rf demo
+              rm -rf packages/runtime/native
+              rm -rf packages/runtime/benchmark
+              rm -rf packages/runtime/rescript
+              rm -rf packages/runtime/test
+              rm -rf packages/css-spec-parser/test
+              rm -rf packages/css-property-parser/test
+              rm -rf packages/string_interpolation/test
+              rm -rf packages/parser/test
+              rm -rf packages/ppx/test
+              mkdir -p packages/runtime/melange/shared
+              cp ${pkgs.fetchurl {
+                url = "https://github.com/davesnx/styled-ppx/releases/download/0.61.0/styled-ppx-0.61.0.tbz";
+                sha256 = "sha256-xuuncOnpu5ACvz91n5nrzsbXtBMsbCrVYohsiLaDm6s=";
+              }} /tmp/styled-ppx.tbz
+              tar -xjf /tmp/styled-ppx.tbz -C /tmp --strip-components=1
+              cp /tmp/packages/runtime/native/shared/*.ml packages/runtime/melange/shared/
+              cp /tmp/packages/runtime/native/Kloth.mli packages/runtime/melange/Kloth.mli
+              cat > packages/runtime/melange/dune <<'INNER_EOF'
+(library
+ (name styled_ppx_runtime_melange)
+ (public_name styled-ppx.melange)
+ (modes melange)
+ (wrapped false)
+ (preprocess
+  (pps melange.ppx -alert -deprecated)))
+
+(copy_files#
+ (mode fallback)
+ (files ./shared/**[!.pp].ml))
+INNER_EOF
+              cat > dune <<'INNER_EOF'
+(dirs packages)
+
+(subdir
+ packages
+ (dirs :standard \ editors website runtime/benchmark runtime/test runtime/native runtime/rescript))
+INNER_EOF
+              sed -i '/server-reason-react/d' dune-project
+              rm -f /tmp/styled-ppx.tbz
+            '';
+          };
 
           pi-acp = pkgs.buildNpmPackage {
             pname = "pi-acp";
@@ -225,6 +298,7 @@
                 pkgs.ocamlPackages.reason
                 pkgs.ocamlPackages.reason-react
                 pkgs.ocamlPackages.reason-react-ppx
+                styled-ppx
               ]
             );
             npmBuildScript = "build:next:web";
@@ -525,6 +599,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          styled-ppx = self.packages.${system}.styled-ppx;
           playwrightFfmpeg = pkgs.runCommand "playwright-ffmpeg-1011" { } ''
             mkdir -p $out/ffmpeg-1011
             ln -s ${pkgs.ffmpeg}/bin/ffmpeg $out/ffmpeg-1011/ffmpeg-linux
@@ -557,6 +632,7 @@
               ocamlPackages.reason
               ocamlPackages.reason-react
               ocamlPackages.reason-react-ppx
+              styled-ppx
             ];
             shellHook = ''
               export PATH="$PWD/node_modules/.bin:$PATH"

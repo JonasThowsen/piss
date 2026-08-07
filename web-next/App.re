@@ -1039,6 +1039,7 @@ module App = {
     let (searchOpen, setSearchOpen) = React.useState(() => false);
     let (searchQuery, setSearchQuery) = React.useState(() => "");
     let (searchScope, setSearchScope) = React.useState(() => "active");
+    let (searchHighlight, setSearchHighlight) = React.useState(() => 0);
     let (showJumpToBottom, setShowJumpToBottom) = React.useState(() => false);
     let (hasOlderEvents, setHasOlderEvents) = React.useState(() => false);
     let (loadingOlderEvents, setLoadingOlderEvents) =
@@ -2687,205 +2688,211 @@ module App = {
         </section>
       </section>
       {searchOpen
-         ? <div className="global-search-layer">
-             <button
-               className="global-search-backdrop"
-               type_="button"
-               ariaLabel="Close session search"
-               onClick={_ => {
+         ? <ModalSurface
+             className="global-search"
+             ariaLabel="Search sessions"
+             onClose={_ => {
+               setSearchOpen(_ => false);
+               setSearchQuery(_ => "");
+             }}>
+             <ModalSurface.Header
+               label="Session switcher"
+               title="Go to a session"
+               onClose={_ => {
                  setSearchOpen(_ => false);
                  setSearchQuery(_ => "");
                }}
              />
-             <section
-               className="global-search"
-               role="dialog"
-               ariaModal=true
-               ariaLabel="Search sessions">
-               <header>
-                 <div>
-                   <span> {React.string("Session switcher")} </span>
-                   <b> {React.string("Go to a session")} </b>
-                 </div>
-                 <button
-                   type_="button"
-                   ariaLabel="Close session search"
-                   onClick={_ => {
+             <div
+               className="global-search-scope"
+               role="group"
+               ariaLabel="Session state">
+               <button
+                 className={searchScope == "active" ? "active" : ""}
+                 type_="button"
+                 ariaPressed={searchScope == "active" ? "true" : "false"}
+                 onClick={_ => setSearchScope(_ => "active")}>
+                 {React.string(
+                    "Active " ++ string_of_int(Array.length(sessions)),
+                  )}
+               </button>
+               <button
+                 className={searchScope == "archived" ? "active" : ""}
+                 type_="button"
+                 ariaPressed={searchScope == "archived" ? "true" : "false"}
+                 onClick={_ => setSearchScope(_ => "archived")}>
+                 {React.string(
+                    "Archived "
+                    ++ string_of_int(Array.length(archivedSessions)),
+                  )}
+               </button>
+             </div>
+             <div className="global-search-field">
+               {icon("search")}
+               <input
+                 autoFocus=true
+                 ariaLabel="Search sessions"
+                 placeholder="Search sessions and workspaces..."
+                 onInput={event => {
+                   let value = eventValue(event);
+                   setSearchQuery(_ => value);
+                 }}
+                 onKeyDown={event => {
+                   let _ = ModalSurface.remapControlNavigation(event);
+                   switch (eventKey(event)) {
+                   | "Escape" =>
+                     preventAnyDefault(event);
                      setSearchOpen(_ => false);
                      setSearchQuery(_ => "");
-                   }}>
-                   {icon("x")}
-                 </button>
-               </header>
-               <div
-                 className="global-search-scope"
-                 role="group"
-                 ariaLabel="Session state">
-                 <button
-                   className={searchScope == "active" ? "active" : ""}
-                   type_="button"
-                   ariaPressed={searchScope == "active" ? "true" : "false"}
-                   onClick={_ => setSearchScope(_ => "active")}>
-                   {React.string(
-                      "Active " ++ string_of_int(Array.length(sessions)),
-                    )}
-                 </button>
-                 <button
-                   className={searchScope == "archived" ? "active" : ""}
-                   type_="button"
-                   ariaPressed={searchScope == "archived" ? "true" : "false"}
-                   onClick={_ => setSearchScope(_ => "archived")}>
-                   {React.string(
-                      "Archived "
-                      ++ string_of_int(Array.length(archivedSessions)),
-                    )}
-                 </button>
-               </div>
-               <div className="global-search-field">
-                 {icon("search")}
-                 <input
-                   autoFocus=true
-                   ariaLabel="Search sessions"
-                   placeholder="Search sessions and workspaces..."
-                   onInput={event => {
-                     let value = eventValue(event);
-                     setSearchQuery(_ => value);
-                   }}
-                   onKeyDown={event =>
-                     switch (eventKey(event)) {
-                     | "Escape" =>
+                   | "Enter" =>
+                     if (Array.length(searchResults) > 0) {
                        preventAnyDefault(event);
-                       setSearchOpen(_ => false);
-                       setSearchQuery(_ => "");
-                     | "Enter" =>
-                       if (Array.length(searchResults) > 0) {
-                         preventAnyDefault(event);
-                         searchScope == "archived"
-                           ? restoreSession(sessionId(searchResults[0]))
-                           : selectSession(sessionId(searchResults[0]));
-                       }
-                     | _ => ()
+                       searchScope == "archived"
+                         ? restoreSession(sessionId(searchResults[0]))
+                         : selectSession(sessionId(searchResults[0]));
                      }
+                   | "ArrowDown" =>
+                     preventAnyDefault(event);
+                     setSearchHighlight(current =>
+                       nextMentionIndex(
+                         current,
+                         Array.length(searchResults),
+                         1,
+                       )
+                     );
+                   | "ArrowUp" =>
+                     preventAnyDefault(event);
+                     setSearchHighlight(current =>
+                       nextMentionIndex(
+                         current,
+                         Array.length(searchResults),
+                         (-1),
+                       )
+                     );
+                   | _ => ()
                    }
-                 />
-               </div>
-               <div
-                 className="global-search-results"
-                 role="listbox"
-                 ariaLabel="Matching sessions">
-                 {Array.length(searchResults) == 0
-                    ? <div className="global-search-empty">
-                        {icon("search")}
-                        <b> {React.string("No matching sessions")} </b>
-                        <span>
-                          {React.string(
-                             "Try a session name, workspace, harness, or status.",
-                           )}
-                        </span>
-                      </div>
-                    : Array.map(
-                        session =>
-                          <button
-                            type_="button"
-                            role="option"
-                            ariaSelected={
-                              sessionId(session) == activeSessionId
-                            }
-                            key={sessionId(session)}
-                            disabled=submitting
-                            onClick={_ =>
-                              searchScope == "archived"
-                                ? restoreSession(sessionId(session))
-                                : selectSession(sessionId(session))
-                            }>
-                            <i className="global-search-glyph">
-                              {icon(
-                                 searchScope == "archived"
-                                   ? "archive" : "external",
-                               )}
-                            </i>
-                            <span>
-                              <b> {React.string(sessionTitle(session))} </b>
-                              <small>
-                                {React.string(
-                                   sessionWorkspaceName(session, workspaces)
-                                   ++ " / "
-                                   ++ sessionHarness(session),
-                                 )}
-                              </small>
-                            </span>
-                            <em>
+                 }}
+               />
+             </div>
+             <div
+               className="global-search-results"
+               role="listbox"
+               ariaLabel="Matching sessions">
+               {Array.length(searchResults) == 0
+                  ? <div className="global-search-empty">
+                      {icon("search")}
+                      <b> {React.string("No matching sessions")} </b>
+                      <span>
+                        {React.string(
+                           "Try a session name, workspace, harness, or status.",
+                         )}
+                      </span>
+                    </div>
+                  : Array.map(
+                      session => {
+                        let id = sessionId(session);
+                        let isCurrent = id == activeSessionId;
+                        let _ = searchHighlight;
+                        <button
+                          type_="button"
+                          role="option"
+                          ariaSelected=isCurrent
+                          ariaActivedescendant={isCurrent ? id : ""}
+                          key=id
+                          disabled=submitting
+                          onClick={_ =>
+                            searchScope == "archived"
+                              ? restoreSession(id)
+                              : selectSession(id)
+                          }>
+                          <i className="global-search-glyph">
+                            {icon(
+                               searchScope == "archived"
+                                 ? "archive" : "external",
+                             )}
+                          </i>
+                          <span>
+                            <b> {React.string(sessionTitle(session))} </b>
+                            <small>
                               {React.string(
-                                 searchScope == "archived"
-                                   ? submitting ? "restoring" : "restore"
-                                   : sessionStatus(session),
+                                 sessionWorkspaceName(session, workspaces)
+                                 ++ " / "
+                                 ++ sessionHarness(session),
                                )}
-                            </em>
-                          </button>,
-                        searchResults,
-                      )
-                      ->React.array}
-               </div>
-               <footer>
-                 <span>
-                   {React.string(
-                      searchScope == "archived"
-                        ? "Enter to restore" : "Enter to open",
-                    )}
-                 </span>
-                 <b>
-                   {React.string(
-                      string_of_int(Array.length(searchResults))
-                      ++ " sessions",
-                    )}
-                 </b>
-               </footer>
-             </section>
-           </div>
+                            </small>
+                          </span>
+                          <em>
+                            {React.string(
+                               searchScope == "archived"
+                                 ? submitting ? "restoring" : "restore"
+                                 : sessionStatus(session),
+                             )}
+                          </em>
+                        </button>;
+                      },
+                      searchResults,
+                    )
+                    ->React.array}
+             </div>
+             <ModalSurface.Footer>
+               <span>
+                 {React.string(
+                    searchScope == "archived"
+                      ? "Enter to restore" : "Enter to open",
+                  )}
+               </span>
+               <b>
+                 {React.string(
+                    string_of_int(Array.length(searchResults)) ++ " sessions",
+                  )}
+               </b>
+             </ModalSurface.Footer>
+           </ModalSurface>
          : React.null}
       {creatorOpen
-         ? <div className="dialog-backdrop" role="presentation">
-             <form className="session-dialog" onSubmit=newSession>
-               <header>
-                 <div>
-                   <span> {React.string("New session")} </span>
-                   <h2> {React.string("Start an agent")} </h2>
-                 </div>
-                 <button
-                   type_="button"
-                   ariaLabel="Close new session dialog"
-                   onClick={_ => setCreatorOpen(_ => false)}>
-                   {icon("x")}
-                 </button>
-               </header>
-               <label htmlFor="new-session-title">
-                 {React.string("Name")}
-               </label>
-               <input
-                 id="new-session-title"
-                 name="title"
-                 maxLength=120
-                 required=true
-                 placeholder="Implementation agent"
+         ? <ModalSurface
+             ariaLabel="New session"
+             onClose={_ => setCreatorOpen(_ => false)}>
+             <form
+               id="new-session-form"
+               onSubmit=newSession
+               style={ReactDOM.Style.make()}>
+               <ModalSurface.Header
+                 label="New session"
+                 title="Start an agent"
+                 onClose={_ => setCreatorOpen(_ => false)}
                />
-               <p className="fixed-workspace">
-                 {React.string("Creating in ")}
-                 <strong>
-                   {React.string(
-                      workspaceNameById(workspaces, creatorWorkspaceId),
-                    )}
-                 </strong>
-               </p>
-               <label htmlFor="new-session-harness">
-                 {React.string("Harness")}
-               </label>
-               <select id="new-session-harness" name="harness">
-                 <option value="pi"> {React.string("Pi")} </option>
-                 <option value="opencode">
-                   {React.string("OpenCode")}
-                 </option>
-               </select>
-               <footer>
+               <ModalSurface.Body>
+                 <label htmlFor="new-session-title">
+                   {React.string("Name")}
+                 </label>
+                 <input
+                   id="new-session-title"
+                   name="title"
+                   maxLength=120
+                   required=true
+                   autoFocus=true
+                   placeholder="Implementation agent"
+                 />
+                 <p className="fixed-workspace">
+                   {React.string("Creating in ")}
+                   <strong>
+                     {React.string(
+                        workspaceNameById(workspaces, creatorWorkspaceId),
+                      )}
+                   </strong>
+                 </p>
+                 <label htmlFor="new-session-harness">
+                   {React.string("Harness")}
+                 </label>
+                 <select id="new-session-harness" name="harness">
+                   <option value="pi"> {React.string("Pi")} </option>
+                   <option value="opencode">
+                     {React.string("OpenCode")}
+                   </option>
+                 </select>
+               </ModalSurface.Body>
+               <ModalSurface.Footer>
                  <button
                    type_="button" onClick={_ => setCreatorOpen(_ => false)}>
                    {React.string("Cancel")}
@@ -2893,76 +2900,79 @@ module App = {
                  <button
                    className="launch-session"
                    type_="submit"
+                   form="new-session-form"
                    disabled=submitting>
                    {React.string(submitting ? "Starting…" : "Start session")}
                  </button>
-               </footer>
+               </ModalSurface.Footer>
              </form>
-           </div>
+           </ModalSurface>
          : React.null}
       {workspaceCreatorOpen
-         ? <div className="dialog-backdrop" role="presentation">
+         ? <ModalSurface
+             className="workspace-dialog"
+             ariaLabel="Add workspace"
+             onClose={_ => setWorkspaceCreatorOpen(_ => false)}>
              <form
-               className="session-dialog workspace-dialog"
-               onSubmit=registerWorkspace>
-               <header>
-                 <div>
-                   <span> {React.string("Add workspace")} </span>
-                   <h2> {React.string("Choose a local directory")} </h2>
+               id="workspace-form"
+               onSubmit=registerWorkspace
+               style={ReactDOM.Style.make()}>
+               <ModalSurface.Header
+                 label="Add workspace"
+                 title="Choose a local directory"
+                 onClose={_ => setWorkspaceCreatorOpen(_ => false)}
+               />
+               <ModalSurface.Body>
+                 <label htmlFor="workspace-search">
+                   {React.string("Search this computer")}
+                 </label>
+                  <div className="directory-search">
+                    <input
+                      id="workspace-search"
+                      placeholder="Search directories..."
+                      onInput=searchDirectories
+                      onKeyDown={event => {
+                        let _ = ModalSurface.remapControlNavigation(event);
+                      }}
+                    />
+                    {icon("search")}
+                  </div>
+                 <span className="dialog-field-label">
+                   {React.string("Directory")}
+                 </span>
+                 <div
+                   className="directory-options"
+                   role="listbox"
+                   ariaLabel="Local directories">
+                   {Array.map(
+                      directory => {
+                        let path = directoryPath(directory);
+                        <button
+                          type_="button"
+                          role="option"
+                          ariaSelected={selectedWorkspacePath == path}
+                          className={
+                            selectedWorkspacePath == path ? "selected" : ""
+                          }
+                          key=path
+                          onClick={_ => setSelectedWorkspacePath(_ => path)}>
+                          <strong>
+                            {React.string(directoryName(directory))}
+                          </strong>
+                          <small> {React.string(path)} </small>
+                        </button>;
+                      },
+                      parseDirectories(directoriesJson),
+                    )
+                    ->React.array}
                  </div>
-                 <button
-                   type_="button"
-                   ariaLabel="Close workspace dialog"
-                   onClick={_ => setWorkspaceCreatorOpen(_ => false)}>
-                   {icon("x")}
-                 </button>
-               </header>
-               <label htmlFor="workspace-search">
-                 {React.string("Search this computer")}
-               </label>
-               <div className="directory-search">
-                 <input
-                   id="workspace-search"
-                   placeholder="Search directories..."
-                   onInput=searchDirectories
-                 />
-                 {icon("search")}
-               </div>
-               <span className="dialog-field-label">
-                 {React.string("Directory")}
-               </span>
-               <div
-                 className="directory-options"
-                 role="listbox"
-                 ariaLabel="Local directories">
-                 {Array.map(
-                    directory => {
-                      let path = directoryPath(directory);
-                      <button
-                        type_="button"
-                        role="option"
-                        ariaSelected={selectedWorkspacePath == path}
-                        className={
-                          selectedWorkspacePath == path ? "selected" : ""
-                        }
-                        key=path
-                        onClick={_ => setSelectedWorkspacePath(_ => path)}>
-                        <strong>
-                          {React.string(directoryName(directory))}
-                        </strong>
-                        <small> {React.string(path)} </small>
-                      </button>;
-                    },
-                    parseDirectories(directoriesJson),
-                  )
-                  ->React.array}
-               </div>
-               <p className="dialog-help">
-                 {React.string(
-                    "Only directories inside administrator-approved local roots are available.",
-                  )}
-               </p>
-               <footer>
+                 <p className="dialog-help">
+                   {React.string(
+                      "Only directories inside administrator-approved local roots are available.",
+                    )}
+                 </p>
+               </ModalSurface.Body>
+               <ModalSurface.Footer>
                  <button
                    type_="button"
                    onClick={_ => setWorkspaceCreatorOpen(_ => false)}>
@@ -2971,35 +2981,26 @@ module App = {
                  <button
                    className="launch-session"
                    type_="submit"
+                   form="workspace-form"
                    disabled={submitting || selectedWorkspacePath == ""}>
                    {React.string(submitting ? "Adding…" : "Add workspace")}
                  </button>
-               </footer>
+               </ModalSurface.Footer>
              </form>
-           </div>
+           </ModalSurface>
          : React.null}
       {removeWorkspaceId != ""
-         ? <div className="dialog-backdrop" role="presentation">
-             <section
-               className="session-dialog archive-dialog workspace-remove-dialog"
-               role="alertdialog"
-               ariaModal=true
-               ariaLabel="Remove workspace">
-               <header>
-                 <div>
-                   <span> {React.string("Remove workspace")} </span>
-                   <h2>
-                     {React.string("Remove " ++ removeWorkspaceName ++ "?")}
-                   </h2>
-                 </div>
-                 <button
-                   type_="button"
-                   disabled=submitting
-                   ariaLabel="Close workspace removal"
-                   onClick={_ => setRemoveWorkspaceId(_ => "")}>
-                   {icon("x")}
-                 </button>
-               </header>
+         ? <ModalSurface
+             className="workspace-remove-dialog"
+             modifier=ModalSurface.Alert
+             ariaLabel="Remove workspace"
+             onClose={_ => setRemoveWorkspaceId(_ => "")}>
+             <ModalSurface.Header
+               label="Remove workspace"
+               title={"Remove " ++ removeWorkspaceName ++ "?"}
+               onClose={_ => setRemoveWorkspaceId(_ => "")}
+             />
+             <ModalSurface.Body>
                <p>
                  {React.string(
                     "The workspace will be removed from PISS. Its directory and files will remain untouched.",
@@ -3013,69 +3014,62 @@ module App = {
                   : <p className="dialog-error" role="alert">
                       {React.string(removeWorkspaceError)}
                     </p>}
-               <footer>
-                 <button
-                   type_="button"
-                   disabled=submitting
-                   onClick={_ => setRemoveWorkspaceId(_ => "")}>
-                   {React.string("Cancel")}
-                 </button>
-                 <button
-                   className="danger-action"
-                   type_="button"
-                   disabled=submitting
-                   onClick={_ => removeWorkspace(removeWorkspaceId)}>
-                   {React.string(
-                      submitting ? "Removing…" : "Remove workspace",
-                    )}
-                 </button>
-               </footer>
-             </section>
-           </div>
+             </ModalSurface.Body>
+             <ModalSurface.Footer>
+               <button
+                 type_="button"
+                 disabled=submitting
+                 onClick={_ => setRemoveWorkspaceId(_ => "")}>
+                 {React.string("Cancel")}
+               </button>
+               <button
+                 className="danger-action"
+                 type_="button"
+                 disabled=submitting
+                 onClick={_ => removeWorkspace(removeWorkspaceId)}>
+                 {React.string(
+                    submitting ? "Removing…" : "Remove workspace",
+                  )}
+               </button>
+             </ModalSurface.Footer>
+           </ModalSurface>
          : React.null}
       {archiveTargetId != ""
-         ? <div className="dialog-backdrop" role="presentation">
-             <section
-               className="session-dialog archive-dialog"
-               role="alertdialog"
-               ariaModal=true
-               ariaLabel="Archive session">
-               <header>
-                 <div>
-                   <span> {React.string("Archive session")} </span>
-                   <h2>
-                     {React.string("Archive " ++ archiveTargetTitle ++ "?")}
-                   </h2>
-                 </div>
-                 <button
-                   type_="button"
-                   ariaLabel="Close archive dialog"
-                   onClick={_ => setArchiveTargetId(_ => "")}>
-                   {icon("x")}
-                 </button>
-               </header>
+         ? <ModalSurface
+             className="archive-dialog"
+             modifier=ModalSurface.Alert
+             ariaLabel="Archive session"
+             onClose={_ => setArchiveTargetId(_ => "")}>
+             <ModalSurface.Header
+               label="Archive session"
+               title={"Archive " ++ archiveTargetTitle ++ "?"}
+               onClose={_ => setArchiveTargetId(_ => "")}
+             />
+             <ModalSurface.Body>
                <p>
                  {React.string(
                     "The worker will stop, but its durable ledger will remain available for a future restoration interface.",
                   )}
                </p>
-               <footer>
-                 <button
-                   type_="button" onClick={_ => setArchiveTargetId(_ => "")}>
-                   {React.string("Cancel")}
-                 </button>
-                 <button
-                   className="danger-action"
-                   type_="button"
-                   disabled=submitting
-                   onClick={_ => archiveSession(archiveTargetId)}>
-                   {React.string(
-                      submitting ? "Archiving…" : "Archive session",
-                    )}
-                 </button>
-               </footer>
-             </section>
-           </div>
+             </ModalSurface.Body>
+             <ModalSurface.Footer>
+               <button
+                 type_="button"
+                 className="dialog-cancel"
+                 onClick={_ => setArchiveTargetId(_ => "")}>
+                 {React.string("Cancel")}
+               </button>
+               <button
+                 className="danger-action"
+                 type_="button"
+                 disabled=submitting
+                 onClick={_ => archiveSession(archiveTargetId)}>
+                 {React.string(
+                    submitting ? "Archiving…" : "Archive session",
+                  )}
+               </button>
+             </ModalSurface.Footer>
+           </ModalSurface>
          : React.null}
     </main>;
   };
