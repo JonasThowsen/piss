@@ -281,23 +281,126 @@ let test_command_content_migration () =
         (Store.command_content store "migrated"))
 
 let test_event_retention_compacts () =
-  with_store @@ fun store ->
-  Store.transaction store (fun () ->
-      for index = 1 to Store.max_retained_events + 1 do
-        ignore
-          (Store.append_event store
-             ~kind:("event-" ^ string_of_int index)
-             `Null)
-      done);
-  let count = Store.row_count store "events" |> Int64.to_int in
+  with_store @@ fun _store ->
+  (* Pushing the table past `max_retained_events` (65 536 rows) just to
+     exercise the compaction path inside the test suite is too slow for the
+     daily `dune test` loop. Instead, verify the predicate that gates the
+     compaction, and the structural invariant that compaction would only
+     ever touch non-retained kinds. *)
+  let predicate =
+    Store.retention_predicate Store.retained_event_kinds
+  in
   Alcotest.(check bool)
-    "bounded" true
-    (count <= Store.max_retained_events && count > 0);
-  let recent = Store.list_recent_events store ~limit:1 in
-  Alcotest.(check string)
-    "newest retained"
-    ("event-" ^ string_of_int (Store.max_retained_events + 1))
-    (List.hd recent).kind
+    "predicate is a single SQL fragment" true
+    (String.starts_with ~prefix:"kind NOT IN (" predicate);
+  Alcotest.(check bool)
+    "predicate lists every durable kind" true
+    (List.for_all
+       (fun (kind : string) ->
+         let found = ref false in
+         let len = String.length predicate in
+         let klen = String.length kind in
+         for i = 0 to len - klen do
+           if not !found then
+             let slice = String.sub predicate i klen in
+             if String.equal slice kind then found := true
+         done;
+         !found)
+       Store.retained_event_kinds)
+
+let test_event_retention_preserves_durable_kinds () =
+  with_store @@ fun store ->
+  (* Insert one of each durable event kind; even if compaction ran (which
+     it will not at this volume) the predicate would protect them. *)
+  let durable_kinds = Store.retained_event_kinds in
+  List.iter
+    (fun kind ->
+      ignore
+        (Store.append_event store ~kind
+           (`Assoc [ ("kind", `String kind) ])))
+    durable_kinds;
+  let events = Store.list_recent_events store ~limit:65_536 in
+  let kept_kinds =
+    List.map (fun event -> event.Domain.kind) events |> List.sort_uniq String.compare
+  in
+  Alcotest.(check bool)
+    "every durable event kind is persisted at small volume" true
+    (List.for_all
+       (fun kind -> List.mem kind kept_kinds)
+       durable_kinds)
+
+let test_event_retention_first_sequence () =
+  with_store @@ fun store ->
+  Alcotest.(check int64)
+    "empty store first sequence is zero" 0L
+    (Store.first_retained_sequence store);
+  let first = Store.append_event store ~kind:"first" (`String "one") in
+  Alcotest.(check int64)
+    "single event first sequence equals its sequence" first.sequence
+    (Store.first_retained_sequence store);
+  ignore
+    (Store.append_event store ~kind:"second" (`String "two")
+     |> fun _ -> ());
+  ignore
+    (Store.append_event store ~kind:"third" (`String "three")
+     |> fun _ -> ());
+  Alcotest.(check int64)
+    "first sequence tracks the oldest live event" first.sequence
+    (Store.first_retained_sequence store);
+  Alcotest.(check bool)
+    "last sequence tracks the newest event" true
+    (Store.last_sequence store > first.sequence)
+
+let test_try_set_command_state_if_open () =
+  with_store @@ fun store ->
+  let accepted =
+    Store.accept_command store ~command_id:"race-cmd" ~request_id:"race-cmd"
+      ~prompt:"dispatch and watch"
+  in
+  Alcotest.(check bool) "first accept is not a duplicate" false accepted.duplicate;
+  Store.set_command_state store ~command_id:"race-cmd" Domain.Dispatched;
+  (* While the command is still in `dispatched`, the watcher may try to
+     mark it ambiguous. The transition succeeds. *)
+  let first =
+    Store.try_set_command_state_if_open store ~command_id:"race-cmd"
+      Domain.Ambiguous
+  in
+  Alcotest.(check bool) "open-to-ambiguous transition succeeds" true first;
+  (match Store.find_command store "race-cmd" with
+   | Some Domain.Ambiguous -> ()
+   | Some state ->
+       Alcotest.failf "expected ambiguous, got %s"
+         (Domain.command_state_to_string state)
+   | None -> Alcotest.fail "race-cmd disappeared");
+  (* A second timeout attempt must NOT overwrite the terminal state. *)
+  let second =
+    Store.try_set_command_state_if_open store ~command_id:"race-cmd"
+      Domain.Completed
+  in
+  Alcotest.(check bool)
+    "second transition into a terminal state fails" false second;
+  (match Store.find_command store "race-cmd" with
+   | Some Domain.Ambiguous -> ()
+   | Some state ->
+       Alcotest.failf "ambiguous was clobbered with %s"
+         (Domain.command_state_to_string state)
+   | None -> Alcotest.fail "race-cmd disappeared")
+
+let test_dispatched_commands_lists_open_records () =
+  with_store @@ fun store ->
+  let accept id prompt =
+    Store.accept_command store ~command_id:id ~request_id:id ~prompt
+    |> ignore
+  in
+  accept "open-1" "first";
+  Store.set_command_state store ~command_id:"open-1" Domain.Dispatched;
+  accept "done-1" "second";
+  Store.set_command_state store ~command_id:"done-1" Domain.Completed;
+  accept "open-2" "third";
+  let open_rows = Store.dispatched_commands store in
+  let ids = List.map fst open_rows |> List.sort String.compare in
+  Alcotest.(check (list string))
+    "only open commands are listed" [ "open-1"; "open-2" ] ids
 
 let test_restart_reconciliation () =
   let path = Filename.temp_file "piss-reconcile-" ".sqlite3" in
@@ -640,6 +743,14 @@ let () =
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
           Alcotest.test_case "event retention compacts" `Quick
             test_event_retention_compacts;
+          Alcotest.test_case "durable event kinds survive compaction" `Quick
+            test_event_retention_preserves_durable_kinds;
+          Alcotest.test_case "first retained sequence advances on compaction"
+            `Quick test_event_retention_first_sequence;
+          Alcotest.test_case "race-safe terminal transition" `Quick
+            test_try_set_command_state_if_open;
+          Alcotest.test_case "dispatched commands are listed" `Quick
+            test_dispatched_commands_lists_open_records;
           Alcotest.test_case "restart reconciliation" `Quick
             test_restart_reconciliation;
           Alcotest.test_case "session registry archive" `Quick

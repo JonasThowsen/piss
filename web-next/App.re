@@ -48,6 +48,10 @@ external itemOptions: timelineItem => array(permissionOption) = "options";
 [@mel.get] external snapshotWorkerPid: sessionSnapshot => int = "workerPid";
 [@mel.get] external snapshotHarnessPid: sessionSnapshot => int = "harnessPid";
 [@mel.get] external snapshotSequence: sessionSnapshot => int = "lastSequence";
+[@mel.get] external snapshotFirstSequence: sessionSnapshot => int = "firstSequence";
+let snapshotRetentionPruned: sessionSnapshot => bool = [%raw
+  "snapshot => snapshot?.retentionPruned === true"
+];
 let snapshotAcceptsImages: sessionSnapshot => bool = [%raw
   "snapshot => snapshot?.acceptsImages === true"
 ];
@@ -2138,13 +2142,22 @@ module App = {
                        current == away ? current : away
                      );
                    }}>
-                   <div className="timeline-stream">
-                     {hasOlderEvents
-                        ? <button
-                            className="load-earlier"
-                            type_="button"
-                            disabled=loadingOlderEvents
-                            onClick=loadOlderEvents>
+                    <div className="timeline-stream">
+                      {snapshotRetentionPruned(snapshot)
+                         ? <p className="timeline-trimmed-notice" role="status">
+                             {React.string(
+                                "Earlier activity was compacted from the durable session log. The worker retained every permission, command, and harness error; ordinary tool/agent updates before "
+                                ++ string_of_int(snapshotFirstSequence(snapshot))
+                                ++ " are no longer in this view."
+                              )}
+                           </p>
+                         : React.null}
+                      {hasOlderEvents
+                         ? <button
+                             className="load-earlier"
+                             type_="button"
+                             disabled=loadingOlderEvents
+                             onClick=loadOlderEvents>
                             {React.string(
                                loadingOlderEvents
                                  ? "Loading earlier activity…"

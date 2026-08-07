@@ -5,8 +5,38 @@ exception Store_error of string
 type t = { db : Sqlite3.db; session_id : session_id; worker_id : worker_id }
 type accepted_command = { state : command_state; duplicate : bool }
 
-let max_retained_events = 4096
+let max_retained_events = 65_536
 let max_retained_commands = 1024
+
+(* Event kinds whose retention is required by the durability contract:
+   permission requests, command acceptances, harness disconnects, and
+   reconciliation records must never be silently dropped when compaction
+   runs. Compaction is allowed to remove ordinary tool/agent updates that
+   are still replayable from the harness transcript. *)
+let retained_event_kinds =
+  [
+    "command.accepted";
+    "command.state";
+    "command.reconciled";
+    "command.dispatch_timeout";
+    "acp.permission.requested";
+    "acp.permission.resolved";
+    "acp.permission.cancelled";
+    "acp.initialize";
+    "acp.session.created";
+    "acp.session.loaded";
+    "acp.session.load_failed";
+    "acp.config_option.changed";
+    "acp.config_option.restored";
+    "acp.config_option.restore_failed";
+    "acp.client_request.rejected";
+    "harness.disconnected";
+    "harness.protocol_error";
+    "worker.upgrade.prepared";
+    "worker.upgrade.completed";
+    "worker.upgrade.expired";
+    "timeline.reset";
+  ]
 
 let fail_rc operation rc =
   if not (Sqlite3.Rc.is_success rc) then
@@ -103,6 +133,10 @@ let last_sequence store =
   scalar_int64 store ~operation:"read last sequence"
     "SELECT COALESCE(MAX(sequence), 0) FROM events"
 
+let first_retained_sequence store =
+  scalar_int64 store ~operation:"read first retained sequence"
+    "SELECT COALESCE(MIN(sequence), 0) FROM events"
+
 let get_metadata store key =
   with_statement store.db "SELECT value FROM metadata WHERE key = ?"
     (fun statement ->
@@ -126,14 +160,40 @@ let row_count store table =
   scalar_int64 store ~operation:("count " ^ table)
     ("SELECT COUNT(*) FROM " ^ table)
 
+(* Build the WHERE clause that protects the durable event kinds listed above
+   from being dropped by compaction. *)
+let retention_predicate kinds =
+  "kind NOT IN ("
+  ^ String.concat ", " (List.map (fun kind -> "'" ^ kind ^ "'") kinds)
+  ^ ")"
+
 let compact_events_if_needed store =
-  if row_count store "events" >= Int64.of_int max_retained_events then
+  let count = row_count store "events" in
+  if count >= Int64.of_int max_retained_events then
+    let predicate = retention_predicate retained_event_kinds in
     exec store.db
-      "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER \
-       BY sequence ASC LIMIT 512)"
+      ("DELETE FROM events WHERE sequence IN (SELECT sequence FROM events \
+        WHERE " ^ predicate ^ " ORDER BY sequence ASC LIMIT 1024)")
 
 let append_event store ~kind payload =
   compact_events_if_needed store;
+  let count = row_count store "events" in
+  let predicate = retention_predicate retained_event_kinds in
+  let retained_count =
+    scalar_int64 store ~operation:"count retained events"
+      ("SELECT COUNT(*) FROM events WHERE " ^ predicate)
+  in
+  if
+    count >= Int64.of_int max_retained_events
+    && retained_count >= Int64.of_int max_retained_events
+  then
+    raise
+      (Store_error
+         (Printf.sprintf
+            "durable event retention limit reached (%d retained events); \
+             the worker must drain or archive before further events can be \
+             persisted"
+            max_retained_events));
   let created_at = Unix.gettimeofday () in
   with_statement store.db
     "INSERT INTO events(kind, payload, created_at) VALUES (?, ?, ?)"
@@ -318,6 +378,43 @@ let set_command_state store ~command_id state =
                 ("state", `String (command_state_to_string state));
               ])))
 
+(* Atomically transition a command only while it is still in an open state.
+   Returns true if the transition won the race against any concurrent state
+   writer; false if the command already reached a terminal state. The caller
+   must use this whenever it cannot otherwise observe that a harness response
+   has landed (for example, the dispatch-timeout watcher). *)
+let try_set_command_state_if_open store ~command_id state =
+  let updated =
+    transaction store (fun () ->
+        let now = Unix.gettimeofday () in
+        with_statement store.db
+          "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = ? \
+           AND state IN ('accepted', 'dispatched', 'acknowledged')"
+          (fun statement ->
+            bind_text statement 1 (command_state_to_string state);
+            bind_float statement 2 now;
+            bind_text statement 3 command_id;
+            match Sqlite3.step statement with
+            | Sqlite3.Rc.DONE -> Sqlite3.changes store.db
+            | rc ->
+                fail_rc "try-set command state" rc;
+                0))
+  in
+  let claimed = updated > 0 in
+  if claimed then (
+    match state with
+    | Completed | Cancelled | Ambiguous | Rejected ->
+        clear_command_content store ~command_id
+    | Received | Accepted | Dispatched | Acknowledged -> ();
+    ignore
+      (append_event store ~kind:"command.state"
+         (`Assoc
+            [
+              ("commandId", `String command_id);
+              ("state", `String (command_state_to_string state));
+            ])));
+  claimed
+
 let incomplete_command_ids store =
   with_statement store.db
     "SELECT command_id FROM commands WHERE state IN ('accepted', 'dispatched', \
@@ -329,6 +426,23 @@ let incomplete_command_ids store =
         | rc ->
             fail_rc "list incomplete commands" rc;
             List.rev ids
+      in
+      collect [])
+
+let dispatched_commands store =
+  with_statement store.db
+    "SELECT command_id, created_at FROM commands WHERE state IN ('dispatched', \
+     'accepted', 'acknowledged') ORDER BY created_at ASC" (fun statement ->
+      let rec collect rows =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            let command_id = Sqlite3.column_text statement 0 in
+            let created_at = Sqlite3.column_double statement 1 in
+            collect ((command_id, created_at) :: rows)
+        | Sqlite3.Rc.DONE -> List.rev rows
+        | rc ->
+            fail_rc "list dispatched commands" rc;
+            List.rev rows
       in
       collect [])
 
