@@ -20,12 +20,16 @@ let
   stateDirectory = "%S/${serviceStateName}";
   sessionRuntimeRoot = "${runtimeDirectory}/sessions";
   sessionStateRoot = "${stateDirectory}/sessions";
-  effectiveWorkspaces = if cfg.workspaces == { } then {
-    default = {
-      name = "PISS rewrite";
-      path = cfg.workspace;
-    };
-  } else cfg.workspaces;
+  effectiveWorkspaces =
+    if cfg.workspaces == { } then
+      {
+        default = {
+          name = "PISS rewrite";
+          path = cfg.workspace;
+        };
+      }
+    else
+      cfg.workspaces;
   workspaceEntries = lib.mapAttrsToList (id: value: value // { inherit id; }) effectiveWorkspaces;
   workspaceArguments = lib.concatMap (workspace: [
     "--workspace-spec"
@@ -65,6 +69,27 @@ let
         args=()
         ;;
       opencode)
+        opencode_auth_source=${
+          lib.escapeShellArg (if cfg.opencodeAuthFile == null then "" else cfg.opencodeAuthFile)
+        }
+        if [[ -n "$opencode_auth_source" ]]; then
+          [[ -f "$opencode_auth_source" ]] || {
+            echo "configured OpenCode authentication file is missing" >&2
+            exit 78
+          }
+          opencode_auth_dir="$session_state/data/opencode"
+          opencode_auth_target="$opencode_auth_dir/auth.json"
+          ${lib.getExe pkgs.jq} -e 'type == "object"' "$opencode_auth_source" >/dev/null || {
+            echo "configured OpenCode authentication file must contain a JSON object" >&2
+            exit 78
+          }
+          mkdir -p "$opencode_auth_dir"
+          if [[ ! -f "$opencode_auth_target" || "$opencode_auth_source" -nt "$opencode_auth_target" ]]; then
+            opencode_auth_tmp="$opencode_auth_dir/.auth.json.$$"
+            ${lib.getExe' pkgs.coreutils "install"} -m 0600 "$opencode_auth_source" "$opencode_auth_tmp"
+            ${lib.getExe' pkgs.coreutils "mv"} -f "$opencode_auth_tmp" "$opencode_auth_target"
+          fi
+        fi
         command=${lib.escapeShellArg "${cfg.opencodePackage}/bin/opencode"}
         args=(--harness-arg acp)
         ;;
@@ -234,6 +259,17 @@ in
       description = "Pinned OpenCode package with its native ACP server.";
     };
 
+    opencodeAuthFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/home/agent/.local/share/opencode/auth.json";
+      description = ''
+        Optional runtime OpenCode auth.json source. OpenCode workers copy a newer
+        source into their private XDG data directory before starting, without
+        placing credentials in the Nix store or process environment.
+      '';
+    };
+
     harness = lib.mkOption {
       type = lib.types.enum [
         "pi"
@@ -283,12 +319,14 @@ in
     workspaces = lib.mkOption {
       default = { };
       description = "Allowlisted workspaces available to durable sessions.";
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          name = lib.mkOption { type = lib.types.str; };
-          path = lib.mkOption { type = lib.types.str; };
-        };
-      });
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption { type = lib.types.str; };
+            path = lib.mkOption { type = lib.types.str; };
+          };
+        }
+      );
     };
 
     workspaceDiscoveryRoots = lib.mkOption {
@@ -339,7 +377,12 @@ in
         message = "services.piss-next.workspaceDiscoveryRoots entries must be absolute";
       }
       {
-        assertion = lib.all (workspace: !(lib.hasInfix "|" workspace.id || lib.hasInfix "|" workspace.name || lib.hasInfix "|" workspace.path)) workspaceEntries;
+        assertion = lib.all (
+          workspace:
+          !(
+            lib.hasInfix "|" workspace.id || lib.hasInfix "|" workspace.name || lib.hasInfix "|" workspace.path
+          )
+        ) workspaceEntries;
         message = "services.piss-next workspace fields must not contain |";
       }
       {
@@ -349,6 +392,10 @@ in
       {
         assertion = cfg.harness != "pi" || lib.hasPrefix "/" cfg.piCommand;
         message = "services.piss-next.piCommand must be absolute for the Pi harness";
+      }
+      {
+        assertion = cfg.opencodeAuthFile == null || lib.hasPrefix "/" cfg.opencodeAuthFile;
+        message = "services.piss-next.opencodeAuthFile must be absolute";
       }
       {
         assertion = lib.all (path: lib.hasPrefix "/" path) cfg.environmentFiles;
@@ -367,7 +414,8 @@ in
     environment.systemPackages = [
       cfg.controlPackage
       cfg.workerPackage
-    ] ++ lib.optional cfg.tailscale.enable loginTool;
+    ]
+    ++ lib.optional cfg.tailscale.enable loginTool;
 
     systemd.user.services."piss-ocaml-worker@" = {
       description = "PISS OCaml independently supervised worker for session %i";
@@ -393,7 +441,9 @@ in
         ReadWritePaths = [
           "%S/${serviceStateName}/sessions/%i"
           "-%h/.pi"
-        ] ++ workspacePaths ++ cfg.workspaceDiscoveryRoots;
+        ]
+        ++ workspacePaths
+        ++ cfg.workspaceDiscoveryRoots;
         LockPersonality = true;
         RestrictAddressFamilies = [
           "AF_INET"

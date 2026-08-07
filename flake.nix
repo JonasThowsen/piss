@@ -459,6 +459,7 @@
                   enable = true;
                   allowedUsers = [ "owner@example.com" ];
                   harness = "opencode";
+                  opencodeAuthFile = "/run/secrets/opencode-auth.json";
                 };
               }
             ];
@@ -493,7 +494,21 @@
               nextModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
             assert nixpkgs.lib.hasInfix "--default-harness opencode"
               opencodeModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
-            pkgs.runCommand "piss-next-nixos-module-check" { } "touch $out";
+            assert
+              opencodeModuleEvaluation.config.services.piss-next.opencodeAuthFile
+              == "/run/secrets/opencode-auth.json";
+            let
+              opencodeWorkerRunner = builtins.head (
+                nixpkgs.lib.splitString " "
+                  opencodeModuleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ExecStart
+              );
+            in
+            pkgs.runCommand "piss-next-nixos-module-check" { } ''
+              grep -F -- '/run/secrets/opencode-auth.json' ${opencodeWorkerRunner}
+              grep -F -- 'configured OpenCode authentication file is missing' ${opencodeWorkerRunner}
+              grep -F -- 'configured OpenCode authentication file must contain a JSON object' ${opencodeWorkerRunner}
+              touch $out
+            '';
         }
       );
 
