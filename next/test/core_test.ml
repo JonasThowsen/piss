@@ -38,6 +38,22 @@ let test_session_registry () =
   Alcotest.(check int)
     "one workspace" 1
     (List.length (Registry.list_workspaces registry));
+  Registry.configure_workspace registry ~id:"workspace-empty"
+    ~name:"Empty workspace" ~root:"/tmp/workspace-empty";
+  Alcotest.(check bool)
+    "empty workspace can be removed" true
+    (Registry.remove_workspace registry "workspace-empty");
+  Registry.configure_workspace registry ~id:"workspace-empty"
+    ~name:"Configured again" ~root:"/tmp/workspace-empty";
+  Alcotest.(check bool)
+    "removed configured workspace stays removed" true
+    (Option.is_none (Registry.find_workspace registry "workspace-empty"));
+  Registry.upsert_workspace registry ~id:"workspace-empty"
+    ~name:"Registered again" ~root:"/tmp/workspace-empty";
+  Alcotest.(check bool)
+    "explicit registration clears removal" true
+    (Option.is_some (Registry.find_workspace registry "workspace-empty"));
+  ignore (Registry.remove_workspace registry "workspace-empty");
   Alcotest.(check (option string))
     "workspace can be recovered by canonical root" (Some "workspace-one")
     (Registry.find_workspace_by_root registry "/tmp/workspace-one"
@@ -49,6 +65,9 @@ let test_session_registry () =
     (Registry.insert registry ~id:"s-two" ~title:"OpenCode / two"
        ~harness:"opencode" ~workspace_id:"workspace-one");
   Alcotest.(check int) "two active sessions" 2 (Registry.active_count registry);
+  Alcotest.(check int)
+    "workspace session count includes both sessions" 2
+    (Registry.workspace_session_count registry "workspace-one");
   Alcotest.(check bool)
     "archive changes state" true
     (Registry.archive registry "s-one");

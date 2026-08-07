@@ -30,16 +30,17 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 
 The deployed Reason application provides:
 
-- durable allowlisted workspaces with current-style responsive navigation and a bounded local-directory picker rooted only in Nix-approved discovery paths;
+- durable allowlisted workspaces with current-style responsive navigation, safe removal of empty workspace registrations, and a bounded local-directory picker rooted only in Nix-approved discovery paths;
 - named Pi/OpenCode session creation, renaming, switching, archival, and restoration through an active/archived session search;
 - simultaneous Pi and OpenCode sessions with one worker and ledger each;
 - a current-workbench composer with Enter/Ctrl/Cmd dispatch plus ACP-backed model and thinking selectors; unsupported agent options remain visibly disabled instead of disappearing;
 - paginated durable history plus streamed assistant messages over resumable server-sent events, with scroll-preserving older-page loading;
+- safe Markdown message rendering with whole-message and per-block clipboard actions for prose, lists, quotes, and fenced code;
 - artifact-aware tool cards for commands, file locations, ACP diffs, images, resources, and terminal references;
 - permission decisions for ACP agents that request them;
 - durable active-turn steering and queued follow-up messages, with a replayable outgoing-message tray and isolated cancellation;
 - worker, adapter, and event-sequence telemetry;
-- automatic reconnection to the durable timeline;
+- automatic reconnection to the durable timeline and a desktop `Ctrl/⌘+K` session-search shortcut;
 - harness-neutral agent collaboration through `piss_list_sessions`, synchronous `piss_ask_session`, asynchronous `piss_send_session`, blocking `piss_collect_responses`, and durable `piss_subscribe_responses` MCP tools;
 - parallel fan-out with durable request IDs and fan-in that can listen for the first response or all responses;
 - dormant orchestrator wake-up: PISS durably waits after the originating turn ends, then starts exactly one new turn with captured results once the subscription is ready and the orchestrator is idle.

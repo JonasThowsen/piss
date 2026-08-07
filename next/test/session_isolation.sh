@@ -93,6 +93,7 @@ control_args=(
   --available-harness opencode
   --default-harness pi
   --workspace-spec "test-workspace|Test workspace|$workspace"
+  --workspace-spec "configured-empty|Configured empty|$root/configured-empty"
   --workspace-discovery-root "$root"
   --bootstrap-session s-bootstrap
   --public "$public_dir"
@@ -135,11 +136,16 @@ command_completed() {
     jq -e --arg command "$command" 'any(.[]; .kind == "command.state" and .payload.commandId == $command and .payload.state == "completed")' >/dev/null
 }
 
+mkdir -p "$root/configured-empty"
 start_control
 wait_session_count 1
 workspaces=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces")
 [[ $(jq -r '.[0].id' <<<"$workspaces") == test-workspace ]]
 [[ $(jq -r '.[0].root' <<<"$workspaces") == "$workspace" ]]
+[[ $(jq --arg id configured-empty 'any(.[]; .id==$id)' <<<"$workspaces") == true ]]
+curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/workspaces/configured-empty/delete" >/dev/null
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
 mkdir -p "$root/local-project"
 directories=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspace-directories?query=local-project")
 [[ $(jq -r '.[0].path' <<<"$directories") == "$root/local-project" ]]
@@ -158,6 +164,9 @@ third=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"harness":"pi","workspaceId":"test-workspace","title":"Implementation agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
 [[ "$first" != "$second" && "$first" != "$third" && "$second" != "$third" ]]
 wait_session_count 3
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/workspaces/test-workspace/delete") == 409 ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r --arg id "$second" '.[]|select(.id==$id)|.title') == "Review agent" ]]
 [[ $(cat "$state/sessions/$second/workspace") == "$workspace" ]]
 curl -fsS -X POST -H 'content-type: application/json' \
@@ -300,6 +309,7 @@ wait "$control_pid" 2>/dev/null || true
 control_pid=
 start_control
 [[ "$control_pid" != "$old_control" ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$third" | jq -r .workerPid) == "$third_worker" ]]
 wake_command=$(python3 - <<'PY'

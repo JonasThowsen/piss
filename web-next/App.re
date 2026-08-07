@@ -10,6 +10,7 @@ type directoryCandidate;
 type configOption;
 type configChoice;
 type outboxItem;
+type disposer = unit => unit;
 
 [@mel.get] external itemId: timelineItem => string = "id";
 [@mel.get] external itemRole: timelineItem => string = "role";
@@ -67,7 +68,78 @@ external configChoices: configOption => array(configChoice) = "options";
 [@mel.scope "String"] external fromCodePoint: int => string = "fromCodePoint";
 
 let icon: string => React.element = [%raw
-  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+  "name => { const n = { menu: [['path',{d:'M4 5h16'}],['path',{d:'M4 12h16'}],['path',{d:'M4 19h16'}]], search: [['path',{d:'m21 21-4.34-4.34'}],['circle',{cx:11,cy:11,r:8}]], plus: [['path',{d:'M5 12h14'}],['path',{d:'M12 5v14'}]], more: [['circle',{cx:12,cy:12,r:1}],['circle',{cx:19,cy:12,r:1}],['circle',{cx:5,cy:12,r:1}]], chevron: [['path',{d:'m6 9 6 6 6-6'}]], up: [['path',{d:'m5 12 7-7 7 7'}],['path',{d:'M12 19V5'}]], down: [['path',{d:'M12 5v14'}],['path',{d:'m19 12-7 7-7-7'}]], at: [['circle',{cx:12,cy:12,r:4}],['path',{d:'M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8'}]], bot: [['path',{d:'M12 8V4H8'}],['rect',{width:16,height:12,x:4,y:8,rx:2}],['path',{d:'M2 14h2'}],['path',{d:'M20 14h2'}],['path',{d:'M15 13v2'}],['path',{d:'M9 13v2'}]], diff: [['path',{d:'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'}],['path',{d:'M9 10h6'}],['path',{d:'M12 13V7'}],['path',{d:'M9 17h6'}]], gauge: [['path',{d:'m12 14 4-4'}],['path',{d:'M3.34 19a10 10 0 1 1 17.32 0'}]], x: [['path',{d:'M18 6 6 18'}],['path',{d:'m6 6 12 12'}]], archive: [['rect',{width:20,height:5,x:2,y:3,rx:1}],['path',{d:'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8'}],['path',{d:'M10 12h4'}]], copy: [['rect',{width:14,height:14,x:8,y:8,rx:2,ry:2}],['path',{d:'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'}]], trash: [['path',{d:'M3 6h18'}],['path',{d:'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'}],['path',{d:'M19 6l-1 14c0 1-1 2-2 2H8c-1 0-2-1-2-2L5 6'}],['path',{d:'M10 11v6'}],['path',{d:'M14 11v6'}]], check: [['path',{d:'M20 6 9 17l-5-5'}]], external: [['path',{d:'M15 3h6v6'}],['path',{d:'M10 14 21 3'}],['path',{d:'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'}]] }; return React.createElement('svg',{viewBox:'0 0 24 24',width:24,height:24,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true},...(n[name]||[]).map(([tag,props],i)=>React.createElement(tag,{...props,key:i}))); }"
+];
+
+let copyToClipboard: string => Js.Promise.t(unit) = [%raw
+  {|text => new Promise(async (resolve, reject) => {
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(text); resolve(); return; } catch (_) {}
+    }
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.readOnly = true;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    previous?.focus();
+    copied ? resolve() : reject(new Error('Clipboard access was denied'));
+  })|}
+];
+let scheduleCopyReset: ((string => string) => unit, string) => unit = [%raw
+  "(setFeedback, key) => setTimeout(() => setFeedback(current => current === key ? '' : current), 1800)"
+];
+let renderMarkdown:
+  (string, string, (string, string) => unit, string) => array(React.element) = [%raw
+  {|(text, itemId, onCopy, feedback) => {
+      const copyGlyph = () => React.createElement('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, React.createElement('rect', { width: 14, height: 14, x: 8, y: 8, rx: 2 }), React.createElement('path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }));
+      const checkGlyph = () => React.createElement('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, React.createElement('path', { d: 'M20 6 9 17l-5-5' }));
+      const inline = (value, key) => {
+        const parts = [];
+        const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+        let cursor = 0, match, index = 0;
+        while ((match = pattern.exec(value))) {
+          if (match.index > cursor) parts.push(value.slice(cursor, match.index));
+          const token = match[0];
+          if (token.startsWith('`')) parts.push(React.createElement('code', { key: `${key}-i${index}` }, token.slice(1, -1)));
+          else if (token.startsWith('**')) parts.push(React.createElement('strong', { key: `${key}-i${index}` }, token.slice(2, -2)));
+          else { const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/); const href = link?.[2] || ''; parts.push(/^https?:\/\//.test(href) ? React.createElement('a', { key: `${key}-i${index}`, href, target: '_blank', rel: 'noreferrer' }, link[1]) : link?.[1] || token); }
+          cursor = match.index + token.length; index++;
+        }
+        if (cursor < value.length) parts.push(value.slice(cursor));
+        return parts;
+      };
+      const copyButton = (key, value, label) => React.createElement('button', { type: 'button', className: `markdown-copy ${feedback === key ? 'copied' : ''}`, onClick: () => onCopy(key, value), 'aria-label': `${feedback === key ? 'Copied' : 'Copy'} ${label}` }, feedback === key ? checkGlyph() : copyGlyph(), React.createElement('b', null, feedback === key ? 'COPIED' : 'COPY'));
+      const blocks = [];
+      const addPlain = source => {
+        for (const raw of source.split(/\n{2,}/)) {
+          const value = raw.trim(); if (!value) continue;
+          const index = blocks.length; const key = `${itemId}-block-${index}`;
+          const lines = value.split('\n');
+          let content;
+          if (lines.every(line => /^\s*[-*]\s+/.test(line))) content = React.createElement('ul', null, ...lines.map((line, i) => React.createElement('li', { key: i }, ...inline(line.replace(/^\s*[-*]\s+/, ''), `${key}-${i}`))));
+          else if (lines.every(line => /^\s*\d+\.\s+/.test(line))) content = React.createElement('ol', null, ...lines.map((line, i) => React.createElement('li', { key: i }, ...inline(line.replace(/^\s*\d+\.\s+/, ''), `${key}-${i}`))));
+          else if (/^#{1,4}\s+/.test(value)) { const mark = value.match(/^(#{1,4})\s+([\s\S]*)$/); const level = Math.min(4, mark[1].length + 2); content = React.createElement(`h${level}`, null, ...inline(mark[2], key)); }
+          else if (lines.every(line => /^>\s?/.test(line))) content = React.createElement('blockquote', null, ...inline(lines.map(line => line.replace(/^>\s?/, '')).join('\n'), key));
+          else content = React.createElement('p', null, ...lines.flatMap((line, i) => i === 0 ? inline(line, `${key}-${i}`) : [React.createElement('br', { key: `${key}-br-${i}` }), ...inline(line, `${key}-${i}`)]));
+          blocks.push(React.createElement('section', { className: 'markdown-block markdown-text-block', key }, copyButton(key, value, 'text block'), content));
+        }
+      };
+      const fence = /```([^\n`]*)\n([\s\S]*?)```/g;
+      let cursor = 0, match;
+      while ((match = fence.exec(text))) {
+        addPlain(text.slice(cursor, match.index));
+        const language = match[1].trim() || 'TEXT'; const code = match[2].replace(/\n$/, ''); const index = blocks.length; const key = `${itemId}-block-${index}`;
+        blocks.push(React.createElement('section', { className: 'markdown-block markdown-code-block', key }, React.createElement('span', { className: 'markdown-code-language', 'aria-hidden': true }, language), copyButton(key, code, 'code block'), React.createElement('pre', null, React.createElement('code', null, code))));
+        cursor = match.index + match[0].length;
+      }
+      addPlain(text.slice(cursor));
+      return blocks;
+    }|}
 ];
 
 let getText: string => Js.Promise.t(string) = [%raw
@@ -120,6 +192,21 @@ let timelineAwayFromBottom: 'a => bool = [%raw
 ];
 let jumpTimelineToBottom: unit => unit = [%raw
   "() => { const timeline = document.getElementById('timeline'); if (timeline) timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' }); }"
+];
+let searchShortcutLabel: unit => string = [%raw
+  "() => /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'"
+];
+let watchSearchShortcut: (unit => unit) => disposer = [%raw
+  {|open => {
+    const handler = event => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'k') {
+        event.preventDefault();
+        open();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }|}
 ];
 let watchVisibleViewport: (unit, unit) => unit = [%raw
   "() => { const sync = () => { const viewport = window.visualViewport; const height = viewport?.height || window.innerHeight; document.documentElement.style.setProperty('--app-height', `${height}px`); }; sync(); requestAnimationFrame(sync); const timer = setTimeout(sync, 250); window.addEventListener('resize', sync); window.addEventListener('pageshow', sync); window.visualViewport?.addEventListener('resize', sync); return () => { clearTimeout(timer); window.removeEventListener('resize', sync); window.removeEventListener('pageshow', sync); window.visualViewport?.removeEventListener('resize', sync); }; }"
@@ -433,16 +520,40 @@ let ignorePromise = promise =>
 
 module TimelineItem = {
   [@react.component]
-  let make = (~item, ~onPermission) => {
+  let make = (~item, ~onPermission, ~onCopy, ~copyFeedback) => {
     let role = itemRole(item);
     let status = itemStatus(item);
     let kind = itemKind(item);
+    let text = itemText(item);
+    let copyable =
+      text != "" && (role == "agent" || role == "peer" || role == "tool");
     <article className={"timeline-item timeline-" ++ role}>
       <div className="message-meta">
         <span className="message-role">
           {React.string(itemTitle(item))}
         </span>
         <span className="message-classification">
+          {copyable
+             ? <button
+                 className={
+                   "timeline-copy "
+                   ++ (copyFeedback == itemId(item) ? "copied" : "")
+                 }
+                 type_="button"
+                 ariaLabel={
+                   copyFeedback == itemId(item)
+                     ? "Copied message" : "Copy message"
+                 }
+                 onClick={_ => onCopy(itemId(item), text)}>
+                 {copyFeedback == itemId(item)
+                    ? icon("check") : icon("copy")}
+                 <b>
+                   {React.string(
+                      copyFeedback == itemId(item) ? "COPIED" : "COPY",
+                    )}
+                 </b>
+               </button>
+             : React.null}
           {role == "tool" && kind != ""
              ? <span className={"artifact-kind kind-" ++ kind}>
                  {React.string(kind)}
@@ -455,11 +566,14 @@ module TimelineItem = {
                </span>}
         </span>
       </div>
-      {itemText(item) == ""
+      {text == ""
          ? React.null
-         : <pre className="message-body">
-             {React.string(itemText(item))}
-           </pre>}
+         : role == "tool"
+             ? <pre className="message-body"> {React.string(text)} </pre>
+             : <div className="message-body markdown-body">
+                 {renderMarkdown(text, itemId(item), onCopy, copyFeedback)
+                  ->React.array}
+               </div>}
       {Array.length(itemLocations(item)) == 0
          ? React.null
          : <div className="artifact-locations">
@@ -602,6 +716,15 @@ module App = {
     let (collapsedWorkspacesJson, setCollapsedWorkspacesJson) =
       React.useState(() => "[]");
     let (sessionMenuId, setSessionMenuId) = React.useState(() => "");
+    let (workspaceMenuId, setWorkspaceMenuId) = React.useState(() => "");
+    let (removeWorkspaceId, setRemoveWorkspaceId) = React.useState(() => "");
+    let (removeWorkspaceName, setRemoveWorkspaceName) =
+      React.useState(() => "");
+    let (removeWorkspaceRoot, setRemoveWorkspaceRoot) =
+      React.useState(() => "");
+    let (removeWorkspaceError, setRemoveWorkspaceError) =
+      React.useState(() => "");
+    let (copyFeedback, setCopyFeedback) = React.useState(() => "");
     let (archiveTargetId, setArchiveTargetId) = React.useState(() => "");
     let (archiveTargetTitle, setArchiveTargetTitle) =
       React.useState(() => "");
@@ -724,6 +847,19 @@ module App = {
         workspaces,
         searchQuery,
       );
+
+    let openSearch = () => {
+      setDrawerOpen(_ => false);
+      setSearchScope(_ =>
+        Array.length(sessions) == 0 ? "archived" : "active"
+      );
+      setSearchOpen(_ => true);
+    };
+
+    React.useEffect1(
+      () => Some(watchSearchShortcut(openSearch)),
+      [|sessionsJson|],
+    );
 
     let applyConfig = (option, value) =>
       if (!running && !submitting) {
@@ -932,6 +1068,43 @@ module App = {
         ->ignore;
       };
 
+    let copyTimelineText = (key, text) => {
+      copyToClipboard(text)
+      ->thenPromise(_ => {
+          setCopyFeedback(_ => key);
+          scheduleCopyReset(setCopyFeedback, key);
+          Js.Promise.resolve();
+        })
+      ->catchPromise(error => {
+          setNotice(_ => errorMessage(error));
+          Js.Promise.resolve();
+        })
+      ->ignore;
+    };
+
+    let removeWorkspace = id =>
+      if (!submitting && id != "") {
+        setSubmitting(_ => true);
+        setRemoveWorkspaceError(_ => "");
+        postText("/api/v2/workspaces/" ++ id ++ "/delete", "{}")
+        ->thenPromise(_ => {
+            setSubmitting(_ => false);
+            setWorkspaceMenuId(_ => "");
+            setRemoveWorkspaceId(_ => "");
+            setNotice(_ =>
+              "Workspace removed. Its directory and files were not changed."
+            );
+            refresh();
+            Js.Promise.resolve();
+          })
+        ->catchPromise(error => {
+            setSubmitting(_ => false);
+            setRemoveWorkspaceError(_ => errorMessage(error));
+            Js.Promise.resolve();
+          })
+        ->ignore;
+      };
+
     let loadOlderEvents = _ =>
       if (!loadingOlderEvents && hasOlderEvents && activeSessionId != "") {
         let before = oldestEventSequence(eventsJson);
@@ -1078,14 +1251,10 @@ module App = {
           title="Search sessions"
           ariaLabel="Search sessions"
           ariaExpanded=searchOpen
-          onClick={_ => {
-            setDrawerOpen(_ => false);
-            setSearchScope(_ =>
-              Array.length(sessions) == 0 ? "archived" : "active"
-            );
-            setSearchOpen(_ => true);
-          }}>
+          onClick={_ => openSearch()}>
           {icon("search")}
+          <span> {React.string("SEARCH SESSIONS")} </span>
+          <kbd> {React.string(searchShortcutLabel())} </kbd>
         </button>
         <div className={"connection-pill connection-" ++ status}>
           <i />
@@ -1154,6 +1323,55 @@ module App = {
                          </small>
                        </span>
                      </button>
+                     <div className="workspace-actions">
+                       <button
+                         className="workspace-more"
+                         type_="button"
+                         ariaLabel={
+                           "Workspace settings for "
+                           ++ workspaceName(workspace)
+                         }
+                         ariaExpanded={
+                           workspaceMenuId == workspaceId(workspace)
+                         }
+                         onClick={_ =>
+                           setWorkspaceMenuId(current =>
+                             current == workspaceId(workspace)
+                               ? "" : workspaceId(workspace)
+                           )
+                         }>
+                         {icon("more")}
+                       </button>
+                       {workspaceMenuId == workspaceId(workspace)
+                          ? <div
+                              className="workspace-menu"
+                              role="menu"
+                              ariaLabel={
+                                "Workspace actions for "
+                                ++ workspaceName(workspace)
+                              }>
+                              <button
+                                type_="button"
+                                role="menuitem"
+                                onClick={_ => {
+                                  setRemoveWorkspaceId(_ =>
+                                    workspaceId(workspace)
+                                  );
+                                  setRemoveWorkspaceName(_ =>
+                                    workspaceName(workspace)
+                                  );
+                                  setRemoveWorkspaceRoot(_ =>
+                                    workspaceRoot(workspace)
+                                  );
+                                  setRemoveWorkspaceError(_ => "");
+                                  setWorkspaceMenuId(_ => "");
+                                }}>
+                                {icon("trash")}
+                                {React.string("REMOVE")}
+                              </button>
+                            </div>
+                          : React.null}
+                     </div>
                      <button
                        type_="button"
                        ariaLabel={
@@ -1454,6 +1672,8 @@ module App = {
                               key={itemId(item)}
                               item
                               onPermission=resolvePermission
+                              onCopy=copyTimelineText
+                              copyFeedback
                             />,
                           timeline,
                         )
@@ -2101,6 +2321,61 @@ module App = {
                  </button>
                </footer>
              </form>
+           </div>
+         : React.null}
+      {removeWorkspaceId != ""
+         ? <div className="dialog-backdrop" role="presentation">
+             <section
+               className="session-dialog archive-dialog workspace-remove-dialog"
+               role="alertdialog"
+               ariaModal=true
+               ariaLabel="Remove workspace">
+               <header>
+                 <div>
+                   <span> {React.string("REMOVE WORKSPACE")} </span>
+                   <h2>
+                     {React.string("Remove " ++ removeWorkspaceName ++ "?")}
+                   </h2>
+                 </div>
+                 <button
+                   type_="button"
+                   disabled=submitting
+                   ariaLabel="Close workspace removal"
+                   onClick={_ => setRemoveWorkspaceId(_ => "")}>
+                   {icon("x")}
+                 </button>
+               </header>
+               <p>
+                 {React.string(
+                    "The workspace will be removed from PISS. Its directory and files will remain untouched.",
+                  )}
+               </p>
+               <small className="workspace-remove-path">
+                 {React.string(removeWorkspaceRoot)}
+               </small>
+               {removeWorkspaceError == ""
+                  ? React.null
+                  : <p className="dialog-error" role="alert">
+                      {React.string(removeWorkspaceError)}
+                    </p>}
+               <footer>
+                 <button
+                   type_="button"
+                   disabled=submitting
+                   onClick={_ => setRemoveWorkspaceId(_ => "")}>
+                   {React.string("CANCEL")}
+                 </button>
+                 <button
+                   className="danger-action"
+                   type_="button"
+                   disabled=submitting
+                   onClick={_ => removeWorkspace(removeWorkspaceId)}>
+                   {React.string(
+                      submitting ? "REMOVING..." : "REMOVE WORKSPACE",
+                    )}
+                 </button>
+               </footer>
+             </section>
            </div>
          : React.null}
       {archiveTargetId != ""
