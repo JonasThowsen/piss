@@ -1084,38 +1084,53 @@ module WorkingView = {
     | "connecting" => "Connecting to the worker"
     | _ => "Ready";
 
+  let safeTitle = (t: option(timelineItem)) =>
+    switch (t) {
+    | Some(item) => itemTitle(item)
+    | None => ""
+    };
+
   let pulseDetail:
     (string, option(timelineItem), string) => string =
-    (pulse, activeTool, agentName) =>
-      switch (pulse, activeTool) {
-      | ("running", _) =>
-        switch (activeTool) {
-        | Some(item) => itemTitle(item)
-        | None => agentName ++ " is working."
+    (pulse, activeTool, agentName) => {
+      let agentWorking = agentName ++ " is working.";
+      let workingTitle = safeTitle(activeTool);
+      switch (pulse) {
+      | "running" =>
+        if (workingTitle !== "") {
+          workingTitle
+        } else {
+          agentWorking
         }
-      | ("thinking", _) => agentName ++ " is composing the next step."
-      | ("awaiting", _) =>
+      | "thinking" => agentName ++ " is composing the next step."
+      | "awaiting" =>
         "The harness is waiting for your permission decision."
-      | ("connecting", _) => "Establishing the durable worker session."
-      | (_, _) => agentName ++ " is ready for your next prompt."
+      | "connecting" => "Establishing the durable worker session."
+      | _ => agentName ++ " is ready for your next prompt."
       };
+    };
 
   let pulseNote: (string, option(timelineItem)) => string =
-    (pulse, activeTool) =>
-      switch (pulse, activeTool) {
-      | ("running", _) =>
-        switch (activeTool) {
-        | Some(_) => "Output streams live as the harness reports it."
-        | None => "The harness is preparing a tool call."
+    (pulse, activeTool) => {
+      let preparing = "The harness is preparing a tool call.";
+      let liveNote = "Output streams live as the harness reports it.";
+      switch (pulse) {
+      | "running" =>
+        let isActive = safeTitle(activeTool) !== "";
+        if (isActive) {
+          liveNote
+        } else {
+          preparing
         }
-      | ("thinking", _) => "Streaming tokens will appear in the Agent tab."
-      | ("awaiting", _) =>
+      | "thinking" => "Streaming tokens will appear in the Agent tab."
+      | "awaiting" =>
         "Approve or reject from the Agent tab; nothing runs until you decide."
-      | ("connecting", _) =>
+      | "connecting" =>
         "Events replay from the durable ledger on attach."
-      | (_, _) =>
+      | _ =>
         "Send a prompt or queue a follow-up; the worker owns the turn end-to-end."
       };
+    };
 
   let metaLine: sessionSnapshot => string =
     snapshot => {
