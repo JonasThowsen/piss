@@ -497,12 +497,25 @@ let valid_json_mutation ~dev_bypass request =
     match valid_json_content request with
     | Error _ as error -> error
     | Ok () -> (
-        match
-          (request_header request "origin", request_header request "host")
-        with
-        | Some origin, Some host
-          when String.equal origin ("https://" ^ host)
-               || String.equal origin ("http://" ^ host) ->
+        let origin = request_header request "origin" in
+        let host = request_header request "host" in
+        let forwarded_host = request_header request "x-forwarded-host" in
+        (* The browser sends an Origin header on every state-changing
+           request. We accept the request when the Origin matches the
+           Host the worker saw directly OR the host the proxy in front
+           of us saw (X-Forwarded-Host). That covers the loopback dev
+           URL, the Tailscale Serve HTTPS hostname, and any other
+           reverse proxy in between. *)
+        let accepted_hosts =
+          match (host, forwarded_host) with
+          | Some direct, _ -> Some direct
+          | None, Some proxied -> Some proxied
+          | None, None -> None
+        in
+        match (origin, accepted_hosts) with
+        | Some origin, Some h
+          when String.equal origin ("https://" ^ h)
+               || String.equal origin ("http://" ^ h) ->
             Ok ()
         | _ -> Error (`Forbidden, "same-origin mutation required"))
 
