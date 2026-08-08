@@ -57,24 +57,26 @@ let header = [%cx {|
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   flex: none;
   @media (max-width: 760px) {
-    padding: 12px 14px;
+    padding: 10px 14px;
+    gap: 10px;
   }
 |}];
 
 let body = [%cx {|
   min-height: 0;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
   display: grid;
-  gap: 14px;
+  gap: 10px;
   align-content: start;
   @media (max-width: 760px) {
-    padding: 16px 14px;
+    padding: 12px 14px;
+    gap: 8px;
   }
 |}];
 
@@ -83,12 +85,12 @@ let footer = [%cx {|
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  padding: 12px 20px;
+  padding: 10px 18px;
   border-top: 1px solid var(--line);
   background: var(--surface);
   flex: none;
   @media (max-width: 760px) {
-    padding: 12px 14px;
+    padding: 10px 14px;
   }
 |}];
 
@@ -120,21 +122,21 @@ let closeButton = [%cx {|
 
 let headerLabel = [%cx {|
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
   font-size: 9px;
   line-height: 1.2;
-  font-family: monospace;
-  letter-spacing: 0.015em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 |}];
 
 let headerTitle = [%cx {|
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   font-size: 22px;
   font-weight: 650;
   letter-spacing: -0.015em;
+  line-height: 1.15;
   @media (max-width: 760px) {
-    font-size: 20px;
+    font-size: 19px;
   }
 |}];
 
@@ -250,7 +252,7 @@ module Header = {
         className=closeButton
         ariaLabel="Close dialog"
         onClick={_ => onClose()}>
-        {React.string("×")}
+        {React.string("\u00D7")}
       </button>
     </header>;
   };
