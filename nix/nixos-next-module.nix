@@ -473,6 +473,20 @@ in
         description = "Tailnet hostname for the OCaml tracer.";
       };
 
+      allowedOrigins = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "https://${cfg.tailscale.hostname}" ];
+        defaultText = lib.literalExpression
+          "[ \"https://\''${cfg.tailscale.hostname}\" ]";
+        description = ''
+          Origin URLs the control plane accepts on state-changing
+          requests in addition to the loopback URL. The Tailscale
+          Serve URL (`https://<tailscale.hostname>.<tailnet>.ts.net`) is
+          always included. Add more entries when routing through another
+          reverse proxy.
+        '';
+      };
+
       stateName = lib.mkOption {
         type = lib.types.strMatching "[a-zA-Z0-9_-]+";
         default = "piss-ocaml-tailscale";
@@ -631,6 +645,12 @@ in
             "--allowed-user"
             user
           ]) cfg.allowedUsers
+          ++ lib.concatMap (origin: [
+            "--allowed-origin"
+            origin
+          ]) ([
+            "https://${cfg.tailscale.hostname}"
+          ] ++ cfg.tailscale.allowedOrigins)
         );
         Restart = "always";
         RestartSec = 2;

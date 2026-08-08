@@ -491,7 +491,7 @@ let valid_json_content request =
       Ok ()
   | _ -> Error (`Unsupported_media_type, "content-type must be application/json")
 
-let valid_json_mutation ~dev_bypass request =
+let valid_json_mutation ~dev_bypass ~allowed_origins request =
   if dev_bypass then Ok ()
   else
     match valid_json_content request with
@@ -501,22 +501,23 @@ let valid_json_mutation ~dev_bypass request =
         let host = request_header request "host" in
         let forwarded_host = request_header request "x-forwarded-host" in
         (* The browser sends an Origin header on every state-changing
-           request. We accept the request when the Origin matches the
-           Host the worker saw directly OR the host the proxy in front
-           of us saw (X-Forwarded-Host). That covers the loopback dev
-           URL, the Tailscale Serve HTTPS hostname, and any other
-           reverse proxy in between. *)
-        let accepted_hosts =
-          match (host, forwarded_host) with
-          | Some direct, _ -> Some direct
-          | None, Some proxied -> Some proxied
-          | None, None -> None
+           request. We accept it when the Origin matches either the
+           Host the worker saw directly, the Host the proxy in front
+           of us advertised (X-Forwarded-Host), or any URL listed in
+           --allowed-origin (so a Tailscale Serve URL with the public
+           tailnet hostname is accepted even when the proxy does not
+           forward X-Forwarded-Host). *)
+        let accepted_origins =
+          let direct =
+            match (host, forwarded_host) with
+            | Some h, _ -> [ "https://" ^ h; "http://" ^ h ]
+            | None, Some h -> [ "https://" ^ h; "http://" ^ h ]
+            | None, None -> []
+          in
+          direct @ List.rev allowed_origins
         in
-        match (origin, accepted_hosts) with
-        | Some origin, Some h
-          when String.equal origin ("https://" ^ h)
-               || String.equal origin ("http://" ^ h) ->
-            Ok ()
+        match origin with
+        | Some o when List.mem o accepted_origins -> Ok ()
         | _ -> Error (`Forbidden, "same-origin mutation required"))
 
 let safe_asset_path root resource =
@@ -1033,7 +1034,7 @@ let serve_asset path content_type =
   with Sys_error _ -> error_json ~status:`Not_found "asset not found"
 
 let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
-    ~dev_bypass _socket request body =
+    ~allowed_origins ~dev_bypass _socket request body =
   let resource = Http.Request.resource request in
   let uri = Uri.of_string resource in
   let path = Uri.path uri in
@@ -1189,7 +1190,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
         | Managed manager, `POST, _, _
           when Option.is_some (workspace_delete path) ->
             Some
-              (match valid_json_mutation ~dev_bypass request with
+              (match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   ignore (read_body body);
@@ -1239,7 +1240,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               |> fun directories -> respond_json (`List directories) )
         | Managed manager, `POST, "/api/v2/workspaces", _ ->
             Some
-              (match valid_json_mutation ~dev_bypass request with
+              (match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
@@ -1290,7 +1291,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
             Some (respond_json (`List sessions))
         | Managed manager, `POST, "/api/v2/sessions", _ ->
             Some
-              (match valid_json_mutation ~dev_bypass request with
+              (match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
@@ -1322,7 +1323,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                   | Error message -> error_json ~status:`Conflict message))
         | Managed manager, `POST, _, Some action ->
             Some
-              (match valid_json_mutation ~dev_bypass request with
+              (match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let request_body = read_body body in
@@ -1405,7 +1406,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
               | Error message -> error_json ~status:`Service_unavailable message
               )
           | `POST, "/api/v2/config-options" -> (
-              match valid_json_mutation ~dev_bypass request with
+              match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
@@ -1513,7 +1514,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                   | Error message ->
                       error_json ~status:`Service_unavailable message))
           | `POST, "/api/v2/session/new" -> (
-              match valid_json_mutation ~dev_bypass request with
+              match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   ignore (read_body body);
@@ -1537,7 +1538,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                       | Ok result -> respond_json ~status:`Created result
                       | Error message -> error_json ~status:`Conflict message)))
           | `POST, "/api/v2/commands" -> (
-              match valid_json_mutation ~dev_bypass request with
+              match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
@@ -1580,7 +1581,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                       | Error message ->
                           error_json ~status:`Service_unavailable message)))
           | `POST, "/api/v2/cancel" -> (
-              match valid_json_mutation ~dev_bypass request with
+              match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   ignore (read_body body);
@@ -1592,7 +1593,7 @@ let handler ~net ~clock ~workers ~public_dir ~app_js ~generation ~allowed_users
                   | Ok result -> respond_json ~status:`Accepted result
                   | Error message -> error_json ~status:`Conflict message))
           | `POST, "/api/v2/permissions" -> (
-              match valid_json_mutation ~dev_bypass request with
+              match valid_json_mutation ~dev_bypass ~allowed_origins request with
               | Error (status, message) -> error_json ~status message
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
@@ -1668,6 +1669,7 @@ let () =
   let app_js = ref "_build/default/web-next/app.js" in
   let generation = ref "development" in
   let allowed_users = ref [] in
+  let allowed_origins = ref [] in
   let dev_bypass = ref false in
   Arg.parse
     [
@@ -1717,6 +1719,11 @@ let () =
       ( "--allowed-user",
         Arg.String (fun value -> allowed_users := value :: !allowed_users),
         "Authorized Tailscale login (repeatable)" );
+      ( "--allowed-origin",
+        Arg.String
+          (fun value -> allowed_origins := value :: !allowed_origins),
+        "Accepted Origin URL for state-changing requests (repeatable, \
+         e.g. https://piss-ocaml.tailb61fd1.ts.net)" );
       ( "--dev-bypass-auth",
         Arg.Set dev_bypass,
         "Allow loopback development requests without Tailscale headers" );
@@ -1826,7 +1833,8 @@ let () =
   let callback =
     handler ~net:(Eio.Stdenv.net env) ~clock:(Eio.Stdenv.clock env) ~workers
       ~public_dir:!public_dir ~app_js:!app_js ~generation:!generation
-      ~allowed_users:!allowed_users ~dev_bypass:!dev_bypass
+      ~allowed_users:!allowed_users
+      ~allowed_origins:!allowed_origins ~dev_bypass:!dev_bypass
   in
   let server = Cohttp_eio.Server.make ~callback () in
   (match workers with
