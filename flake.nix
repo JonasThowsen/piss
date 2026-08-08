@@ -621,6 +621,7 @@ INNER_EOF
               ocamlPackages.ocaml
               ocamlPackages.findlib
               ocamlPackages.ocamlformat
+              ocamlPackages.ocaml-lsp
               ocamlPackages.eio_main
               ocamlPackages.cohttp-eio
               ocamlPackages.yojson
