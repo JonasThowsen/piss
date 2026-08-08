@@ -1090,47 +1090,19 @@ module WorkingView = {
     | None => ""
     };
 
+  let pulseDetailImpl: (string, Js.nullable('a), string) => string = [%raw
+    "function(p, a, n) { if (p === 'running') { if (a != null && a.title) return a.title; return n + ' is working.'; } if (p === 'thinking') return n + ' is composing the next step.'; if (p === 'awaiting') return 'The harness is waiting for your permission decision.'; if (p === 'connecting') return 'Establishing the durable worker session.'; return n + ' is ready for your next prompt.'; }"
+  ];
   let pulseDetail:
     (string, option(timelineItem), string) => string =
-    (pulse, activeTool, agentName) => {
-      let agentWorking = agentName ++ " is working.";
-      let workingTitle = safeTitle(activeTool);
-      switch (pulse) {
-      | "running" =>
-        if (workingTitle !== "") {
-          workingTitle
-        } else {
-          agentWorking
-        }
-      | "thinking" => agentName ++ " is composing the next step."
-      | "awaiting" =>
-        "The harness is waiting for your permission decision."
-      | "connecting" => "Establishing the durable worker session."
-      | _ => agentName ++ " is ready for your next prompt."
-      };
-    };
+    (pulse, activeTool, agentName) =>
+      pulseDetailImpl(pulse, Js.Nullable.fromOption(activeTool), agentName);
 
+  let pulseNoteImpl: (string, Js.nullable('a)) => string = [%raw
+    "function(p, a) { if (p === 'running') { if (a != null) return 'Output streams live as the harness reports it.'; return 'The harness is preparing a tool call.'; } if (p === 'thinking') return 'Streaming tokens will appear in the Agent tab.'; if (p === 'awaiting') return 'Approve or reject from the Agent tab; nothing runs until you decide.'; if (p === 'connecting') return 'Events replay from the durable ledger on attach.'; return 'Send a prompt or queue a follow-up; the worker owns the turn end-to-end.'; }"
+  ];
   let pulseNote: (string, option(timelineItem)) => string =
-    (pulse, activeTool) => {
-      let preparing = "The harness is preparing a tool call.";
-      let liveNote = "Output streams live as the harness reports it.";
-      switch (pulse) {
-      | "running" =>
-        let isActive = safeTitle(activeTool) !== "";
-        if (isActive) {
-          liveNote
-        } else {
-          preparing
-        }
-      | "thinking" => "Streaming tokens will appear in the Agent tab."
-      | "awaiting" =>
-        "Approve or reject from the Agent tab; nothing runs until you decide."
-      | "connecting" =>
-        "Events replay from the durable ledger on attach."
-      | _ =>
-        "Send a prompt or queue a follow-up; the worker owns the turn end-to-end."
-      };
-    };
+    (pulse, activeTool) => pulseNoteImpl(pulse, Js.Nullable.fromOption(activeTool));
 
   let metaLine: sessionSnapshot => string =
     snapshot => {
