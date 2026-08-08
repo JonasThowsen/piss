@@ -491,29 +491,31 @@ let valid_json_content request =
       Ok ()
   | _ -> Error (`Unsupported_media_type, "content-type must be application/json")
 
+(* Glob-style pattern match where '*' matches any run of characters.
+   We translate the pattern to a regular expression (escape every
+   non-asterisk character, then turn '*' into '.*') and run it through
+   Str.regexp. The hand-rolled recursive matcher I tried first was
+   buggy in the non-empty consume branch and would loop forever or
+   fail to find a valid match. *)
 let origin_matches pattern origin =
-  let chars s =
-    let n = String.length s in
-    let rec aux i acc = if i >= n then acc else aux (i + 1) (s.[i] :: acc) in
-    List.rev (aux 0 [])
+  let regex_pattern =
+    let buf = Buffer.create (String.length pattern + 4) in
+    Buffer.add_string buf "^";
+    String.iter
+      (function
+        | '*' -> Buffer.add_string buf ".*"
+        | c ->
+            Buffer.add_char buf '\\';
+            Buffer.add_char buf c)
+      pattern;
+    Buffer.add_string buf "$";
+    Buffer.contents buf
   in
-  let rec star_match s t =
-    (* Standard glob-style '*' match where '*' matches any run of
-       characters, including the empty run. *)
-    match (s, t) with
-    | [], [] -> true
-    | [], _ -> false
-    | _ :: _, [] -> false
-    | '*' :: s_rest, t ->
-        (* '*' matches the empty run (drop it) or consumes one
-           character of t (drop from t). The third branch is
-           redundant but kept explicit so the recursion shape matches
-           the textbook formulation. *)
-        star_match s_rest t || star_match s t
-    | s_hd :: s_rest, t_hd :: t_rest ->
-        s_hd = t_hd && star_match s_rest t_rest
-  in
-  star_match (chars pattern) (chars origin)
+  let re = Str.regexp regex_pattern in
+  try
+    ignore (Str.search_forward re origin 0);
+    true
+  with Not_found -> false
 
 let valid_json_mutation ~dev_bypass ~allowed_origins request =
   if dev_bypass then Ok ()
