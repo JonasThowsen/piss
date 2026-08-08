@@ -23,33 +23,32 @@ let backdrop = [%cx {|
   width: 100%;
   height: 100vh;
   display: grid;
-  align-items: start;
-  justify-items: stretch;
-  padding: min(2vh, 12px) 0 12px 0;
-  background: #20231f6b;
+  place-items: center;
+  padding: 22px;
+  background: rgba(28, 31, 28, 0.5);
   @media (max-width: 760px) {
-    padding: 0;
+    padding: 12px;
   }
 |}];
 
 let popup = [%cx {|
   position: relative;
   width: min(580px, 100%);
-  align-self: start;
-  max-height: min(760px, calc(100vh - 24px));
+  max-height: min(760px, calc(100vh - 44px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 18px 48px 0 #181c18;
+  box-shadow: 0 18px 48px 0 #181c1820;
   overflow: hidden;
   @media (max-width: 760px) {
     width: 100%;
-    max-height: 100vh;
-    height: 100vh;
+    max-height: 100%;
+    height: 100%;
     border: 0;
     border-radius: 0;
+    box-shadow: none;
   }
 |}];
 
@@ -195,11 +194,13 @@ let make = (
   };
   /* The dynamic-viewport-height units (`dvh`) and CSS custom properties
    * are not accepted by the styled-ppx 0.61.0 ppx parser, so we have
-   * to size the backdrop and popup against `--app-height` via inline
-   * styles. `watchVisibleViewport` keeps that custom property in sync
-   * with `window.visualViewport.height`, which shrinks when the soft
+   * to size the backdrop against `--app-height` via inline styles.
+   * `watchVisibleViewport` keeps that custom property in sync with
+   * `window.visualViewport.height`, which shrinks when the soft
    * keyboard opens, so the modal resizes with the keyboard instead of
-   * shifting its content out of view. */
+   * shifting its content out of view. The popup keeps its CSS-driven
+   * max-height; the inline `maxHeight` only constrains it so it can
+   * never exceed the available viewport when the keyboard is open. */
   let backdropStyle =
     ReactDOM.Style.make(
       ~height="var(--app-height, 100dvh)",
@@ -208,7 +209,6 @@ let make = (
     );
   let popupStyle =
     ReactDOM.Style.make(
-      ~height="var(--app-height, 100dvh)",
       ~maxHeight="var(--app-height, 100dvh)",
       (),
     );
