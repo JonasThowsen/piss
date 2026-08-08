@@ -127,7 +127,7 @@ let
         if [[ -d "$opencode_user_config" ]]; then
           opencode_session_config="$session_state/config/opencode"
           mkdir -p "$opencode_session_config"
-          ${lib.getExe' pkgs.rsync} -a --update --delete \
+          ${lib.getExe' pkgs.rsync "rsync"} -a --update --delete \
             --exclude='.git' \
             "$opencode_user_config/" \
             "$opencode_session_config/"
