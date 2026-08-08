@@ -24,8 +24,8 @@ let security_headers =
     ("cache-control", "no-store");
     ( "content-security-policy",
       "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' \
-       data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; \
-       base-uri 'none'; form-action 'none'" );
+       data:; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+       frame-ancestors 'none'; base-uri 'none'; form-action 'none'" );
     ("referrer-policy", "no-referrer");
     ("x-content-type-options", "nosniff");
     ("x-frame-options", "DENY");
