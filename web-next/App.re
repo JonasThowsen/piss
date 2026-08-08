@@ -1221,7 +1221,13 @@ module App = {
 
     let snapshot = parseSnapshot(sessionJson);
     let status = snapshotStatus(snapshot);
-    let running = status == "running" || status == "requires_action";
+    /* A command is only "in flight" when status is "running". "requires_action"
+       means the harness is waiting for the user to answer a permission dialog
+       (or, when the harness has gone silent, it can mean a stale permission
+       request was never resolved). In either case no command is in flight, so
+       the composer should default to "prompt", not "steer". */
+    let running = status == "running";
+    let awaitingPermission = status == "requires_action";
     let workerUnavailable = status == "offline" || status == "connecting";
     let agentName = snapshotAgentName(snapshot);
     let timeline =
@@ -1259,7 +1265,7 @@ module App = {
     );
 
     let applyConfig = (option, value) =>
-      if (!running && !submitting) {
+      if (!running && !awaitingPermission && !submitting) {
         setSubmitting(_ => true);
         setConfigMenu(_ => "");
         let body =
@@ -2413,9 +2419,11 @@ module App = {
                     ? "Create or select a session"
                     : workerUnavailable
                         ? "Connecting to the session worker..."
-                        : running
-                            ? "Message Pi while it works..."
-                            : "Message agent / commands @ files"
+                        : awaitingPermission
+                            ? "Resolve the permission prompt above first…"
+                            : running
+                                ? "Message Pi while it works..."
+                                : "Message agent / commands @ files"
                 }
               />
               <div className="composer-footer">
@@ -2487,7 +2495,7 @@ module App = {
                        <button
                          className="composer-config-trigger model"
                          type_="button"
-                         disabled={running || submitting || workerUnavailable}
+                         disabled={running || awaitingPermission || submitting || workerUnavailable}
                          ariaExpanded={configMenu == "model"}
                          ariaLabel={"Model: " ++ configCurrentName(option)}
                          onClick={_ =>
@@ -2599,7 +2607,7 @@ module App = {
                        <button
                          className="composer-config-trigger thinking"
                          type_="button"
-                         disabled={running || submitting || workerUnavailable}
+                         disabled={running || awaitingPermission || submitting || workerUnavailable}
                          ariaExpanded={configMenu == "thinking"}
                          ariaLabel={"Thinking: " ++ configCurrentName(option)}
                          onClick={_ =>

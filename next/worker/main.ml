@@ -8,7 +8,19 @@ let max_frame_bytes = 16 * 1024 * 1024
    so the UI is not stuck on a silently silent harness. *)
 let dispatch_timeout_seconds = 600.
 
-type pending_permission = { raw_id : Yojson.Safe.t; params : Yojson.Safe.t }
+(* Same idea, but for permission requests the harness never resolves.
+   A stale permission keeps `status = Requires_action` even though no
+   command is in flight, which confuses the UI (it sees a "running"
+   session that actually cannot accept a prompt) and pins the worker
+   into a permanent steer-only state. Expire and reply with a
+   `cancelled` outcome so the harness can move on. *)
+let permission_timeout_seconds = 600.
+
+type pending_permission = {
+  raw_id : Yojson.Safe.t;
+  params : Yojson.Safe.t;
+  requested_at : float;
+}
 
 let write_json sink json =
   Eio.Flow.copy_string (Yojson.Safe.to_string json ^ "\n") sink
@@ -145,6 +157,40 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
                   ]))))
       stuck
   in
+  let expire_stuck_permissions () =
+    let now = Unix.gettimeofday () in
+    let stuck =
+      Hashtbl.fold
+        (fun request_id permission acc ->
+          if now -. permission.requested_at > permission_timeout_seconds then
+            (request_id, permission) :: acc
+          else acc)
+        pending_permissions []
+    in
+    List.iter
+      (fun (request_id, permission) ->
+        Hashtbl.remove pending_permissions request_id;
+        ignore
+          (Store.append_event store ~kind:"acp.permission.expired"
+             (`Assoc
+                [
+                  ("requestId", `String request_id);
+                  ("timeoutSeconds", `Float permission_timeout_seconds);
+                  ( "reason",
+                    `String
+                      "user did not respond to the permission request within \
+                       the configured budget; the worker is replying with \
+                       cancelled on the user's behalf" );
+                ]));
+        send
+          (Acp.response_with_id ~id:permission.raw_id
+             (`Assoc [ ("outcome", `Assoc [ ("outcome", `String "cancelled") ]) ])))
+      stuck;
+    if stuck <> [] then
+      status :=
+        if Hashtbl.length running_commands > 0 then Domain.Running
+        else Domain.Idle
+  in
   let fail_pending message =
     Hashtbl.iter
       (fun _ resolver ->
@@ -159,7 +205,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
   Eio.Fiber.fork ~sw (fun () ->
       while true do
         Eio.Time.sleep clock 5.0;
-        expire_stuck_commands ()
+        expire_stuck_commands ();
+        expire_stuck_permissions ()
       done);
   Eio.Fiber.fork ~sw (fun () ->
       try
@@ -193,7 +240,8 @@ let run ~env ~socket_path ~database_path ~session_id ~worker_id ~generation
               (Acp.Request
                  { id; method_ = "session/request_permission"; params }) ->
               let raw_id = Yojson.Safe.Util.member "id" json in
-              Hashtbl.replace pending_permissions id { raw_id; params };
+              Hashtbl.replace pending_permissions id
+                { raw_id; params; requested_at = Unix.gettimeofday () };
               status := Domain.Requires_action
           | Ok (Acp.Request { id; method_; _ }) ->
               send
