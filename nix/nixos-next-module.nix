@@ -475,15 +475,16 @@ in
 
       allowedOrigins = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [ "https://${cfg.tailscale.hostname}" ];
+        default = [ "https://${cfg.tailscale.hostname}.*.ts.net" ];
         defaultText = lib.literalExpression
-          "[ \"https://\''${cfg.tailscale.hostname}\" ]";
+          "[ \"https://\''${cfg.tailscale.hostname}.*.ts.net\" ]";
         description = ''
-          Origin URLs the control plane accepts on state-changing
-          requests in addition to the loopback URL. The Tailscale
-          Serve URL (`https://<tailscale.hostname>.<tailnet>.ts.net`) is
-          always included. Add more entries when routing through another
-          reverse proxy.
+          Origin URL patterns the control plane accepts on state-changing
+          requests in addition to the loopback URL. The default is a
+          glob-style pattern that matches every Tailscale Serve URL for
+          this node (`https://<tailscale.hostname>.<tailnet>.ts.net`)
+          without the module having to know the tailnet. Add more
+          entries when routing through another reverse proxy.
         '';
       };
 
@@ -648,9 +649,7 @@ in
           ++ lib.concatMap (origin: [
             "--allowed-origin"
             origin
-          ]) ([
-            "https://${cfg.tailscale.hostname}"
-          ] ++ cfg.tailscale.allowedOrigins)
+          ]) cfg.tailscale.allowedOrigins
         );
         Restart = "always";
         RestartSec = 2;

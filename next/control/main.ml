@@ -491,6 +491,27 @@ let valid_json_content request =
       Ok ()
   | _ -> Error (`Unsupported_media_type, "content-type must be application/json")
 
+let origin_matches pattern origin =
+  let chars s =
+    let n = String.length s in
+    let rec aux i acc = if i >= n then acc else aux (i + 1) (s.[i] :: acc) in
+    List.rev (aux 0 [])
+  in
+  let rec star_match s t =
+    (* Standard glob-style '*' match where '*' matches any run of
+       characters, including the empty run. *)
+    match (s, t) with
+    | [], [] -> true
+    | [], _ | _ :: _, [] -> false
+    | '*' :: s_rest, t ->
+        star_match s_rest t
+        || star_match s_rest t
+        || star_match s t
+    | s_hd :: s_rest, t_hd :: t_rest ->
+        s_hd = t_hd && star_match s_rest t_rest
+  in
+  star_match (chars pattern) (chars origin)
+
 let valid_json_mutation ~dev_bypass ~allowed_origins request =
   if dev_bypass then Ok ()
   else
@@ -503,11 +524,13 @@ let valid_json_mutation ~dev_bypass ~allowed_origins request =
         (* The browser sends an Origin header on every state-changing
            request. We accept it when the Origin matches either the
            Host the worker saw directly, the Host the proxy in front
-           of us advertised (X-Forwarded-Host), or any URL listed in
-           --allowed-origin (so a Tailscale Serve URL with the public
-           tailnet hostname is accepted even when the proxy does not
-           forward X-Forwarded-Host). *)
-        let accepted_origins =
+           of us advertised (X-Forwarded-Host), or any pattern in
+           --allowed-origin. The pattern syntax is glob-style ('*'
+           matches any run of characters), so the NixOS module can
+           pass 'https://piss-ocaml.*.ts.net' and accept every
+           Tailscale Serve URL for that hostname without knowing the
+           tailnet up front. *)
+        let accepted_patterns =
           let direct =
             match (host, forwarded_host) with
             | Some h, _ -> [ "https://" ^ h; "http://" ^ h ]
@@ -517,7 +540,10 @@ let valid_json_mutation ~dev_bypass ~allowed_origins request =
           direct @ List.rev allowed_origins
         in
         match origin with
-        | Some o when List.mem o accepted_origins -> Ok ()
+        | Some o
+          when List.exists (fun pattern -> origin_matches pattern o)
+                 accepted_patterns ->
+            Ok ()
         | _ -> Error (`Forbidden, "same-origin mutation required"))
 
 let safe_asset_path root resource =
