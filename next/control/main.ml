@@ -502,11 +502,14 @@ let origin_matches pattern origin =
        characters, including the empty run. *)
     match (s, t) with
     | [], [] -> true
-    | [], _ | _ :: _, [] -> false
+    | [], _ -> false
+    | _ :: _, [] -> false
     | '*' :: s_rest, t ->
-        star_match s_rest t
-        || star_match s_rest t
-        || star_match s t
+        (* '*' matches the empty run (drop it) or consumes one
+           character of t (drop from t). The third branch is
+           redundant but kept explicit so the recursion shape matches
+           the textbook formulation. *)
+        star_match s_rest t || star_match s t
     | s_hd :: s_rest, t_hd :: t_rest ->
         s_hd = t_hd && star_match s_rest t_rest
   in
