@@ -115,6 +115,23 @@ let
             ${lib.getExe' pkgs.coreutils "mv"} -f "$opencode_auth_tmp" "$opencode_auth_target"
           fi
         fi
+        # Sync the user's OpenCode config (permission rules, model
+        # defaults, MCP servers, etc.) into the per-session config dir.
+        # We override XDG_CONFIG_HOME to isolate sessions, but that
+        # would otherwise hide the user's own opencode.json and any
+        # files they added under ~/.config/opencode/ (skills, agents,
+        # commands, plugins). Copying the whole directory is the
+        # smallest way to honour updates the user makes to their
+        # global config while keeping per-session isolation.
+        opencode_user_config="$HOME/.config/opencode"
+        if [[ -d "$opencode_user_config" ]]; then
+          opencode_session_config="$session_state/config/opencode"
+          mkdir -p "$opencode_session_config"
+          ${lib.getExe' pkgs.rsync} -a --update --delete \
+            --exclude='.git' \
+            "$opencode_user_config/" \
+            "$opencode_session_config/"
+        fi
         command=${lib.escapeShellArg "${cfg.opencodePackage}/bin/opencode"}
         args=(--harness-arg acp)
         ;;
