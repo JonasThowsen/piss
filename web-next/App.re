@@ -1088,8 +1088,11 @@ module WorkingView = {
     (string, option(timelineItem), string) => string =
     (pulse, activeTool, agentName) =>
       switch (pulse, activeTool) {
-      | ("running", Some(item)) => itemTitle(item)
-      | ("running", None) => agentName ++ " is working."
+      | ("running", _) =>
+        switch (activeTool) {
+        | Some(item) => itemTitle(item)
+        | None => agentName ++ " is working."
+        }
       | ("thinking", _) => agentName ++ " is composing the next step."
       | ("awaiting", _) =>
         "The harness is waiting for your permission decision."
@@ -1100,9 +1103,11 @@ module WorkingView = {
   let pulseNote: (string, option(timelineItem)) => string =
     (pulse, activeTool) =>
       switch (pulse, activeTool) {
-      | ("running", Some(_)) =>
-        "Output streams live as the harness reports it."
-      | ("running", None) => "The harness is preparing a tool call."
+      | ("running", _) =>
+        switch (activeTool) {
+        | Some(_) => "Output streams live as the harness reports it."
+        | None => "The harness is preparing a tool call."
+        }
       | ("thinking", _) => "Streaming tokens will appear in the Agent tab."
       | ("awaiting", _) =>
         "Approve or reject from the Agent tab; nothing runs until you decide."
