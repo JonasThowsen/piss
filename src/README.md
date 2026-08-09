@@ -28,14 +28,23 @@ The mock ACP agent remains only as a deterministic integration-test fixture.
 ## Layout
 
 ```
+shared/                shared library (Piss_shared) — pure types and
+│                       protocol definitions that both the backend
+│                       and the browser shell consume. No IO.
+│   ├── domain.ml      session, worker, command, event, snapshot types
+│   ├── wire.ml        PISS wire protocol request/response variants
+│   ├── acp.ml         ACP envelope helpers
+│   └── workspace_files.ml  mention + resource types, validators,
+│                            file:// uri builder, MIME table
 src/
-├── lib/                 shared library (Piss_core)
-│   ├── domain.ml        pure types and JSON encoders
-│   ├── wire.ml          PISS wire protocol
-│   ├── acp.ml           ACP envelope helpers
-│   ├── workspace_files.ml   bounded workspace file mention search
-│   ├── registry.ml      durable session + workspace registry (SQLite)
-│   └── store.ml         durable worker command + event ledger (SQLite)
+├── lib/                 backend-only library (Piss_core)
+│   ├── workspace_io.ml bounded workspace file mention search,
+│                       resolve_resource (filesystem IO)
+│   ├── registry.ml    durable session + workspace registry (SQLite)
+│   ├── store.ml       durable worker command + event ledger (SQLite)
+│   └── piss_core.ml   umbrella that re-exports Piss_shared plus
+│                       aliases for the wrapped sibling modules so
+│                       every name is reachable as `Piss_core.X`
 ├── control/             piss-control (control plane)
 │   ├── config.ml        CLI parsing, the workers type
 │   ├── http.ml          HTTP request routing

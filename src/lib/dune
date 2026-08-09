@@ -1,5 +1,13 @@
+; Backend-only library: SQLite stores, filesystem access, the
+; workers registry. Pure types and protocol definitions are
+; provided by `piss.shared` and re-exported through the umbrella
+; `Piss_core` module in `piss_core.ml`.
+;
+; Anything that the browser shell (web/) needs must live in
+; `piss.shared` instead.
+
 (library
  (name piss_core)
  (public_name piss.core)
- (wrapped true)
- (libraries yojson sqlite3 unix))
+ (libraries piss.shared yojson sqlite3 unix)
+ (wrapped true))

@@ -553,7 +553,7 @@ let test_workspace_file_mentions () =
   Unix.symlink outside (Filename.concat root "escape.txt");
   Unix.mkfifo (Filename.concat root "special.pipe") 0o600;
   let mentions =
-    match Workspace_files.search ~root ~query:"App" with
+    match Workspace_io.search ~root ~query:"App" with
     | Ok mentions -> mentions
     | Error message -> Alcotest.fail message
   in
@@ -563,7 +563,7 @@ let test_workspace_file_mentions () =
        (fun (mention : Workspace_files.mention) -> mention.path)
        mentions);
   let all =
-    match Workspace_files.search ~root ~query:"" with
+    match Workspace_io.search ~root ~query:"" with
     | Ok mentions -> mentions
     | Error message -> Alcotest.fail message
   in
@@ -574,7 +574,7 @@ let test_workspace_file_mentions () =
          mention.path <> "escape.txt" && mention.path <> "special.pipe")
        all);
   let resource =
-    match Workspace_files.resolve_resource ~root "web/App.re" with
+    match Workspace_io.resolve_resource ~root "web/App.re" with
     | Ok resource -> resource
     | Error message -> Alcotest.fail message
   in
@@ -585,7 +585,7 @@ let test_workspace_file_mentions () =
     (String.starts_with ~prefix:"file:///" resource.uri);
   List.iter
     (fun path ->
-      match Workspace_files.resolve_resource ~root path with
+      match Workspace_io.resolve_resource ~root path with
       | Error _ -> ()
       | Ok _ -> Alcotest.failf "unsafe resource path was accepted: %s" path)
     [ "../outside.txt"; "escape.txt"; "special.pipe" ];

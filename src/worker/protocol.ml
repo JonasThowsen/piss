@@ -70,7 +70,7 @@ let resolve_resources ~workspace resources =
   List.fold_left
     (fun resolved (resource : Domain.resource_input) ->
       Result.bind resolved (fun resources ->
-          Workspace_files.resolve_resource ~root:workspace resource.path
+          Workspace_io.resolve_resource ~root:workspace resource.path
           |> Result.map (fun value -> value :: resources)))
     (Ok []) resources
   |> Result.map List.rev
@@ -218,7 +218,7 @@ let handle (state : t) request =
       let events = Store.list_recent_events state.store ~limit in
       Ok (`List (List.map Domain.event_to_yojson events))
   | Wire.File_search { query } ->
-      Workspace_files.search ~root:state.workspace ~query
+      Workspace_io.search ~root:state.workspace ~query
       |> Result.map (fun mentions ->
           `List (List.map Workspace_files.mention_to_yojson mentions))
   | Wire.Config_options -> Ok !(state.config_options)

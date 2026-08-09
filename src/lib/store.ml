@@ -1,4 +1,4 @@
-open Domain
+open Piss_shared.Domain
 
 exception Store_error of string
 

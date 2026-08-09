@@ -1,0 +1,15 @@
+; Pure type and protocol definitions shared between the PISS
+; backend (src/) and, eventually, the PISS browser shell (web/).
+;
+; Anything that depends on IO (filesystem access, SQLite stores,
+; network requests) belongs in src/lib/ as part of `piss.core`,
+; not here. This library compiles for the native OCaml target;
+; the browser shell will consume its types once the Melange toolchain
+; supports a shared JSON library (today Melange cannot link against
+; the nixpkgs yojson; that lands separately).
+
+(library
+ (name piss_shared)
+ (public_name piss.shared)
+ (libraries yojson)
+ (wrapped true))
