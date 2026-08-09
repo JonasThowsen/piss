@@ -58,7 +58,7 @@ let refresh_upgrade_lease (state : t) =
       state.upgrade_deadline := 0.;
       Store.set_metadata state.store "pending_worker_upgrade" "";
       ignore
-        (Store.append_event state.store ~kind:"worker.upgrade.expired"
+        (Store.append_event state.store ~kind:"worker.upgrade.expired" ~payload:
            (`Assoc [ ("targetGeneration", `String target) ]))
   | _ -> ()
 
@@ -191,7 +191,7 @@ let handle (state : t) request =
         state.persist_config_values ();
         Store.set_metadata state.store "pending_worker_upgrade" target;
         let event =
-          Store.append_event state.store ~kind:"worker.upgrade.prepared"
+          Store.append_event state.store ~kind:"worker.upgrade.prepared" ~payload:
             (`Assoc
                [
                  ("fromGeneration", `String state.args.generation);
@@ -240,7 +240,7 @@ let handle (state : t) request =
         state.harness_session_id := created;
         incr state.sessions_created_since_start;
         ignore
-          (Store.append_event state.store ~kind:"timeline.reset"
+          (Store.append_event state.store ~kind:"timeline.reset" ~payload:
              (`Assoc [ ("acpSessionId", `String created) ]));
         state.status := Domain.Idle;
         Ok (`Assoc [ ("sessionId", `String created) ]))
@@ -303,7 +303,7 @@ let handle (state : t) request =
         | _ -> ());
         state.persist_config_values ();
         ignore
-          (Store.append_event state.store ~kind:"acp.config_option.changed"
+          (Store.append_event state.store ~kind:"acp.config_option.changed" ~payload:
              response);
         Ok (`Assoc [ ("configOptions", !(state.config_options)) ])
   | Wire.Cancel ->
@@ -311,14 +311,14 @@ let handle (state : t) request =
         Error "the session has no active prompt"
       else (
         ignore
-          (Store.append_event state.store ~kind:"command.cancel.requested"
+          (Store.append_event state.store ~kind:"command.cancel.requested" ~payload:
              (`Assoc [ ("sessionId", `String !(state.harness_session_id)) ]));
         state.send
           (Acp.cancel_notification ~session_id:!(state.harness_session_id));
         Ok (`Assoc [ ("state", `String "cancelling") ]))
   | Wire.Peer_event { kind; request_id; peer_id; text } ->
       let event =
-        Store.append_event state.store ~kind
+        Store.append_event state.store ~kind ~payload:
           (`Assoc
              [
                ("requestId", `String request_id);
@@ -347,7 +347,7 @@ let handle (state : t) request =
                 | None -> `Assoc [ ("outcome", `String "cancelled") ]
               in
               ignore
-                (Store.append_event state.store ~kind:"acp.permission.resolved"
+                (Store.append_event state.store ~kind:"acp.permission.resolved" ~payload:
                    (`Assoc
                       [
                         ("requestId", `String request_id);

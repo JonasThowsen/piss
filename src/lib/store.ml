@@ -2,7 +2,13 @@ open Piss_shared.Domain
 
 exception Store_error of string
 
-type t = { db : Sqlite3.db; session_id : session_id; worker_id : worker_id }
+type t = {
+  db : Sqlite3.db;
+  session_id : session_id;
+  worker_id : worker_id;
+}
+
+let _ = fun (s : t) -> ignore (s.session_id, s.worker_id)
 type accepted_command = { state : command_state; duplicate : bool }
 
 let max_retained_events = 65_536
@@ -175,7 +181,7 @@ let compact_events_if_needed store =
       ("DELETE FROM events WHERE sequence IN (SELECT sequence FROM events \
         WHERE " ^ predicate ^ " ORDER BY sequence ASC LIMIT 1024)")
 
-let append_event store ~kind payload =
+let append_event store ~kind ~payload =
   compact_events_if_needed store;
   let count = row_count store "events" in
   let predicate = retention_predicate retained_event_kinds in
@@ -324,7 +330,7 @@ let accept_command ?(action = "prompt") ?(content = `List []) ?(images = [])
               expect_done "accept command" statement);
           ignore
             (append_event store ~kind:"command.accepted"
-               (`Assoc
+               ~payload:(`Assoc
                   [
                     ("commandId", `String command_id);
                     ("requestId", `String request_id);
@@ -372,7 +378,7 @@ let set_command_state store ~command_id state =
       | Received | Accepted | Dispatched | Acknowledged -> ());
       ignore
         (append_event store ~kind:"command.state"
-           (`Assoc
+           ~payload:(`Assoc
               [
                 ("commandId", `String command_id);
                 ("state", `String (command_state_to_string state));
@@ -409,7 +415,7 @@ let try_set_command_state_if_open store ~command_id state =
          ();
          ignore
            (append_event store ~kind:"command.state"
-              (`Assoc
+              ~payload:(`Assoc
                  [
                    ("commandId", `String command_id);
                    ("state", `String (command_state_to_string state));
@@ -456,7 +462,7 @@ let reconcile_incomplete_commands store =
           clear_command_content store ~command_id;
           ignore
             (append_event store ~kind:"command.reconciled"
-               (`Assoc
+               ~payload:(`Assoc
                   [
                     ("commandId", `String command_id);
                     ("state", `String "ambiguous");

@@ -314,7 +314,7 @@ let test_event_retention_preserves_durable_kinds () =
   List.iter
     (fun kind ->
       ignore
-        (Store.append_event store ~kind (`Assoc [ ("kind", `String kind) ])))
+        (Store.append_event store ~kind ~payload:(`Assoc [ ("kind", `String kind) ])))
     durable_kinds;
   let events = Store.list_recent_events store ~limit:65_536 in
   let kept_kinds =
@@ -330,13 +330,13 @@ let test_event_retention_first_sequence () =
   Alcotest.(check int64)
     "empty store first sequence is zero" 0L
     (Store.first_retained_sequence store);
-  let first = Store.append_event store ~kind:"first" (`String "one") in
+  let first = Store.append_event store ~kind:"first" ~payload:(`String "one") in
   Alcotest.(check int64)
     "single event first sequence equals its sequence" first.sequence
     (Store.first_retained_sequence store);
-  ignore (Store.append_event store ~kind:"second" (`String "two") |> fun _ -> ());
+  ignore (Store.append_event store ~kind:"second" ~payload:(`String "two") |> fun _ -> ());
   ignore
-    (Store.append_event store ~kind:"third" (`String "three") |> fun _ -> ());
+    (Store.append_event store ~kind:"third" ~payload:(`String "three") |> fun _ -> ());
   Alcotest.(check int64)
     "first sequence tracks the oldest live event" first.sequence
     (Store.first_retained_sequence store);
@@ -429,8 +429,8 @@ let test_restart_reconciliation () =
 
 let test_event_sequence () =
   with_store @@ fun store ->
-  let first = Store.append_event store ~kind:"first" (`String "one") in
-  let second = Store.append_event store ~kind:"second" (`String "two") in
+  let first = Store.append_event store ~kind:"first" ~payload:(`String "one") in
+  let second = Store.append_event store ~kind:"second" ~payload:(`String "two") in
   Alcotest.(check int64)
     "monotonic"
     Int64.(add first.sequence 1L)
