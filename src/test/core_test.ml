@@ -11,8 +11,8 @@ let with_store f =
         [ ""; "-wal"; "-shm" ])
     (fun () ->
       let store =
-        Store.open_ ~path ~session_id:(Domain.Session_id "session")
-          ~worker_id:(Domain.Worker_id "worker")
+        Store.open_ ~path ~session_id:(Domain.session_id "session")
+          ~worker_id:(Domain.worker_id "worker")
       in
       Fun.protect ~finally:(fun () -> Store.close store) (fun () -> f store))
 
@@ -268,8 +268,8 @@ let test_command_content_migration () =
         "legacy schema created" true (Sqlite3.Rc.is_success rc);
       Alcotest.(check bool) "legacy database closed" true (Sqlite3.db_close db);
       let store =
-        Store.open_ ~path ~session_id:(Domain.Session_id "session")
-          ~worker_id:(Domain.Worker_id "worker")
+        Store.open_ ~path ~session_id:(Domain.session_id "session")
+          ~worker_id:(Domain.worker_id "worker")
       in
       Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
       ignore
@@ -406,8 +406,8 @@ let test_restart_reconciliation () =
         [ ""; "-wal"; "-shm" ])
     (fun () ->
       let open_store () =
-        Store.open_ ~path ~session_id:(Domain.Session_id "session")
-          ~worker_id:(Domain.Worker_id "worker")
+        Store.open_ ~path ~session_id:(Domain.session_id "session")
+          ~worker_id:(Domain.worker_id "worker")
       in
       let first = open_store () in
       ignore

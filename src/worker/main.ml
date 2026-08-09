@@ -13,8 +13,8 @@ let run ~env (args : Config.args) =
     failwith "authorized workspace is not a directory";
   let store =
     Store.open_ ~path:args.database_path
-      ~session_id:(Domain.Session_id args.session_id)
-      ~worker_id:(Domain.Worker_id args.worker_id)
+      ~session_id:(Domain.session_id args.session_id)
+      ~worker_id:(Domain.worker_id args.worker_id)
   in
   let reconciled_commands = Store.reconcile_incomplete_commands store in
   if reconciled_commands <> [] then

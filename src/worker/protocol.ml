@@ -39,9 +39,9 @@ let worker_snapshot (state : t) =
     Store.set_metadata state.store "retention_pruned" "true";
   Domain.
     {
-      session_id = Session_id state.args.session_id;
-      worker_id = Worker_id state.args.worker_id;
-      runtime_generation = Runtime_generation 1;
+      session_id  = Domain.session_id state.args.session_id;
+      worker_id  = Domain.worker_id state.args.worker_id;
+      runtime_generation  = Domain.runtime_generation 1;
       worker_pid = Unix.getpid ();
       harness_pid = None;
       agent_name = state.agent_name;
