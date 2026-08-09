@@ -7,7 +7,7 @@ type state =
   | No_sessions
   | Awaiting_selection
   | Loading of string
-  | Loaded of string * Event_history.entry list
+  | Loaded of string * Event_buffer.t
   | Failed of string * string
 
 let class_ name = Vdom.Attr.class_ name
@@ -38,51 +38,59 @@ let message ~key ~class_name ~role ~status body =
 
 let render_entry = function
   | Event_history.User { sequence; command_id; text = body } ->
-      message
-        ~key:(Int64.to_string sequence ^ "-user")
-        ~class_name:"timeline-user" ~role:"You" ~status:command_id body
+      Some
+        (message
+           ~key:(Int64.to_string sequence ^ "-user")
+           ~class_name:"timeline-user" ~role:"You" ~status:command_id body)
   | Agent { sequence; message_id; text = body } ->
-      message
-        ~key:(Int64.to_string sequence ^ "-agent")
-        ~class_name:"timeline-agent" ~role:"Agent" ~status:message_id body
+      Some
+        (message
+           ~key:(Int64.to_string sequence ^ "-agent")
+           ~class_name:"timeline-agent" ~role:"Agent" ~status:message_id body)
   | Tool { sequence; tool_call_id; title; detail; status } ->
-      Vdom.Node.create "article"
-        ~key:(Int64.to_string sequence ^ "-tool")
-        ~attrs:[ class_ "timeline-item timeline-tool" ]
-        [
-          Vdom.Node.create "details"
-            ~attrs:[ class_ "tool-disclosure" ]
-            [
-              Vdom.Node.create "summary"
-                [
-                  Vdom.Node.span
-                    ~attrs:[ class_ "tool-disclosure-icon" ]
-                    [ text ">" ];
-                  Vdom.Node.strong
-                    ~attrs:[ class_ "message-role" ]
-                    [ text title ];
-                  Vdom.Node.span
-                    ~attrs:[ class_ "message-status" ]
-                    [ text status ];
-                ];
-              Vdom.Node.div
-                ~attrs:[ class_ "timeline-contents" ]
-                [
-                  Vdom.Node.p
-                    ~attrs:[ class_ "message-status" ]
-                    [ text tool_call_id ];
-                  Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text detail ];
-                ];
-            ];
-        ]
+      Some
+        (Vdom.Node.create "article"
+           ~key:(Int64.to_string sequence ^ "-tool")
+           ~attrs:[ class_ "timeline-item timeline-tool" ]
+           [
+             Vdom.Node.create "details"
+               ~attrs:[ class_ "tool-disclosure" ]
+               [
+                 Vdom.Node.create "summary"
+                   [
+                     Vdom.Node.span
+                       ~attrs:[ class_ "tool-disclosure-icon" ]
+                       [ text ">" ];
+                     Vdom.Node.strong
+                       ~attrs:[ class_ "message-role" ]
+                       [ text title ];
+                     Vdom.Node.span
+                       ~attrs:[ class_ "message-status" ]
+                       [ text status ];
+                   ];
+                 Vdom.Node.div
+                   ~attrs:[ class_ "timeline-contents" ]
+                   [
+                     Vdom.Node.p
+                       ~attrs:[ class_ "message-status" ]
+                       [ text tool_call_id ];
+                     Vdom.Node.p
+                       ~attrs:[ class_ "message-body" ]
+                       [ text detail ];
+                   ];
+               ];
+           ])
   | Command_state { sequence; command_id; state } ->
       let state = Event_history.command_state_to_string state in
-      message
-        ~key:(Int64.to_string sequence ^ "-command")
-        ~class_name:"timeline-command" ~role:"Command"
-        ~status:("state / " ^ state) command_id
+      Some
+        (message
+           ~key:(Int64.to_string sequence ^ "-command")
+           ~class_name:"timeline-command" ~role:"Command"
+           ~status:("state / " ^ state) command_id)
+  | Permission_requested _ | Permission_resolved _ | Permission_cancelled _ ->
+      None
 
-let timeline state selected_id =
+let timeline state selected_id ~deciding_permissions ~on_permission =
   let content =
     match (state, selected_id) with
     | Sessions_loading, _ ->
@@ -109,14 +117,17 @@ let timeline state selected_id =
         ]
     | Failed (_, message), _ ->
         [ empty_state "!" "Could not load history." message ]
-    | Loaded (_, []), _ ->
+    | Loaded (_, buffer), _ when List.is_empty (Event_buffer.entries buffer) ->
         [
           empty_state "0" "No events yet."
             "The worker has not published a visible timeline event.";
         ]
-    | Loaded (history_id, entries), Some selected_id
+    | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
-        List.map entries ~f:render_entry
+        let entries = Event_buffer.entries buffer in
+        List.filter_map entries ~f:render_entry
+        @ Permission_view.render_pending entries ~deciding:deciding_permissions
+            ~on_decide:on_permission
     | Loaded _, _ ->
         [
           empty_state "..." "Loading recent events..."
@@ -174,7 +185,8 @@ let composer ~prompt ~submitting ~notice ~on_prompt ~on_submit =
         ];
     ]
 
-let render ~session ~state ~prompt ~submitting ~notice ~on_prompt ~on_submit =
+let render ~session ~state ~prompt ~submitting ~notice ~deciding_permissions
+    ~on_prompt ~on_submit ~on_permission =
   let selected_id =
     Option.map session ~f:(fun (session : Control_plane.Session.t) ->
         session.id)
@@ -200,7 +212,7 @@ let render ~session ~state ~prompt ~submitting ~notice ~on_prompt ~on_submit =
          ];
        Vdom.Node.div
          ~attrs:[ class_ "timeline-wrap" ]
-         [ timeline state selected_id ];
+         [ timeline state selected_id ~deciding_permissions ~on_permission ];
      ]
     @
     match session with

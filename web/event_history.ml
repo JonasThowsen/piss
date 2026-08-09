@@ -10,6 +10,25 @@ type command_state =
   | Ambiguous
   | Rejected
 
+type permission_option = { option_id : string; name : string; kind : string }
+
+type permission_tool = {
+  tool_call_id : string;
+  title : string;
+  kind : string;
+  status : string;
+  raw_input : Yojson.Safe.t option;
+}
+
+type permission_request = {
+  request_id : string;
+  session_id : string;
+  tool : permission_tool;
+  options : permission_option list;
+}
+
+type pending_permission = { sequence : int64; request : permission_request }
+
 type entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
@@ -25,6 +44,15 @@ type entry =
       command_id : string;
       state : command_state;
     }
+  | Permission_requested of { sequence : int64; request : permission_request }
+  | Permission_resolved of {
+      sequence : int64;
+      request_id : string;
+      option_id : string option;
+    }
+  | Permission_cancelled of { sequence : int64; request_id : string }
+
+type event = { sequence : int64; kind : string; entry : entry option }
 
 let ( let* ) result f = Result.bind result ~f
 let error path message = Error (path ^ " " ^ message)
@@ -74,6 +102,15 @@ let number path = function
 let list path = function
   | `List values -> Ok values
   | _ -> error path "must be an array"
+
+let id_string path = function
+  | `String value when not (String.is_empty value) -> Ok value
+  | `Int value -> Ok (Int.to_string value)
+  | `Intlit value -> (
+      match Int64.of_string_opt value with
+      | Some _ -> Ok value
+      | None -> error path "must be a string or integer")
+  | _ -> error path "must be a non-empty string or integer"
 
 let optional_field fields path name decode =
   match List.Assoc.find fields ~equal:String.equal name with
@@ -251,12 +288,86 @@ let decode_tool_update path sequence payload =
             status = Option.value status ~default:"in_progress";
           }))
 
-let decode_event index json =
+let decode_permission_option path json =
+  let* fields = assoc path json in
+  let* option_id = field_as fields path "optionId" nonempty_string in
+  let* name = field_as fields path "name" nonempty_string in
+  let* kind = field_as fields path "kind" nonempty_string in
+  Ok { option_id; name; kind }
+
+let decode_permission_tool path json =
+  let* fields = assoc path json in
+  let* tool_call_id = field_as fields path "toolCallId" nonempty_string in
+  let* title = field_as fields path "title" nonempty_string in
+  let* kind = field_as fields path "kind" nonempty_string in
+  let* status = field_as fields path "status" tool_status in
+  let raw_input = List.Assoc.find fields ~equal:String.equal "rawInput" in
+  Ok { tool_call_id; title; kind; status; raw_input }
+
+let decode_permission_requested path sequence payload =
+  let* fields = assoc path payload in
+  let* jsonrpc = field_as fields path "jsonrpc" string in
+  if not (String.equal jsonrpc "2.0") then
+    error (path ^ ".jsonrpc") "must be 2.0"
+  else
+    let* request_id = field_as fields path "id" id_string in
+    let* method_ = field_as fields path "method" string in
+    if not (String.equal method_ "session/request_permission") then
+      error (path ^ ".method") "must be session/request_permission"
+    else
+      let* params = field_as fields path "params" assoc in
+      let params_path = path ^ ".params" in
+      let* session_id =
+        field_as params params_path "sessionId" nonempty_string
+      in
+      let* tool_json = field params params_path "toolCall" in
+      let* tool =
+        decode_permission_tool (params_path ^ ".toolCall") tool_json
+      in
+      let* option_values = field_as params params_path "options" list in
+      let* options =
+        option_values
+        |> List.mapi ~f:(fun index option ->
+            decode_permission_option
+              (Printf.sprintf "%s.options[%d]" params_path index)
+              option)
+        |> Result.all
+      in
+      if List.is_empty options then
+        error (params_path ^ ".options") "must not be empty"
+      else
+        Ok
+          (Some
+             (Permission_requested
+                {
+                  sequence;
+                  request = { request_id; session_id; tool; options };
+                }))
+
+let decode_permission_resolved path sequence payload =
+  let* fields = assoc path payload in
+  let* request_id = field_as fields path "requestId" nonempty_string in
+  let* option_id =
+    match List.Assoc.find fields ~equal:String.equal "optionId" with
+    | Some `Null -> Ok None
+    | Some json ->
+        Result.map (nonempty_string (path ^ ".optionId") json) ~f:Option.some
+    | None -> error (path ^ ".optionId") "is required"
+  in
+  Ok (Some (Permission_resolved { sequence; request_id; option_id }))
+
+let decode_permission_cancelled path sequence payload =
+  let* fields = assoc path payload in
+  let* request_id = field_as fields path "requestId" nonempty_string in
+  Ok (Some (Permission_cancelled { sequence; request_id }))
+
+let decode_event_json index json =
   let path = Printf.sprintf "events[%d]" index in
   let* fields = assoc path json in
   let* sequence = field_as fields path "sequence" int64 in
   let* kind = field_as fields path "kind" nonempty_string in
   let* payload = field fields path "payload" in
+  let* _payload_fields = assoc (path ^ ".payload") payload in
   let* _created_at = field_as fields path "createdAt" number in
   let payload_path = path ^ ".payload" in
   let* entry =
@@ -272,28 +383,48 @@ let decode_event index json =
           `Agent
     | "acp.tool_call" -> decode_tool_call payload_path sequence payload
     | "acp.tool_call_update" -> decode_tool_update payload_path sequence payload
+    | "acp.permission.requested" ->
+        decode_permission_requested payload_path sequence payload
+    | "acp.permission.resolved" ->
+        decode_permission_resolved payload_path sequence payload
+    | "acp.permission.cancelled" ->
+        decode_permission_cancelled payload_path sequence payload
     | _ -> Ok None
   in
-  Ok (sequence, entry)
+  if Int64.(sequence <= 0L) then error (path ^ ".sequence") "must be positive"
+  else Ok { sequence; kind; entry }
 
-let decode body =
+let validate_order events =
+  let rec loop previous = function
+    | [] -> Ok events
+    | event :: rest ->
+        if Int64.(event.sequence <= previous) then
+          Error "event sequences must be strictly increasing"
+        else loop event.sequence rest
+  in
+  loop Int64.min_value events
+
+let decode_events body =
   match Result.try_with (fun () -> Yojson.Safe.from_string body) with
   | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
   | Ok (`List events) ->
-      let* decoded = events |> List.mapi ~f:decode_event |> Result.all in
-      let rec validate_order previous entries = function
-        | [] -> Ok (List.rev entries)
-        | (sequence, entry) :: rest ->
-            if Int64.(sequence <= previous) then
-              Error "event sequences must be strictly increasing"
-            else
-              validate_order sequence
-                (Option.value_map entry ~default:entries ~f:(fun value ->
-                     value :: entries))
-                rest
-      in
-      validate_order Int64.min_value [] decoded
+      let* decoded = events |> List.mapi ~f:decode_event_json |> Result.all in
+      validate_order decoded
   | Ok _ -> Error "response must be a JSON array"
+
+let decode_event body =
+  match Result.try_with (fun () -> Yojson.Safe.from_string body) with
+  | Error exn -> Error ("event is not valid JSON: " ^ Exn.to_string exn)
+  | Ok json -> decode_event_json 0 json
+
+let project events = List.filter_map events ~f:(fun event -> event.entry)
+let decode body = Result.map (decode_events body) ~f:project
+let sequence event = event.sequence
+let kind event = event.kind
+
+let refreshes_session event =
+  String.equal event.kind "command.state"
+  || String.is_prefix event.kind ~prefix:"acp.permission."
 
 let command_is_terminal ~command_id entries =
   List.exists entries ~f:(function
@@ -303,3 +434,17 @@ let command_is_terminal ~command_id entries =
         | Completed | Cancelled | Ambiguous | Rejected -> true
         | Received | Accepted | Dispatched | Acknowledged -> false)
     | _ -> false)
+
+let pending_permissions entries =
+  let requests = Hashtbl.create (module String) in
+  List.iter entries ~f:(function
+    | Permission_requested { sequence; request } ->
+        Hashtbl.set requests ~key:request.request_id ~data:{ sequence; request }
+    | Permission_resolved { request_id; _ }
+    | Permission_cancelled { request_id; _ } ->
+        Hashtbl.remove requests request_id
+    | User _ | Agent _ | Tool _ | Command_state _ -> ());
+  Hashtbl.data requests
+  |> List.sort
+       ~compare:(fun (left : pending_permission) (right : pending_permission) ->
+         Int64.compare left.sequence right.sequence)

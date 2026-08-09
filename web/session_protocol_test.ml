@@ -71,6 +71,40 @@ let history =
   ]
   |}
 
+let permission_requested =
+  {|
+    {
+      "sequence": 5,
+      "kind": "acp.permission.requested",
+      "payload": {
+        "jsonrpc": "2.0",
+        "id": "permission-web-command",
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "acp-session",
+          "toolCall": {
+            "toolCallId": "tool-web-command",
+            "title": "Allow the stability proof",
+            "kind": "execute",
+            "status": "pending",
+            "rawInput": {"command": "mock-proof"}
+          },
+          "options": [
+            {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+          ]
+        }
+      },
+      "createdAt": 1723123460
+    }
+  |}
+
+let permission_resolved =
+  {|{"sequence":6,"kind":"acp.permission.resolved","payload":{"requestId":"permission-web-command","optionId":"allow-once"},"createdAt":1723123461}|}
+
+let permission_cancelled =
+  {|{"sequence":7,"kind":"acp.permission.cancelled","payload":{"requestId":"permission-web-command"},"createdAt":1723123462}|}
+
 let () =
   let entries = decode history in
   (match entries with
@@ -113,6 +147,84 @@ let () =
   (match Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " with
   | Error _ -> ()
   | Ok _ -> fail "blank prompt was accepted");
+  let requested =
+    match Event_history.decode_event permission_requested with
+    | Ok event -> event
+    | Error message -> fail message
+  in
+  let resolved =
+    match Event_history.decode_event permission_resolved with
+    | Ok event -> event
+    | Error message -> fail message
+  in
+  let cancelled =
+    match Event_history.decode_event permission_cancelled with
+    | Ok event -> event
+    | Error message -> fail message
+  in
+  (match
+     Event_history.pending_permissions (Event_history.project [ requested ])
+   with
+  | [
+   { request = { request_id = "permission-web-command"; tool; options; _ }; _ };
+  ]
+    when String.equal tool.tool_call_id "tool-web-command"
+         && List.equal String.equal
+              (List.map options ~f:(fun option -> option.option_id))
+              [ "allow-once"; "reject-once" ] ->
+      ()
+  | _ -> fail "permission request fixture was not projected exactly");
+  if
+    not
+      (List.is_empty
+         (Event_history.pending_permissions
+            (Event_history.project [ requested; resolved ])))
+  then fail "resolved permission remained pending";
+  (match Event_history.project [ resolved ] with
+  | [ Permission_resolved { option_id = Some "allow-once"; _ } ] -> ()
+  | _ -> fail "resolved permission fixture lost its selected option");
+  (match Event_history.project [ cancelled ] with
+  | [ Permission_cancelled { request_id = "permission-web-command"; _ } ] -> ()
+  | _ -> fail "cancelled permission fixture was not decoded");
+  if
+    not
+      (List.is_empty
+         (Event_history.pending_permissions
+            (Event_history.project [ requested; cancelled ])))
+  then fail "cancelled permission remained pending";
+  let malformed_permission =
+    String.substr_replace_first permission_requested
+      ~pattern:", \"kind\": \"allow_once\"" ~with_:""
+  in
+  (match Event_history.decode_event malformed_permission with
+  | Error message when String.is_substring message ~substring:"kind" -> ()
+  | _ -> fail "permission option without a kind was accepted");
+  let decision =
+    Permission_decision.to_yojson ~request_id:"permission-web-command"
+      ~option_id:(Some "allow-once")
+  in
+  if
+    not
+      (Yojson.Safe.equal decision
+         (`Assoc
+            [
+              ("requestId", `String "permission-web-command");
+              ("optionId", `String "allow-once");
+            ]))
+  then fail "selected permission decision JSON was incorrect";
+  let cancelled_decision =
+    Permission_decision.to_yojson ~request_id:"permission-web-command"
+      ~option_id:None
+  in
+  if
+    not
+      (Yojson.Safe.equal cancelled_decision
+         (`Assoc
+            [
+              ("requestId", `String "permission-web-command");
+              ("optionId", `Null);
+            ]))
+  then fail "cancel permission decision JSON was incorrect";
   (match
      Request_target.same_origin ~path:"/api/v2/events"
        ~query:[ ("recent", "500"); ("session", "session/a & b") ]
@@ -122,6 +234,16 @@ let () =
            "/api/v2/events?recent=500&session=session%2Fa%20%26%20b" ->
       ()
   | Ok target -> fail ("unexpected encoded target: " ^ target)
+  | Error message -> fail message);
+  (match
+     Request_target.same_origin ~path:"/api/v2/event-stream"
+       ~query:[ ("session", "session/a & b"); ("after", "42") ]
+   with
+  | Ok target
+    when String.equal target
+           "/api/v2/event-stream?session=session%2Fa%20%26%20b&after=42" ->
+      ()
+  | Ok target -> fail ("unexpected stream target: " ^ target)
   | Error message -> fail message);
   match Request_target.same_origin ~path:"//example.test/events" ~query:[] with
   | Error _ -> ()

@@ -1,20 +1,40 @@
 (library
  (name control_plane_domain)
  (wrapped false)
- (modules control_plane event_history prompt_command request_target)
+ (modules
+  control_plane
+  event_buffer
+  event_history
+  permission_decision
+  prompt_command
+  request_target)
  (libraries core uri yojson))
 
 (executable
  (name main)
- (modules browser_http command_id main session_rail timeline_view)
+ (modules
+  browser_http
+  command_id
+  event_stream
+  main
+  permission_view
+  session_rail
+  timeline_view)
  (modes js)
- (libraries async_js bonsai.web control_plane_domain)
+ (libraries async_js bonsai.web control_plane_domain js_of_ocaml)
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
 
 (test
  (name control_plane_test)
  (modules control_plane_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name event_buffer_test)
+ (modules event_buffer_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

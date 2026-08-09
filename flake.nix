@@ -57,9 +57,18 @@
                 ./web/control_plane.ml
                 ./web/control_plane.mli
                 ./web/control_plane_test.ml
+                ./web/event_buffer.ml
+                ./web/event_buffer.mli
+                ./web/event_buffer_test.ml
                 ./web/event_history.ml
                 ./web/event_history.mli
+                ./web/event_stream.ml
+                ./web/event_stream.mli
                 ./web/main.ml
+                ./web/permission_decision.ml
+                ./web/permission_decision.mli
+                ./web/permission_view.ml
+                ./web/permission_view.mli
                 ./web/prompt_command.ml
                 ./web/prompt_command.mli
                 ./web/request_target.ml
