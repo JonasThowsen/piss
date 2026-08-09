@@ -1,10 +1,25 @@
 {
   description = "PISS - Pi sin sidecar";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    pi-acp-src = {
+      url = "github:svkozak/pi-acp/d1cffc047ab37a096ee70ca39cfc1de463db8d12";
+      flake = false;
+    };
+    opencode-src = {
+      url = "github:anomalyco/opencode/f51665191af10f1e4e0512af3708e9c2c58ecb8d";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      pi-acp-src,
+      opencode-src,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -207,6 +222,43 @@
         in
         {
           inherit piss;
+          opencode = opencode-src.packages.${system}.opencode;
+          pi-acp = pkgs.buildNpmPackage {
+            pname = "pi-acp";
+            version = "0.0.33";
+            src = pi-acp-src;
+            patches = [
+              ./nix/pi-acp-delivery.patch
+              ./nix/pi-acp-mcp.patch
+            ];
+            npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            preBuild = "npm run typecheck";
+            npmBuildScript = "build";
+            doCheck = true;
+            checkPhase = ''
+              runHook preCheck
+              npm test
+              runHook postCheck
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin $out/lib/pi-acp
+              cp dist/index.js package.json $out/lib/pi-acp/
+              npm prune --omit=dev --offline
+              cp -r node_modules $out/lib/pi-acp/node_modules
+              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/pi-acp \
+                --add-flags $out/lib/pi-acp/index.js
+              runHook postInstall
+            '';
+            meta = {
+              description = "ACP adapter for the Pi coding agent";
+              homepage = "https://github.com/svkozak/pi-acp";
+              license = nixpkgs.lib.licenses.mit;
+              mainProgram = "pi-acp";
+              platforms = systems;
+            };
+          };
           piss-web = pissWeb;
           default = piss;
         }
@@ -220,9 +272,61 @@
         };
       });
 
-      checks = forAllSystems (system: {
-        inherit (self.packages.${system}) piss piss-web;
-      });
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          moduleEvaluation = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              {
+                services.piss = {
+                  enable = true;
+                  allowedUsers = [ "owner@example.com" ];
+                  harness = "mock";
+                  piCommand = nixpkgs.lib.getExe pkgs.pi-coding-agent;
+                  workspaces.default = {
+                    name = "PISS";
+                    path = "/var/empty";
+                  };
+                };
+              }
+            ];
+          };
+        in
+        {
+          inherit (self.packages.${system}) piss piss-web pi-acp;
+          nixos-module =
+            assert moduleEvaluation.config.services.piss.port == 4318;
+            assert
+              moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
+              == "on-failure";
+            assert builtins.elem "-%h/.pi"
+              moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ReadWritePaths;
+            assert nixpkgs.lib.hasInfix "--default-harness mock"
+              moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
+            assert
+              moduleEvaluation.config.systemd.user.timers.piss-ocaml-worker-upgrade.timerConfig.OnUnitActiveSec
+              == "1min";
+            let
+              workerRunner = builtins.head (
+                nixpkgs.lib.splitString " "
+                  moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ExecStart
+              );
+              upgradeRunner =
+                moduleEvaluation.config.systemd.user.services.piss-ocaml-worker-upgrade.serviceConfig.ExecStart;
+            in
+            pkgs.runCommand "piss-nixos-module-check" { } ''
+              grep -F -- 'STATE_DIRECTORY' ${workerRunner}
+              grep -F -- 'for suffix in "" -wal -shm' ${workerRunner}
+              grep -F -- '--harness-arg acp' ${workerRunner}
+              grep -F -- 'prepare_upgrade' ${upgradeRunner}
+              grep -F -- 'systemctl --user restart' ${upgradeRunner}
+              touch $out
+            '';
+        }
+      );
 
       devShells = forAllSystems (
         system:
@@ -261,5 +365,6 @@
       );
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+      nixosModules.default = import ./nix/nixos-module.nix self;
     };
 }
