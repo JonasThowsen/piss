@@ -6,6 +6,9 @@ type history_action =
   | Start of string
   | Initial of string * Event_history.event list
   | Append of string * Event_history.event
+  | Begin_older of string
+  | Prepend_older of string * Event_history.event list
+  | Older_failed of string * string
   | History_failed of string * string
 
 type deciding_action = Add of string | Remove of string | Reset
@@ -87,6 +90,27 @@ let apply_history _ state = function
       | Timeline_view.Loaded (current, buffer)
         when String.equal current session_id ->
           Loaded (current, Event_buffer.add buffer event)
+      | _ -> state)
+  | Begin_older session_id -> (
+      match state with
+      | Timeline_view.Loaded (current, buffer)
+        when String.equal current session_id ->
+          Loaded (current, Event_buffer.begin_page buffer)
+      | _ -> state)
+  | Prepend_older (session_id, events) -> (
+      match state with
+      | Timeline_view.Loaded (current, buffer)
+        when String.equal current session_id -> (
+          match Event_buffer.prepend buffer events with
+          | Ok buffer -> Loaded (current, buffer)
+          | Error message ->
+              Loaded (current, Event_buffer.fail_page buffer message))
+      | _ -> state)
+  | Older_failed (session_id, message) -> (
+      match state with
+      | Timeline_view.Loaded (current, buffer)
+        when String.equal current session_id ->
+          Loaded (current, Event_buffer.fail_page buffer message)
       | _ -> state)
   | History_failed (session_id, message) -> (
       match state with

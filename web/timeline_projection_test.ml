@@ -26,7 +26,7 @@ let () =
             input = None;
             output = Some "partial";
             status = None;
-            artifacts = [ "terminal: proof" ];
+            artifacts = [ Terminal { terminal_id = "proof"; text = None } ];
           };
         Tool_call_update
           {
@@ -36,7 +36,11 @@ let () =
             input = None;
             output = Some "2 tests passed";
             status = Some "completed";
-            artifacts = [ "terminal: proof"; "location: proof.txt" ];
+            artifacts =
+              [
+                Terminal { terminal_id = "proof"; text = None };
+                Location { path = "proof.txt"; line = None; text = None };
+              ];
           };
       ]
   in
@@ -51,9 +55,25 @@ let () =
        input = "dune runtest";
        output = "partial\n2 tests passed";
        status = "completed";
-       artifacts = [ "terminal: proof"; "location: proof.txt" ];
+       artifacts =
+         [
+           Terminal { terminal_id = "proof"; text = None };
+           Location { path = "proof.txt"; line = None; text = None };
+         ];
      };
   ] ->
-      ()
+      let copied =
+        tool_text ~input:"dune runtest" ~output:"partial\n2 tests passed"
+          ~artifacts:
+            [
+              Terminal { terminal_id = "proof"; text = None };
+              Location { path = "proof.txt"; line = None; text = None };
+            ]
+      in
+      if
+        not
+          (String.is_substring copied ~substring:"terminal: proof"
+          && String.is_substring copied ~substring:"location: proof.txt")
+      then fail "full tool copy omitted typed artifacts"
   | _ ->
       fail "timeline projection did not aggregate stable message and tool rows"

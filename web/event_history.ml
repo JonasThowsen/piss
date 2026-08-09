@@ -31,6 +31,8 @@ type permission_request = Timeline_projection.permission_request = {
   options : permission_option list;
 }
 
+type artifact = Timeline_projection.artifact
+
 type entry = Timeline_projection.entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
@@ -41,7 +43,7 @@ type entry = Timeline_projection.entry =
       input : string;
       output : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state of {
       sequence : int64;

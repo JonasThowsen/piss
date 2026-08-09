@@ -36,7 +36,12 @@ let render_request ~deciding ~on_decide
   in
   Vdom.Node.create "article"
     ~key:(Int64.to_string sequence ^ "-permission")
-    ~attrs:[ class_ "timeline-item timeline-permission" ]
+    ~attrs:
+      [
+        class_ "timeline-item timeline-permission";
+        Vdom.Attr.create "data-timeline-key"
+          (Int64.to_string sequence ^ "-permission");
+      ]
     [
       Vdom.Node.div
         ~attrs:[ class_ "message-meta" ]

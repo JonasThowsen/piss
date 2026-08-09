@@ -10,6 +10,7 @@
   global_search
   image_attachment
   image_batch
+  markdown_syntax
   mention_picker
   composer_policy
   outbox_projection
@@ -28,6 +29,7 @@
  (modules
   app_header
   app_state
+  artifact_view
   browser_http
   clipboard
   command_id
@@ -36,9 +38,11 @@
   config_controls
   details_view
   event_stream
+  history_loader
   image_attachments
   mention_request
   main
+  markdown_view
   modal
   mobile_shell
   outbox_view
@@ -57,6 +61,13 @@
   (pps ppx_jane bonsai.ppx_bonsai)))
 
 (test
+ (name acp_content_test)
+ (modules acp_content_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
  (name composer_domain_test)
  (modules composer_domain_test)
  (libraries core control_plane_domain)
@@ -73,6 +84,13 @@
 (test
  (name event_buffer_test)
  (modules event_buffer_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name markdown_syntax_test)
+ (modules markdown_syntax_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

@@ -11,6 +11,7 @@ let listener : Js.Unsafe.any option ref = ref None
 let window_listener : Js.Unsafe.any option ref = ref None
 let following = ref true
 let pinning = ref false
+let anchoring = ref false
 let previous_top = ref 0
 let previous_client_height = ref 0
 
@@ -102,7 +103,7 @@ let rec pin () =
   | Some _ -> update_button ()
 
 and schedule () =
-  if Option.is_none !frame then (
+  if (not !anchoring) && Option.is_none !frame then (
     if !following then pinning := true;
     frame := Some (request_frame pin))
 
@@ -121,7 +122,8 @@ let on_scroll event =
           not (Js.to_bool trusted)
         with _ -> false
       in
-      if resized && not explicit then ()
+      if !anchoring then ()
+      else if resized && not explicit then ()
       else if top < !previous_top - 1 && ((not !pinning) || explicit) then
         following := false
       else if not !pinning then following := distance value <= 80;
@@ -150,7 +152,8 @@ let cleanup_now () =
   resize := None;
   listener := None;
   window_listener := None;
-  timeline := None
+  timeline := None;
+  anchoring := false
 
 let observe constructor_name =
   let callback = Js.wrap_callback (fun _ -> schedule ()) in
@@ -230,6 +233,118 @@ let jump_to_latest () =
       schedule ())
 
 let resume () = action_effect (fun () -> if !following then schedule ())
+
+type anchor = {
+  key : string option;
+  offset : float;
+  height : float;
+  top : float;
+}
+
+let number value property : float = Js.Unsafe.get value property
+
+let bounds_top value =
+  let bounds = Js.Unsafe.meth_call value "getBoundingClientRect" [||] in
+  number bounds "top"
+
+let attribute value name =
+  let result =
+    Js.Unsafe.meth_call value "getAttribute"
+      [| Js.Unsafe.inject (Js.string name) |]
+  in
+  if present result then Some (Js.to_string (Js.Unsafe.coerce result)) else None
+
+let visible_key value =
+  let timeline_top = bounds_top value in
+  let items =
+    Js.Unsafe.meth_call value "querySelectorAll"
+      [| Js.Unsafe.inject (Js.string ".timeline-item[data-timeline-key]") |]
+  in
+  let length : int = Js.Unsafe.get items "length" in
+  let rec loop index =
+    if index >= length then None
+    else
+      let item =
+        Js.Unsafe.meth_call items "item" [| Js.Unsafe.inject index |]
+      in
+      let bounds = Js.Unsafe.meth_call item "getBoundingClientRect" [||] in
+      let bottom = number bounds "bottom" in
+      if Float.(bottom > timeline_top) then
+        Option.map (attribute item "data-timeline-key") ~f:(fun key ->
+            (key, number bounds "top" -. timeline_top))
+      else loop (index + 1)
+  in
+  loop 0
+
+let capture_anchor () =
+  match !timeline with
+  | None -> None
+  | Some value ->
+      let key, offset = Option.value (visible_key value) ~default:("", 0.) in
+      Some
+        {
+          key = (if String.is_empty key then None else Some key);
+          offset;
+          height = number value "scrollHeight";
+          top = number value "scrollTop";
+        }
+
+let find_key value key =
+  let items =
+    Js.Unsafe.meth_call value "querySelectorAll"
+      [| Js.Unsafe.inject (Js.string ".timeline-item[data-timeline-key]") |]
+  in
+  let length : int = Js.Unsafe.get items "length" in
+  let rec loop index =
+    if index >= length then None
+    else
+      let item =
+        Js.Unsafe.meth_call items "item" [| Js.Unsafe.inject index |]
+      in
+      match attribute item "data-timeline-key" with
+      | Some candidate when String.equal candidate key -> Some item
+      | _ -> loop (index + 1)
+  in
+  loop 0
+
+let restore_anchor anchor =
+  match !timeline with
+  | None -> ()
+  | Some value ->
+      let next_top =
+        match Option.bind anchor.key ~f:(find_key value) with
+        | Some item ->
+            let timeline_top = bounds_top value in
+            number value "scrollTop"
+            +. (bounds_top item -. timeline_top -. anchor.offset)
+        | None -> anchor.top +. (number value "scrollHeight" -. anchor.height)
+      in
+      Js.Unsafe.set value "scrollTop" next_top;
+      previous_top := Js.Unsafe.get value "scrollTop"
+
+let preserve_after_prepend action =
+  Effect.bind
+    (Effect.of_deferred_thunk (fun () ->
+         let was_following = !following in
+         anchoring := true;
+         pinning := false;
+         cancel_frame ();
+         Async_kernel.Deferred.return (capture_anchor (), was_following)))
+    ~f:(fun (anchor, was_following) ->
+      Effect.bind action ~f:(fun () ->
+          Effect.of_deferred_thunk (fun () ->
+              let finished = Async_kernel.Ivar.create () in
+              ignore
+                (request_frame (fun () ->
+                     Option.iter anchor ~f:restore_anchor;
+                     ignore
+                       (request_frame (fun () ->
+                            Option.iter anchor ~f:restore_anchor;
+                            anchoring := false;
+                            following := was_following;
+                            update_button ();
+                            Async_kernel.Ivar.fill_if_empty finished ()))));
+              Async_kernel.Ivar.read finished)))
 
 let track () =
   action_effect (fun () ->

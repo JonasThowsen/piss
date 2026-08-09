@@ -7,6 +7,7 @@ val supported_mime_types : string list
 val of_data_url :
   name:string -> mime_type:string -> string -> (t, string) result
 
+val of_base64 : name:string -> mime_type:string -> string -> (t, string) result
 val validate_total : t list -> (unit, string) result
 val mime_type : t -> string
 val data : t -> string

@@ -50,12 +50,15 @@
                 ./web/.ocamlformat
                 ./web/acp_content.ml
                 ./web/acp_content.mli
+                ./web/acp_content_test.ml
                 ./web/dune
                 ./web/dune-project
                 ./web/app_header.ml
                 ./web/app_header.mli
                 ./web/app_state.ml
                 ./web/app_state.mli
+                ./web/artifact_view.ml
+                ./web/artifact_view.mli
                 ./web/browser_http.ml
                 ./web/browser_http.mli
                 ./web/clipboard.ml
@@ -85,6 +88,8 @@
                 ./web/event_history.mli
                 ./web/global_search.ml
                 ./web/global_search.mli
+                ./web/history_loader.ml
+                ./web/history_loader.mli
                 ./web/event_stream.ml
                 ./web/event_stream.mli
                 ./web/image_attachment.ml
@@ -94,6 +99,11 @@
                 ./web/image_attachments.ml
                 ./web/image_attachments.mli
                 ./web/main.ml
+                ./web/markdown_syntax.ml
+                ./web/markdown_syntax.mli
+                ./web/markdown_syntax_test.ml
+                ./web/markdown_view.ml
+                ./web/markdown_view.mli
                 ./web/managed_workflow_test.ml
                 ./web/modal.ml
                 ./web/modal.mli

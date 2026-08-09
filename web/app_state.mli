@@ -2,6 +2,9 @@ type history_action =
   | Start of string
   | Initial of string * Event_history.event list
   | Append of string * Event_history.event
+  | Begin_older of string
+  | Prepend_older of string * Event_history.event list
+  | Older_failed of string * string
   | History_failed of string * string
 
 type deciding_action = Add of string | Remove of string | Reset

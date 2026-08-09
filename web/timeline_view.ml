@@ -33,8 +33,104 @@ let focus_tab tab =
       (try ignore (Js.Unsafe.meth_call element "focus" [||]) with _ -> ());
       Async_kernel.Deferred.return ())
 
-let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
-    ~on_permission =
+let retained_runtime session runtime =
+  Option.first_some runtime
+    (Option.bind session ~f:(fun (session : Control_plane.Session.t) ->
+         session.runtime))
+
+let history_controls ~session ~runtime ~buffer ~on_load_older =
+  let snapshot = retained_runtime session runtime in
+  let entries = Event_buffer.entries buffer in
+  let pending = Event_history.pending_permissions entries in
+  let requires_action =
+    Option.exists session ~f:(fun session ->
+        phys_equal session.Control_plane.Session.status
+          Runtime_domain.Requires_action)
+    || Option.exists snapshot ~f:(fun runtime ->
+        phys_equal runtime.Runtime_domain.status Runtime_domain.Requires_action)
+  in
+  let can_page =
+    Option.exists snapshot ~f:(fun runtime ->
+        Event_buffer.can_page_before buffer
+          ~first_sequence:runtime.Runtime_domain.first_sequence)
+  in
+  let loading = Event_buffer.is_loading buffer in
+  let retention =
+    match snapshot with
+    | Some runtime when runtime.retention_pruned ->
+        [
+          Vdom.Node.p
+            ~attrs:
+              [
+                class_ "timeline-trimmed-notice";
+                Vdom.Attr.create "role" "status";
+              ]
+            [
+              text
+                ("Earlier ordinary activity was compacted from the durable "
+               ^ "session log. Retained history begins at sequence "
+                ^ Int64.to_string runtime.first_sequence
+                ^ "; permission and command boundaries remain durable.");
+            ];
+        ]
+    | None | Some _ -> []
+  in
+  let error =
+    Option.value_map (Event_buffer.page_error buffer) ~default:[]
+      ~f:(fun message ->
+        [
+          Vdom.Node.p
+            ~attrs:
+              [
+                class_ "timeline-history-warning";
+                Vdom.Attr.create "role" "alert";
+              ]
+            [ text ("Earlier history could not be loaded: " ^ message) ];
+        ])
+  in
+  let permission_gap =
+    if
+      requires_action && List.is_empty pending && (not loading)
+      && ((not can_page) || Option.is_none snapshot)
+    then
+      [
+        Vdom.Node.p
+          ~attrs:
+            [
+              class_ "timeline-history-warning"; Vdom.Attr.create "role" "alert";
+            ]
+          [
+            text
+              "The session reports requires_action, but no pending permission \
+               request exists in retained history. No approval was inferred; \
+               inspect or restart the session to recover explicitly.";
+          ];
+      ]
+    else []
+  in
+  let paging =
+    if can_page || loading then
+      [
+        Vdom.Node.button
+          ~attrs:
+            ([
+               class_ "load-earlier";
+               Vdom.Attr.create "type" "button";
+               Vdom.Attr.on_click (fun _ -> on_load_older ());
+             ]
+            @ if loading then [ Vdom.Attr.create "disabled" "" ] else [])
+          [
+            text
+              (if loading then "Loading earlier activity..."
+               else "Load earlier activity");
+          ];
+      ]
+    else []
+  in
+  retention @ error @ permission_gap @ paging
+
+let timeline state selected_id ~session ~runtime ~deciding_permissions
+    ~copy_feedback ~on_copy ~on_permission ~on_load_older =
   let content =
     match (state, selected_id) with
     | Sessions_loading, _ ->
@@ -65,18 +161,21 @@ let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
         [
           Timeline_entry_view.empty_state "!" "Could not load history." message;
         ]
-    | Loaded (_, buffer), _ when List.is_empty (Event_buffer.entries buffer) ->
-        [
-          Timeline_entry_view.empty_state "0" "No events yet."
-            "The worker has not published a visible timeline event.";
-        ]
     | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
         let entries = Event_buffer.entries buffer in
-        List.filter_map entries
-          ~f:(Timeline_entry_view.render ~copy_feedback ~on_copy)
-        @ Permission_view.render_pending entries ~deciding:deciding_permissions
-            ~on_decide:on_permission
+        history_controls ~session ~runtime ~buffer ~on_load_older
+        @
+        if List.is_empty entries then
+          [
+            Timeline_entry_view.empty_state "0" "No events yet."
+              "The worker has not published a visible timeline event.";
+          ]
+        else
+          List.filter_map entries
+            ~f:(Timeline_entry_view.render ~copy_feedback ~on_copy)
+          @ Permission_view.render_pending entries
+              ~deciding:deciding_permissions ~on_decide:on_permission
     | Loaded _, _ ->
         [
           Timeline_entry_view.empty_state "..." "Loading recent events..."
@@ -88,6 +187,8 @@ let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
       [
         class_ "timeline";
         Vdom.Attr.id "timeline";
+        Vdom.Attr.create "tabindex" "0";
+        Vdom.Attr.create "aria-live" "polite";
         Vdom.Attr.on_scroll (fun _ -> Timeline_scroll.track ());
       ]
     [ Vdom.Node.div ~attrs:[ class_ "timeline-stream" ] content ]
@@ -165,7 +266,7 @@ let render_tabs selected ~on_select working =
 
 let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     ~on_tab ~state ~composer ~deciding_permissions ~copy_feedback ~on_copy
-    ~on_permission =
+    ~on_permission ~on_load_older =
   let selected_id =
     Option.map session ~f:(fun (session : Control_plane.Session.t) ->
         session.id)
@@ -198,8 +299,8 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
         @ if phys_equal tab Agent then [] else [ Vdom.Attr.create "hidden" "" ]
         )
       [
-        timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
-          ~on_permission;
+        timeline state selected_id ~session ~runtime ~deciding_permissions
+          ~copy_feedback ~on_copy ~on_permission ~on_load_older;
         Vdom.Node.button
           ~attrs:
             ([

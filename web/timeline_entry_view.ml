@@ -35,9 +35,13 @@ let copy_button ~key ~kind ~body ~copy_feedback ~on_copy =
       ]
     [ Vdom.Node.b [ text (String.uppercase adjective) ] ]
 
-let message ~key ~class_name ~role ~status ?copy body =
+let message ~key ~class_name ~role ~status ?copy ?body_node body =
   Vdom.Node.create "article" ~key
-    ~attrs:[ class_ ("timeline-item " ^ class_name) ]
+    ~attrs:
+      [
+        class_ ("timeline-item " ^ class_name);
+        Vdom.Attr.create "data-timeline-key" key;
+      ]
     [
       Vdom.Node.div
         ~attrs:[ class_ "message-meta" ]
@@ -46,8 +50,10 @@ let message ~key ~class_name ~role ~status ?copy body =
           Vdom.Node.span ~attrs:[ class_ "message-status" ] [ text status ];
           Option.value copy ~default:Vdom.Node.none;
         ];
-      (if String.is_empty body then Vdom.Node.none
-       else Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text body ]);
+      Option.value body_node
+        ~default:
+          (if String.is_empty body then Vdom.Node.none
+           else Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text body ]);
     ]
 
 let render ~copy_feedback ~on_copy = function
@@ -63,6 +69,8 @@ let render ~copy_feedback ~on_copy = function
            ~status:message_id
            ~copy:
              (copy_button ~key ~kind:"message" ~body ~copy_feedback ~on_copy)
+           ~body_node:
+             (Markdown_view.render ~item_key:key ~copy_feedback ~on_copy body)
            body)
   | Tool { sequence = _; tool_call_id; title; input; output; status; artifacts }
     ->
@@ -70,7 +78,11 @@ let render ~copy_feedback ~on_copy = function
       let detail = Timeline_projection.tool_text ~input ~output ~artifacts in
       Some
         (Vdom.Node.create "article" ~key
-           ~attrs:[ class_ "timeline-item timeline-tool" ]
+           ~attrs:
+             [
+               class_ "timeline-item timeline-tool";
+               Vdom.Attr.create "data-timeline-key" key;
+             ]
            [
              Vdom.Node.create "details"
                ~attrs:[ class_ "tool-disclosure" ]
@@ -89,20 +101,21 @@ let render ~copy_feedback ~on_copy = function
                    ];
                  Vdom.Node.div
                    ~attrs:[ class_ "timeline-contents" ]
-                   [
-                     Vdom.Node.p
-                       ~attrs:[ class_ "message-status" ]
-                       [ text tool_call_id ];
-                     Vdom.Node.div
-                       ~attrs:[ class_ "tool-copy-row" ]
-                       [
-                         copy_button ~key ~kind:"tool output" ~body:detail
-                           ~copy_feedback ~on_copy;
-                       ];
-                     Vdom.Node.p
-                       ~attrs:[ class_ "message-body" ]
-                       [ text detail ];
-                   ];
+                   ([
+                      Vdom.Node.p
+                        ~attrs:[ class_ "message-status" ]
+                        [ text tool_call_id ];
+                      Vdom.Node.div
+                        ~attrs:[ class_ "tool-copy-row" ]
+                        [
+                          copy_button ~key ~kind:"tool output" ~body:detail
+                            ~copy_feedback ~on_copy;
+                        ];
+                      Vdom.Node.pre
+                        ~attrs:[ class_ "message-body" ]
+                        [ text detail ];
+                    ]
+                   @ Artifact_view.render_all artifacts);
                ];
            ])
   | Command_state { sequence; command_id; state } ->

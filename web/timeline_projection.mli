@@ -25,6 +25,8 @@ type permission_request = {
   options : permission_option list;
 }
 
+type artifact = Acp_content.artifact
+
 type update =
   | User_update of { sequence : int64; command_id : string; text : string }
   | Agent_chunk of { sequence : int64; message_id : string; text : string }
@@ -34,7 +36,7 @@ type update =
       title : string;
       input : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Tool_call_update of {
       sequence : int64;
@@ -43,7 +45,7 @@ type update =
       input : string option;
       output : string option;
       status : string option;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state_update of {
       sequence : int64;
@@ -71,7 +73,7 @@ type entry =
       input : string;
       output : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state of {
       sequence : int64;
@@ -87,4 +89,6 @@ type entry =
   | Permission_cancelled of { sequence : int64; request_id : string }
 
 val project : update list -> entry list
-val tool_text : input:string -> output:string -> artifacts:string list -> string
+
+val tool_text :
+  input:string -> output:string -> artifacts:artifact list -> string

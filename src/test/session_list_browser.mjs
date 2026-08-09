@@ -150,13 +150,13 @@ try {
   if (await firstTool.count() !== 1) throw new Error("tool lifecycle did not aggregate into one row");
   const disclosure = firstTool.locator("details.tool-disclosure");
   if (await disclosure.getAttribute("open") !== null) throw new Error("tool call was expanded by default");
-  await disclosure.locator("summary").click();
+  await disclosure.locator(":scope > summary").click();
   await firstTool.getByRole("button", { name: "Copy tool output" }).click();
   const toolClipboard = await page.evaluate(() => navigator.clipboard.readText());
   if (!toolClipboard.includes("dune runtest") || !toolClipboard.includes("2 tests passed")) {
     throw new Error(`aggregated tool copy was incomplete: ${toolClipboard}`);
   }
-  await disclosure.locator("summary").click();
+  await disclosure.locator(":scope > summary").click();
 
   const response = "The worker retained ownership while the control plane was replaceable.";
   const agent = page.locator(".timeline-agent").last();

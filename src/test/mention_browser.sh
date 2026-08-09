@@ -7,7 +7,8 @@ control_exe=$(realpath "${3:?control executable is required}")
 public_dir=$(realpath "${4:?public directory is required}")
 app_js=$(realpath "${5:?browser bundle is required}")
 workspace=$(realpath "${6:?workspace is required}")
-browser_test=$(realpath "${7:?browser test is required}")
+browser_tests=("${@:7}")
+[[ ${#browser_tests[@]} -gt 0 ]] || { echo "browser test is required" >&2; exit 64; }
 port=${PISS_TEST_PORT:-$(python3 - <<'PY'
 import socket
 with socket.socket() as listener:
@@ -78,4 +79,6 @@ for _ in $(seq 1 500); do
   sleep .02
 done
 
-node "$browser_test" "http://127.0.0.1:$port" "$workspace"
+for browser_test in "${browser_tests[@]}"; do
+  node "$(realpath "$browser_test")" "http://127.0.0.1:$port" "$workspace"
+done

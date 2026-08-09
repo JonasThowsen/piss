@@ -29,6 +29,7 @@ type permission_request = Timeline_projection.permission_request = {
   options : permission_option list;
 }
 
+type artifact = Timeline_projection.artifact
 type pending_permission = { sequence : int64; request : permission_request }
 
 type entry = Timeline_projection.entry =
@@ -41,7 +42,7 @@ type entry = Timeline_projection.entry =
       input : string;
       output : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state of {
       sequence : int64;

@@ -84,6 +84,7 @@
   mention_browser.sh
   run_integration.sh
   session_list_browser.mjs
+  timeline_browser.mjs
   ../worker/main.exe
   ../mock_agent/main.exe
   ../control/main.exe)
@@ -95,4 +96,5 @@
    %{dep:../worker/main.exe}
    %{dep:../mock_agent/main.exe}
    %{dep:../control/main.exe}
-   %{dep:session_list_browser.mjs})))
+   %{dep:session_list_browser.mjs}
+   %{dep:timeline_browser.mjs})))

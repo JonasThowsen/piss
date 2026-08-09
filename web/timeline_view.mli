@@ -23,4 +23,5 @@ val render :
   copy_feedback:(string * Clipboard.status) option ->
   on_copy:(key:string -> text:string -> unit Effect.t) ->
   on_permission:(request_id:string -> option_id:string option -> unit Effect.t) ->
+  on_load_older:(unit -> unit Effect.t) ->
   Vdom.Node.t

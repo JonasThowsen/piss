@@ -27,6 +27,8 @@ type permission_request = {
   options : permission_option list;
 }
 
+type artifact = Acp_content.artifact
+
 type update =
   | User_update of { sequence : int64; command_id : string; text : string }
   | Agent_chunk of { sequence : int64; message_id : string; text : string }
@@ -36,7 +38,7 @@ type update =
       title : string;
       input : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Tool_call_update of {
       sequence : int64;
@@ -45,7 +47,7 @@ type update =
       input : string option;
       output : string option;
       status : string option;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state_update of {
       sequence : int64;
@@ -73,7 +75,7 @@ type entry =
       input : string;
       output : string;
       status : string;
-      artifacts : string list;
+      artifacts : artifact list;
     }
   | Command_state of {
       sequence : int64;
@@ -98,7 +100,7 @@ let add_or_replace state key entry =
 
 let append_unique current incoming =
   List.fold incoming ~init:current ~f:(fun values value ->
-      if List.mem values value ~equal:String.equal then values
+      if List.mem values value ~equal:Acp_content.equal then values
       else values @ [ value ])
 
 let append_output current = function
@@ -202,5 +204,7 @@ let project updates =
       Map.find_exn projected.entries key)
 
 let tool_text ~input ~output ~artifacts =
-  List.filter (input :: output :: artifacts) ~f:(Fn.non String.is_empty)
+  List.filter
+    (input :: output :: List.map artifacts ~f:Acp_content.copy_text)
+    ~f:(Fn.non String.is_empty)
   |> String.concat ~sep:"\n"

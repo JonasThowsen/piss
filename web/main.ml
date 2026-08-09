@@ -5,11 +5,6 @@ open App_state
 
 let class_ name = [ Vdom.Attr.class_ name ]
 
-let history_request session_id =
-  Browser_http.get
-    ~query:[ ("recent", "500"); ("session", session_id) ]
-    "/api/v2/events"
-
 let catalog_request () =
   Async_kernel.Deferred.all
     [
@@ -64,75 +59,6 @@ let load_snapshot ~inject_shell session_id =
               | Ok snapshot ->
                   inject_shell (Runtime_loaded (session_id, snapshot)))))
 
-let terminal_permission event =
-  match Event_history.project [ event ] with
-  | [ Event_history.Permission_resolved { request_id; _ } ]
-  | [ Permission_cancelled { request_id; _ } ] ->
-      Some request_id
-  | _ -> None
-
-let dispatch action = Vdom.Effect.Expert.handle_non_dom_event_exn action
-
-let connect_stream ~selection ~session_id ~after ~inject_history
-    ~inject_deciding ~refresh_catalog_effect ~refresh_snapshot_effect
-    ~set_stream_notice =
-  let on_event body =
-    match Event_history.decode_event body with
-    | Error message ->
-        dispatch (set_stream_notice ("Live event rejected: " ^ message))
-    | Ok event ->
-        let effects =
-          [ inject_history (Append (session_id, event)) ]
-          @ Option.value_map (terminal_permission event) ~default:[]
-              ~f:(fun request_id -> [ inject_deciding (Remove request_id) ])
-          @
-          if Event_history.refreshes_session event then
-            [ refresh_catalog_effect; refresh_snapshot_effect ]
-          else []
-        in
-        dispatch (Effect.Many effects)
-  in
-  let on_open () = dispatch (set_stream_notice "") in
-  let on_error () =
-    dispatch (set_stream_notice "Event stream reconnecting...")
-  in
-  Effect.of_deferred_thunk (fun () ->
-      (match
-         Event_stream.connect selection ~after ~on_event ~on_open ~on_error
-       with
-      | Ok () -> ()
-      | Error message -> dispatch (set_stream_notice message));
-      Async_kernel.Deferred.return ())
-
-let load_history ~inject_history ~inject_deciding ~refresh_catalog_effect
-    ~refresh_snapshot_effect ~set_stream_notice session_id =
-  let selection = Event_stream.select ~session_id in
-  Effect.bind (inject_deciding Reset) ~f:(fun () ->
-      Effect.bind (inject_history (Start session_id)) ~f:(fun () ->
-          Effect.bind
-            (Effect.of_deferred_thunk (fun () -> history_request session_id))
-            ~f:(function
-              | Error error ->
-                  inject_history
-                    (History_failed (session_id, Error.to_string_hum error))
-              | Ok body -> (
-                  match Event_history.decode_events body with
-                  | Error message ->
-                      inject_history (History_failed (session_id, message))
-                  | Ok events ->
-                      let buffer =
-                        Event_buffer.create ~live_capacity:live_event_capacity
-                          events
-                      in
-                      Effect.bind
-                        (inject_history (Initial (session_id, events)))
-                        ~f:(fun () ->
-                          connect_stream ~selection ~session_id
-                            ~after:(Event_buffer.highest_sequence buffer)
-                            ~inject_history ~inject_deciding
-                            ~refresh_catalog_effect ~refresh_snapshot_effect
-                            ~set_stream_notice)))))
-
 let component graph =
   let sessions, set_sessions = Bonsai.state Session_rail.Loading graph in
   let archived, set_archived = Bonsai.state [] graph in
@@ -178,6 +104,47 @@ let component graph =
         shell.runtime.snapshot
     | _ -> None
   in
+  let permission_recovery =
+    let%arr selected = selected and runtime = runtime and history = history in
+    match (selected, history) with
+    | Some session, Timeline_view.Loaded (history_id, buffer)
+      when String.equal session.id history_id ->
+        let snapshot = Option.first_some runtime session.runtime in
+        let requires_action =
+          phys_equal session.status Runtime_domain.Requires_action
+          || Option.exists snapshot ~f:(fun snapshot ->
+              phys_equal snapshot.status Runtime_domain.Requires_action)
+        in
+        let no_pending =
+          Event_buffer.entries buffer
+          |> Event_history.pending_permissions |> List.is_empty
+        in
+        if requires_action && no_pending then
+          Option.bind snapshot ~f:(fun snapshot ->
+              if
+                Event_buffer.can_page_before buffer
+                  ~first_sequence:snapshot.first_sequence
+              then
+                Option.map (Event_buffer.earliest_sequence buffer)
+                  ~f:(fun before -> (session.id, before))
+              else None)
+        else None
+    | None, _ | Some _, _ -> None
+  in
+  let recover_permission =
+    let%arr inject_history = inject_history
+    and set_stream_notice = set_stream_notice in
+    function
+    | None -> Effect.Ignore
+    | Some (session_id, before) ->
+        History_loader.load_older ~inject_history ~set_stream_notice ~session_id
+          ~before
+  in
+  Bonsai.Edge.on_change permission_recovery
+    ~equal:
+      (Option.equal (fun (left_id, left_before) (right_id, right_before) ->
+           String.equal left_id right_id && Int64.equal left_before right_before))
+    ~callback:recover_permission graph;
   let refresh_runtime =
     let%arr selected_id = selected_id and inject_shell = inject_shell in
     Option.value_map selected_id ~default:Effect.Ignore ~f:(fun id ->
@@ -243,7 +210,8 @@ let component graph =
                     Effect.Many
                       [
                         snapshot_refresh;
-                        load_history ~inject_history ~inject_deciding
+                        History_loader.load_initial ~inject_history
+                          ~inject_deciding
                           ~refresh_catalog_effect:catalog_refresh
                           ~refresh_snapshot_effect:snapshot_refresh
                           ~set_stream_notice id;
@@ -276,7 +244,7 @@ let component graph =
                   set_menu_open None;
                   catalog_refresh;
                   snapshot_refresh;
-                  load_history ~inject_history ~inject_deciding
+                  History_loader.load_initial ~inject_history ~inject_deciding
                     ~refresh_catalog_effect:catalog_refresh
                     ~refresh_snapshot_effect:snapshot_refresh ~set_stream_notice
                     id;
@@ -353,6 +321,8 @@ let component graph =
   and set_menu_open = set_menu_open
   and inject_shell = inject_shell
   and inject_deciding = inject_deciding
+  and inject_history = inject_history
+  and set_stream_notice = set_stream_notice
   and set_copy_feedback = set_copy_feedback in
   let session = Session_rail.selected sessions selected_id in
   let workspace = App_header.selected_workspace workspaces session in
@@ -412,6 +382,22 @@ let component graph =
       (Effect.Many [ set_mobile_open false; set_menu_open None ])
       ~f:(fun () -> action)
   in
+  let load_older () =
+    match (session, visible_history) with
+    | Some session, Timeline_view.Loaded (history_id, buffer)
+      when String.equal session.id history_id -> (
+        let snapshot = Option.first_some runtime session.runtime in
+        match snapshot with
+        | Some snapshot
+          when Event_buffer.can_page_before buffer
+                 ~first_sequence:snapshot.first_sequence ->
+            Option.value_map (Event_buffer.earliest_sequence buffer)
+              ~default:Effect.Ignore ~f:(fun before ->
+                History_loader.load_older ~inject_history ~set_stream_notice
+                  ~session_id:session.id ~before)
+        | None | Some _ -> Effect.Ignore)
+    | None, _ | Some _, _ -> Effect.Ignore
+  in
   Vdom.Node.div ~attrs:(class_ "app-shell")
     [
       Vdom.Node.main
@@ -443,7 +429,8 @@ let component graph =
                 ~runtime_error:shell.runtime.error ~tab:shell.tab
                 ~on_tab:select_tab ~state:visible_history
                 ~composer:(Some composer.view) ~deciding_permissions
-                ~copy_feedback ~on_copy:copy ~on_permission:decide;
+                ~copy_feedback ~on_copy:copy ~on_permission:decide
+                ~on_load_older:load_older;
             ];
         ];
       search.view;

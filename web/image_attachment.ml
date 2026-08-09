@@ -34,7 +34,7 @@ let decoded_size data =
       Error "Image data is not valid base64"
     else Ok ((length / 4 * 3) - padding)
 
-let of_data_url ~name ~mime_type value =
+let of_base64 ~name ~mime_type data =
   if not (List.mem supported_mime_types mime_type ~equal:String.equal) then
     Error
       ("Unsupported image type: "
@@ -43,13 +43,16 @@ let of_data_url ~name ~mime_type value =
     String.is_empty name || String.length name > 255 || String.mem name '\000'
   then Error "Image name is invalid"
   else
-    let prefix = "data:" ^ mime_type ^ ";base64," in
-    if not (String.is_prefix value ~prefix) then
-      Error "FileReader returned an invalid image data URL"
-    else
-      let data = String.drop_prefix value (String.length prefix) in
-      Result.map (decoded_size data) ~f:(fun size ->
-          { mime_type; data; name; size })
+    Result.map (decoded_size data) ~f:(fun size ->
+        { mime_type; data; name; size })
+
+let of_data_url ~name ~mime_type value =
+  let prefix = "data:" ^ mime_type ^ ";base64," in
+  if not (String.is_prefix value ~prefix) then
+    Error "FileReader returned an invalid image data URL"
+  else
+    let data = String.drop_prefix value (String.length prefix) in
+    of_base64 ~name ~mime_type data
 
 let validate_total images =
   if List.length images > max_count then
