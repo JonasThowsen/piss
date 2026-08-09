@@ -108,7 +108,7 @@ let resolve_resource ~root path =
       let root = Unix.realpath root in
       let absolute = Filename.concat root path |> Unix.realpath in
       let stats = Unix.stat absolute in
-      if not (path_within ~root absolute) then
+      if not (path_within ~root ~path:absolute) then
         Error "resource path escapes the workspace"
       else if stats.st_kind <> Unix.S_REG then
         Error "resource path is not a regular file"

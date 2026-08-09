@@ -29,6 +29,12 @@ type envelope =
     shape is so malformed that the envelope kind itself is unclear. *)
 val envelope_of_yojson : Yojson.Safe.t -> (envelope, string) result
 
+(** Best-effort decode of a JSON-RPC `id` field. The harness is
+    allowed to send string or integer ids; the worker always sends
+    strings. Returns [None] when the field is missing or has an
+    unexpected type. *)
+val id_to_string : Yojson.Safe.t -> string option
+
 (** Inspect a JSON value that should be a response for a specific id.
     [Ok] carries the result payload, [Error] carries a human-readable
     diagnostic. *)

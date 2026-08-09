@@ -52,7 +52,7 @@ let valid_relative_path path =
   && path |> String.split_on_char '/'
      |> List.for_all (fun part -> part <> "" && part <> "." && part <> "..")
 
-let path_within ~root path =
+let path_within ~root ~path =
   String.equal root path
   || String.starts_with
        ~prefix:(if String.ends_with ~suffix:"/" root then root else root ^ "/")
