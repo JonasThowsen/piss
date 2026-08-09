@@ -1,6 +1,7 @@
 (* Piss_core is the backend umbrella for the PISS libraries. *)
 
 module Domain : module type of Piss_shared.Domain
+module Error : module type of Piss_shared.Error
 module Wire : module type of Piss_shared.Wire
 module Acp : module type of Piss_shared.Acp
 module Workspace_files : module type of Piss_shared.Workspace_files

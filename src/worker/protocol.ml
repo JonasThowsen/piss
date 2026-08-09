@@ -2,6 +2,11 @@
 
 open Piss_core
 
+let conflict reason = Result.Error (Error.Conflict { reason })
+let validation field reason = Result.Error (Error.Validation { field; reason })
+let upstream message = Result.Error (Error.Upstream_unavailable { message })
+let internal message = Result.Error (Error.Internal { message })
+
 let resolve_resources ~workspace resources =
   List.fold_left
     (fun resolved (resource : Domain.resource_input) ->
@@ -26,7 +31,7 @@ let resource_metadata (resource : Workspace_files.resource) =
 let dispatch_prompt state ?action ~command_id ~text ~images ~resources () =
   let store = State.store state in
   match resolve_resources ~workspace:(State.workspace state) resources with
-  | Error message -> Error message
+  | Error message -> validation "resources" message
   | Ok resolved_resources -> (
       let image_metadata = List.map Wire.image_metadata_to_yojson images in
       let resources_metadata = List.map resource_metadata resolved_resources in
@@ -60,7 +65,7 @@ let dispatch_prompt state ?action ~command_id ~text ~images ~resources () =
              | None -> []))
       with exn ->
         State.record_dispatch_failed state ~command_id;
-        Error (Printexc.to_string exn))
+        internal (Printexc.to_string exn))
 
 let handle state request =
   let args = State.args state in
@@ -88,7 +93,7 @@ let handle state request =
                  else []) );
            ])
   | Wire.Hello { protocol_version } ->
-      Error
+      validation "protocolVersion"
         (Printf.sprintf "unsupported worker protocol version %d"
            protocol_version)
   | Wire.Snapshot -> (
@@ -117,7 +122,7 @@ let handle state request =
         || State.pending_permission_count state > 0
         || State.configuration_change_depth state > 0
         || State.status state <> Domain.Idle
-      then Error "worker is not idle and cannot prepare for upgrade"
+      then conflict "worker is not idle and cannot prepare for upgrade"
       else
         let event =
           State.start_upgrade state ~target
@@ -144,21 +149,23 @@ let handle state request =
       |> fun events -> Ok (`List events)
   | Wire.File_search { query } ->
       Workspace_io.search ~root:(State.workspace state) ~query
+      |> Result.map_error (fun message ->
+          Error.Upstream_unavailable { message })
       |> Result.map (fun mentions ->
           `List (List.map Workspace_files.mention_to_yojson mentions))
   | Wire.Config_options -> Ok (State.config_options state)
   | _ when State.upgrade_is_preparing state ->
-      Error "worker is preparing for an immutable generation upgrade"
+      upstream "worker is preparing for an immutable generation upgrade"
   | Wire.New_session ->
       if
         State.running_command_count state > 0
         || State.pending_permission_count state > 0
-      then Error "the active session must be idle before creating another"
+      then conflict "the active session must be idle before creating another"
       else if State.additional_session_limit_reached state then
         (* TODO(tracer): Replace this in-adapter cap with one independently
            supervised worker per durable session before exposing unbounded
            session creation. pi-acp retains a Pi process for every session. *)
-        Error "restart the worker before creating more than four sessions"
+        conflict "restart the worker before creating more than four sessions"
       else (
         State.set_status state Domain.Starting;
         let created = State.create_harness_session state in
@@ -166,7 +173,7 @@ let handle state request =
         Ok (`Assoc [ ("sessionId", `String created) ]))
   | Wire.Prompt { images; _ }
     when images <> [] && not (State.supports_images state) ->
-      Error "the ACP agent does not accept image prompts"
+      validation "images" "the ACP agent does not accept image prompts"
   | Wire.Prompt { command_id; text; images; resources } -> (
       match Store.find_command store command_id with
       | Some command_state ->
@@ -179,11 +186,11 @@ let handle state request =
                  ("duplicate", `Bool true);
                ])
       | None when State.running_command_count state > 0 ->
-          Error "the session already has an active prompt"
+          conflict "the session already has an active prompt"
       | None -> dispatch_prompt state ~command_id ~text ~images ~resources ())
   | Wire.Deliver { images; _ }
     when images <> [] && not (State.supports_images state) ->
-      Error "the ACP agent does not accept image prompts"
+      validation "images" "the ACP agent does not accept image prompts"
   | Wire.Deliver { command_id; text; images; resources; action } -> (
       match Store.find_command store command_id with
       | Some command_state ->
@@ -196,14 +203,14 @@ let handle state request =
                  ("duplicate", `Bool true);
                ])
       | None when State.running_command_count state = 0 ->
-          Error (action ^ " is only available during an active prompt")
+          conflict (action ^ " is only available during an active prompt")
       | None ->
           dispatch_prompt state ~action ~command_id ~text ~images ~resources ())
   | Wire.Set_config_option { config_id; value } ->
       if
         State.running_command_count state > 0
         || State.pending_permission_count state > 0
-      then Error "session configuration can only change while idle"
+      then conflict "session configuration can only change while idle"
       else
         let id =
           "config-"
@@ -221,7 +228,7 @@ let handle state request =
         Ok (`Assoc [ ("configOptions", State.config_options state) ])
   | Wire.Cancel ->
       if State.running_command_count state = 0 then
-        Error "the session has no active prompt"
+        conflict "the session has no active prompt"
       else (
         ignore
           (Store.append_event store ~kind:"command.cancel.requested"
@@ -243,14 +250,17 @@ let handle state request =
       |> Domain.event_to_yojson |> Result.ok
   | Wire.Permission { request_id; option_id } -> (
       match State.pending_permission state ~request_id with
-      | None -> Error "permission request is no longer pending"
+      | None ->
+          Result.Error
+            (Error.Not_found
+               { resource = "permission request"; id = request_id })
       | Some permission -> (
           match option_id with
           | Some selected
             when not
                    (Harness.option_is_offered ~params:permission.params
                       ~option_id:selected) ->
-              Error "permission option was not offered by the agent"
+              conflict "permission option was not offered by the agent"
           | selected ->
               let outcome =
                 match selected with

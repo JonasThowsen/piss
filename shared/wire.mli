@@ -52,10 +52,10 @@ type request =
       text : string;
     }
 
-type response = (Yojson.Safe.t, string) result
+type response = (Yojson.Safe.t, Error.t) result
 (** A response from the worker to the control plane. The `Ok` arm carries the
-    worker-supplied payload (already JSON); the `Error` arm carries a
-    human-readable diagnostic string. *)
+    worker-supplied payload (already JSON); the `Error` arm carries a structured
+    shared error. *)
 
 val request_of_yojson : Yojson.Safe.t -> (request, string) result
 val response_to_yojson : response -> Yojson.Safe.t

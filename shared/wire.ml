@@ -39,7 +39,7 @@ type request =
       text : string;
     }
 
-type response = (Yojson.Safe.t, string) result
+type response = (Yojson.Safe.t, Error.t) result
 
 let member name json = Yojson.Safe.Util.member name json
 
@@ -312,13 +312,17 @@ let request_of_yojson json =
 
 let response_to_yojson = function
   | Ok result -> `Assoc [ ("ok", `Bool true); ("result", result) ]
-  | Error message -> `Assoc [ ("ok", `Bool false); ("error", `String message) ]
+  | Error error ->
+      `Assoc [ ("ok", `Bool false); ("error", Error.to_yojson error) ]
 
 let response_of_yojson json =
   match member "ok" json with
   | `Bool true -> Ok (member "result" json)
   | `Bool false -> (
-      match string_member "error" json with
-      | Ok message -> Error message
-      | Error message -> Error message)
-  | _ -> Error "worker response is missing ok"
+      match Error.of_yojson (member "error" json) with
+      | Ok error -> Error error
+      | Error message ->
+          Error
+            (Error.Internal
+               { message = "worker returned an invalid error: " ^ message }))
+  | _ -> Error (Error.Internal { message = "worker response is missing ok" })

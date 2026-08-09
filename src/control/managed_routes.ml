@@ -2,6 +2,14 @@
 
 open Piss_core
 
+let validation ?(field = "request") reason = Error.Validation { field; reason }
+let conflict reason = Error.Conflict { reason }
+let forbidden reason = Error.Forbidden { reason }
+let upstream message = Error.Upstream_unavailable { message }
+
+let authentication_error status reason =
+  match status with `Forbidden -> forbidden reason | _ -> validation reason
+
 let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
     ~dev_bypass ~(calling_session : Registry.session option) ~request ~read_body
     route =
@@ -10,7 +18,8 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
       Some
         (match calling_session with
         | None ->
-            Headers.error_json ~status:`Unauthorized "broker token required"
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
         | Some caller ->
             Registry.list manager.registry ~include_archived:false
             |> List.map (fun (session : Registry.session) ->
@@ -26,14 +35,16 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
       Some
         (match calling_session with
         | None ->
-            Headers.error_json ~status:`Unauthorized "broker token required"
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
         | Some source -> (
             match Authentication.valid_json_content request with
-            | Error (status, message) -> Headers.error_json ~status message
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
             | Ok () -> (
                 let json = read_body () |> Yojson.Safe.from_string in
                 match Broker.send_peer_request ~net manager ~source json with
-                | Error message -> Headers.error_json ~status:`Conflict message
+                | Error message -> Headers.error_json (conflict message)
                 | Ok (peer_request, duplicate) ->
                     Headers.respond_json ~status:`Accepted
                       (`Assoc
@@ -46,14 +57,16 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
       Some
         (match calling_session with
         | None ->
-            Headers.error_json ~status:`Unauthorized "broker token required"
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
         | Some source -> (
             match Authentication.valid_json_content request with
-            | Error (status, message) -> Headers.error_json ~status message
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
             | Ok () -> (
                 let json = read_body () |> Yojson.Safe.from_string in
                 match Broker.accept_peer_subscription manager ~source json with
-                | Error message -> Headers.error_json ~status:`Conflict message
+                | Error message -> Headers.error_json (conflict message)
                 | Ok (subscription, duplicate) ->
                     Headers.respond_json ~status:`Accepted
                       (`Assoc
@@ -66,21 +79,22 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
       Some
         (match calling_session with
         | None ->
-            Headers.error_json ~status:`Unauthorized "broker token required"
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
         | Some source -> (
             match Authentication.valid_json_content request with
-            | Error (status, message) -> Headers.error_json ~status message
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
             | Ok () -> (
                 let json = read_body () |> Yojson.Safe.from_string in
                 match Broker.send_peer_request ~net manager ~source json with
-                | Error message -> Headers.error_json ~status:`Conflict message
+                | Error message -> Headers.error_json (conflict message)
                 | Ok (peer_request, duplicate) -> (
                     match
                       Broker.wait_for_peer_response ~net ~clock manager ~source
                         peer_request
                     with
-                    | Error message ->
-                        Headers.error_json ~status:`Service_unavailable message
+                    | Error message -> Headers.error_json (upstream message)
                     | Ok response ->
                         Headers.respond_json
                           (`Assoc
@@ -93,10 +107,12 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
       Some
         (match calling_session with
         | None ->
-            Headers.error_json ~status:`Unauthorized "broker token required"
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
         | Some source -> (
             match Authentication.valid_json_content request with
-            | Error (status, message) -> Headers.error_json ~status message
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
             | Ok () ->
                 let json = read_body () |> Yojson.Safe.from_string in
                 let open Yojson.Safe.Util in
@@ -117,11 +133,16 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
                 in
                 if request_ids = [] || List.length request_ids > 64 then
                   Headers.error_json
-                    "requestIds must contain between 1 and 64 identities"
+                    (validation ~field:"requestIds"
+                       "requestIds must contain between 1 and 64 identities")
                 else if timeout < 0. || timeout > 600. then
-                  Headers.error_json "timeoutSeconds must be between 0 and 600"
+                  Headers.error_json
+                    (validation ~field:"timeoutSeconds"
+                       "timeoutSeconds must be between 0 and 600")
                 else if not (List.mem wait_for [ "any"; "all" ]) then
-                  Headers.error_json "waitFor must be 'any' or 'all'"
+                  Headers.error_json
+                    (validation ~field:"waitFor"
+                       "waitFor must be 'any' or 'all'")
                 else
                   let finished, pending =
                     Broker.collect_peer_requests ~net ~clock manager ~source
@@ -150,25 +171,27 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
            Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
              request
          with
-        | Error (status, message) -> Headers.error_json ~status message
+        | Error (status, message) ->
+            Headers.error_json ~status (authentication_error status message)
         | Ok () -> (
             ignore (read_body ());
             match Registry.find_workspace manager.registry id with
             | None ->
-                Headers.error_json ~status:`Not_found "workspace not found"
+                Headers.error_json
+                  (Error.Not_found { resource = "workspace"; id })
             | Some workspace ->
                 let session_count =
                   Registry.workspace_session_count manager.registry id
                 in
                 if session_count > 0 then
-                  Headers.error_json ~status:`Conflict
-                    (Printf.sprintf
-                       "Delete %d %s first, including archived sessions"
-                       session_count
-                       (if session_count = 1 then "session" else "sessions"))
+                  Headers.error_json
+                    (conflict
+                       (Printf.sprintf
+                          "Delete %d %s first, including archived sessions"
+                          session_count
+                          (if session_count = 1 then "session" else "sessions")))
                 else if not (Registry.remove_workspace manager.registry id) then
-                  Headers.error_json ~status:`Conflict
-                    "workspace was not removed"
+                  Headers.error_json (conflict "workspace was not removed")
                 else (
                   (if String.equal manager.default_workspace_id id then
                      match Registry.list_workspaces manager.registry with
@@ -196,7 +219,8 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
            Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
              request
          with
-        | Error (status, message) -> Headers.error_json ~status message
+        | Error (status, message) ->
+            Headers.error_json ~status (authentication_error status message)
         | Ok () -> (
             let json = read_body () |> Yojson.Safe.from_string in
             let open Yojson.Safe.Util in
@@ -204,14 +228,16 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
               match member "path" json with `String value -> value | _ -> ""
             in
             match Workspaces.canonical_directory requested_path with
-            | None -> Headers.error_json "Choose an existing local directory"
+            | None ->
+                Headers.error_json
+                  (validation ~field:"path" "Choose an existing local directory")
             | Some path
               when not
                      (List.exists
                         (fun root -> Workspaces.path_within ~root path)
                         manager.workspace_discovery_roots) ->
-                Headers.error_json ~status:`Forbidden
-                  "Directory is outside the approved local roots"
+                Headers.error_json
+                  (forbidden "Directory is outside the approved local roots")
             | Some path ->
                 let workspace =
                   match
@@ -247,7 +273,8 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
            Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
              request
          with
-        | Error (status, message) -> Headers.error_json ~status message
+        | Error (status, message) ->
+            Headers.error_json ~status (authentication_error status message)
         | Ok () -> (
             let json = read_body () |> Yojson.Safe.from_string in
             let open Yojson.Safe.Util in
@@ -275,14 +302,15 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
             | Ok session ->
                 Headers.respond_json ~status:`Created
                   (Registry.session_to_yojson session)
-            | Error message -> Headers.error_json ~status:`Conflict message))
+            | Error message -> Headers.error_json (conflict message)))
   | Routes.Post_session_action action ->
       Some
         (match
            Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
              request
          with
-        | Error (status, message) -> Headers.error_json ~status message
+        | Error (status, message) ->
+            Headers.error_json ~status (authentication_error status message)
         | Ok () -> (
             let request_body = read_body () in
             match action with
@@ -290,12 +318,12 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
                 match Workers.archive_managed_session manager id with
                 | Ok () ->
                     Headers.respond_json (`Assoc [ ("archived", `Bool true) ])
-                | Error message -> Headers.error_json ~status:`Conflict message)
+                | Error message -> Headers.error_json (conflict message))
             | Routes.Restore id -> (
                 match Workers.restore_managed_session manager id with
                 | Ok () ->
                     Headers.respond_json (`Assoc [ ("restored", `Bool true) ])
-                | Error message -> Headers.error_json ~status:`Conflict message)
+                | Error message -> Headers.error_json (conflict message))
             | Routes.Rename id ->
                 let json = Yojson.Safe.from_string request_body in
                 let title =
@@ -304,10 +332,13 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
                 in
                 if not (Lifecycle.valid_title title) then
                   Headers.error_json
-                    "title must contain between 1 and 120 characters"
+                    (validation ~field:"title"
+                       "title must contain between 1 and 120 characters")
                 else if Registry.rename_session manager.registry id title then
                   Headers.respond_json
                     (`Assoc
                        [ ("renamed", `Bool true); ("title", `String title) ])
-                else Headers.error_json ~status:`Not_found "session not found"))
+                else
+                  Headers.error_json
+                    (Error.Not_found { resource = "session"; id })))
   | _ -> None

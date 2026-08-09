@@ -306,10 +306,18 @@ let run ~env (args : Config.args) =
       try
         let json = read_json reader in
         Wire.request_of_yojson json
+        |> Result.map_error (fun reason ->
+            Error.Validation { field = "request"; reason })
       with
-      | Yojson.Json_error message -> Error ("invalid JSON: " ^ message)
-      | Eio.Buf_read.Buffer_limit_exceeded -> Error "worker frame is too large"
-      | exn -> Error (Printexc.to_string exn)
+      | Yojson.Json_error message ->
+          Error
+            (Error.Validation
+               { field = "request"; reason = "invalid JSON: " ^ message })
+      | Eio.Buf_read.Buffer_limit_exceeded ->
+          Error
+            (Error.Validation
+               { field = "request"; reason = "worker frame is too large" })
+      | exn -> Error (Error.Internal { message = Printexc.to_string exn })
     in
     match receive () with
     | Ok (Wire.Hello _ as hello) -> (
@@ -322,13 +330,19 @@ let run ~env (args : Config.args) =
             | Ok request ->
                 Protocol.handle state request
                 |> Wire.response_to_yojson |> write_json flow
-            | Error message ->
-                write_json flow (Wire.response_to_yojson (Error message))))
+            | Error error ->
+                write_json flow (Wire.response_to_yojson (Error error))))
     | Ok _ ->
         write_json flow
           (Wire.response_to_yojson
-             (Error "hello must be the first request on a worker connection"))
-    | Error message -> write_json flow (Wire.response_to_yojson (Error message))
+             (Error
+                (Error.Validation
+                   {
+                     field = "op";
+                     reason =
+                       "hello must be the first request on a worker connection";
+                   })))
+    | Error error -> write_json flow (Wire.response_to_yojson (Error error))
   in
   let net = Eio.Stdenv.net env in
   (try Unix.unlink args.socket_path

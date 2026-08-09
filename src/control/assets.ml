@@ -1,5 +1,7 @@
 (* Static asset serving for the browser shell. *)
 
+open Piss_core
+
 let safe_asset_path root resource =
   match resource with
   | "/" -> Some (Filename.concat root "index.html", "text/html; charset=utf-8")
@@ -29,4 +31,5 @@ let serve path content_type =
     Cohttp_eio.Server.respond_string ~status:`OK
       ~headers:(Headers.text_headers content_type)
       ~body ()
-  with Sys_error _ -> Headers.error_json ~status:`Not_found "asset not found"
+  with Sys_error _ ->
+    Headers.error_json (Error.Not_found { resource = "asset"; id = path })

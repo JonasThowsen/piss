@@ -3,6 +3,15 @@
 open Cohttp
 open Piss_core
 
+let validation ?(field = "request") reason = Error.Validation { field; reason }
+let conflict reason = Error.Conflict { reason }
+let forbidden reason = Error.Forbidden { reason }
+let upstream message = Error.Upstream_unavailable { message }
+let internal message = Error.Internal { message }
+
+let authentication_error status reason =
+  match status with `Forbidden -> forbidden reason | _ -> validation reason
+
 let read_body body =
   Eio.Buf_read.of_flow body ~max_size:Config.max_body_bytes
   |> Eio.Buf_read.take_all
@@ -20,15 +29,21 @@ let worker_socket workers session_id =
   match workers with
   | Config.Fixed path -> Ok path
   | Managed manager ->
-      Result.map
-        (fun (session : Registry.session) ->
-          Lifecycle.session_socket manager.runtime_root session.id)
+      Result.map_error
+        (fun _ ->
+          Error.Not_found
+            {
+              resource = "active session";
+              id = Option.value session_id ~default:"";
+            })
         (Workers.active_session manager session_id)
+      |> Result.map (fun (session : Registry.session) ->
+          Lifecycle.session_socket manager.runtime_root session.id)
 
 let with_worker workers session_id operation =
   match worker_socket workers session_id with
   | Ok socket -> operation socket
-  | Error message -> Error message
+  | Error error -> Error error
 
 let handler ~net ~clock ~env _socket request body =
   let workers = env.Config.workers in
@@ -51,8 +66,9 @@ let handler ~net ~clock ~env _socket request body =
       && not (Authentication.authorized ~allowed_users ~dev_bypass request)
     then
       Headers.error_json ~status:`Unauthorized
-        (if is_broker_path then "session broker token is not authorized"
-         else "Tailscale identity is not authorized")
+        (forbidden
+           (if is_broker_path then "session broker token is not authorized"
+            else "Tailscale identity is not authorized"))
     else
       let route =
         match
@@ -93,23 +109,21 @@ let handler ~net ~clock ~env _socket request body =
                       (`Assoc [ ("op", `String "snapshot") ]))
               with
               | Ok snapshot -> Headers.respond_json snapshot
-              | Error message ->
-                  Headers.error_json ~status:`Service_unavailable message)
+              | Error error -> Headers.error_json error)
           | Routes.Get_file_mentions { session_id; query } -> (
               let request =
                 `Assoc
                   [ ("op", `String "file_search"); ("query", `String query) ]
               in
               match Wire.request_of_yojson request with
-              | Error message -> Headers.error_json message
+              | Error message -> Headers.error_json (validation message)
               | Ok _ -> (
                   match
                     with_worker workers session_id (fun socket ->
                         Worker_client.request ~net ~socket request)
                   with
                   | Ok mentions -> Headers.respond_json mentions
-                  | Error message ->
-                      Headers.error_json ~status:`Service_unavailable message))
+                  | Error error -> Headers.error_json error))
           | Routes.Get_config_options { session_id } -> (
               match
                 with_worker workers session_id (fun socket ->
@@ -117,14 +131,15 @@ let handler ~net ~clock ~env _socket request body =
                       (`Assoc [ ("op", `String "config_options") ]))
               with
               | Ok options -> Headers.respond_json options
-              | Error message ->
-                  Headers.error_json ~status:`Service_unavailable message)
+              | Error error -> Headers.error_json error)
           | Routes.Post_config_options { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
               with
-              | Error (status, message) -> Headers.error_json ~status message
+              | Error (status, message) ->
+                  Headers.error_json ~status
+                    (authentication_error status message)
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
                   match
@@ -143,14 +158,13 @@ let handler ~net ~clock ~env _socket request body =
                                  ]))
                       with
                       | Ok result -> Headers.respond_json result
-                      | Error message ->
-                          Headers.error_json ~status:`Conflict message)
-                  | _ -> Headers.error_json "configId and value must be strings"
-                  ))
+                      | Error error -> Headers.error_json error)
+                  | _ ->
+                      Headers.error_json
+                        (validation "configId and value must be strings")))
           | Routes.Get_event_stream { session_id; after } -> (
               match worker_socket workers session_id with
-              | Error message ->
-                  Headers.error_json ~status:`Service_unavailable message
+              | Error error -> Headers.error_json error
               | Ok socket ->
                   (* TODO(tracer): Add a worker-side wait_events primitive
                      before supporting many concurrent observers per session;
@@ -167,7 +181,7 @@ let handler ~net ~clock ~env _socket request body =
                     with
                     | Ok (`List events) -> Ok events
                     | Ok _ -> Error "worker returned an invalid event page"
-                    | Error message -> Error message
+                    | Error error -> Error (Error.to_string error)
                   in
                   let stream =
                     Event_stream.source ~fetch ~after
@@ -201,14 +215,15 @@ let handler ~net ~clock ~env _socket request body =
                     Worker_client.request ~net ~socket worker_request)
               with
               | Ok events -> Headers.respond_json events
-              | Error message ->
-                  Headers.error_json ~status:`Service_unavailable message)
+              | Error error -> Headers.error_json error)
           | Routes.Post_session_new -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
               with
-              | Error (status, message) -> Headers.error_json ~status message
+              | Error (status, message) ->
+                  Headers.error_json ~status
+                    (authentication_error status message)
               | Ok () -> (
                   ignore (read_body body);
                   match workers with
@@ -222,8 +237,7 @@ let handler ~net ~clock ~env _socket request body =
                       | Ok session ->
                           Headers.respond_json ~status:`Created
                             (Registry.session_to_yojson session)
-                      | Error message ->
-                          Headers.error_json ~status:`Conflict message)
+                      | Error message -> Headers.error_json (conflict message))
                   | Fixed socket -> (
                       match
                         Worker_client.request ~net ~socket
@@ -231,14 +245,15 @@ let handler ~net ~clock ~env _socket request body =
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Created result
-                      | Error message ->
-                          Headers.error_json ~status:`Conflict message)))
+                      | Error error -> Headers.error_json error)))
           | Routes.Post_commands { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
               with
-              | Error (status, message) -> Headers.error_json ~status message
+              | Error (status, message) ->
+                  Headers.error_json ~status
+                    (authentication_error status message)
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
                   let open Yojson.Safe.Util in
@@ -270,7 +285,7 @@ let handler ~net ~clock ~env _socket request body =
                       else [ ("action", `String action) ])
                   in
                   match Wire.request_of_yojson worker_json with
-                  | Error message -> Headers.error_json message
+                  | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
                         with_worker workers session_id (fun socket ->
@@ -278,15 +293,15 @@ let handler ~net ~clock ~env _socket request body =
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Accepted result
-                      | Error message ->
-                          Headers.error_json ~status:`Service_unavailable
-                            message)))
+                      | Error error -> Headers.error_json error)))
           | Routes.Post_cancel { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
               with
-              | Error (status, message) -> Headers.error_json ~status message
+              | Error (status, message) ->
+                  Headers.error_json ~status
+                    (authentication_error status message)
               | Ok () -> (
                   ignore (read_body body);
                   match
@@ -295,14 +310,15 @@ let handler ~net ~clock ~env _socket request body =
                           (`Assoc [ ("op", `String "cancel") ]))
                   with
                   | Ok result -> Headers.respond_json ~status:`Accepted result
-                  | Error message ->
-                      Headers.error_json ~status:`Conflict message))
+                  | Error error -> Headers.error_json error))
           | Routes.Post_permissions { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
               with
-              | Error (status, message) -> Headers.error_json ~status message
+              | Error (status, message) ->
+                  Headers.error_json ~status
+                    (authentication_error status message)
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
                   let open Yojson.Safe.Util in
@@ -326,14 +342,15 @@ let handler ~net ~clock ~env _socket request body =
                              ]))
                   with
                   | Ok result -> Headers.respond_json result
-                  | Error message ->
-                      Headers.error_json ~status:`Conflict message))
+                  | Error error -> Headers.error_json error))
           | Routes.Get_app_js ->
               Assets.serve app_js "text/javascript; charset=utf-8"
           | Routes.Get_asset resource -> (
               match Assets.safe_asset_path public_dir resource with
               | Some (path, content_type) -> Assets.serve path content_type
-              | None -> Headers.error_json ~status:`Not_found "not found")
+              | None ->
+                  Headers.error_json
+                    (Error.Not_found { resource = "asset"; id = resource }))
           | Routes.Method_not_allowed { method_; path } ->
               let method_name =
                 match method_ with
@@ -349,7 +366,8 @@ let handler ~net ~clock ~env _socket request body =
                 | `Other value -> value
               in
               Headers.error_json ~status:`Method_not_allowed
-                (method_name ^ " not allowed for " ^ path)
+                (validation ~field:"method"
+                   (method_name ^ " not allowed for " ^ path))
           | Routes.Get_broker_sessions | Routes.Post_broker_send
           | Routes.Post_broker_subscribe | Routes.Post_broker_ask
           | Routes.Post_broker_collect | Routes.Get_workspaces
@@ -358,13 +376,13 @@ let handler ~net ~clock ~env _socket request body =
           | Routes.Post_sessions | Routes.Post_session_action _ ->
               assert false)
   with
-  | Eio.Io _ as exn ->
-      Headers.error_json ~status:`Service_unavailable (Printexc.to_string exn)
+  | Eio.Io _ as exn -> Headers.error_json (upstream (Printexc.to_string exn))
   | Eio.Buf_read.Buffer_limit_exceeded ->
       Headers.error_json ~status:`Request_entity_too_large
-        "request body is too large"
-  | Yojson.Json_error message -> Headers.error_json ("invalid JSON: " ^ message)
-  | Yojson.Safe.Util.Type_error (message, _) -> Headers.error_json message
-  | Invalid_argument message -> Headers.error_json message
-  | exn ->
-      Headers.error_json ~status:`Internal_server_error (Printexc.to_string exn)
+        (validation ~field:"body" "request body is too large")
+  | Yojson.Json_error message ->
+      Headers.error_json (validation ("invalid JSON: " ^ message))
+  | Yojson.Safe.Util.Type_error (message, _) ->
+      Headers.error_json (validation message)
+  | Invalid_argument message -> Headers.error_json (validation message)
+  | exn -> Headers.error_json (internal (Printexc.to_string exn))

@@ -2,6 +2,10 @@
  (name core_test)
  (libraries piss.core alcotest unix))
 
+(test
+ (name error_test)
+ (libraries piss.core alcotest))
+
 (rule
  (alias interaction-test)
  (deps

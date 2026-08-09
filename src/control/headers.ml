@@ -1,5 +1,7 @@
 (* HTTP response helpers and security headers for the control plane. *)
 
+open Piss_core
+
 let security_headers =
   [
     ("cache-control", "no-store");
@@ -30,5 +32,19 @@ let respond_json ?(status = `OK) json =
     ~body:(Yojson.Safe.to_string json)
     ()
 
-let error_json ?(status = `Bad_request) message =
-  respond_json ~status (`Assoc [ ("error", `String message) ])
+let status_of_error = function
+  | Error.Not_found _ -> `Not_found
+  | Error.Forbidden _ -> `Forbidden
+  | Error.Conflict _ -> `Conflict
+  | Error.Upstream_unavailable _ -> `Service_unavailable
+  | Error.Validation _ -> `Bad_request
+  | Error.Internal _ -> `Internal_server_error
+
+let error_json ?status error =
+  let status = Option.value status ~default:(status_of_error error) in
+  respond_json ~status
+    (`Assoc
+       [
+         ("error", `String (Error.to_string error));
+         ("errorDetails", Error.to_yojson error);
+       ])
