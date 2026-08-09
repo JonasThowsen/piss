@@ -1,7 +1,6 @@
-(* Pure domain types for the PISS control plane, worker, and browser shell.
-   Every type and value here is the public API contract between backend and
-   frontend; anything in this module must be importable from a Melange
-   compilation unit and must not perform IO.
+(* Pure domain types for the PISS control plane and worker. These values define
+   the wire contract projected to the separately compiled browser application;
+   this module must not perform IO.
 
    Types are concrete where the caller needs to pattern-match (event, snapshot,
    command_state, worker_status). They are abstract by wrapping in a

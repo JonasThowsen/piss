@@ -11,7 +11,7 @@ The defining guarantee is **control-plane replaceability**:
 
 > While an agent is executing a tool, the PISS API/control-plane process can be killed and replaced. The agent and tool processes keep their PIDs, output is durably buffered, the replacement control plane reconstructs the session, and no accepted command is executed twice.
 
-The backend and browser application are written in OCaml. Native services compile with OCaml 5 and Dune. Browser code compiles from OCaml/Reason through Melange and Dune. The first harness integration uses ACP; Pi may be reached through an ACP adapter while remaining replaceable.
+The backend and browser application are written in OCaml. Native services compile with OCaml 5.5 and Dune. The browser uses Bonsai and js_of_ocaml in a separate Nix-pinned OCaml 5.2 shell. The first harness integration uses ACP; Pi may be reached through an ACP adapter while remaining replaceable.
 
 ## 2. Product boundary
 
@@ -132,7 +132,7 @@ No input-controlled collection may grow without a configured bound.
 ## 4. Process architecture
 
 ```text
-Browser (OCaml/Melange)
+Browser (OCaml/Bonsai/js_of_ocaml)
         |
         | HTTPS + server events
         v
@@ -287,13 +287,13 @@ Initial API:
 
 All mutations require same-origin HTTPS in production, authenticated Tailscale identity, content-type validation, bounded bodies, and mutation IDs.
 
-The OCaml/Melange browser application is compiled by Dune. It preserves the current mobile-first product direction and accessibility boundary. Frontend migrations are vertical by workflow; the existing React application remains reference behavior until each replacement path is verified.
+The OCaml/Bonsai browser application is compiled to JavaScript by Dune and js_of_ocaml in the OCaml 5.2 web shell. It preserves the mobile-first product direction and accessibility boundary.
 
 ## 9. Update protocol
 
 ### 9.1 Browser assets
 
-Browser assets are content-addressed and independently replaceable. A service worker caches only immutable shell assets. API responses and private data are never cached. Activation never reloads a focused tab without an explicit local update action.
+Browser assets are versioned with the immutable Nix package generation and are independently replaceable with the control plane. The browser application does not cache API responses or private data.
 
 ### 9.2 Control plane
 
@@ -406,17 +406,19 @@ The canonical replaceability test records PIDs, starts a 60-second tool, force-k
 - no pending permission was auto-resolved;
 - all retained state stays within configured bounds.
 
-## 13. Delivery slices
+## 13. Historical delivery slices
+
+This section records the original tracer-bullet migration plan. It is historical context, not current build guidance.
 
 ### Slice 0 — repository and reproducible toolchain
 
-- OCaml 5, Dune, formatter, tests, Melange, and required libraries pinned by Nix.
-- `dune build @all`, tests, and frontend emission run in the dev shell.
-- Existing TypeScript implementation remains buildable during migration.
+- Native OCaml, Dune, formatters, tests, and required libraries were pinned by Nix.
+- Browser dependencies were isolated in a separate Nix shell.
+- During this historical migration checkpoint, the previous TypeScript implementation remained buildable.
 
 ### Slice 1 — replaceability tracer
 
-Observable behavior: one mock ACP session continues a long-running tool while `pissd` is killed and replaced; an OCaml/Melange browser reconnects and shows buffered completion.
+Observable behavior: one mock ACP session continues a long-running tool while `pissd` is killed and replaced; the OCaml browser reconnects and shows buffered completion.
 
 This slice includes real native binaries, SQLite, local transport, HTTP/event stream, and process tests. It may use a fixed mock harness and one fixed workspace.
 
@@ -475,7 +477,7 @@ The rewrite cannot replace the current implementation until all are true:
 ## 16. Decision record
 
 - **Language:** OCaml for native services and shared domain logic.
-- **Browser language:** OCaml or Reason syntax compiled by Melange through Dune.
+- **Browser language:** OCaml with Bonsai, compiled by js_of_ocaml through Dune in the OCaml 5.2 web shell.
 - **Concurrency:** structured concurrency within a process; OS supervision between lifecycle domains.
 - **Persistence:** SQLite WAL with one explicit owning process per database.
 - **Harness boundary:** ACP baseline plus negotiated capabilities; MCP/PISS extensions for specialized features.

@@ -144,14 +144,14 @@ let () =
   let command =
     match
       Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text" ~images:[]
-        ~resources:[ { path = "web/App.re" } ]
+        ~resources:[ { path = "web/main.ml" } ]
     with
     | Ok command -> command
     | Error message -> fail message
   in
   let expected =
     Yojson.Safe.from_string
-      {|{"commandId":"web-uuid","text":"plain text","images":[],"resources":[{"path":"web/App.re"}],"action":"prompt"}|}
+      {|{"commandId":"web-uuid","text":"plain text","images":[],"resources":[{"path":"web/main.ml"}],"action":"prompt"}|}
   in
   if not (Yojson.Safe.equal expected (Prompt_command.to_yojson command)) then
     fail "prompt encoder emitted the wrong wire contract";

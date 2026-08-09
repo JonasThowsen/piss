@@ -1,8 +1,8 @@
-# PISS architecture
+# Historical TypeScript architecture
 
-Status: **accepted and implemented foundation**.
+Status: **historical reference for the retired TypeScript/Effect/React implementation under `legacy/`; it is not built or deployed.**
 
-PISS is the primary interface and lifecycle owner for Pi. Pi remains the coding harness and durable session format; PISS adds secure remote ownership, supervision, organization, and a browser interface.
+This document records the architecture that preceded the canonical OCaml implementation described in `docs/OCAML-REWRITE.md`.
 
 ## Product boundary
 
@@ -106,5 +106,5 @@ command dispatch.
 - Runtime-targeted commands include a generation token, and accepted command IDs are bounded and persisted.
 - Image type, signature, count, and aggregate size are validated before RPC delivery.
 - Git review uses fixed commands in a bounded, networkless Bubblewrap sandbox.
-- API responses and private runtime data are never cached by the service worker.
+- API responses and private runtime data are not cached by the browser application.
 - Tailscale Funnel and direct public exposure are unsupported.

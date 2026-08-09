@@ -1,7 +1,8 @@
 # PISS OCaml design notes
 
-Status: **proposal — to be implemented slice by slice.**
-Scope: the OCaml/Melange rewrite under `src/` and `web/`.
+Status: **historical design record; the rewrite has advanced beyond this proposal.**
+Scope: the native OCaml 5.5 services under `src/` and the OCaml 5.2
+Bonsai/js_of_ocaml application under `web/`.
 Companion to `OCAML-REWRITE.md` (which describes *what* to build) and
 `ARCHITECTURE.md` (which describes the system *boundaries*); this
 document focuses on *how to write the OCaml*.
@@ -611,9 +612,8 @@ Each step is independent and reviewable in isolation:
     big `.mli` files.
 11. **`Error` module across the wire protocol + HTTP** — typed
     errors.
-12. **`web/`** — same discipline applies; `Types.re` should have a
-    `.rei` (Reason interface) file documenting each type and the
-    accessor it lives behind.
+12. **`web/`** — same discipline applies; browser modules expose `.mli`
+    interfaces where a public contract benefits from one.
 
 The `.mli` files come first because they let reviewers catch the
 *public* mistakes before the implementation drift hides them.
@@ -624,9 +624,9 @@ The `.mli` files come first because they let reviewers catch the
   introducing `let*`/`>>=` would be a regression.
 - **No GADTs.** The wire types are simple enums; GADTs would buy us
   nothing and cost us readability.
-- **No ppx rewriters in the control plane.** The Melange ppx is
-  needed for React bindings, but nothing in `src/` should depend
-  on a ppx.
+- **No ppx rewriters in the control plane.** Bonsai and Jane Street ppx
+  rewriters stay confined to the browser build; `src/` does not depend on
+  them.
 - **No first-class modules except where the type system needs
   them.** Module-dependent functions in OCaml 5.5 are the better
   tool when the module is static at the call site. We only fall back
@@ -648,5 +648,5 @@ The `.mli` files come first because they let reviewers catch the
 - [Base/Core library conventions](https://opensource.janestreet.com/core_patterns.html) — module-per-type, `t` first, uniform
   interfaces (§2.1, §2.5).
 - `docs/OCAML-REWRITE.md` — the slice plan this design enables.
-- `docs/ARCHITECTURE.md` — the system boundaries this design
-  enforces.
+- `docs/ARCHITECTURE.md` — the historical TypeScript architecture that
+  preceded this design.

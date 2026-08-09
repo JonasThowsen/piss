@@ -1,10 +1,10 @@
 # PISS — OCaml implementation
 
-This directory contains the OCaml/Melange rewrite of PISS. The boundaries
+This directory contains the native OCaml 5.5 services for PISS. The boundaries
 are real:
 
 ```text
-Reason/Melange browser
+OCaml/Bonsai/js_of_ocaml browser
         |
         | authenticated same-origin HTTP + resumable SSE
         v
@@ -70,7 +70,7 @@ src/
 
 ## Current user workflow
 
-The deployed Reason application provides:
+The deployed Bonsai application provides:
 
 - durable allowlisted workspaces with current-style responsive navigation,
   safe removal of empty workspace registrations, and a bounded
@@ -122,7 +122,9 @@ to reattach to its harness session and replay conversation history.
 
 ## Build and test
 
-The Nix development shell provides OCaml 5.5 and all project dependencies:
+The default Nix development shell provides OCaml 5.5, the native project
+dependencies, Playwright, and Chromium. Browser builds use the separate OCaml
+5.2 `.#web` shell:
 
 ```bash
 just build          # native OCaml 5.5 and Bonsai OCaml 5.2 builds

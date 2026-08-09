@@ -17,10 +17,10 @@ let resource path =
   }
 
 let () =
-  let mention = active "Review @App before" 11 in
+  let mention = active "Review @main before" 12 in
   if
-    mention.start <> 7 || mention.stop <> 11
-    || not (String.equal mention.query "App")
+    mention.start <> 7 || mention.stop <> 12
+    || not (String.equal mention.query "main")
   then fail "current mention bounds were parsed incorrectly";
   let quoted = active "first\nOpen @\"dir/a f" 20 in
   if not (String.equal quoted.query "dir/a f") then
@@ -43,13 +43,13 @@ let () =
   if (not (String.equal trigger.text "review @ now")) || trigger.cursor <> 8
   then fail "toolbar insertion did not preserve prefix and suffix";
   let insertion =
-    Mention_picker.insert_resource ~text:"Review @App before" ~active:mention
-      ~path:"web/App.re"
+    Mention_picker.insert_resource ~text:"Review @main before" ~active:mention
+      ~path:"web/main.ml"
   in
   (match insertion with
   | Some insertion
-    when String.equal insertion.text "Review @web/App.re before"
-         && insertion.cursor = 18 ->
+    when String.equal insertion.text "Review @web/main.ml before"
+         && insertion.cursor = 19 ->
       ()
   | _ -> fail "plain mention insertion did not preserve surrounding text");
   let spaced = active "Read @\"old" 10 in
@@ -61,14 +61,15 @@ let () =
     when String.equal insertion.text "Read @\"docs/my file.md\" next" ->
       ()
   | _ -> fail "spaced path was not quoted during insertion");
-  let first = resource "web/App.re" and second = resource "README.md" in
+  let first = resource "web/main.ml" and second = resource "README.md" in
   let selected =
     Mention_picker.add_resource [] first |> fun resources ->
     Mention_picker.add_resource resources first |> fun resources ->
     Mention_picker.add_resource resources second
   in
   let kept =
-    Mention_picker.reconcile ~text:"Review @web/App.re, not @README.md" selected
+    Mention_picker.reconcile ~text:"Review @web/main.ml, not @README.md"
+      selected
   in
   if
     not
@@ -78,22 +79,22 @@ let () =
   then fail "resource reconciliation did not require an exact mention token";
   let decoded =
     Mention_picker.decode_response
-      {|[{"path":"web/App.re","name":"App.re","kind":"file","size":42}]|}
+      {|[{"path":"web/main.ml","name":"main.ml","kind":"file","size":42}]|}
   in
   (match decoded with
   | Ok [ item ]
-    when String.equal item.path "web/App.re"
-         && String.equal item.name "App.re"
+    when String.equal item.path "web/main.ml"
+         && String.equal item.name "main.ml"
          && item.size = 42 ->
       ()
   | _ -> fail "valid mention response was not decoded");
   let picker =
     Mention_picker.loading mention ~generation:7 |> fun picker ->
     Mention_picker.resolve picker ~generation:7
-      [ resource "legacy/web/src/App.tsx"; first ]
+      [ resource "examples/main.mli"; first ]
   in
   (match Mention_picker.selected_resource picker with
-  | Some item when String.equal item.path "web/App.re" -> ()
+  | Some item when String.equal item.path "web/main.ml" -> ()
   | _ -> fail "picker did not rank the closest basename first");
   List.iter
     [

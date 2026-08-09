@@ -4,7 +4,9 @@ const [url, workspace] = process.argv.slice(2);
 if (!url || !workspace) throw new Error("browser test URL and workspace are required");
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(`${workspace}/node_modules/playwright-core`);
+const playwrightCorePath = process.env.PLAYWRIGHT_CORE_PATH;
+if (!playwrightCorePath) throw new Error("PLAYWRIGHT_CORE_PATH is required");
+const { chromium } = require(playwrightCorePath);
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 if (!executablePath) throw new Error("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is required");
 

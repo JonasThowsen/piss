@@ -9,5 +9,6 @@
 (library
  (name piss_core)
  (public_name piss.core)
+ (private_modules registry_support)
  (libraries piss.shared yojson sqlite3 unix)
  (wrapped true))

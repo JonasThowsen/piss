@@ -4,7 +4,7 @@
 
 **PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
 
-The repository is the OCaml/Melange rewrite. The previous TypeScript/Effect implementation is preserved under `legacy/` for reference only — it is not built or deployed.
+The repository is the OCaml implementation. The previous TypeScript/Effect implementation is preserved under `legacy/` for historical reference only; it is not built or deployed.
 
 PISS is designed to run on **NixOS + Tailscale**. The flake packages the application; the host configuration owns the service and network policy:
 
@@ -25,10 +25,10 @@ src/                OCaml native services
   session_mcp/      piss-session-mcp (collaboration broker)
   mock_agent/       piss-mock-agent (deterministic ACP fixture)
   test/             unit + shell-driven integration tests
-web/                OCaml/Reason/Melange browser shell
+web/                OCaml/Bonsai/js_of_ocaml browser application
 legacy/             previous TypeScript implementation (not built)
 justfile            canonical development recipes
-flake.nix           OCaml 5.5 development shell and PISS package
+flake.nix           OCaml 5.5 native shell, OCaml 5.2 web shell, and packages
 ```
 
 ## Install on NixOS
@@ -59,10 +59,6 @@ The package contains `pissd`, `piss-session-worker`, `piss-session-mcp`, and `pi
 
 Pi, OpenCode, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building PISS rather than becoming a second NixOS configuration framework.
 
-### 3. Install the PWA
-
-Open the HTTPS URL and choose **Install app** or **Add to Home Screen**. The service worker caches only fixed application-shell assets; private API and session data are never cached.
-
 ## Updating
 
 ```bash
@@ -79,13 +75,14 @@ The host configuration decides when to restart the control plane and how to repl
 git clone https://github.com/JonasThowsen/piss
 cd piss
 nix develop                # OCaml 5.5 server shell
-npm ci                     # temporary Playwright driver for browser integration tests
 just build                 # native OCaml 5.5 and Bonsai OCaml 5.2 builds
 just serve                 # run the control plane locally with sensible defaults
 just worker                # run a single session worker pointed at the mock agent
 ```
 
 `just serve` binds the control plane to loopback and enables the local identity bypass (`--dev-bypass-auth`). Production refuses that bypass.
+
+The default shell also provides Nix-pinned Playwright and Chromium for browser integration tests. Browser compilation runs in the separate `.#web` shell because the current Bonsai package set uses OCaml 5.2.
 
 Common recipes:
 

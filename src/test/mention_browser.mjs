@@ -3,7 +3,9 @@ import { createRequire } from "node:module";
 const [url, workspace] = process.argv.slice(2);
 if (!url || !workspace) throw new Error("browser test URL and workspace are required");
 const require = createRequire(import.meta.url);
-const { chromium } = require(`${workspace}/node_modules/playwright-core`);
+const playwrightCorePath = process.env.PLAYWRIGHT_CORE_PATH;
+if (!playwrightCorePath) throw new Error("PLAYWRIGHT_CORE_PATH is required");
+const { chromium } = require(playwrightCorePath);
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 if (!executablePath) throw new Error("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is required");
 
@@ -17,7 +19,7 @@ try {
     if (message.type() === "error") errors.push(`desktop console: ${message.text()}`);
   });
   desktop.on("pageerror", (error) => errors.push(`desktop page: ${error.message}`));
-  await desktop.goto(url, { waitUntil: "networkidle" });
+  await desktop.goto(url, { waitUntil: "domcontentloaded" });
   const agentTab = desktop.getByRole("tab", { name: "Agent" });
   const returnToAgentAfterRun = async () => {
     try {
@@ -30,18 +32,18 @@ try {
     if (await desktop.getByRole("tab", { name: "Working" }).getAttribute("aria-selected") === "true") await agentTab.click();
   };
   const textarea = desktop.getByRole("textbox", { name: "Message agent" });
-  await textarea.fill("Review @App before release");
+  await textarea.fill("Review @web/main before release");
   await textarea.evaluate((field) => {
     field.focus();
-    field.setSelectionRange(11, 11);
+    field.setSelectionRange(16, 16);
     field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
   });
-  const appOption = desktop.getByRole("option", { name: /^App\.re web\/App\.re$/ });
+  const appOption = desktop.getByRole("option", { name: /^main\.ml web\/main\.ml$/ });
   await appOption.waitFor();
   await desktop.locator("#file-mention-options").ariaSnapshot();
   await textarea.press("ArrowDown");
   await desktop.waitForFunction(
-    () => document.querySelector("#file-mention-1")?.getAttribute("aria-selected") === "true",
+    () => document.querySelector("#file-mention-0")?.getAttribute("aria-selected") === "true",
   );
   await textarea.press("ArrowUp");
   await textarea.press("Escape");
@@ -51,19 +53,22 @@ try {
   );
   await appOption.waitFor();
   await textarea.press("Enter");
-  const expected = "Review @web/App.re before release";
-  if ((await textarea.inputValue()) !== expected) throw new Error("keyboard mention insertion lost surrounding text");
+  const expected = "Review @web/main.ml before release";
+  const inserted = await textarea.inputValue();
+  if (inserted !== expected) {
+    throw new Error(`keyboard mention insertion lost surrounding text: ${JSON.stringify(inserted)}`);
+  }
   const requestPromise = desktop.waitForRequest(
     (request) => request.url().includes("/api/v2/commands") && request.method() === "POST",
   );
   await desktop.getByRole("button", { name: "Send message" }).click();
   await returnToAgentAfterRun();
   const body = (await requestPromise).postDataJSON();
-  if (body.text !== expected || body.resources?.[0]?.path !== "web/App.re") {
+  if (body.text !== expected || body.resources?.[0]?.path !== "web/main.ml") {
     throw new Error(`typed ACP resource input missing: ${JSON.stringify(body)}`);
   }
 
-  const agentResponse = "Received typed resource link: web/App.re.";
+  const agentResponse = "Received typed resource link: web/main.ml.";
   await desktop.getByText(agentResponse).waitFor({ timeout: 10000 });
   const firstTool = desktop.locator(".timeline-tool").last();
   const firstDisclosure = firstTool.locator("details.tool-disclosure");
@@ -157,16 +162,16 @@ try {
     if (message.type() === "error") errors.push(`mobile console: ${message.text()}`);
   });
   mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
-  await mobile.goto(url, { waitUntil: "networkidle" });
+  await mobile.goto(url, { waitUntil: "domcontentloaded" });
   const mobileTextarea = mobile.getByRole("textbox", { name: "Message agent" });
   await mobileTextarea.fill("Touch mention ");
   await mobile.getByRole("button", { name: "Mention a workspace file" }).tap();
-  await mobileTextarea.type("App");
-  const mobileOption = mobile.getByRole("option", { name: /^App\.re web\/App\.re$/ });
+  await mobileTextarea.type("web/main");
+  const mobileOption = mobile.getByRole("option", { name: /^main\.ml web\/main\.ml$/ });
   await mobileOption.waitFor();
   await mobile.locator("#file-mention-options").ariaSnapshot();
   await mobileOption.tap();
-  if ((await mobileTextarea.inputValue()) !== "Touch mention @web/App.re") {
+  if ((await mobileTextarea.inputValue()) !== "Touch mention @web/main.ml") {
     throw new Error("touch mention insertion failed");
   }
   if (errors.length) throw new Error(errors.join("\n"));

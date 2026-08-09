@@ -246,6 +246,7 @@
               pkgs.just
               pkgs.nodejs_24
             ];
+            PLAYWRIGHT_CORE_PATH = "${pkgs.playwright}";
             PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
           };
           web = pkgs.mkShell {

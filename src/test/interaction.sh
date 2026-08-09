@@ -58,8 +58,8 @@ updated_config=$(curl -fsS -X POST -H 'content-type: application/json' \
 snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$snapshot") == high ]]
 [[ $(jq -r '.acceptsImages' <<<"$snapshot") == true ]]
-mentions=$(curl -fsS "http://127.0.0.1:$port/api/v2/file-mentions?query=App")
-jq -e 'any(.[]; .path == "web/App.re" and .kind == "file")' \
+mentions=$(curl -fsS "http://127.0.0.1:$port/api/v2/file-mentions?query=main")
+jq -e 'any(.[]; .path == "web/main.ml" and .kind == "file")' \
   <<<"$mentions" >/dev/null
 long_query=$(python3 - <<'PY'
 print('q' * 201)
@@ -71,16 +71,16 @@ PY
   --data '{"commandId":"escaping-resource","text":"inspect","resources":[{"path":"../outside.txt"}]}' \
   "http://127.0.0.1:$port/api/v2/commands") == 400 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"resource-command","text":"Inspect @web/App.re safely","resources":[{"path":"web/App.re"}]}' \
+  --data '{"commandId":"resource-command","text":"Inspect @web/main.ml safely","resources":[{"path":"web/main.ml"}]}' \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 for _ in $(seq 1 300); do
   resource_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
   [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "resource-command" and .payload.state == "completed")] | length' <<<"$resource_events") == 1 ]] && break
   sleep .02
 done
-[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "resource-command" and .payload.resourceCount == 1 and .payload.resources[0].path == "web/App.re")] | length' <<<"$resource_events") == 1 ]]
-[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.type == "resource_link" and .payload.params.update.content.name == "web/App.re" and (.payload.params.update.content.uri | startswith("file:///")))] | length' <<<"$resource_events") == 1 ]]
-[[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk" and .payload.params.update.content.text == "Received typed resource link: web/App.re.")] | length' <<<"$resource_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "resource-command" and .payload.resourceCount == 1 and .payload.resources[0].path == "web/main.ml")] | length' <<<"$resource_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.type == "resource_link" and .payload.params.update.content.name == "web/main.ml" and (.payload.params.update.content.uri | startswith("file:///")))] | length' <<<"$resource_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk" and .payload.params.update.content.text == "Received typed resource link: web/main.ml.")] | length' <<<"$resource_events") == 1 ]]
 image_data=R0lGODlhAQABAAAAACw=
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
   --data '{"commandId":"bad-image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}' \

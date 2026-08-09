@@ -102,7 +102,7 @@ let () =
   let command =
     match
       Prompt_command.create ~action:Follow_up ~images:[ wire_image ]
-        ~resources:[ { path = "web/App.re" } ]
+        ~resources:[ { path = "web/main.ml" } ]
         ~command_id:"stable-id" ~text:""
     with
     | Ok command -> command

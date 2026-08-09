@@ -1,10 +1,5 @@
 node_modules/
 _build/
-dist/
-dist-v2/
-coverage/
-playwright-report/
-test-results/
 result
 .direnv/
 .env

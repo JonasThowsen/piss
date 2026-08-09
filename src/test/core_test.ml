@@ -555,19 +555,20 @@ let test_workspace_file_mentions () =
   with_workspace @@ fun ~parent ~root ->
   let web = Filename.concat root "web" in
   Unix.mkdir web 0o700;
-  let app = Filename.concat web "App.re" in
+  let app = Filename.concat web "main.ml" in
   write_file app "let durable = true\n";
   let outside = Filename.concat parent "outside.txt" in
   write_file outside "secret\n";
   Unix.symlink outside (Filename.concat root "escape.txt");
   Unix.mkfifo (Filename.concat root "special.pipe") 0o600;
   let mentions =
-    match Workspace_io.search ~root ~query:"App" with
+    match Workspace_io.search ~root ~query:"main" with
     | Ok mentions -> mentions
     | Error message -> Alcotest.fail message
   in
   Alcotest.(check (list string))
-    "search returns canonical workspace-relative regular files" [ "web/App.re" ]
+    "search returns canonical workspace-relative regular files"
+    [ "web/main.ml" ]
     (List.map
        (fun (mention : Workspace_files.mention) -> mention.path)
        mentions);
@@ -583,12 +584,12 @@ let test_workspace_file_mentions () =
          mention.path <> "escape.txt" && mention.path <> "special.pipe")
        all);
   let resource =
-    match Workspace_io.resolve_resource ~root ~path:"web/App.re" with
+    match Workspace_io.resolve_resource ~root ~path:"web/main.ml" with
     | Ok resource -> resource
     | Error message -> Alcotest.fail message
   in
   Alcotest.(check string)
-    "resource keeps relative display name" "web/App.re" resource.name;
+    "resource keeps relative display name" "web/main.ml" resource.name;
   Alcotest.(check bool)
     "resource uses an absolute file URI" true
     (String.starts_with ~prefix:"file:///" resource.uri);
@@ -600,7 +601,7 @@ let test_workspace_file_mentions () =
     [ "../outside.txt"; "escape.txt"; "special.pipe" ];
   let request =
     Acp.prompt_request ~delivery:None ~command_id:"resource-command"
-      ~session_id:"session" ~text:"Inspect @web/App.re" ~images:[]
+      ~session_id:"session" ~text:"Inspect @web/main.ml" ~images:[]
       ~resources:[ resource ]
   in
   let prompt =
@@ -614,7 +615,7 @@ let test_workspace_file_mentions () =
            (List.assoc_opt "type" fields)
            Yojson.Safe.Util.to_string_option);
       Alcotest.(check (option string))
-        "ACP resource link name" (Some "web/App.re")
+        "ACP resource link name" (Some "web/main.ml")
         (Option.bind
            (List.assoc_opt "name" fields)
            Yojson.Safe.Util.to_string_option)

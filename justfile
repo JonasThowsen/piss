@@ -156,12 +156,6 @@ dev: build
     fi
     just serve
 
-# ──────────────────────────────── Audit ───────────────────────────────────
-
-# Audit pinned npm dependencies for known vulnerabilities.
-audit:
-    npm audit --omit=dev --audit-level=high
-
 # ──────────────────────────────── Misc ────────────────────────────────────
 
 # Open a toplevel with the project libraries available.

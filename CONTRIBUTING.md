@@ -6,16 +6,14 @@ PISS is security-sensitive. Keep changes narrow, typed, and covered by tests whe
 
 ```bash
 nix develop
-npm ci
 just check
 nix flake check
 nix build .#piss
 ```
 
-The default development shell provides OCaml 5.5, Dune, formatters, and the
-native libraries. `just build` enters the separate OCaml 5.2 shell used for the
-Bonsai browser bundle. npm currently supplies only the Playwright browser test
-driver.
+The default development shell provides OCaml 5.5, Dune, native libraries, and
+Nix-pinned Playwright with Chromium. `just build` enters the separate OCaml 5.2
+shell used for the Bonsai/js_of_ocaml browser bundle.
 
 ## Pull requests
 
