@@ -1,5 +1,0 @@
-(library
- (name piss_core)
- (public_name piss-next.core)
- (wrapped true)
- (libraries yojson sqlite3 unix))

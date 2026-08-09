@@ -1,0 +1,87 @@
+(test
+ (name core_test)
+ (libraries piss.core alcotest unix))
+
+(rule
+ (alias interaction-test)
+ (deps
+  interaction.sh
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../../web/app.js
+  (source_tree ../../web/public))
+ (action
+  (run
+   bash
+   %{dep:interaction.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web/public
+   %{dep:../../web/app.js}
+   %{workspace_root})))
+
+(rule
+ (alias session-isolation-test)
+ (deps
+  session_isolation.sh
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../session_mcp/main.exe
+  ../../web/app.js
+  (source_tree ../../web/public))
+ (action
+  (run
+   bash
+   %{dep:session_isolation.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web/public
+   %{dep:../../web/app.js}
+   %{workspace_root}
+   %{dep:../session_mcp/main.exe})))
+
+(rule
+ (alias mention-browser-test)
+ (deps
+  mention_browser.sh
+  mention_browser.mjs
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../../web/app.js
+  (source_tree ../../web/public))
+ (action
+  (run
+   bash
+   %{dep:mention_browser.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web/public
+   %{dep:../../web/app.js}
+   %{workspace_root}
+   %{dep:mention_browser.mjs})))
+
+(rule
+ (alias replaceability-test)
+ (deps
+  replaceability.sh
+  ../worker/main.exe
+  ../mock_agent/main.exe
+  ../control/main.exe
+  ../../web/app.js
+  (source_tree ../../web/public))
+ (action
+  (run
+   bash
+   %{dep:replaceability.sh}
+   %{dep:../worker/main.exe}
+   %{dep:../mock_agent/main.exe}
+   %{dep:../control/main.exe}
+   %{workspace_root}/web/public
+   %{dep:../../web/app.js}
+   %{workspace_root})))

@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name pissd)
+ (libraries piss.core eio_main cohttp-eio cstruct uri yojson unix str))

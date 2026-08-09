@@ -1,4 +1,0 @@
-(executable
- (name main)
- (public_name piss-mock-agent)
- (libraries piss-next.core yojson unix))

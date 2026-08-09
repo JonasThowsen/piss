@@ -7,64 +7,261 @@ self:
 }:
 let
   cfg = config.services.piss;
-  defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-server;
-  defaultWebPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-web;
+  nativePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-core;
+  controlPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-control;
+  workerPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-worker;
+  mockAgentPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-mock-agent;
+  sessionMcpPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-session-mcp;
+  webPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.piss-web;
+  defaultAdapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
+  defaultOpenCodePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode;
   serviceStateName = "piss";
-  tailscaleStateName = cfg.tailscale.stateName;
-  socket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
-  deploymentGeneration = builtins.hashString "sha256" (
-    builtins.toJSON {
-      package = toString cfg.package;
-      module = builtins.hashFile "sha256" ./nixos-module.nix;
-      inherit (cfg)
-        port
-        piCommand
-        sshAgentSocket
-        environmentFiles
-        allowedUsers
-        workspaceDiscoveryRoots
-        workspaces
-        ;
-      runtimePackages = map toString [
-        pkgs.nodejs_24
-        pkgs.bashInteractive
-        pkgs.nix
-        pkgs.chromium
-        pkgs.ffmpeg
-      ];
-    }
+  runtimeDirectory = "%t/${serviceStateName}";
+  stateDirectory = "%S/${serviceStateName}";
+  sessionRuntimeRoot = "${runtimeDirectory}/sessions";
+  sessionStateRoot = "${stateDirectory}/sessions";
+  effectiveWorkspaces =
+    if cfg.workspaces == { } then
+      {
+        default = {
+          name = "PISS rewrite";
+          path = cfg.workspace;
+        };
+      }
+    else
+      cfg.workspaces;
+  workspaceEntries = lib.mapAttrsToList (id: value: value // { inherit id; }) effectiveWorkspaces;
+  workspaceArguments = lib.concatMap (workspace: [
+    "--workspace-spec"
+    "${workspace.id}|${workspace.name}|${workspace.path}"
+  ]) workspaceEntries;
+  workspacePaths = map (workspace: workspace.path) workspaceEntries;
+  workspaceDiscoveryArguments = lib.concatMap (path: [
+    "--workspace-discovery-root"
+    path
+  ]) cfg.workspaceDiscoveryRoots;
+  workerGeneration = builtins.hashString "sha256" (
+    lib.concatStringsSep "\n" (
+      map toString [
+        cfg.workerPackage
+        cfg.adapterPackage
+        cfg.opencodePackage
+        cfg.mockAgentPackage
+        cfg.sessionMcpPackage
+      ]
+      ++ [
+        cfg.piCommand
+        (if cfg.opencodeAuthFile == null then "" else cfg.opencodeAuthFile)
+        (if cfg.sshAgentSocket == null then "" else cfg.sshAgentSocket)
+        (toString cfg.port)
+        (builtins.toJSON cfg.environmentFiles)
+        (builtins.toJSON workspacePaths)
+        (builtins.toJSON cfg.workspaceDiscoveryRoots)
+      ]
+    )
   );
 
-  activateUpdate = pkgs.writeShellScript "piss-activate-update" ''
+  workerRunner = pkgs.writeShellScript "piss-ocaml-session-worker" ''
     set -euo pipefail
-    systemctl=${lib.getExe' pkgs.systemd "systemctl"}
-    pid="$($systemctl --user show --property=MainPID --value piss.service)"
-    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || exit 0
-
-    current=""
-    current_port=""
-    while IFS= read -r entry; do
-      if [[ "$entry" == PISS_DEPLOYMENT_GENERATION=* ]]; then
-        current="''${entry#PISS_DEPLOYMENT_GENERATION=}"
-      elif [[ "$entry" == PISS_PORT=* ]]; then
-        current_port="''${entry#PISS_PORT=}"
-      fi
-    done < <(${lib.getExe' pkgs.coreutils "tr"} '\0' '\n' < "/proc/$pid/environ")
-
-    [[ "$current" == ${lib.escapeShellArg deploymentGeneration} ]] && exit 0
-    [[ "$current_port" =~ ^[1-9][0-9]*$ ]] || current_port=${toString cfg.port}
-
-    health="$(${lib.getExe pkgs.curl} --silent --fail --max-time 2 \
-      "http://127.0.0.1:$current_port/api/health" || true)"
-    if [[ "$health" != *'"updateActivation":"quiescent-sigusr2"'* ]]; then
-      echo "PISS update staged, but the running generation predates safe activation." >&2
-      echo "Restart piss.service once when its sessions are idle; later updates will activate automatically." >&2
-      exit 0
+    # The systemd user manager inherits XDG_STATE_HOME et al. from
+    # previous worker runs, which causes `state` to be derived from a
+    # session-specific path instead of the canonical root. Wipe them
+    # so this script always rebuilds them from a known base.
+    unset XDG_STATE_HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || { echo "invalid session id" >&2; exit 64; }
+    state="''${XDG_STATE_HOME:-$HOME/.local/state}/${serviceStateName}"
+    session_state="$state/sessions/$id"
+    session_runtime="''${XDG_RUNTIME_DIR:?}/${serviceStateName}/sessions/$id"
+    mkdir -p "$session_state" "$session_runtime" \
+      "$session_state/cache" "$session_state/config" \
+      "$session_state/data" "$session_state/xdg-state"
+    export XDG_CACHE_HOME="$session_state/cache"
+    export XDG_CONFIG_HOME="$session_state/config"
+    export XDG_DATA_HOME="$session_state/data"
+    export XDG_STATE_HOME="$session_state/xdg-state"
+    harness="$(tr -d '\n' < "$session_state/harness")"
+    broker_token="$(tr -d '\n' < "$session_state/broker-token")"
+    workspace="$(tr -d '\n' < "$session_state/workspace")"
+    if [[ "$id" == "deployed-tracer" && -e "$state/worker.sqlite3" && ! -e "$session_state/worker.sqlite3" ]]; then
+      for suffix in "" -wal -shm; do
+        [[ ! -e "$state/worker.sqlite3$suffix" ]] || mv "$state/worker.sqlite3$suffix" "$session_state/worker.sqlite3$suffix"
+      done
     fi
-
-    echo "Staged PISS update differs from running generation; activation will wait for active work to settle"
-    $systemctl --user kill --kill-whom=main --signal=SIGUSR2 piss.service
+    case "$harness" in
+      pi)
+        command=${lib.escapeShellArg "${cfg.adapterPackage}/bin/pi-acp"}
+        args=()
+        ;;
+      opencode)
+        opencode_auth_source=${
+          lib.escapeShellArg (if cfg.opencodeAuthFile == null then "" else cfg.opencodeAuthFile)
+        }
+        if [[ -n "$opencode_auth_source" ]]; then
+          [[ -f "$opencode_auth_source" ]] || {
+            echo "configured OpenCode authentication file is missing" >&2
+            exit 78
+          }
+          opencode_auth_dir="$session_state/data/opencode"
+          opencode_auth_target="$opencode_auth_dir/auth.json"
+          ${lib.getExe pkgs.jq} -e 'type == "object"' "$opencode_auth_source" >/dev/null || {
+            echo "configured OpenCode authentication file must contain a JSON object" >&2
+            exit 78
+          }
+          mkdir -p "$opencode_auth_dir"
+          if [[ ! -f "$opencode_auth_target" || "$opencode_auth_source" -nt "$opencode_auth_target" ]]; then
+            opencode_auth_tmp="$opencode_auth_dir/.auth.json.$$"
+            ${lib.getExe' pkgs.coreutils "install"} -m 0600 "$opencode_auth_source" "$opencode_auth_tmp"
+            ${lib.getExe' pkgs.coreutils "mv"} -f "$opencode_auth_tmp" "$opencode_auth_target"
+          fi
+        fi
+        # Sync the user's OpenCode config (permission rules, model
+        # defaults, MCP servers, etc.) into the per-session config dir.
+        # We override XDG_CONFIG_HOME to isolate sessions, but that
+        # would otherwise hide the user's own opencode.json and any
+        # files they added under ~/.config/opencode/ (skills, agents,
+        # commands, plugins). Copying the whole directory is the
+        # smallest way to honour updates the user makes to their
+        # global config while keeping per-session isolation.
+        opencode_user_config="$HOME/.config/opencode"
+        if [[ -d "$opencode_user_config" ]]; then
+          opencode_session_config="$session_state/config/opencode"
+          mkdir -p "$opencode_session_config"
+          ${lib.getExe' pkgs.rsync "rsync"} -a --update --delete \
+            --exclude='.git' \
+            "$opencode_user_config/" \
+            "$opencode_session_config/"
+        fi
+        command=${lib.escapeShellArg "${cfg.opencodePackage}/bin/opencode"}
+        args=(--harness-arg acp)
+        ;;
+      mock)
+        command=${lib.escapeShellArg "${cfg.mockAgentPackage}/bin/piss-mock-agent"}
+        args=()
+        ;;
+      *) echo "unsupported harness: $harness" >&2; exit 64 ;;
+    esac
+    exec ${cfg.workerPackage}/bin/piss-session-worker \
+      --socket "$session_runtime/worker.sock" \
+      --database "$session_state/worker.sqlite3" \
+      --session "$id" \
+      --worker "worker-$id" \
+      --generation ${lib.escapeShellArg workerGeneration} \
+      --workspace "$workspace" \
+      --harness "$command" \
+      --session-mcp ${cfg.sessionMcpPackage}/bin/piss-session-mcp \
+      --broker-url http://127.0.0.1:${toString cfg.port} \
+      --broker-token "$broker_token" \
+      --curl-command ${lib.getExe pkgs.curl} \
+      "''${args[@]}"
   '';
+
+  startWorker = pkgs.writeShellScript "piss-start-session" ''
+    set -euo pipefail
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
+    unit="piss-worker@$id.service"
+    socket="''${XDG_RUNTIME_DIR:?}/piss/sessions/$id/worker.sock"
+    ${lib.getExe' pkgs.systemd "systemctl"} --user start "$unit"
+    for _ in $(seq 1 200); do
+      [[ -S "$socket" ]] && exit 0
+      ${lib.getExe' pkgs.systemd "systemctl"} --user is-active --quiet "$unit" || {
+        ${lib.getExe' pkgs.systemd "systemctl"} --user status "$unit" --no-pager >&2 || true
+        exit 1
+      }
+      sleep .05
+    done
+    echo "worker socket did not become ready: $socket" >&2
+    exit 1
+  '';
+
+  stopWorker = pkgs.writeShellScript "piss-stop-session" ''
+    set -euo pipefail
+    id="''${1:?session id required}"
+    [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || exit 64
+    exec ${lib.getExe' pkgs.systemd "systemctl"} --user stop "piss-worker@$id.service"
+  '';
+
+  workerUpgradeClient = pkgs.writeText "piss-worker-upgrade-client.py" ''
+    import json
+    import socket
+    import sys
+
+    socket_path, operation = sys.argv[1:3]
+    request = {"op": operation}
+    if operation == "prepare_upgrade":
+        request["generation"] = sys.argv[3]
+
+    def receive(connection):
+        line = bytearray()
+        while not line.endswith(b"\n"):
+            chunk = connection.recv(min(65536, 16 * 1024 * 1024 + 1 - len(line)))
+            if not chunk:
+                raise RuntimeError("worker closed before returning a frame")
+            line.extend(chunk)
+            if len(line) > 16 * 1024 * 1024:
+                raise RuntimeError("worker returned an oversized frame")
+        envelope = json.loads(line)
+        if not envelope.get("ok"):
+            raise RuntimeError(envelope.get("error", "worker request failed"))
+        return envelope.get("result")
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(5)
+    connection.connect(socket_path)
+    connection.sendall(b'{"op":"hello","protocolVersion":1}\n')
+    receive(connection)
+    connection.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
+    print(json.dumps(receive(connection), separators=(",", ":")))
+  '';
+
+  upgradeIdleWorkers = pkgs.writeShellScript "piss-upgrade-idle-workers" ''
+    set -euo pipefail
+    runtime_root="''${XDG_RUNTIME_DIR:?}/${serviceStateName}"
+    [[ -d "$runtime_root" ]] || exit 0
+    target=${lib.escapeShellArg workerGeneration}
+    systemctl=${lib.getExe' pkgs.systemd "systemctl"}
+    client=${lib.getExe pkgs.python3}
+    jq=${lib.getExe pkgs.jq}
+
+    while read -r unit _; do
+      [[ -n "$unit" ]] || continue
+      id="''${unit#piss-worker@}"
+      id="''${id%.service}"
+      [[ "$id" =~ ^[a-z0-9-]{3,64}$ ]] || continue
+      socket="$runtime_root/sessions/$id/worker.sock"
+      [[ -S "$socket" ]] || continue
+      snapshot="$($client ${workerUpgradeClient} "$socket" snapshot 2>/dev/null)" || continue
+      current="$(printf '%s' "$snapshot" | $jq -r '.workerGeneration // ""')"
+      [[ "$current" != "$target" ]] || continue
+      status="$(printf '%s' "$snapshot" | $jq -r '.status // "offline"')"
+      [[ "$status" == idle ]] || continue
+      prepared="$($client ${workerUpgradeClient} "$socket" prepare_upgrade "$target" 2>/dev/null)" || {
+        echo "worker $id uses a legacy generation without safe upgrade preparation; leaving it running" >&2
+        continue
+      }
+      [[ "$(printf '%s' "$prepared" | $jq -r '.ready // false')" == true ]] || continue
+      echo "upgrading idle PISS worker $id from $current to $target"
+      $systemctl --user restart "$unit"
+      ready=false
+      for _ in $(seq 1 300); do
+        if [[ -S "$socket" ]]; then
+          replacement="$($client ${workerUpgradeClient} "$socket" snapshot 2>/dev/null)" || replacement=""
+          if [[ "$(printf '%s' "$replacement" | $jq -r '.workerGeneration // ""')" == "$target" ]]; then
+            ready=true
+            break
+          fi
+        fi
+        sleep .05
+      done
+      [[ "$ready" == true ]] || {
+        echo "upgraded worker did not become ready: $id" >&2
+        exit 1
+      }
+    done < <($systemctl --user list-units --type=service --state=running --no-legend --plain 'piss-worker@*.service')
+  '';
+  tailscaleStateName = cfg.tailscale.stateName;
+  tailscaleSocket = "$XDG_RUNTIME_DIR/${tailscaleStateName}/tailscaled.sock";
 
   tailscaledRunner = pkgs.writeShellScript "piss-tailscaled" ''
     set -euo pipefail
@@ -74,19 +271,19 @@ let
       --tun=userspace-networking \
       --port=0 \
       --statedir="$state" \
-      --socket="${socket}"
+      --socket="${tailscaleSocket}"
   '';
 
   tailscaleUp = pkgs.writeShellScript "piss-tailscale-up" ''
     set -euo pipefail
-    state="$(${lib.getExe pkgs.tailscale} --socket="${socket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
+    state="$(${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
     if [[ "$state" == "Running" ]]; then
       exit 0
     fi
     ${
       if cfg.tailscale.authKeyFile != null then
         ''
-          exec ${lib.getExe pkgs.tailscale} --socket="${socket}" up \
+          exec ${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" up \
             --reset \
             --accept-dns=false \
             --hostname=${lib.escapeShellArg cfg.tailscale.hostname} \
@@ -95,7 +292,7 @@ let
         ''
       else
         ''
-          echo "PISS has not joined the tailnet yet; run piss-tailscale-login." >&2
+          echo "The OCaml tracer has not joined the tailnet; run piss-tailscale-login." >&2
           exit 0
         ''
     }
@@ -103,13 +300,14 @@ let
 
   tailscaleServe = pkgs.writeShellScript "piss-tailscale-serve" ''
     set -euo pipefail
+    state=""
     for _ in $(seq 1 60); do
-      state="$(${lib.getExe pkgs.tailscale} --socket="${socket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
+      state="$(${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
       [[ "$state" == "Running" ]] && break
       sleep 1
     done
-    [[ "$state" == "Running" ]] || { echo "PISS Tailscale node is not authenticated; run piss-tailscale-login" >&2; exit 1; }
-    exec ${lib.getExe pkgs.tailscale} --socket="${socket}" serve --bg --yes \
+    [[ "$state" == "Running" ]] || { echo "The OCaml tracer Tailscale node is not authenticated." >&2; exit 1; }
+    exec ${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" serve --bg --yes \
       http://127.0.0.1:${toString cfg.port}
   '';
 
@@ -125,127 +323,197 @@ let
 in
 {
   options.services.piss = {
-    enable = lib.mkEnableOption "the Effect-based PISS control plane";
+    enable = lib.mkEnableOption "the OCaml PISS replaceability tracer";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = defaultPackage;
-      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-server";
-      description = "PISS runtime server package.";
+      default = nativePackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-core";
+      description = "Combined OCaml development package retained for compatibility.";
+    };
+
+    controlPackage = lib.mkOption {
+      type = lib.types.package;
+      default = controlPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-control";
+      description = "Replaceable OCaml control-plane package.";
+    };
+
+    workerPackage = lib.mkOption {
+      type = lib.types.package;
+      default = workerPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-worker";
+      description = "Stable independently supervised session-worker package.";
+    };
+
+    mockAgentPackage = lib.mkOption {
+      type = lib.types.package;
+      default = mockAgentPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-mock-agent";
+      description = "Deterministic ACP fixture package used by mock sessions.";
+    };
+
+    sessionMcpPackage = lib.mkOption {
+      type = lib.types.package;
+      default = sessionMcpPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-session-mcp";
+      description = "Harness-neutral MCP server for inter-session collaboration.";
     };
 
     webPackage = lib.mkOption {
       type = lib.types.package;
-      default = defaultWebPackage;
+      default = webPackage;
       defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss-web";
-      description = "PISS browser-shell package. Updating only this package does not restart active runtimes.";
+      description = "Reason/Melange browser package.";
     };
 
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 4317;
-      description = "Loopback port for PISS.";
+    adapterPackage = lib.mkOption {
+      type = lib.types.package;
+      default = defaultAdapterPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.pi-acp";
+      description = "Pinned Pi ACP adapter package.";
+    };
+
+    opencodePackage = lib.mkOption {
+      type = lib.types.package;
+      default = defaultOpenCodePackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.opencode";
+      description = "Pinned OpenCode package with its native ACP server.";
+    };
+
+    opencodeAuthFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/home/agent/.local/share/opencode/auth.json";
+      description = ''
+        Optional runtime OpenCode auth.json source. OpenCode workers copy a newer
+        source into their private XDG data directory before starting, without
+        placing credentials in the Nix store or process environment.
+      '';
+    };
+
+    harness = lib.mkOption {
+      type = lib.types.enum [
+        "pi"
+        "opencode"
+        "mock"
+      ];
+      default = "pi";
+      description = "ACP harness used by the deployed session worker.";
     };
 
     piCommand = lib.mkOption {
       type = lib.types.str;
       default = "pi";
-      example = "/home/you/.npm-global/bin/pi";
-      description = "Absolute Pi CLI path recommended for the systemd user service.";
-    };
-
-    sshAgentSocket = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/run/user/1000/ssh-agent";
-      description = ''
-        Shared SSH agent socket inherited by every Pi runtime. When unset,
-        PISS uses SSH_AUTH_SOCK or the standard $XDG_RUNTIME_DIR/ssh-agent.
-      '';
+      description = "Absolute Pi CLI path used by pi-acp.";
     };
 
     environmentFiles = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "/run/secrets/piss-api-keys.env" ];
+      description = "Absolute systemd EnvironmentFile paths containing model provider credentials.";
+    };
+
+    sshAgentSocket = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "SSH agent socket inherited by the real agent worker.";
+    };
+
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 4318;
+      description = "Loopback port for the replaceable OCaml control plane.";
+    };
+
+    maxActiveSessions = lib.mkOption {
+      type = lib.types.ints.between 1 256;
+      default = 32;
+      description = "Resource safety limit for concurrently active harness sessions.";
+    };
+
+    autoUpgradeIdleWorkers = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
       description = ''
-        Absolute systemd EnvironmentFile paths containing secrets such as API
-        keys. Values are inherited by PISS and every Pi runtime; use files
-        provisioned by a secret manager rather than Nix store paths.
+        Automatically move active session workers to the current immutable
+        generation after each worker atomically confirms that it is idle.
       '';
     };
 
-    allowedUsers = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      example = [ "you@example.com" ];
-      description = "Tailscale user logins allowed in PISS. Required unless allowAllTailnetUsers is enabled.";
+    workerUpgradeInterval = lib.mkOption {
+      type = lib.types.str;
+      default = "1min";
+      example = "30s";
+      description = "systemd time span between idle-worker upgrade checks.";
     };
 
-    allowAllTailnetUsers = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Allow every identity permitted by tailnet policy. Prefer allowedUsers.";
+    workspace = lib.mkOption {
+      type = lib.types.str;
+      default = "/home/jonas/coding/piss";
+      description = "Backward-compatible default workspace used when workspaces is empty.";
+    };
+
+    workspaces = lib.mkOption {
+      default = { };
+      description = "Allowlisted workspaces available to durable sessions.";
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption { type = lib.types.str; };
+            path = lib.mkOption { type = lib.types.str; };
+          };
+        }
+      );
     };
 
     workspaceDiscoveryRoots = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "/home/me/coding" ];
-      description = "Absolute roots within which PISS may fuzzy-search directories and create durable workspaces.";
+      description = "Local directory roots available to the workspace picker.";
     };
 
-    workspaces = lib.mkOption {
+    allowedUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Trusted workspace roots shown by PISS and available to owned Pi runtimes.";
-      type = lib.types.listOf (
-        lib.types.submodule {
-          options = {
-            name = lib.mkOption {
-              type = lib.types.str;
-              description = "Human-readable workspace name.";
-            };
-            path = lib.mkOption {
-              type = lib.types.str;
-              description = "Absolute trusted workspace root.";
-            };
-            trustProjectResources = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Allow Pi RPC sessions to load project-local settings, extensions, skills, and packages.";
-            };
-          };
-        }
-      );
-      example = [
-        {
-          name = "PISS";
-          path = "/home/me/coding/piss";
-        }
-      ];
+      description = "Tailscale user logins authorized to use the agent control plane.";
     };
 
     tailscale = {
-      enable = lib.mkEnableOption "an independent userspace Tailscale node for PISS" // {
+      enable = lib.mkEnableOption "an independent userspace Tailscale node for the OCaml tracer" // {
         default = true;
       };
 
       hostname = lib.mkOption {
         type = lib.types.str;
         default = "piss";
-        description = "Hostname for the independent Tailscale node.";
+        description = "Tailnet hostname for the OCaml tracer.";
+      };
+
+      allowedOrigins = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "https://${cfg.tailscale.hostname}.*.ts.net" ];
+        defaultText = lib.literalExpression
+          "[ \"https://\''${cfg.tailscale.hostname}.*.ts.net\" ]";
+        description = ''
+          Origin URL patterns the control plane accepts on state-changing
+          requests in addition to the loopback URL. The default is a
+          glob-style pattern that matches every Tailscale Serve URL for
+          this node (`https://<tailscale.hostname>.<tailnet>.ts.net`)
+          without the module having to know the tailnet. Add more
+          entries when routing through another reverse proxy.
+        '';
       };
 
       stateName = lib.mkOption {
         type = lib.types.strMatching "[a-zA-Z0-9_-]+";
-        default = "piss";
-        description = "State/runtime directory name for the Tailscale node; set this to a retired service's name to adopt its existing tailnet identity.";
+        default = "piss-tailscale";
+        description = "Independent Tailscale state and runtime directory name.";
       };
 
       authKeyFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/run/secrets/piss-tailscale-auth-key";
         description = "Optional file containing a Tailscale auth key.";
       };
     };
@@ -254,81 +522,68 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.allowedUsers != [ ] || cfg.allowAllTailnetUsers;
-        message = "services.piss.allowedUsers must contain at least one Tailscale login unless allowAllTailnetUsers = true";
+        assertion = lib.all (workspace: lib.hasPrefix "/" workspace.path) workspaceEntries;
+        message = "services.piss workspace paths must be absolute";
       }
       {
-        assertion = lib.all (workspace: lib.hasPrefix "/" workspace.path) cfg.workspaces;
-        message = "Every services.piss.workspaces path must be absolute";
+        assertion = lib.all (path: lib.hasPrefix "/" path) cfg.workspaceDiscoveryRoots;
+        message = "services.piss.workspaceDiscoveryRoots entries must be absolute";
       }
       {
-        assertion = lib.all (root: lib.hasPrefix "/" root) cfg.workspaceDiscoveryRoots;
-        message = "Every services.piss.workspaceDiscoveryRoots entry must be absolute";
+        assertion = lib.all (
+          workspace:
+          !(
+            lib.hasInfix "|" workspace.id || lib.hasInfix "|" workspace.name || lib.hasInfix "|" workspace.path
+          )
+        ) workspaceEntries;
+        message = "services.piss workspace fields must not contain |";
       }
       {
-        assertion = cfg.sshAgentSocket == null || lib.hasPrefix "/" cfg.sshAgentSocket;
-        message = "services.piss.sshAgentSocket must be an absolute path";
+        assertion = cfg.allowedUsers != [ ];
+        message = "services.piss.allowedUsers must contain at least one Tailscale login";
+      }
+      {
+        assertion = cfg.harness != "pi" || lib.hasPrefix "/" cfg.piCommand;
+        message = "services.piss.piCommand must be absolute for the Pi harness";
+      }
+      {
+        assertion = cfg.opencodeAuthFile == null || lib.hasPrefix "/" cfg.opencodeAuthFile;
+        message = "services.piss.opencodeAuthFile must be absolute";
       }
       {
         assertion = lib.all (path: lib.hasPrefix "/" path) cfg.environmentFiles;
-        message = "Every services.piss.environmentFiles entry must be absolute";
+        message = "services.piss.environmentFiles entries must be absolute";
+      }
+      {
+        assertion = cfg.sshAgentSocket == null || lib.hasPrefix "/" cfg.sshAgentSocket;
+        message = "services.piss.sshAgentSocket must be absolute";
+      }
+      {
+        assertion = cfg.tailscale.authKeyFile == null || lib.hasPrefix "/" cfg.tailscale.authKeyFile;
+        message = "services.piss.tailscale.authKeyFile must be absolute";
       }
     ];
 
-    environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
-    environment.etc."piss/public".source = "${cfg.webPackage}/share/piss/public";
+    environment.systemPackages = [
+      cfg.controlPackage
+      cfg.workerPackage
+    ]
+    ++ lib.optional cfg.tailscale.enable loginTool;
 
-    systemd.user.services.piss = {
-      description = "PISS — Effect control plane";
-      # A switch stages the new unit without replacing the process that owns Pi
-      # runtimes. piss-update-activation asks that process to exit only after
-      # working, compacting, queued, and interactive sessions have settled.
+    systemd.user.services."piss-worker@" = {
+      description = "PISS OCaml independently supervised worker for session %i";
       restartIfChanged = false;
-      notSocketActivated = true;
-      path = [
-        pkgs.nodejs_24
-        pkgs.bashInteractive
-        pkgs.nix
-        pkgs.chromium
-        pkgs.ffmpeg
-      ];
-      wantedBy = [ "default.target" ];
+      stopIfChanged = false;
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      environment = {
-        NODE_ENV = "production";
-        PISS_DEPLOYMENT_GENERATION = deploymentGeneration;
-        PISS_HOST = "127.0.0.1";
-        PISS_PORT = toString cfg.port;
-        PISS_PI_COMMAND = cfg.piCommand;
-        PISS_BROWSER_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
-        PISS_BROWSER_FFMPEG_PATH = "${pkgs.ffmpeg}/bin/ffmpeg";
-        PISS_BROWSER_FFPROBE_PATH = "${pkgs.ffmpeg}/bin/ffprobe";
-        # This stable profile path changes atomically on activation without
-        # changing the service unit or restarting its owned Pi runtimes.
-        PISS_PUBLIC_DIR = "/etc/piss/public";
-        PISS_ALLOWED_USERS = lib.concatStringsSep "," cfg.allowedUsers;
-        PISS_WORKSPACE_DISCOVERY_ROOTS = builtins.toJSON cfg.workspaceDiscoveryRoots;
-        PISS_WORKSPACES = builtins.toJSON (
-          map (workspace: {
-            inherit (workspace) name;
-            root = workspace.path;
-            inherit (workspace) trustProjectResources;
-          }) cfg.workspaces
-        );
-      }
-      // lib.optionalAttrs (cfg.sshAgentSocket != null) {
-        PISS_SSH_AUTH_SOCK = cfg.sshAgentSocket;
-        SSH_AUTH_SOCK = cfg.sshAgentSocket;
-      };
       serviceConfig = {
+        ExecStart = "${workerRunner} %i";
         EnvironmentFile = cfg.environmentFiles;
-        ExecStart = lib.getExe cfg.package;
-        # A quiescent update exits cleanly after SIGUSR2; always restart so the
-        # user manager launches the newly staged ExecStart generation.
-        Restart = "always";
+        Restart = "on-failure";
         RestartSec = 2;
-        StateDirectory = serviceStateName;
+        RuntimeDirectory = "${serviceStateName}/sessions/%i";
+        RuntimeDirectoryMode = "0700";
+        StateDirectory = "${serviceStateName}/sessions/%i";
         StateDirectoryMode = "0700";
         UMask = "0077";
         NoNewPrivileges = true;
@@ -337,47 +592,169 @@ in
         ProtectHome = "read-only";
         ProtectSystem = "strict";
         ReadWritePaths = [
-          "%S/${serviceStateName}"
-          "-%h/.pi/agent"
+          "%S/${serviceStateName}/sessions/%i"
+          "-%h/.pi"
         ]
-        ++ map (workspace: workspace.path) cfg.workspaces
+        ++ workspacePaths
         ++ cfg.workspaceDiscoveryRoots;
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
+        LockPersonality = true;
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
-          "AF_NETLINK"
           "AF_UNIX"
         ];
-        # Workspace reviews create short-lived bubblewrap user/mount/PID/network
-        # namespaces. The sandbox itself drops capabilities and exposes only
-        # read-only checkout and Nix store mounts.
-        RestrictNamespaces = false;
+        RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
-        LockPersonality = true;
+      };
+      environment = {
+        PI_ACP_ENABLE_EMBEDDED_CONTEXT = "true";
+        PI_ACP_PI_COMMAND = cfg.piCommand;
+      }
+      // lib.optionalAttrs (cfg.sshAgentSocket != null) {
+        PISS_SSH_AUTH_SOCK = cfg.sshAgentSocket;
+        SSH_AUTH_SOCK = cfg.sshAgentSocket;
       };
     };
 
-    systemd.user.services.piss-update-activation = {
-      description = "Activate staged PISS update after sessions settle";
+    systemd.user.services.piss = {
+      description = "PISS OCaml replaceable control plane";
       wantedBy = [ "default.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      serviceConfig = {
+        ExecStart = lib.escapeShellArgs (
+          [
+            "${cfg.controlPackage}/bin/piss-control"
+            "--port"
+            (toString cfg.port)
+            "--registry"
+            "${stateDirectory}/registry.sqlite3"
+            "--session-state-root"
+            sessionStateRoot
+            "--session-runtime-root"
+            sessionRuntimeRoot
+            "--session-launcher"
+            startWorker
+            "--session-stopper"
+            stopWorker
+            "--available-harness"
+            "pi"
+            "--available-harness"
+            "opencode"
+            "--available-harness"
+            "mock"
+            "--default-harness"
+            cfg.harness
+            "--bootstrap-session"
+            "deployed-tracer"
+            "--max-active-sessions"
+            (toString cfg.maxActiveSessions)
+            "--public"
+            "${cfg.webPackage}/share/piss/public"
+            "--app-js"
+            "${cfg.webPackage}/share/piss/public/app.js"
+            "--generation"
+            (toString cfg.controlPackage)
+          ]
+          ++ workspaceArguments
+          ++ workspaceDiscoveryArguments
+          ++ lib.concatMap (user: [
+            "--allowed-user"
+            user
+          ]) cfg.allowedUsers
+          ++ lib.concatMap (origin: [
+            "--allowed-origin"
+            origin
+          ]) cfg.tailscale.allowedOrigins
+        );
+        Restart = "always";
+        RestartSec = 2;
+        StateDirectory = serviceStateName;
+        StateDirectoryMode = "0700";
+        ReadWritePaths = [ stateDirectory ];
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        # The worker socket lives under %t (/run/user/$UID), so the control
+        # plane needs read-only traversal of the user runtime directory.
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        LockPersonality = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.services.piss-watchdog = {
+      description = "Ensure PISS OCaml control plane is running";
       after = [ "piss.service" ];
-      requires = [ "piss.service" ];
-      stopIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = activateUpdate;
-        RemainAfterExit = true;
+        ExecStart = "${lib.getExe' pkgs.systemd "systemctl"} --user start piss.service";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        LockPersonality = true;
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.timers.piss-watchdog = {
+      description = "Periodically confirm PISS OCaml control plane";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "1min";
+        Persistent = true;
+        Unit = "piss-watchdog.service";
+      };
+    };
+
+    systemd.user.services.piss-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
+      description = "Upgrade idle PISS workers to the current immutable generation";
+      after = [ "piss.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = upgradeIdleWorkers;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProtectHome = "read-only";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.user.timers.piss-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
+      description = "Periodically upgrade idle PISS workers";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = cfg.workerUpgradeInterval;
+        Persistent = true;
+        Unit = "piss-worker-upgrade.service";
       };
     };
 
     systemd.user.services.piss-tailscaled = lib.mkIf cfg.tailscale.enable {
-      description = "Independent userspace Tailscale node for PISS";
+      description = "Independent userspace Tailscale node for PISS OCaml";
       wantedBy = [ "default.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -396,11 +773,7 @@ in
         ProtectHome = "read-only";
         ProtectSystem = "strict";
         ReadWritePaths = [ "%S/${tailscaleStateName}" ];
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
+        LockPersonality = true;
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
@@ -410,12 +783,11 @@ in
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
-        LockPersonality = true;
       };
     };
 
     systemd.user.services.piss-tailscale-up = lib.mkIf cfg.tailscale.enable {
-      description = "Authenticate the independent PISS Tailscale node";
+      description = "Authenticate the independent PISS OCaml Tailscale node";
       wantedBy = [ "default.target" ];
       after = [ "piss-tailscaled.service" ];
       requires = [ "piss-tailscaled.service" ];
@@ -427,7 +799,7 @@ in
     };
 
     systemd.user.services.piss-tailscale-serve = lib.mkIf cfg.tailscale.enable {
-      description = "Serve PISS at ${cfg.tailscale.hostname}.<tailnet>.ts.net";
+      description = "Serve PISS OCaml at ${cfg.tailscale.hostname}.<tailnet>.ts.net";
       wantedBy = [ "default.target" ];
       after = [
         "piss.service"

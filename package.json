@@ -23,53 +23,7 @@
     "nixos"
   ],
   "scripts": {
-    "build": "npm run clean && npm run build:server && npm run build:web",
-    "build:server": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/server.js",
-    "build:web": "vite build",
-    "build:next:web": "dune build @web-bundle",
-    "audit": "npm audit --omit=dev --audit-level=high",
-    "check": "npm run typecheck && npm run test",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "dev": "PISS_DEV_BYPASS_AUTH=1 concurrently -k -n server,web -c cyan,green \"tsx watch server/main.ts\" \"vite\"",
-    "start": "node dist/server.js",
-    "test": "node --import tsx --test test/**/*.test.ts",
-    "test:browser": "playwright test",
-    "test:browser-recording:packaged": "node --import tsx test/packaged-browser-recording.fixture.ts"
-  },
-  "dependencies": {
-    "@base-ui/react": "^1.6.0",
-    "@emotion/css": "^11.13.5",
-    "@ff-labs/fff-node": "0.8.4",
-    "@tanstack/react-hotkeys": "0.10.0",
-    "effect": "4.0.0-beta.101",
-    "lucide-react": "1.27.0",
-    "melange": "^7.0.1",
-    "melange.js": "^7.0.1",
-    "playwright-core": "1.62.0",
-    "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1",
-    "web-push": "^3.6.7"
-  },
-  "devDependencies": {
-    "@playwright/test": "1.62.0",
-    "@types/node": "^24.0.15",
-    "@types/react": "^19.1.9",
-    "@types/react-dom": "^19.1.7",
-    "@types/web-push": "^3.6.4",
-    "@vitejs/plugin-react": "^4.7.0",
-    "concurrently": "^9.2.0",
-    "esbuild": "^0.25.8",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "tsx": "^4.20.3",
-    "typescript": "7.0.2",
-    "vite": "^7.1.3"
-  },
-  "allowScripts": {
-    "@google/genai@1.52.0": true,
-    "protobufjs@7.6.4": true,
-    "esbuild@0.25.12": true,
-    "esbuild@0.28.1": true
+    "build:web": "dune build @web-bundle",
+    "audit": "npm audit --omit=dev --audit-level=high"
   }
 }

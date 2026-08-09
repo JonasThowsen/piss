@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml)
 
-**PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) coding-agent sessions.
+**PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
 
-PISS owns and supervises Pi RPC runtimes. From a phone or laptop you can create trusted workspaces, run multiple sessions, inspect native messages and tool events, send prompts, steer or queue work, review changes, and install the interface as a PWA.
+The repository is the OCaml/Melange rewrite. The previous TypeScript/Effect implementation is preserved under `legacy/` for reference only — it is not built or deployed.
 
 PISS is designed for **NixOS + Tailscale**. Its NixOS module runs the application behind an independent userspace Tailscale node:
 
@@ -13,35 +13,24 @@ https://piss.<tailnet>.ts.net
 ```
 
 > [!WARNING]
-> Remote Pi control is equivalent to remote access to your user account. Never expose PISS with Tailscale Funnel or an unauthenticated public proxy.
+> Remote agent control is equivalent to remote access to your user account. Never expose PISS with Tailscale Funnel or an unauthenticated public proxy.
 
-## Features
+## Source layout
 
-- Browser-created trusted workspaces and multiple supervised Pi sessions
-- Durable session metadata and validated resume from Pi JSONL transcripts
-- Native conversation and tool-event timelines
-- Managed loopback Chromium verification with bounded accessible interaction plus durable inline PNG and WebM evidence
-- Prompt, steer, follow-up, abort, archive, and resume controls
-- Guided engineering workflows with conversational Define, policy-bound read-only Research, source-pinned Plan handoff, one final **Approve & Run** dossier, revision-bound unattended authority, durable guidance/progress/receipt reconciliation, and bounded Build → Verify → Review → Repair recovery
-- Runtime-generation and command-ID protection against stale or duplicate delivery
-- Model, thinking-level, context, usage, queue, and compaction controls
-- Interactive Pi extension requests (`select`, `confirm`, `input`, and `editor`)
-- Workspace-scoped file mentions and read-only Git review in a Bubblewrap sandbox
-- PNG, JPEG, GIF, and WebP prompt attachments plus privately stored browser screenshots and short recordings with media, duration, and quota validation
-- Per-session browser drafts and an update-safe offline application shell
-- Opt-in privacy-safe Web Push notifications
-- Mobile navigation, keyboard shortcuts, and global session picking
-- Tailscale identity authentication with a secure-by-default allowlist
-- Reproducible Nix packages, NixOS module, development shell, and browser tests
-
-See [the architecture](./docs/ARCHITECTURE.md) and [tracer roadmap](./docs/ROADMAP.md) for implementation details and known limitations.
-
-## Requirements
-
-- NixOS with flakes enabled
-- Pi installed for the desktop user
-- A Tailscale tailnet with MagicDNS and HTTPS certificates enabled
-- Node.js only for development; the Nix package supplies its runtime
+```text
+src/                OCaml native services
+  lib/              shared library (types, protocols, SQLite stores)
+  control/          piss-control (replaceable control plane)
+  worker/           piss-session-worker (one per active session)
+  session_mcp/      piss-session-mcp (collaboration broker)
+  mock_agent/       piss-mock-agent (deterministic ACP fixture)
+  test/             unit + shell-driven integration tests
+web/                OCaml/Reason/Melange browser shell
+nix/                NixOS module and pinned harness packages
+legacy/             previous TypeScript implementation (not built)
+justfile            canonical development recipes
+flake.nix           Nix packages and NixOS module
+```
 
 ## Install on NixOS
 
@@ -66,16 +55,15 @@ See [the architecture](./docs/ARCHITECTURE.md) and [tracer roadmap](./docs/ROADM
   services.piss = {
     enable = true;
     allowedUsers = [ "you@example.com" ];
-    piCommand = "/home/you/.npm-global/bin/pi";
     workspaceDiscoveryRoots = [ "/home/you/coding" ];
-    tailscale.hostname = "piss";
+    tailscale.hostname = "piss-ocaml";
   };
 }
 ```
 
 `allowedUsers` is required by default. To deliberately rely only on tailnet policy, set `allowAllTailnetUsers = true`.
 
-PISS starts without seeded workspaces. Use **+** in the workspace navigation to select or create a directory below `workspaceDiscoveryRoots`. You can also seed trusted roots declaratively:
+Seed trusted workspaces declaratively:
 
 ```nix
 services.piss.workspaces = [
@@ -89,7 +77,7 @@ services.piss.workspaces = [
 
 Set `trustProjectResources = true` only when Pi may load that workspace's local settings, extensions, skills, and packages.
 
-Pi runtimes share your normal SSH agent. PISS automatically uses `SSH_AUTH_SOCK` or the standard `$XDG_RUNTIME_DIR/ssh-agent`, so one `ssh-add` applies to every session and loop. If your agent uses another stable socket (for example 1Password or GCR), configure it explicitly:
+Pi runtimes share your normal SSH agent. PISS automatically uses `SSH_AUTH_SOCK` or the standard `$XDG_RUNTIME_DIR/ssh-agent`, so one `ssh-add` applies to every session. If your agent uses another stable socket (for example 1Password or GCR), configure it explicitly:
 
 ```nix
 services.piss.sshAgentSocket = "/run/user/1000/gcr/ssh";
@@ -107,7 +95,7 @@ sudo nixos-rebuild switch --flake ~/nixos#your-host
 piss-tailscale-login
 ```
 
-Open the displayed login URL. Authentication state persists under `~/.local/state/piss/tailscale`.
+Authentication state persists under `~/.local/state/piss`.
 
 For unattended enrollment, use a secret file readable by the desktop user:
 
@@ -115,60 +103,9 @@ For unattended enrollment, use a secret file readable by the desktop user:
 services.piss.tailscale.authKeyFile = "/run/secrets/piss-tailscale-auth-key";
 ```
 
-### 4. Supply API keys from sops-nix
-
-PISS can load systemd environment files provisioned outside the Nix store. For a
-single encrypted file that can hold any number of keys, encrypt a dotenv file as
-a binary SOPS payload and let sops-nix expose its decrypted contents:
-
-```nix
-{ config, inputs, ... }:
-{
-  imports = [ inputs.sops-nix.nixosModules.sops ];
-
-  sops.secrets.piss-api-keys = {
-    sopsFile = ./secrets/piss-api-keys.env.json;
-    format = "binary";
-    owner = "you";
-    mode = "0400";
-  };
-
-  services.piss.environmentFiles = [
-    config.sops.secrets.piss-api-keys.path
-  ];
-}
-```
-
-The decrypted file uses systemd `EnvironmentFile` syntax:
-
-```dotenv
-SIRKUSAGIO_API_KEY=replace-with-the-real-value
-ANOTHER_API_KEY=replace-with-the-real-value
-```
-
-Only the SOPS-encrypted payload belongs in Git. Never put secret values directly
-in Nix expressions. Module-controlled PISS variables override conflicting names
-from an environment file. All configured values are inherited by PISS and every
-Pi runtime, so only use keys intended for every trusted PISS workspace.
-
-MCP servers can refer to a key without storing its value in MCP configuration:
-
-```json
-{
-  "auth": "bearer",
-  "bearerTokenEnv": "SIRKUSAGIO_API_KEY"
-}
-```
-
-Restart PISS after adding or rotating values so systemd reloads the file. A
-session-scoped **Restart Pi Runtime** is enough only when PISS itself has already
-loaded the current environment.
-
-### 5. Install the PWA
+### 4. Install the PWA
 
 Open the HTTPS URL and choose **Install app** or **Add to Home Screen**. The service worker caches only fixed application-shell assets; private API and session data are never cached.
-
-Enable task alerts from the application if desired. Notification payloads contain an opaque session ID and generic attention state, not prompts, output, workspace names, paths, or credentials.
 
 ## Updating
 
@@ -178,73 +115,73 @@ nix flake update piss
 sudo nixos-rebuild switch --flake .#your-host
 ```
 
-Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. A server update is staged without restarting PISS. The update activator asks the running generation to wait until working, queued, compacting, interactive, and autonomous workflow phases have settled; it then performs a short restart and automatically resumes the idle runtimes from their Pi transcripts on the new generation. You can deploy while other sessions are working—the old generation keeps serving them until activation is safe.
-
-The first upgrade from a release without this handoff is staged but not activated automatically, because the old process cannot understand the safe-activation signal. Wait until its sessions are idle and restart `piss.service` once; subsequent updates use the quiescent handoff automatically.
-
-A forced `systemctl --user restart piss` still interrupts active work and should otherwise be reserved for emergencies. Exact process continuity across a server update remains future work, but normal declarative deployments no longer replace an in-flight Pi process.
+Browser assets and the runtime server are separate module packages, so a browser-only update does not restart active runtimes. Worker upgrades are session-scoped: an enabled-by-default timer compares each running worker with the current generation and replaces idle workers without disturbing busy ones.
 
 ## Operations
 
 ```bash
-systemctl --user status piss piss-update-activation piss-tailscaled piss-tailscale-serve
-journalctl --user -u piss -u piss-update-activation -f
-journalctl --user -u piss-tailscale-serve -f
+systemctl --user status piss piss-worker-upgrade piss-tailscaled piss-tailscale-serve
+journalctl --user -u piss -u piss-worker-upgrade -f
 ```
 
-PISS state is stored under `~/.local/state/piss`. Pi's own JSONL session files remain the source of truth for conversation history.
+PISS state is stored under `~/.local/state/piss`.
 
 ## Development
 
 ```bash
 git clone https://github.com/JonasThowsen/piss
 cd piss
-nix develop
-npm ci
-npm run dev
+nix develop                # exposes opam, dune, node, system tools
+just switch                # one-time: create the OCaml 5.5 opam switch
+just build                 # dune build @all @web-bundle
+just serve                 # run the control plane locally with sensible defaults
+just worker                # run a single session worker pointed at the mock agent
 ```
 
-`npm run dev` binds both servers to loopback and enables the local identity bypass. Production refuses that bypass.
+`just serve` binds the control plane to loopback and enables the local identity bypass (`--dev-bypass-auth`). Production refuses that bypass.
 
-Common commands:
+Common recipes:
 
-```bash
-npm run check
-npm run test:browser
-npm run build
-npm run audit
-nix flake check
-nix build .#piss
-```
+| Recipe | What it does |
+| --- | --- |
+| `just build` | Build every OCaml artifact and the Melange bundle |
+| `just build-native` | Build only the native executables |
+| `just build-web` | Build only the browser bundle |
+| `just test` | Run the Alcotest unit suite |
+| `just test-integration` | Run the shell-driven integration tests |
+| `just format` | Auto-format every OCaml and Reason source |
+| `just format-check` | Verify formatting without modifying files |
+| `just check` | format-check + build + test + test-integration |
+| `just serve` | Run the control plane against the mock harness |
+| `just worker` | Run one session worker against the mock harness |
+| `just mock-agent` | Run the deterministic mock ACP agent |
+| `just doc` | Build the API documentation |
+| `just info` | Print the active opam switch and tool versions |
 
-The canonical source layout is:
-
-```text
-server/        Effect services, HTTP adapter, and Pi runtime supervision
-shared/        Effect schemas and shared state rules
-web/           React PWA
-browser-test/  Playwright coverage
-test/          Node integration and unit tests
-nix/           NixOS module
-```
+Run `just` with no arguments to list every recipe.
 
 ## Module options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `services.piss.enable` | `false` | Enable PISS |
-| `services.piss.package` | `piss-server` | Runtime server package |
+| `services.piss.controlPackage` | `piss-control` | Replaceable control-plane package |
+| `services.piss.workerPackage` | `piss-session-worker` | Stable session-worker package |
+| `services.piss.sessionMcpPackage` | `piss-session-mcp` | Inter-session collaboration server |
+| `services.piss.mockAgentPackage` | `piss-mock-agent` | Deterministic ACP fixture |
+| `services.piss.adapterPackage` | `pi-acp` | Pinned Pi ACP adapter |
+| `services.piss.opencodePackage` | `opencode` | Pinned OpenCode binary |
 | `services.piss.webPackage` | `piss-web` | Independently updatable browser shell |
-| `services.piss.port` | `4317` | Loopback application port |
-| `services.piss.piCommand` | `"pi"` | Pi CLI executable |
-| `services.piss.sshAgentSocket` | auto-detected | Shared SSH agent socket inherited by every Pi runtime |
+| `services.piss.port` | `4318` | Loopback application port |
+| `services.piss.sshAgentSocket` | auto-detected | Shared SSH agent socket inherited by every worker |
 | `services.piss.allowedUsers` | `[]` | Explicit Tailscale login allowlist |
 | `services.piss.allowAllTailnetUsers` | `false` | Permit every identity allowed by tailnet policy |
 | `services.piss.workspaceDiscoveryRoots` | `[]` | Roots available for workspace discovery and creation |
 | `services.piss.workspaces` | `[]` | Declaratively trusted workspace roots |
+| `services.piss.autoUpgradeIdleWorkers` | `true` | Compare and upgrade idle workers against the current generation |
+| `services.piss.workerUpgradeInterval` | `"1min"` | How often the upgrade timer runs |
 | `services.piss.tailscale.enable` | `true` | Run the independent userspace node |
-| `services.piss.tailscale.hostname` | `"piss"` | Dedicated tailnet hostname |
-| `services.piss.tailscale.stateName` | `"piss"` | Tailscale state/runtime directory name |
+| `services.piss.tailscale.hostname` | `"piss-ocaml"` | Dedicated tailnet hostname |
 | `services.piss.tailscale.authKeyFile` | `null` | Optional unattended enrollment key file |
 
 ## Security

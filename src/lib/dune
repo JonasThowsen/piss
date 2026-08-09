@@ -1,0 +1,5 @@
+(library
+ (name piss_core)
+ (public_name piss.core)
+ (wrapped true)
+ (libraries yojson sqlite3 unix))
