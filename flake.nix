@@ -52,10 +52,23 @@
                 ./web/dune-project
                 ./web/browser_http.ml
                 ./web/browser_http.mli
+                ./web/command_id.ml
+                ./web/command_id.mli
                 ./web/control_plane.ml
                 ./web/control_plane.mli
                 ./web/control_plane_test.ml
+                ./web/event_history.ml
+                ./web/event_history.mli
                 ./web/main.ml
+                ./web/prompt_command.ml
+                ./web/prompt_command.mli
+                ./web/request_target.ml
+                ./web/request_target.mli
+                ./web/session_protocol_test.ml
+                ./web/session_rail.ml
+                ./web/session_rail.mli
+                ./web/timeline_view.ml
+                ./web/timeline_view.mli
               ];
             };
             nativeBuildInputs = [
@@ -65,6 +78,7 @@
             buildInputs = [
               bonsaiWeb.bonsai
               bonsaiWeb.ocamlPackages.ppx_pattern_bind
+              bonsaiWeb.ocamlPackages.uri
               bonsaiWeb.ocamlPackages.yojson
             ];
             buildPhase = ''

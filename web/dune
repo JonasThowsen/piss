@@ -1,12 +1,12 @@
 (library
  (name control_plane_domain)
  (wrapped false)
- (modules control_plane)
- (libraries core yojson))
+ (modules control_plane event_history prompt_command request_target)
+ (libraries core uri yojson))
 
 (executable
  (name main)
- (modules main browser_http)
+ (modules browser_http command_id main session_rail timeline_view)
  (modes js)
  (libraries async_js bonsai.web control_plane_domain)
  (preprocess
@@ -15,6 +15,13 @@
 (test
  (name control_plane_test)
  (modules control_plane_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name session_protocol_test)
+ (modules session_protocol_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))
