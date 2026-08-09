@@ -3,65 +3,6 @@
 open Cohttp
 open Piss_core
 
-type session_action = Archive of string | Restore of string | Rename of string
-
-let session_action path =
-  match String.split_on_char '/' path with
-  | [ ""; "api"; "v2"; "sessions"; id; "archive" ]
-    when Lifecycle.valid_session_id id ->
-      Some (Archive id)
-  | [ ""; "api"; "v2"; "sessions"; id; "restore" ]
-    when Lifecycle.valid_session_id id ->
-      Some (Restore id)
-  | [ ""; "api"; "v2"; "sessions"; id; "rename" ]
-    when Lifecycle.valid_session_id id ->
-      Some (Rename id)
-  | _ -> None
-
-let workspace_delete path =
-  match String.split_on_char '/' path with
-  | [ ""; "api"; "v2"; "workspaces"; id; "delete" ]
-    when Lifecycle.valid_session_id id ->
-      Some id
-  | _ -> None
-
-let parse_non_negative_cursor value =
-  match Int64.of_string_opt value with
-  | Some cursor when cursor >= 0L -> Ok cursor
-  | _ -> Error "event cursor must be a non-negative integer"
-
-let parse_after uri =
-  match Uri.get_query_param uri "after" with
-  | None -> Ok 0L
-  | Some value -> parse_non_negative_cursor value
-
-let parse_before uri =
-  match Uri.get_query_param uri "before" with
-  | None -> Error "before is required"
-  | Some value -> (
-      match parse_non_negative_cursor value with
-      | Ok cursor when cursor > 0L -> Ok cursor
-      | Ok _ -> Error "before must be a positive integer"
-      | Error _ as error -> error)
-
-let stream_after request uri =
-  match parse_after uri with
-  | Error _ as error -> error
-  | Ok query_cursor -> (
-      match Header.get (Request.headers request) "last-event-id" with
-      | None | Some "" -> Ok query_cursor
-      | Some value -> (
-          match parse_non_negative_cursor value with
-          | Error _ as error -> error
-          | Ok header_cursor -> Ok (Int64.max query_cursor header_cursor)))
-
-let parse_limit value =
-  try
-    let limit = int_of_string value in
-    if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
-    else Ok limit
-  with Failure _ -> Error "limit must be an integer"
-
 let read_body body =
   Eio.Buf_read.of_flow body ~max_size:Config.max_body_bytes
   |> Eio.Buf_read.take_all
@@ -75,8 +16,17 @@ let broker_source (workers : Config.workers) request =
       | Some token -> Registry.find_active_by_token manager.registry token
       | None -> None)
 
-let with_worker workers uri operation =
-  match Workers.worker_socket workers uri with
+let worker_socket workers session_id =
+  match workers with
+  | Config.Fixed path -> Ok path
+  | Managed manager ->
+      Result.map
+        (fun (session : Registry.session) ->
+          Lifecycle.session_socket manager.runtime_root session.id)
+        (Workers.active_session manager session_id)
+
+let with_worker workers session_id operation =
+  match worker_socket workers session_id with
   | Ok socket -> operation socket
   | Error message -> Error message
 
@@ -104,11 +54,20 @@ let handler ~net ~clock ~env _socket request body =
         (if is_broker_path then "session broker token is not authorized"
          else "Tailscale identity is not authorized")
     else
-      let managed_response =
+      let route =
         match
-          ((workers : Config.workers), method_, path, session_action path)
+          Routes.parse
+            ~managed:(match workers with Managed _ -> true | Fixed _ -> false)
+            ~method_ ~uri
+            ~last_event_id:
+              (Header.get (Request.headers request) "last-event-id")
         with
-        | Managed manager, `GET, "/api/v2/broker/sessions", _ ->
+        | Ok route -> route
+        | Error message -> raise (Invalid_argument message)
+      in
+      let managed_response =
+        match ((workers : Config.workers), route) with
+        | Managed manager, Routes.Get_broker_sessions ->
             Some
               (match calling_session with
               | None ->
@@ -125,7 +84,7 @@ let handler ~net ~clock ~env _socket request body =
                           ("self", `Bool (String.equal caller.id session.id));
                         ])
                   |> fun sessions -> Headers.respond_json (`List sessions))
-        | Managed manager, `POST, "/api/v2/broker/send", _ ->
+        | Managed manager, Routes.Post_broker_send ->
             Some
               (match calling_session with
               | None ->
@@ -150,7 +109,7 @@ let handler ~net ~clock ~env _socket request body =
                                  ("state", `String peer_request.state);
                                  ("duplicate", `Bool duplicate);
                                ]))))
-        | Managed manager, `POST, "/api/v2/broker/subscribe", _ ->
+        | Managed manager, Routes.Post_broker_subscribe ->
             Some
               (match calling_session with
               | None ->
@@ -175,7 +134,7 @@ let handler ~net ~clock ~env _socket request body =
                                  ("state", `String subscription.state);
                                  ("duplicate", `Bool duplicate);
                                ]))))
-        | Managed manager, `POST, "/api/v2/broker/ask", _ ->
+        | Managed manager, Routes.Post_broker_ask ->
             Some
               (match calling_session with
               | None ->
@@ -208,7 +167,7 @@ let handler ~net ~clock ~env _socket request body =
                                      ("response", `String response);
                                      ("duplicate", `Bool duplicate);
                                    ])))))
-        | Managed manager, `POST, "/api/v2/broker/collect", _ ->
+        | Managed manager, Routes.Post_broker_collect ->
             Some
               (match calling_session with
               | None ->
@@ -264,13 +223,12 @@ let handler ~net ~clock ~env _socket request body =
                                         `String request.id)
                                       pending) );
                              ])))
-        | Managed manager, `GET, "/api/v2/workspaces", _ ->
+        | Managed manager, Routes.Get_workspaces ->
             Some
               ( Registry.list_workspaces manager.registry
               |> List.map Registry.workspace_to_yojson
               |> fun workspaces -> Headers.respond_json (`List workspaces) )
-        | Managed manager, `POST, _, _
-          when Option.is_some (workspace_delete path) ->
+        | Managed manager, Routes.Post_workspace_delete id ->
             Some
               (match
                  Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
@@ -279,7 +237,6 @@ let handler ~net ~clock ~env _socket request body =
               | Error (status, message) -> Headers.error_json ~status message
               | Ok () -> (
                   ignore (read_body body);
-                  let id = Option.get (workspace_delete path) in
                   match Registry.find_workspace manager.registry id with
                   | None ->
                       Headers.error_json ~status:`Not_found
@@ -312,10 +269,7 @@ let handler ~net ~clock ~env _socket request body =
                                ("removed", `Bool true);
                                ("id", `String workspace.id);
                              ]))))
-        | Managed manager, `GET, "/api/v2/workspace-directories", _ ->
-            let query =
-              Uri.get_query_param uri "query" |> Option.value ~default:""
-            in
+        | Managed manager, Routes.Get_workspace_directories { query } ->
             Some
               ( Workspaces.search_workspace_directories
                   manager.workspace_discovery_roots query
@@ -326,7 +280,7 @@ let handler ~net ~clock ~env _socket request body =
                       ("name", `String (Workspaces.workspace_name path));
                     ])
               |> fun directories -> Headers.respond_json (`List directories) )
-        | Managed manager, `POST, "/api/v2/workspaces", _ ->
+        | Managed manager, Routes.Post_workspaces ->
             Some
               (match
                  Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
@@ -367,22 +321,21 @@ let handler ~net ~clock ~env _socket request body =
                       in
                       Headers.respond_json ~status:`Created
                         (Registry.workspace_to_yojson workspace)))
-        | Managed manager, `GET, "/api/v2/sessions", _ ->
+        | Managed manager, Routes.Get_sessions { archived } ->
             let sessions =
-              match Uri.get_query_param uri "archived" with
-              | Some "true" ->
-                  Registry.list_archived manager.registry
-                  |> List.map (fun session ->
-                      match Registry.session_to_yojson session with
-                      | `Assoc fields ->
-                          `Assoc (("status", `String "archived") :: fields)
-                      | _ -> assert false)
-              | _ ->
-                  Registry.list manager.registry ~include_archived:false
-                  |> List.map (Workers.summary ~net manager)
+              if archived then
+                Registry.list_archived manager.registry
+                |> List.map (fun session ->
+                    match Registry.session_to_yojson session with
+                    | `Assoc fields ->
+                        `Assoc (("status", `String "archived") :: fields)
+                    | _ -> assert false)
+              else
+                Registry.list manager.registry ~include_archived:false
+                |> List.map (Workers.summary ~net manager)
             in
             Some (Headers.respond_json (`List sessions))
-        | Managed manager, `POST, "/api/v2/sessions", _ ->
+        | Managed manager, Routes.Post_sessions ->
             Some
               (match
                  Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
@@ -419,7 +372,7 @@ let handler ~net ~clock ~env _socket request body =
                         (Registry.session_to_yojson session)
                   | Error message ->
                       Headers.error_json ~status:`Conflict message))
-        | Managed manager, `POST, _, Some action ->
+        | Managed manager, Routes.Post_session_action action ->
             Some
               (match
                  Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
@@ -429,21 +382,21 @@ let handler ~net ~clock ~env _socket request body =
               | Ok () -> (
                   let request_body = read_body body in
                   match action with
-                  | Archive id -> (
+                  | Routes.Archive id -> (
                       match Workers.archive_managed_session manager id with
                       | Ok () ->
                           Headers.respond_json
                             (`Assoc [ ("archived", `Bool true) ])
                       | Error message ->
                           Headers.error_json ~status:`Conflict message)
-                  | Restore id -> (
+                  | Routes.Restore id -> (
                       match Workers.restore_managed_session manager id with
                       | Ok () ->
                           Headers.respond_json
                             (`Assoc [ ("restored", `Bool true) ])
                       | Error message ->
                           Headers.error_json ~status:`Conflict message)
-                  | Rename id ->
+                  | Routes.Rename id ->
                       let json = Yojson.Safe.from_string request_body in
                       let title =
                         Yojson.Safe.Util.member "title" json
@@ -467,8 +420,8 @@ let handler ~net ~clock ~env _socket request body =
       match managed_response with
       | Some response -> response
       | None -> (
-          match (method_, path) with
-          | `GET, "/health" ->
+          match route with
+          | Routes.Get_health ->
               Headers.respond_json
                 (`Assoc
                    [
@@ -476,19 +429,16 @@ let handler ~net ~clock ~env _socket request body =
                      ("generation", `String generation);
                      ("pid", `Int (Unix.getpid ()));
                    ])
-          | `GET, "/api/v2/session" -> (
+          | Routes.Get_session { session_id } -> (
               match
-                with_worker workers uri (fun socket ->
+                with_worker workers session_id (fun socket ->
                     Worker_client.request ~net ~socket
                       (`Assoc [ ("op", `String "snapshot") ]))
               with
               | Ok snapshot -> Headers.respond_json snapshot
               | Error message ->
                   Headers.error_json ~status:`Service_unavailable message)
-          | `GET, "/api/v2/file-mentions" -> (
-              let query =
-                Uri.get_query_param uri "query" |> Option.value ~default:""
-              in
+          | Routes.Get_file_mentions { session_id; query } -> (
               let request =
                 `Assoc
                   [ ("op", `String "file_search"); ("query", `String query) ]
@@ -497,22 +447,22 @@ let handler ~net ~clock ~env _socket request body =
               | Error message -> Headers.error_json message
               | Ok _ -> (
                   match
-                    with_worker workers uri (fun socket ->
+                    with_worker workers session_id (fun socket ->
                         Worker_client.request ~net ~socket request)
                   with
                   | Ok mentions -> Headers.respond_json mentions
                   | Error message ->
                       Headers.error_json ~status:`Service_unavailable message))
-          | `GET, "/api/v2/config-options" -> (
+          | Routes.Get_config_options { session_id } -> (
               match
-                with_worker workers uri (fun socket ->
+                with_worker workers session_id (fun socket ->
                     Worker_client.request ~net ~socket
                       (`Assoc [ ("op", `String "config_options") ]))
               with
               | Ok options -> Headers.respond_json options
               | Error message ->
                   Headers.error_json ~status:`Service_unavailable message)
-          | `POST, "/api/v2/config-options" -> (
+          | Routes.Post_config_options { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
@@ -526,7 +476,7 @@ let handler ~net ~clock ~env _socket request body =
                   with
                   | `String config_id, `String value -> (
                       match
-                        with_worker workers uri (fun socket ->
+                        with_worker workers session_id (fun socket ->
                             Worker_client.request ~net ~socket
                               (`Assoc
                                  [
@@ -540,92 +490,63 @@ let handler ~net ~clock ~env _socket request body =
                           Headers.error_json ~status:`Conflict message)
                   | _ -> Headers.error_json "configId and value must be strings"
                   ))
-          | `GET, "/api/v2/event-stream" -> (
-              match stream_after request uri with
-              | Error message -> Headers.error_json message
-              | Ok after -> (
-                  match Workers.worker_socket workers uri with
-                  | Error message ->
-                      Headers.error_json ~status:`Service_unavailable message
-                  | Ok socket ->
-                      (* TODO(tracer): Add a worker-side wait_events primitive
-                         before supporting many concurrent observers per
-                         session; this first browser stream uses bounded 250 ms
-                         reads. *)
-                      let fetch cursor =
-                        match
-                          Worker_client.request ~net ~socket
-                            (`Assoc
-                               [
-                                 ("op", `String "events");
-                                 ("after", `Intlit (Int64.to_string cursor));
-                                 ("limit", `Int 200);
-                               ])
-                        with
-                        | Ok (`List events) -> Ok events
-                        | Ok _ -> Error "worker returned an invalid event page"
-                        | Error message -> Error message
-                      in
-                      let stream =
-                        Event_stream.source ~fetch ~after
-                          ~sleep:(Eio.Time.sleep clock)
-                      in
-                      Cohttp_eio.Server.respond ~status:`OK
-                        ~headers:Headers.event_stream_headers ~body:stream ()))
-          | `GET, "/api/v2/events" -> (
-              let requested_limit default =
-                match Uri.get_query_param uri "limit" with
-                | None -> Ok default
-                | Some value -> parse_limit value
+          | Routes.Get_event_stream { session_id; after } -> (
+              match worker_socket workers session_id with
+              | Error message ->
+                  Headers.error_json ~status:`Service_unavailable message
+              | Ok socket ->
+                  (* TODO(tracer): Add a worker-side wait_events primitive
+                     before supporting many concurrent observers per session;
+                     this first browser stream uses bounded 250 ms reads. *)
+                  let fetch cursor =
+                    match
+                      Worker_client.request ~net ~socket
+                        (`Assoc
+                           [
+                             ("op", `String "events");
+                             ("after", `Intlit (Int64.to_string cursor));
+                             ("limit", `Int 200);
+                           ])
+                    with
+                    | Ok (`List events) -> Ok events
+                    | Ok _ -> Error "worker returned an invalid event page"
+                    | Error message -> Error message
+                  in
+                  let stream =
+                    Event_stream.source ~fetch ~after
+                      ~sleep:(Eio.Time.sleep clock)
+                  in
+                  Cohttp_eio.Server.respond ~status:`OK
+                    ~headers:Headers.event_stream_headers ~body:stream ())
+          | Routes.Get_events { session_id; page } -> (
+              let worker_request =
+                match page with
+                | Routes.Before { cursor; limit } ->
+                    `Assoc
+                      [
+                        ("op", `String "events_before");
+                        ("before", `Intlit (Int64.to_string cursor));
+                        ("limit", `Int limit);
+                      ]
+                | Routes.Recent { limit } ->
+                    `Assoc
+                      [ ("op", `String "recent_events"); ("limit", `Int limit) ]
+                | Routes.After { cursor; limit } ->
+                    `Assoc
+                      [
+                        ("op", `String "events");
+                        ("after", `Intlit (Int64.to_string cursor));
+                        ("limit", `Int limit);
+                      ]
               in
-              let request =
-                match Uri.get_query_param uri "before" with
-                | Some _ -> (
-                    match (parse_before uri, requested_limit 200) with
-                    | Ok before, Ok limit ->
-                        Ok
-                          (`Assoc
-                             [
-                               ("op", `String "events_before");
-                               ("before", `Intlit (Int64.to_string before));
-                               ("limit", `Int limit);
-                             ])
-                    | Error message, _ | _, Error message -> Error message)
-                | None -> (
-                    match Uri.get_query_param uri "recent" with
-                    | Some value -> (
-                        match parse_limit value with
-                        | Ok limit ->
-                            Ok
-                              (`Assoc
-                                 [
-                                   ("op", `String "recent_events");
-                                   ("limit", `Int limit);
-                                 ])
-                        | Error message -> Error message)
-                    | None -> (
-                        match (parse_after uri, requested_limit 200) with
-                        | Ok after, Ok limit ->
-                            Ok
-                              (`Assoc
-                                 [
-                                   ("op", `String "events");
-                                   ("after", `Intlit (Int64.to_string after));
-                                   ("limit", `Int limit);
-                                 ])
-                        | Error message, _ | _, Error message -> Error message))
-              in
-              match request with
-              | Error message -> Headers.error_json message
-              | Ok request -> (
-                  match
-                    with_worker workers uri (fun socket ->
-                        Worker_client.request ~net ~socket request)
-                  with
-                  | Ok events -> Headers.respond_json events
-                  | Error message ->
-                      Headers.error_json ~status:`Service_unavailable message))
-          | `POST, "/api/v2/session/new" -> (
+              match
+                with_worker workers session_id (fun socket ->
+                    Worker_client.request ~net ~socket worker_request)
+              with
+              | Ok events -> Headers.respond_json events
+              | Error message ->
+                  Headers.error_json ~status:`Service_unavailable message)
+          | Routes.Post_session_new -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
@@ -655,7 +576,7 @@ let handler ~net ~clock ~env _socket request body =
                           Headers.respond_json ~status:`Created result
                       | Error message ->
                           Headers.error_json ~status:`Conflict message)))
-          | `POST, "/api/v2/commands" -> (
+          | Routes.Post_commands { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
@@ -695,7 +616,7 @@ let handler ~net ~clock ~env _socket request body =
                   | Error message -> Headers.error_json message
                   | Ok _ -> (
                       match
-                        with_worker workers uri (fun socket ->
+                        with_worker workers session_id (fun socket ->
                             Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result ->
@@ -703,7 +624,7 @@ let handler ~net ~clock ~env _socket request body =
                       | Error message ->
                           Headers.error_json ~status:`Service_unavailable
                             message)))
-          | `POST, "/api/v2/cancel" -> (
+          | Routes.Post_cancel { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
@@ -712,14 +633,14 @@ let handler ~net ~clock ~env _socket request body =
               | Ok () -> (
                   ignore (read_body body);
                   match
-                    with_worker workers uri (fun socket ->
+                    with_worker workers session_id (fun socket ->
                         Worker_client.request ~net ~socket
                           (`Assoc [ ("op", `String "cancel") ]))
                   with
                   | Ok result -> Headers.respond_json ~status:`Accepted result
                   | Error message ->
                       Headers.error_json ~status:`Conflict message))
-          | `POST, "/api/v2/permissions" -> (
+          | Routes.Post_permissions { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
                   request
@@ -738,7 +659,7 @@ let handler ~net ~clock ~env _socket request body =
                           (Type_error ("optionId must be a string or null", json))
                   in
                   match
-                    with_worker workers uri (fun socket ->
+                    with_worker workers session_id (fun socket ->
                         Worker_client.request ~net ~socket
                           (`Assoc
                              [
@@ -750,13 +671,13 @@ let handler ~net ~clock ~env _socket request body =
                   | Ok result -> Headers.respond_json result
                   | Error message ->
                       Headers.error_json ~status:`Conflict message))
-          | `GET, "/app.js" ->
+          | Routes.Get_app_js ->
               Assets.serve app_js "text/javascript; charset=utf-8"
-          | `GET, resource -> (
+          | Routes.Get_asset resource -> (
               match Assets.safe_asset_path public_dir resource with
               | Some (path, content_type) -> Assets.serve path content_type
               | None -> Headers.error_json ~status:`Not_found "not found")
-          | _ ->
+          | Routes.Method_not_allowed { method_; path } ->
               let method_name =
                 match method_ with
                 | `GET -> "GET"
@@ -771,7 +692,14 @@ let handler ~net ~clock ~env _socket request body =
                 | `Other value -> value
               in
               Headers.error_json ~status:`Method_not_allowed
-                (method_name ^ " not allowed for " ^ path))
+                (method_name ^ " not allowed for " ^ path)
+          | Routes.Get_broker_sessions | Routes.Post_broker_send
+          | Routes.Post_broker_subscribe | Routes.Post_broker_ask
+          | Routes.Post_broker_collect | Routes.Get_workspaces
+          | Routes.Post_workspace_delete _ | Routes.Get_workspace_directories _
+          | Routes.Post_workspaces | Routes.Get_sessions _
+          | Routes.Post_sessions | Routes.Post_session_action _ ->
+              assert false)
   with
   | Eio.Io _ as exn ->
       Headers.error_json ~status:`Service_unavailable (Printexc.to_string exn)

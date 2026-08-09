@@ -1,4 +1,18 @@
 (executable
  (name main)
  (public_name pissd)
+ (modules
+  main
+  config
+  http
+  routes
+  workers
+  workspaces
+  lifecycle
+  broker
+  worker_client
+  authentication
+  event_stream
+  headers
+  assets)
  (libraries piss.core eio_main cohttp-eio cstruct uri yojson unix str))
