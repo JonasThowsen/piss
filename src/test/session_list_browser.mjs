@@ -116,6 +116,13 @@ try {
   if (sessions.length !== 1 || sessions[0].id !== "s-mention-browser") {
     throw new Error(`unexpected session response: ${JSON.stringify(sessions)}`);
   }
+  const waitForIdle = async () => {
+    await page.waitForFunction(async () => {
+      const response = await fetch("/api/v2/session?session=s-mention-browser");
+      return response.ok && (await response.json()).status === "idle";
+    });
+    await page.locator(".connection-pill").getByText("idle", { exact: true }).waitFor();
+  };
   const prompt = "Render the deterministic Bonsai response";
   await page.getByRole("textbox", { name: "Message agent" }).fill(prompt);
   const requestPromise = page.waitForRequest(
@@ -167,6 +174,46 @@ try {
     throw new Error(`post-submit polling remained active: ${JSON.stringify(eventPageRequests)}`);
   }
 
+  await waitForIdle();
+  const gifData = "R0lGODlhAQABAAAAACw=";
+  const imageInput = page.locator("#composer-image-input");
+  if ((await imageInput.getAttribute("multiple")) === null || !(await imageInput.isHidden())) {
+    throw new Error("image input was not hidden and multi-file capable");
+  }
+  await page.getByRole("textbox", { name: "Message agent" }).evaluate((field, data) => {
+    const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], "proof.gif", { type: "image/gif" }));
+    field.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
+  }, gifData);
+  await page.getByText("proof.gif", { exact: true }).waitFor();
+  await page.getByText("14 B", { exact: true }).waitFor();
+  const imageRequestPromise = page.waitForRequest(
+    (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Send message" }).click();
+  const imageBody = (await imageRequestPromise).postDataJSON();
+  if (
+    imageBody.action !== "prompt"
+    || imageBody.text !== ""
+    || imageBody.images?.length !== 1
+    || imageBody.images[0]?.mimeType !== "image/gif"
+    || imageBody.images[0]?.name !== "proof.gif"
+    || imageBody.images[0]?.data !== gifData
+  ) {
+    throw new Error(`unexpected image command: ${JSON.stringify(imageBody)}`);
+  }
+  await returnToAgentAfterRun();
+  await page.getByText("Received 1 image attachment.", { exact: true }).waitFor({ timeout: 10000 });
+  if ((await page.locator("body").innerText()).includes(gifData)) {
+    throw new Error("base64 image data was rendered into the timeline");
+  }
+
+  await waitForIdle();
   const permissionPrompt = "permission: render the browser decision path";
   await page.getByRole("textbox", { name: "Message agent" }).fill(permissionPrompt);
   await page.getByRole("button", { name: "Send message" }).click();
@@ -212,15 +259,70 @@ try {
   await clickPromise;
   await permissionCard.waitFor({ state: "detached", timeout: 10000 });
   await returnToAgentAfterRun();
+  await page.getByRole("button", { name: "Steer next" }).waitFor();
+  if (!(await page.getByRole("button", { name: "Send message" }).isDisabled())) {
+    throw new Error("permission resolution inferred a running delivery action");
+  }
   await page.getByText("state / completed", { exact: true }).last().waitFor({ timeout: 10000 });
   if (eventPageRequests.length !== 1) {
     throw new Error(`permission flow polled event pages: ${JSON.stringify(eventPageRequests)}`);
   }
 
-  const waitForIdle = () => page.waitForFunction(async () => {
-    const response = await fetch("/api/v2/session?session=s-mention-browser");
-    return response.ok && (await response.json()).status === "idle";
-  });
+  await waitForIdle();
+  await page.getByRole("textbox", { name: "Message agent" }).fill("hold active for steering");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await page.waitForFunction(() =>
+    document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true"
+    || [...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Steer next")),
+  );
+  if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
+  const steerButton = page.getByRole("button", { name: "Steer next" });
+  await steerButton.waitFor();
+  await steerButton.click();
+  await page.getByRole("textbox", { name: "Message agent" }).fill("steer the active proof");
+  const steerRequestPromise = page.waitForRequest(
+    (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Send message" }).click();
+  const steerBody = (await steerRequestPromise).postDataJSON();
+  if (steerBody.action !== "steer" || steerBody.text !== "steer the active proof") {
+    throw new Error(`unexpected steer command: ${JSON.stringify(steerBody)}`);
+  }
+  const cancelRequestPromise = page.waitForRequest(
+    (candidate) => new URL(candidate.url()).pathname === "/api/v2/cancel" && candidate.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Cancel" }).click();
+  const cancelRequest = await cancelRequestPromise;
+  if (
+    JSON.stringify(cancelRequest.postDataJSON()) !== "{}"
+    || new URL(cancelRequest.url()).searchParams.get("session") !== "s-mention-browser"
+  ) {
+    throw new Error(`unexpected cancel request: ${cancelRequest.postData()}`);
+  }
+  await page.getByText("Cancellation requested. Waiting for session events.", { exact: false }).waitFor();
+
+  await waitForIdle();
+  await page.getByRole("textbox", { name: "Message agent" }).fill("hold active for follow-up");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await page.waitForFunction(() =>
+    document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true"
+    || [...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Follow-up")),
+  );
+  if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
+  const followButton = page.getByRole("button", { name: "Follow-up" });
+  await followButton.click();
+  await page.getByRole("textbox", { name: "Message agent" }).fill("run this after the proof");
+  const followRequestPromise = page.waitForRequest(
+    (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Send message" }).click();
+  const followBody = (await followRequestPromise).postDataJSON();
+  if (followBody.action !== "follow_up" || followBody.text !== "run this after the proof") {
+    throw new Error(`unexpected follow-up command: ${JSON.stringify(followBody)}`);
+  }
+  await page.locator(".outbox-message").filter({ hasText: "Follow-up" }).waitFor();
+  await waitForIdle();
+
   const dispatchPrompt = (text) => page.evaluate(async (prompt) => {
     const response = await fetch("/api/v2/commands?session=s-mention-browser", {
       method: "POST",
@@ -312,7 +414,7 @@ try {
   }
   await mobileContext.close();
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, tabs, config, runtime details, mobile drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, tabs, config, images, steer/follow-up, cancel, runtime details, mobile drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

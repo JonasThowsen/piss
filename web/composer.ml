@@ -1,7 +1,7 @@
 open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
-open Js_of_ocaml
+open Composer_ui
 
 type output = {
   view : Vdom.Node.t;
@@ -11,177 +11,78 @@ type output = {
 
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
-let input_id = "prompt-input"
-let dispatch action = Vdom.Effect.Expert.handle_non_dom_event_exn action
 
-let present value =
-  Js.to_bool
-    (Js.Unsafe.coerce
-       (Js.Unsafe.fun_call
-          (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "Boolean")
-          [| value |]))
-
-let selection_from target fallback =
-  try
-    let start : int = Js.Unsafe.get target "selectionStart" in
-    let stop : int = Js.Unsafe.get target "selectionEnd" in
-    (start, stop)
-  with _ -> (fallback, fallback)
-
-let event_selection event fallback =
-  selection_from
-    (Js.Unsafe.get (Js.Unsafe.inject event) "currentTarget")
-    fallback
-
-let field_snapshot fallback =
-  let field =
-    Js.Unsafe.meth_call
-      (Js.Unsafe.inject Dom_html.document)
-      "getElementById"
-      [| Js.Unsafe.inject (Js.string input_id) |]
-  in
-  if present field then
-    let value =
-      try Js.to_string (Js.Unsafe.coerce (Js.Unsafe.get field "value"))
-      with _ -> fallback
-    in
-    let start, stop = selection_from field (String.length value) in
-    (value, start, stop)
-  else (fallback, String.length fallback, String.length fallback)
-
-let apply_to_field (insertion : Mention_picker.insertion) =
-  let field =
-    Js.Unsafe.meth_call
-      (Js.Unsafe.inject Dom_html.document)
-      "getElementById"
-      [| Js.Unsafe.inject (Js.string input_id) |]
-  in
-  if present field then (
-    Js.Unsafe.set field "value" (Js.string insertion.text);
-    ignore (Js.Unsafe.meth_call field "focus" [||]);
-    ignore
-      (Js.Unsafe.meth_call field "setSelectionRange"
-         [|
-           Js.Unsafe.inject insertion.cursor; Js.Unsafe.inject insertion.cursor;
-         |]))
-
-let focus_at cursor =
-  let focus () =
-    let field =
-      Js.Unsafe.meth_call
-        (Js.Unsafe.inject Dom_html.document)
-        "getElementById"
-        [| Js.Unsafe.inject (Js.string input_id) |]
-    in
-    if present field then (
-      ignore (Js.Unsafe.meth_call field "focus" [||]);
-      ignore
-        (Js.Unsafe.meth_call field "setSelectionRange"
-           [| Js.Unsafe.inject cursor; Js.Unsafe.inject cursor |]))
-  in
-  focus ();
-  let callback = Js.wrap_callback focus in
-  ignore
-    (Js.Unsafe.meth_call
-       (Js.Unsafe.inject Dom_html.window)
-       "requestAnimationFrame"
-       [| Js.Unsafe.inject callback |])
-
-let key event =
-  try
-    Js.to_string
-      (Js.Unsafe.coerce (Js.Unsafe.get (Js.Unsafe.inject event) "key"))
-  with _ -> ""
-
-let prevent action =
-  Effect.Many
-    [ Vdom.Effect.Prevent_default; Vdom.Effect.Stop_propagation; action ]
-
-let picker_view picker ~on_hover ~on_choose =
-  match picker with
-  | Mention_picker.Closed -> Vdom.Node.none
-  | Open { active; availability; selected; _ } ->
-      let contents =
-        match availability with
-        | Loading ->
-            [
-              Vdom.Node.p
-                ~attrs:[ class_ "file-mention-state" ]
-                [ text "Searching workspace files..." ];
-            ]
-        | Failed message ->
-            [
-              Vdom.Node.p
-                ~attrs:[ class_ "file-mention-state error" ]
-                [ text message ];
-            ]
-        | Ready [] ->
-            [
-              Vdom.Node.p
-                ~attrs:[ class_ "file-mention-state" ]
-                [ text "No workspace files match." ];
-            ]
-        | Ready resources ->
-            List.mapi resources ~f:(fun index resource ->
-                Vdom.Node.button ~key:resource.path
-                  ~attrs:
-                    [
-                      Vdom.Attr.id (Printf.sprintf "file-mention-%d" index);
-                      Vdom.Attr.create "type" "button";
-                      Vdom.Attr.create "role" "option";
-                      Vdom.Attr.create "aria-label"
-                        (resource.name ^ " " ^ resource.path);
-                      Vdom.Attr.create "aria-selected"
-                        (Bool.to_string (index = selected));
-                      (if index = selected then class_ "active" else class_ "");
-                      Vdom.Attr.on_mouseenter (fun _ -> on_hover index);
-                      Vdom.Attr.on_mousedown (fun _ ->
-                          Vdom.Effect.Prevent_default);
-                      Vdom.Attr.on_click (fun _ -> on_choose resource);
-                    ]
-                  [
-                    Vdom.Node.create "i" [ text "@" ];
-                    Vdom.Node.span
-                      [
-                        Vdom.Node.create "b" [ text resource.name ];
-                        Vdom.Node.create "small" [ text resource.path ];
-                      ];
-                  ])
-      in
-      Vdom.Node.div
-        ~attrs:
-          [
-            class_ "file-mention-menu";
-            Vdom.Attr.id "file-mention-options";
-            Vdom.Attr.create "role" "listbox";
-            Vdom.Attr.create "aria-label" "Workspace files";
-          ]
-        (Vdom.Node.header
-           [
-             Vdom.Node.span [ text "Workspace files" ];
-             Vdom.Node.create "small" [ text active.query ];
-           ]
-        :: contents)
-
-let component session stream_notice config_controls graph =
+let component session runtime connecting stream_notice config_controls ~on_busy
+    graph =
   let prompt, set_prompt = Bonsai.state "" graph in
   let resources, set_resources = Bonsai.state [] graph in
   let picker, set_picker = Bonsai.state Mention_picker.Closed graph in
   let submitting, set_submitting = Bonsai.state false graph in
+  let delivery, set_delivery = Bonsai.state Prompt_command.Prompt graph in
+  let cancel_sequence, set_cancel_sequence = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
+  let runtime_status =
+    let%arr runtime = runtime in
+    Option.map runtime ~f:(fun runtime -> runtime.Runtime_domain.status)
+  in
+  let reset_run_state =
+    let%arr set_delivery = set_delivery
+    and set_cancel_sequence = set_cancel_sequence in
+    function
+    | Some Runtime_domain.Running -> Effect.Ignore
+    | _ ->
+        Effect.Many
+          [ set_delivery Prompt_command.Prompt; set_cancel_sequence None ]
+  in
+  Bonsai.Edge.on_change runtime_status ~equal:(Option.equal phys_equal)
+    ~callback:reset_run_state graph;
+  let attachment_available =
+    let%arr session = session
+    and runtime = runtime
+    and connecting = connecting
+    and submitting = submitting in
+    Option.is_some session && (not connecting) && (not submitting)
+    && Option.value_map runtime ~default:false
+         ~f:(fun (runtime : Runtime_domain.t) ->
+           runtime.accepts_images
+           && match runtime.status with Idle | Running -> true | _ -> false)
+  in
+  let attachments =
+    Image_attachments.component ~available:attachment_available
+      ~on_notice:set_notice ~on_processing:on_busy graph
+  in
   let%arr session = session
+  and runtime = runtime
+  and connecting = connecting
   and stream_notice = stream_notice
   and config_controls = config_controls
+  and attachments = attachments
   and prompt = prompt
   and resources = resources
   and picker = picker
   and submitting = submitting
+  and delivery = delivery
+  and cancel_sequence = cancel_sequence
   and notice = notice
   and set_prompt = set_prompt
   and set_resources = set_resources
   and set_picker = set_picker
   and set_submitting = set_submitting
+  and set_delivery = set_delivery
+  and set_cancel_sequence = set_cancel_sequence
+  and on_busy = on_busy
   and set_notice = set_notice in
+  let policy =
+    Composer_policy.derive ~has_session:(Option.is_some session) ~runtime
+      ~connecting ~submitting ~image_processing:attachments.processing
+  in
+  let disabled = Composer_policy.disabled policy in
+  let action_selected =
+    match runtime with
+    | Some runtime when phys_equal runtime.status Running ->
+        not (phys_equal delivery Prompt_command.Prompt)
+    | _ -> true
+  in
   let close_picker () =
     Mention_request.cancel ();
     set_picker Mention_picker.Closed
@@ -248,6 +149,78 @@ let component session stream_notice config_controls graph =
     apply_to_field insertion;
     Effect.Many [ set_prompt insertion.text; start_search active ]
   in
+  let submit requested_action =
+    match (session, runtime, disabled) with
+    | None, _, _ | _, None, _ | _, _, true -> Effect.Ignore
+    | _, Some runtime, false
+      when phys_equal runtime.Runtime_domain.status Running
+           && phys_equal requested_action Prompt_command.Prompt ->
+        set_notice "Choose Steer next or Follow-up for the active run"
+    | Some (session : Control_plane.Session.t), Some runtime, false -> (
+        let live_text, _, _ = field_snapshot prompt in
+        let selected = Mention_picker.reconcile ~text:live_text resources in
+        let command_resources =
+          List.map selected ~f:(fun resource : Prompt_command.resource ->
+              { path = resource.path })
+        in
+        let command_images =
+          List.map attachments.images ~f:(fun image : Prompt_command.image ->
+              {
+                mime_type = Image_attachment.mime_type image;
+                data = Image_attachment.data image;
+                name = Image_attachment.name image;
+              })
+        in
+        let action =
+          Composer_policy.action runtime.status ~delivery:requested_action
+        in
+        let command_id = Command_id.create () in
+        match
+          Prompt_command.create ~action ~command_id ~text:live_text
+            ~images:command_images ~resources:command_resources
+        with
+        | Error message -> set_notice message
+        | Ok command ->
+            Effect.bind
+              (Effect.Many [ set_submitting true; on_busy true ])
+              ~f:(fun () ->
+                Effect.bind
+                  (Effect.of_deferred_thunk (fun () ->
+                       Browser_http.post_json
+                         ~query:[ ("session", session.id) ]
+                         "/api/v2/commands"
+                         (Prompt_command.to_yojson command)))
+                  ~f:(function
+                    | Error error ->
+                        Effect.Many
+                          [
+                            set_submitting false;
+                            on_busy false;
+                            set_notice (Error.to_string_hum error);
+                          ]
+                    | Ok _ ->
+                        Mention_request.cancel ();
+                        apply_to_field { text = ""; cursor = 0 };
+                        Effect.Many
+                          [
+                            set_prompt "";
+                            set_resources [];
+                            set_picker Mention_picker.Closed;
+                            attachments.clear ();
+                            set_delivery Prompt_command.Prompt;
+                            set_cancel_sequence None;
+                            set_submitting false;
+                            on_busy false;
+                            set_notice
+                              (match action with
+                              | Prompt ->
+                                  "Prompt accepted. Waiting for live events."
+                              | Steer ->
+                                  "Steer queued. Waiting for live events."
+                              | Follow_up ->
+                                  "Follow-up queued. Waiting for live events.");
+                          ])))
+  in
   let keydown event =
     match (key event, picker) with
     | "ArrowDown", Open { active; _ } ->
@@ -264,51 +237,37 @@ let component session stream_notice config_controls graph =
         | Some resource -> prevent (choose active resource)
         | None -> prevent Effect.Ignore)
     | "Enter", Open _ -> prevent Effect.Ignore
+    | "Enter", Closed
+      when (not (event_bool event "isComposing"))
+           && ((not (is_mobile ()))
+              || event_bool event "ctrlKey" || event_bool event "metaKey")
+           && not (event_bool event "shiftKey") ->
+        prevent (submit delivery)
     | _ -> Effect.Ignore
   in
-  let submit () =
-    match (session, submitting) with
-    | None, _ | _, true -> Effect.Ignore
-    | Some (session : Control_plane.Session.t), false -> (
-        let live_text, _, _ = field_snapshot prompt in
-        let selected = Mention_picker.reconcile ~text:live_text resources in
-        let command_resources =
-          List.map selected ~f:(fun resource : Prompt_command.resource ->
-              { path = resource.path })
-        in
-        let command_id = Command_id.create () in
-        match
-          Prompt_command.prompt ~command_id ~text:live_text
-            ~resources:command_resources
-        with
-        | Error message -> set_notice message
-        | Ok command ->
-            Effect.bind (set_submitting true) ~f:(fun () ->
-                Effect.bind
-                  (Effect.of_deferred_thunk (fun () ->
-                       Browser_http.post_json
-                         ~query:[ ("session", session.id) ]
-                         "/api/v2/commands"
-                         (Prompt_command.to_yojson command)))
-                  ~f:(function
-                    | Error error ->
-                        Effect.Many
-                          [
-                            set_submitting false;
-                            set_notice (Error.to_string_hum error);
-                          ]
-                    | Ok _ ->
-                        Mention_request.cancel ();
-                        apply_to_field { text = ""; cursor = 0 };
-                        Effect.Many
-                          [
-                            set_prompt "";
-                            set_resources [];
-                            set_picker Mention_picker.Closed;
-                            set_submitting false;
-                            set_notice
-                              "Prompt accepted. Waiting for live events.";
-                          ])))
+  let cancel () =
+    match (session, runtime) with
+    | Some session, Some runtime
+      when phys_equal runtime.Runtime_domain.status Running
+           && Option.is_none cancel_sequence ->
+        Effect.bind (set_cancel_sequence (Some runtime.last_sequence))
+          ~f:(fun () ->
+            Effect.bind
+              (Effect.of_deferred_thunk (fun () ->
+                   Browser_http.post_json
+                     ~query:[ ("session", session.id) ]
+                     "/api/v2/cancel" (`Assoc [])))
+              ~f:(function
+                | Error error ->
+                    Effect.Many
+                      [
+                        set_cancel_sequence None;
+                        set_notice (Error.to_string_hum error);
+                      ]
+                | Ok _ ->
+                    set_notice
+                      "Cancellation requested. Waiting for session events."))
+    | _ -> Effect.Ignore
   in
   let combined_notice =
     if String.is_empty stream_notice then notice
@@ -338,7 +297,7 @@ let component session stream_notice config_controls graph =
           ~attrs:
             [
               class_ "composer";
-              Vdom.Attr.on_submit (fun _ -> prevent (submit ()));
+              Vdom.Attr.on_submit (fun _ -> prevent (submit delivery));
             ]
           [
             Vdom.Node.textarea
@@ -349,23 +308,31 @@ let component session stream_notice config_controls graph =
                    Vdom.Attr.create "aria-autocomplete" "list";
                    Vdom.Attr.create "aria-controls" "file-mention-options";
                    Vdom.Attr.create "aria-expanded" (Bool.to_string picker_open);
-                   Vdom.Attr.placeholder "Message agent";
+                   Vdom.Attr.placeholder (Composer_policy.placeholder policy);
+                   Vdom.Attr.create "maxlength" "65536";
                    Vdom.Attr.on_input update_prompt;
                    Vdom.Attr.on_keydown keydown;
+                   attachments.paste_attr;
                  ]
-                @ Option.value_map active_descendant ~default:[] ~f:(fun id ->
-                    [ Vdom.Attr.create "aria-activedescendant" id ]))
+                @
+                if disabled then [ Vdom.Attr.disabled ]
+                else
+                  []
+                  @ Option.value_map active_descendant ~default:[] ~f:(fun id ->
+                      [ Vdom.Attr.create "aria-activedescendant" id ]))
               [];
             picker_view picker
               ~on_hover:(fun index ->
                 set_picker (Mention_picker.select_index picker index))
               ~on_choose;
+            attachments.previews;
             Vdom.Node.div
               ~attrs:[ class_ "composer-footer" ]
               [
                 Vdom.Node.div
                   ~attrs:[ class_ "composer-insertions" ]
                   [
+                    attachments.view;
                     Vdom.Node.button
                       ~attrs:
                         [
@@ -392,11 +359,64 @@ let component session stream_notice config_controls graph =
                        Vdom.Attr.create "aria-label" "Send message";
                      ]
                     @
-                    if submitting || String.is_empty (String.strip prompt) then
-                      [ Vdom.Attr.create "disabled" "" ]
+                    if
+                      disabled || (not action_selected)
+                      || String.is_empty (String.strip prompt)
+                         && List.is_empty attachments.images
+                    then [ Vdom.Attr.create "disabled" "" ]
                     else [])
-                  [ text (if submitting then "..." else ">") ];
+                  [
+                    text
+                      (if submitting || attachments.processing then "..."
+                       else ">");
+                  ];
               ];
+            (match runtime with
+            | Some runtime when phys_equal runtime.status Running ->
+                Vdom.Node.div
+                  ~attrs:[ class_ "composer-run-actions" ]
+                  [
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.create "aria-pressed"
+                            (Bool.to_string (phys_equal delivery Steer));
+                          (if phys_equal delivery Steer then class_ "active"
+                           else class_ "");
+                          Vdom.Attr.on_click (fun _ -> set_delivery Steer);
+                        ]
+                      [ text "Steer next" ];
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.create "aria-pressed"
+                            (Bool.to_string (phys_equal delivery Follow_up));
+                          (if phys_equal delivery Follow_up then class_ "active"
+                           else class_ "");
+                          Vdom.Attr.on_click (fun _ -> set_delivery Follow_up);
+                        ]
+                      [ text "Follow-up" ];
+                    Vdom.Node.button
+                      ~attrs:
+                        ([
+                           class_ "cancel-run";
+                           Vdom.Attr.create "type" "button";
+                           Vdom.Attr.on_click (fun _ -> cancel ());
+                         ]
+                        @
+                        if Option.is_some cancel_sequence then
+                          [ Vdom.Attr.disabled ]
+                        else [])
+                      [
+                        text
+                          (if Option.is_some cancel_sequence then
+                             "Cancelling..."
+                           else "Cancel");
+                      ];
+                  ]
+            | _ -> Vdom.Node.none);
           ];
       ]
   in
@@ -411,6 +431,11 @@ let component session stream_notice config_controls graph =
             set_prompt "";
             set_resources [];
             set_picker Mention_picker.Closed;
+            attachments.clear ();
+            set_delivery Prompt_command.Prompt;
+            set_cancel_sequence None;
+            set_submitting false;
+            on_busy false;
             set_notice "";
           ]);
     set_notice;

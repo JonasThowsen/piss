@@ -52,6 +52,10 @@
                 ./web/acp_content.mli
                 ./web/dune
                 ./web/dune-project
+                ./web/app_header.ml
+                ./web/app_header.mli
+                ./web/app_state.ml
+                ./web/app_state.mli
                 ./web/browser_http.ml
                 ./web/browser_http.mli
                 ./web/clipboard.ml
@@ -60,6 +64,11 @@
                 ./web/command_id.mli
                  ./web/composer.ml
                  ./web/composer.mli
+                 ./web/composer_ui.ml
+                 ./web/composer_ui.mli
+                 ./web/composer_domain_test.ml
+                 ./web/composer_policy.ml
+                 ./web/composer_policy.mli
                  ./web/config_controls.ml
                  ./web/config_controls.mli
                  ./web/control_plane.ml
@@ -67,13 +76,21 @@
                  ./web/control_plane_test.ml
                  ./web/details_view.ml
                  ./web/details_view.mli
-                ./web/event_buffer.ml
-                ./web/event_buffer.mli
-                ./web/event_buffer_test.ml
-                ./web/event_history.ml
+                 ./web/event_buffer.ml
+                 ./web/event_buffer.mli
+                 ./web/event_buffer_test.ml
+                 ./web/event_decode.ml
+                 ./web/event_decode.mli
+                 ./web/event_history.ml
                 ./web/event_history.mli
                 ./web/event_stream.ml
                 ./web/event_stream.mli
+                 ./web/image_attachment.ml
+                 ./web/image_attachment.mli
+                 ./web/image_batch.ml
+                 ./web/image_batch.mli
+                 ./web/image_attachments.ml
+                ./web/image_attachments.mli
                 ./web/main.ml
                 ./web/mention_picker.ml
                 ./web/mention_picker.mli
@@ -82,6 +99,10 @@
                  ./web/mention_request.mli
                  ./web/mobile_shell.ml
                  ./web/mobile_shell.mli
+                 ./web/outbox_projection.ml
+                 ./web/outbox_projection.mli
+                 ./web/outbox_view.ml
+                 ./web/outbox_view.mli
                 ./web/permission_decision.ml
                 ./web/permission_decision.mli
                 ./web/permission_view.ml
@@ -104,8 +125,12 @@
                 ./web/timeline_projection_test.ml
                  ./web/timeline_scroll.ml
                  ./web/timeline_scroll.mli
+                 ./web/timeline_entry_view.ml
+                 ./web/timeline_entry_view.mli
                  ./web/working_view.ml
                  ./web/working_view.mli
+                 ./web/working_panel.ml
+                 ./web/working_panel.mli
                  ./web/workbench_domain_test.ml
                  ./web/workspace_catalog.ml
                  ./web/workspace_catalog.mli

@@ -1,152 +1,9 @@
 open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
+open App_state
 
 let class_ name = [ Vdom.Attr.class_ name ]
-let text = Vdom.Node.text
-let live_event_capacity = 4096
-
-type history_action =
-  | Start of string
-  | Initial of string * Event_history.event list
-  | Append of string * Event_history.event
-  | History_failed of string * string
-
-type deciding_action = Add of string | Remove of string | Reset
-
-type runtime_state = {
-  session_id : string option;
-  snapshot : Runtime_domain.t option;
-  loading : bool;
-  error : string option;
-}
-
-type shell_model = { runtime : runtime_state; tab : Session_tabs.t }
-
-type shell_action =
-  | Runtime_start of string
-  | Runtime_loaded of string * Runtime_domain.t
-  | Runtime_failed of string * string
-  | Select_tab of Session_tabs.t
-
-let empty_runtime =
-  { session_id = None; snapshot = None; loading = false; error = None }
-
-let apply_shell _ model = function
-  | Runtime_start session_id ->
-      if Option.exists model.runtime.session_id ~f:(String.equal session_id)
-      then
-        {
-          model with
-          runtime = { model.runtime with loading = true; error = None };
-        }
-      else
-        {
-          runtime =
-            {
-              session_id = Some session_id;
-              snapshot = None;
-              loading = true;
-              error = None;
-            };
-          tab = Agent;
-        }
-  | Runtime_loaded (session_id, snapshot)
-    when Option.exists model.runtime.session_id ~f:(String.equal session_id) ->
-      let previous =
-        Option.map model.runtime.snapshot ~f:(fun value -> value.status)
-      in
-      {
-        runtime =
-          {
-            session_id = Some session_id;
-            snapshot = Some snapshot;
-            loading = false;
-            error = None;
-          };
-        tab =
-          Session_tabs.select_after_snapshot ~previous ~next:snapshot.status
-            model.tab;
-      }
-  | Runtime_failed (session_id, message)
-    when Option.exists model.runtime.session_id ~f:(String.equal session_id) ->
-      {
-        model with
-        runtime = { model.runtime with loading = false; error = Some message };
-      }
-  | Runtime_loaded _ | Runtime_failed _ -> model
-  | Select_tab tab -> { model with tab }
-
-let apply_history _ state = function
-  | Start session_id -> Timeline_view.Loading session_id
-  | Initial (session_id, events) -> (
-      match state with
-      | Timeline_view.Loading current when String.equal current session_id ->
-          Loaded
-            ( session_id,
-              Event_buffer.create ~live_capacity:live_event_capacity events )
-      | _ -> state)
-  | Append (session_id, event) -> (
-      match state with
-      | Timeline_view.Loaded (current, buffer)
-        when String.equal current session_id ->
-          Loaded (current, Event_buffer.add buffer event)
-      | _ -> state)
-  | History_failed (session_id, message) -> (
-      match state with
-      | Timeline_view.Loading current when String.equal current session_id ->
-          Failed (session_id, message)
-      | _ -> state)
-
-let apply_deciding _ deciding = function
-  | Add request_id -> Set.add deciding request_id
-  | Remove request_id -> Set.remove deciding request_id
-  | Reset -> String.Set.empty
-
-let selected_workspace workspaces session =
-  Option.bind session ~f:(fun (session : Control_plane.Session.t) ->
-      Workspace_catalog.find_workspace workspaces session.workspace_id)
-
-let render_header sessions workspaces selected_id
-    (runtime : Runtime_domain.t option) mobile_menu =
-  let selected = Session_rail.selected sessions selected_id in
-  let workspace = selected_workspace workspaces selected in
-  let status, status_class =
-    match (sessions, selected, runtime) with
-    | Session_rail.Loading, _, _ -> ("loading", "running")
-    | Session_rail.Failed _, _, _ -> ("offline", "offline")
-    | Session_rail.Loaded [], _, _ -> ("idle", "idle")
-    | Session_rail.Loaded _, Some _, Some runtime ->
-        let status = Runtime_domain.status_to_string runtime.status in
-        (status, status)
-    | Session_rail.Loaded _, Some session, None ->
-        let status = Control_plane.Session.status_to_string session.status in
-        (status, status)
-    | Session_rail.Loaded _, None, _ -> ("idle", "idle")
-  in
-  let title =
-    Option.value_map selected ~default:"PISS" ~f:(fun session -> session.title)
-  in
-  let context =
-    Option.value_map workspace ~default:"Durable agent workbench"
-      ~f:(fun workspace -> workspace.name ^ " / " ^ workspace.root)
-  in
-  Vdom.Node.header ~attrs:(class_ "app-header")
-    [
-      mobile_menu;
-      Vdom.Node.div ~attrs:(class_ "brand-lockup")
-        [
-          Vdom.Node.span ~attrs:(class_ "brand-mark") [ text "P" ];
-          Vdom.Node.div
-            [
-              Vdom.Node.h1 [ text title ];
-              Vdom.Node.p ~attrs:(class_ "eyebrow") [ text context ];
-            ];
-        ];
-      Vdom.Node.div
-        ~attrs:(class_ ("connection-pill connection-" ^ status_class))
-        [ Vdom.Node.create "i" []; Vdom.Node.span [ text status ] ];
-    ]
 
 let history_request session_id =
   Browser_http.get
@@ -296,6 +153,7 @@ let component graph =
   in
   let stream_notice, set_stream_notice = Bonsai.state "" graph in
   let copy_feedback, set_copy_feedback = Bonsai.state None graph in
+  let composer_busy, set_composer_busy = Bonsai.state false graph in
   let selected =
     let%arr sessions = sessions and selected_id = selected_id in
     Session_rail.selected sessions selected_id
@@ -314,15 +172,22 @@ let component graph =
         load_snapshot ~inject_shell id)
   in
   let config_available =
-    let%arr shell = shell in
-    (not shell.runtime.loading) && Option.is_none shell.runtime.error
+    let%arr shell = shell and composer_busy = composer_busy in
+    (not shell.runtime.loading)
+    && Option.is_none shell.runtime.error
+    && not composer_busy
   in
   let config_controls =
     Config_controls.component runtime ~available:config_available
       ~refresh:refresh_runtime ~on_error:set_stream_notice graph
   in
   let composer =
-    Composer.component selected stream_notice config_controls graph
+    let connecting =
+      let%arr shell = shell in
+      shell.runtime.loading
+    in
+    Composer.component selected runtime connecting stream_notice config_controls
+      ~on_busy:set_composer_busy graph
   in
   let load =
     let%arr set_sessions = set_sessions
@@ -408,7 +273,7 @@ let component graph =
   and set_sessions = set_sessions
   and set_workspaces = set_workspaces in
   let session = Session_rail.selected sessions selected_id in
-  let workspace = selected_workspace workspaces session in
+  let workspace = App_header.selected_workspace workspaces session in
   let visible_history =
     match sessions with
     | Session_rail.Loading -> Timeline_view.Sessions_loading
@@ -478,7 +343,7 @@ let component graph =
   in
   Vdom.Node.main ~attrs:(class_ "control-room")
     [
-      render_header sessions workspaces selected_id runtime
+      App_header.render sessions workspaces selected_id runtime
         (Mobile_shell.menu_button ~open_:mobile_open ~on_open:open_mobile);
       Vdom.Node.section ~attrs:(class_ "workspace-grid")
         [
@@ -488,8 +353,7 @@ let component graph =
           Timeline_view.render ~session ~workspace ~runtime
             ~runtime_loading:shell.runtime.loading
             ~runtime_error:shell.runtime.error ~tab:shell.tab ~on_tab:select_tab
-            ~state:visible_history
-            ~composer:(Option.map session ~f:(fun _ -> composer.view))
+            ~state:visible_history ~composer:(Some composer.view)
             ~deciding_permissions ~copy_feedback ~on_copy:copy
             ~on_permission:decide;
         ];

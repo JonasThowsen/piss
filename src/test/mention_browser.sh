@@ -44,7 +44,7 @@ mkdir -p "\$root/state/sessions/\$id" "\$root/runtime/\$id"
 if [[ -f "\$root/pids/\$id" ]] && kill -0 "\$(cat "\$root/pids/\$id")" 2>/dev/null; then exit 0; fi
 harness=\$(tr -d '\n' <"\$root/state/sessions/\$id/harness")
 [[ "\$harness" == mock ]] || exit 64
-PISS_MOCK_DURATION=1 '$worker_exe' \\
+PISS_MOCK_DURATION=5 '$worker_exe' \\
   --socket "\$root/runtime/\$id/worker.sock" \\
   --database "\$root/state/sessions/\$id/worker.sqlite3" \\
   --session "\$id" --worker "worker-\$id" --generation mention-browser \\

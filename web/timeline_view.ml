@@ -33,159 +33,53 @@ let focus_tab tab =
       (try ignore (Js.Unsafe.meth_call element "focus" [||]) with _ -> ());
       Async_kernel.Deferred.return ())
 
-let empty_state glyph title message =
-  Vdom.Node.div
-    ~attrs:[ class_ "empty-state" ]
-    [
-      Vdom.Node.span [ text glyph ];
-      Vdom.Node.h3 [ text title ];
-      Vdom.Node.p [ text message ];
-    ]
-
-let copy_button ~key ~kind ~body ~copy_feedback ~on_copy =
-  let state =
-    match copy_feedback with
-    | Some (candidate, status) when String.equal candidate key -> Some status
-    | _ -> None
-  in
-  let adjective, class_name =
-    match state with
-    | None -> ("Copy", "")
-    | Some Clipboard.Copied -> ("Copied", " copied")
-    | Some Failed -> ("Copy failed", " failed")
-  in
-  Vdom.Node.button
-    ~attrs:
-      [
-        class_ ("timeline-copy" ^ class_name);
-        Vdom.Attr.create "type" "button";
-        Vdom.Attr.create "aria-label" (adjective ^ " " ^ kind);
-        Vdom.Attr.on_click (fun _ -> on_copy ~key ~text:body);
-      ]
-    [ Vdom.Node.b [ text (String.uppercase adjective) ] ]
-
-let message ~key ~class_name ~role ~status ?copy body =
-  Vdom.Node.create "article" ~key
-    ~attrs:[ class_ ("timeline-item " ^ class_name) ]
-    [
-      Vdom.Node.div
-        ~attrs:[ class_ "message-meta" ]
-        [
-          Vdom.Node.strong ~attrs:[ class_ "message-role" ] [ text role ];
-          Vdom.Node.span ~attrs:[ class_ "message-status" ] [ text status ];
-          Option.value copy ~default:Vdom.Node.none;
-        ];
-      (if String.is_empty body then Vdom.Node.none
-       else Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text body ]);
-    ]
-
-let render_entry ~copy_feedback ~on_copy = function
-  | Event_history.User { sequence; command_id; text = body } ->
-      Some
-        (message
-           ~key:(Int64.to_string sequence ^ "-user")
-           ~class_name:"timeline-user" ~role:"You" ~status:command_id body)
-  | Agent { sequence = _; message_id; text = body } ->
-      let key = "agent:" ^ message_id in
-      Some
-        (message ~key ~class_name:"timeline-agent" ~role:"Agent"
-           ~status:message_id
-           ~copy:
-             (copy_button ~key ~kind:"message" ~body ~copy_feedback ~on_copy)
-           body)
-  | Tool { sequence = _; tool_call_id; title; input; output; status; artifacts }
-    ->
-      let key = "tool:" ^ tool_call_id in
-      let detail = Timeline_projection.tool_text ~input ~output ~artifacts in
-      Some
-        (Vdom.Node.create "article" ~key
-           ~attrs:[ class_ "timeline-item timeline-tool" ]
-           [
-             Vdom.Node.create "details"
-               ~attrs:[ class_ "tool-disclosure" ]
-               [
-                 Vdom.Node.create "summary"
-                   [
-                     Vdom.Node.span
-                       ~attrs:[ class_ "tool-disclosure-icon" ]
-                       [ text ">" ];
-                     Vdom.Node.strong
-                       ~attrs:[ class_ "message-role" ]
-                       [ text title ];
-                     Vdom.Node.span
-                       ~attrs:[ class_ "message-status" ]
-                       [ text status ];
-                   ];
-                 Vdom.Node.div
-                   ~attrs:[ class_ "timeline-contents" ]
-                   [
-                     Vdom.Node.p
-                       ~attrs:[ class_ "message-status" ]
-                       [ text tool_call_id ];
-                     Vdom.Node.div
-                       ~attrs:[ class_ "tool-copy-row" ]
-                       [
-                         copy_button ~key ~kind:"tool output" ~body:detail
-                           ~copy_feedback ~on_copy;
-                       ];
-                     Vdom.Node.p
-                       ~attrs:[ class_ "message-body" ]
-                       [ text detail ];
-                   ];
-               ];
-           ])
-  | Command_state { sequence; command_id; state } ->
-      let state = Event_history.command_state_to_string state in
-      Some
-        (message
-           ~key:(Int64.to_string sequence ^ "-command")
-           ~class_name:"timeline-command" ~role:"Command"
-           ~status:("state / " ^ state) command_id)
-  | Permission_requested _ | Permission_resolved _ | Permission_cancelled _ ->
-      None
-
 let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
     ~on_permission =
   let content =
     match (state, selected_id) with
     | Sessions_loading, _ ->
         [
-          empty_state "..." "Loading active sessions..."
+          Timeline_entry_view.empty_state "..." "Loading active sessions..."
             "Waiting for the same-origin control-plane response.";
         ]
     | Sessions_failed message, _ ->
-        [ empty_state "!" "Could not load sessions." message ]
+        [
+          Timeline_entry_view.empty_state "!" "Could not load sessions." message;
+        ]
     | No_sessions, _ ->
         [
-          empty_state "0" "No active sessions."
+          Timeline_entry_view.empty_state "0" "No active sessions."
             "The control plane returned an empty active-session list.";
         ]
     | Awaiting_selection, _ ->
         [
-          empty_state ">" "Select a session."
+          Timeline_entry_view.empty_state ">" "Select a session."
             "Choose a session to load its recent history.";
         ]
     | Loading _, _ ->
         [
-          empty_state "..." "Loading recent events..."
+          Timeline_entry_view.empty_state "..." "Loading recent events..."
             "Waiting for the same-origin control-plane response.";
         ]
     | Failed (_, message), _ ->
-        [ empty_state "!" "Could not load history." message ]
+        [
+          Timeline_entry_view.empty_state "!" "Could not load history." message;
+        ]
     | Loaded (_, buffer), _ when List.is_empty (Event_buffer.entries buffer) ->
         [
-          empty_state "0" "No events yet."
+          Timeline_entry_view.empty_state "0" "No events yet."
             "The worker has not published a visible timeline event.";
         ]
     | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
         let entries = Event_buffer.entries buffer in
-        List.filter_map entries ~f:(render_entry ~copy_feedback ~on_copy)
+        List.filter_map entries
+          ~f:(Timeline_entry_view.render ~copy_feedback ~on_copy)
         @ Permission_view.render_pending entries ~deciding:deciding_permissions
             ~on_decide:on_permission
     | Loaded _, _ ->
         [
-          empty_state "..." "Loading recent events..."
+          Timeline_entry_view.empty_state "..." "Loading recent events..."
             "Waiting for the selected session history.";
         ]
   in
@@ -269,124 +163,6 @@ let render_tabs selected ~on_select working =
       button Details;
     ]
 
-let working_tool_card (tool : Working_view.tool) =
-  Vdom.Node.create "article"
-    ~attrs:[ class_ "timeline-item timeline-tool" ]
-    [
-      Vdom.Node.create "details"
-        ~attrs:[ class_ "tool-disclosure"; Vdom.Attr.create "open" "" ]
-        [
-          Vdom.Node.create "summary"
-            [
-              Vdom.Node.span
-                ~attrs:[ class_ "tool-disclosure-icon" ]
-                [ text ">" ];
-              Vdom.Node.strong
-                ~attrs:[ class_ "message-role" ]
-                [ text tool.title ];
-              Vdom.Node.span
-                ~attrs:[ class_ "message-status" ]
-                [ text tool.status ];
-            ];
-          Vdom.Node.div
-            ~attrs:[ class_ "timeline-contents" ]
-            [
-              Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text tool.detail ];
-            ];
-        ];
-    ]
-
-let render_working model ~hidden =
-  let phase = Working_view.phase_label model.Working_view.phase in
-  let phase_class =
-    match model.phase with
-    | Running_tool -> "running"
-    | Thinking -> "thinking"
-    | Awaiting_permission -> "awaiting"
-    | Connecting -> "connecting"
-    | Idle -> "idle"
-  in
-  Vdom.Node.div
-    ~attrs:
-      ([
-         Vdom.Attr.id "session-panel-working";
-         class_ ("working-view working-view-" ^ phase_class);
-         Vdom.Attr.create "role" "tabpanel";
-         Vdom.Attr.create "aria-labelledby" "session-tab-working";
-       ]
-      @ if hidden then [ Vdom.Attr.create "hidden" "" ] else [])
-    [
-      Vdom.Node.header
-        ~attrs:[ class_ "working-header" ]
-        [
-          Vdom.Node.div
-            ~attrs:[ class_ "working-status" ]
-            [
-              Vdom.Node.span
-                ~attrs:[ class_ ("working-pulse working-pulse-" ^ phase_class) ]
-                [
-                  Vdom.Node.create "i" ~attrs:[ class_ "working-pulse-dot" ] [];
-                ];
-              Vdom.Node.span
-                ~attrs:[ class_ "working-status-label" ]
-                [ text phase ];
-            ];
-          Vdom.Node.h2
-            ~attrs:[ class_ "working-detail" ]
-            [ text (Working_view.phase_detail model) ];
-          Vdom.Node.p
-            ~attrs:[ class_ "working-note" ]
-            [ text "A focused projection of live agent and tool activity." ];
-        ];
-      Vdom.Node.section
-        ~attrs:[ class_ "working-current-card" ]
-        [
-          Option.value_map model.current
-            ~default:
-              (Vdom.Node.div
-                 ~attrs:[ class_ "working-current-card-empty" ]
-                 [
-                   Vdom.Node.p
-                     ~attrs:[ class_ "working-current-empty-message" ]
-                     [ text (Working_view.phase_detail model) ];
-                 ])
-            ~f:working_tool_card;
-        ];
-      Vdom.Node.section
-        ~attrs:[ class_ "working-recent" ]
-        [
-          Vdom.Node.h3 [ text "Recent tools" ];
-          (match model.recent with
-          | [] ->
-              Vdom.Node.p
-                ~attrs:[ class_ "working-note" ]
-                [ text "No recent tools." ]
-          | tools ->
-              Vdom.Node.create "ul"
-                ~attrs:[ class_ "working-recent-list" ]
-                (List.map tools ~f:(fun tool ->
-                     Vdom.Node.create "li"
-                       ~key:(Int64.to_string tool.sequence)
-                       ~attrs:
-                         [
-                           class_
-                             ("working-recent-row working-recent-row-"
-                            ^ tool.status);
-                         ]
-                       [
-                         Vdom.Node.span
-                           ~attrs:[ class_ "message-status" ]
-                           [ text (Int64.to_string tool.sequence) ];
-                         Vdom.Node.strong
-                           ~attrs:[ class_ "working-recent-title" ]
-                           [ text tool.title ];
-                         Vdom.Node.span
-                           ~attrs:[ class_ "message-status" ]
-                           [ text tool.status ];
-                       ])));
-        ];
-    ]
-
 let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     ~on_tab ~state ~composer ~deciding_permissions ~copy_feedback ~on_copy
     ~on_permission =
@@ -409,6 +185,7 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     Working_view.derive ~snapshot:runtime ~connecting:runtime_loading ~events
       ~entries
   in
+  let outbox_view = Outbox_view.render events in
   let agent_panel =
     Vdom.Node.div
       ~attrs:
@@ -444,7 +221,7 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     | Some session ->
         [
           agent_panel;
-          render_working working ~hidden:(not (phys_equal tab Working));
+          Working_panel.render working ~hidden:(not (phys_equal tab Working));
           Vdom.Node.div
             ~attrs:
               ([
@@ -482,4 +259,6 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
        | Some _ -> render_tabs tab ~on_select:on_tab working);
        Vdom.Node.div ~attrs:[ class_ "session-panel-stack" ] panels;
      ]
-    @ if phys_equal tab Agent then Option.to_list composer else [])
+    @
+    if phys_equal tab Agent then outbox_view :: Option.to_list composer else []
+    )

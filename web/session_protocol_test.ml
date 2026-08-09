@@ -105,6 +105,14 @@ let permission_resolved =
 let permission_cancelled =
   {|{"sequence":7,"kind":"acp.permission.cancelled","payload":{"requestId":"permission-web-command"},"createdAt":1723123462}|}
 
+let delivery_history =
+  {|
+  [
+    {"sequence":8,"kind":"command.accepted","payload":{"commandId":"follow-command","requestId":"follow-command","action":"follow_up","text":"later","imageCount":1,"images":[{"mimeType":"image/gif","name":"proof.gif","size":14}],"resourceCount":0,"resources":[]},"createdAt":1723123463},
+    {"sequence":9,"kind":"command.reconciled","payload":{"commandId":"follow-command","state":"ambiguous","reason":"worker restarted before completion"},"createdAt":1723123464}
+  ]
+  |}
+
 let () =
   let entries = decode history in
   (match entries with
@@ -135,7 +143,7 @@ let () =
   | _ -> fail "out-of-order event history was accepted");
   let command =
     match
-      Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text"
+      Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text" ~images:[]
         ~resources:[ { path = "web/App.re" } ]
     with
     | Ok command -> command
@@ -148,7 +156,8 @@ let () =
   if not (Yojson.Safe.equal expected (Prompt_command.to_yojson command)) then
     fail "prompt encoder emitted the wrong wire contract";
   (match
-     Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " ~resources:[]
+     Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " ~images:[]
+       ~resources:[]
    with
   | Error _ -> ()
   | Ok _ -> fail "blank prompt was accepted");
@@ -230,6 +239,25 @@ let () =
               ("optionId", `Null);
             ]))
   then fail "cancel permission decision JSON was incorrect";
+  let delivery_events =
+    match Event_history.decode_events delivery_history with
+    | Ok events -> events
+    | Error message -> fail message
+  in
+  (match
+     delivery_events
+     |> List.filter_map ~f:Event_history.outbox_update
+     |> Outbox_projection.project
+   with
+  | [
+   { command_id = "follow-command"; action = Follow_up; status = Ambiguous; _ };
+  ] ->
+      ()
+  | _ ->
+      fail "accepted/reconciled events did not project an ambiguous follow-up");
+  (match Event_history.project delivery_events with
+  | [ User { text = "later"; _ }; Command_state { state = Ambiguous; _ } ] -> ()
+  | _ -> fail "image metadata changed the text-only timeline projection");
   (match
      Request_target.same_origin ~path:"/api/v2/events"
        ~query:[ ("recent", "500"); ("session", "session/a & b") ]

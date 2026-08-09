@@ -5,8 +5,13 @@
   acp_content
   control_plane
   event_buffer
+  event_decode
   event_history
+  image_attachment
+  image_batch
   mention_picker
+  composer_policy
+  outbox_projection
   permission_decision
   prompt_command
   request_target
@@ -20,24 +25,38 @@
 (executable
  (name main)
  (modules
+  app_header
+  app_state
   browser_http
   clipboard
   command_id
   composer
+  composer_ui
   config_controls
   details_view
   event_stream
+  image_attachments
   mention_request
   main
   mobile_shell
+  outbox_view
   permission_view
   session_rail
+  timeline_entry_view
   timeline_scroll
-  timeline_view)
+  timeline_view
+  working_panel)
  (modes js)
  (libraries async_js bonsai.web control_plane_domain js_of_ocaml)
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
+
+(test
+ (name composer_domain_test)
+ (modules composer_domain_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
 
 (test
  (name control_plane_test)
