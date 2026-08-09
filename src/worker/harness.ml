@@ -1,5 +1,7 @@
 (* ACP harness process: spawn, write, read, and envelope dispatch. *)
 
+let max_frame_bytes = Config.max_frame_bytes
+
 let write_json sink json =
   Eio.Flow.copy_string (Yojson.Safe.to_string json ^ "\n") sink
 
@@ -52,7 +54,7 @@ let spawn ~sw ~env ~command ~args =
   Eio.Flow.close stdout_sink;
   Eio.Flow.close stdin_source;
   let pid = Eio.Process.pid proc in
-  let reader = Eio.Buf_read.of_flow stdout ~max_size:Config.max_frame_bytes in
+  let reader = Eio.Buf_read.of_flow stdout ~max_size:max_frame_bytes in
   let outgoing = Eio.Stream.create 64 in
   let send json = Eio.Stream.add outgoing json in
   Eio.Fiber.fork ~sw (fun () ->
