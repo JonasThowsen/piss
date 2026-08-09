@@ -173,53 +173,6 @@ let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
     ~attrs:[ class_ "timeline"; Vdom.Attr.id "timeline" ]
     [ Vdom.Node.div ~attrs:[ class_ "timeline-stream" ] content ]
 
-let composer ~prompt ~submitting ~notice ~on_prompt ~on_submit =
-  Vdom.Node.div
-    ~attrs:[ class_ "composer-wrap" ]
-    [
-      Vdom.Node.p ~attrs:[ class_ "notice" ] [ text notice ];
-      Vdom.Node.form
-        ~attrs:
-          [
-            class_ "composer";
-            Vdom.Attr.on_submit (fun _ ->
-                Effect.Many
-                  [
-                    on_submit ();
-                    Vdom.Effect.Prevent_default;
-                    Vdom.Effect.Stop_propagation;
-                  ]);
-          ]
-        [
-          Vdom.Node.textarea
-            ~attrs:
-              [
-                Vdom.Attr.string_property "value" prompt;
-                Vdom.Attr.create "aria-label" "Message agent";
-                Vdom.Attr.placeholder "Send a plain text prompt";
-                Vdom.Attr.on_input (fun _ value -> on_prompt value);
-              ]
-            [];
-          Vdom.Node.div
-            ~attrs:[ class_ "composer-actions" ]
-            [
-              Vdom.Node.span [ text "PLAIN TEXT" ];
-              Vdom.Node.button
-                ~attrs:
-                  ([
-                     class_ "send-action";
-                     Vdom.Attr.create "type" "submit";
-                     Vdom.Attr.create "aria-label" "Send message";
-                   ]
-                  @
-                  if submitting || String.is_empty (String.strip prompt) then
-                    [ Vdom.Attr.create "disabled" "" ]
-                  else [])
-                [ text (if submitting then "..." else ">") ];
-            ];
-        ];
-    ]
-
 let render ~session ~state ~composer ~deciding_permissions ~copy_feedback
     ~on_copy ~on_permission =
   let selected_id =
@@ -252,13 +205,17 @@ let render ~session ~state ~composer ~deciding_permissions ~copy_feedback
              ~on_copy ~on_permission;
            Vdom.Node.button
              ~attrs:
-               [
-                 class_ "timeline-jump";
-                 Vdom.Attr.create "type" "button";
-                 Vdom.Attr.create "aria-label" "Jump to latest message";
-                 Vdom.Attr.create "hidden" "";
-                 Vdom.Attr.on_click (fun _ -> Timeline_scroll.jump_to_latest ());
-               ]
+               ([
+                  class_ "timeline-jump";
+                  Vdom.Attr.create "type" "button";
+                  Vdom.Attr.create "aria-label" "Jump to latest message";
+                  Vdom.Attr.on_click (fun _ ->
+                      Timeline_scroll.jump_to_latest ());
+                ]
+               @
+               if Timeline_scroll.is_following () then
+                 [ Vdom.Attr.create "hidden" "" ]
+               else [])
              [ Vdom.Node.span [ text "LATEST" ] ];
          ];
      ]

@@ -6,6 +6,7 @@
   control_plane
   event_buffer
   event_history
+  mention_picker
   permission_decision
   prompt_command
   request_target
@@ -18,7 +19,9 @@
   browser_http
   clipboard
   command_id
+  composer
   event_stream
+  mention_request
   main
   permission_view
   session_rail
@@ -39,6 +42,13 @@
 (test
  (name event_buffer_test)
  (modules event_buffer_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name mention_picker_test)
+ (modules mention_picker_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

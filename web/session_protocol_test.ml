@@ -134,17 +134,22 @@ let () =
   | Error message when String.is_substring message ~substring:"increasing" -> ()
   | _ -> fail "out-of-order event history was accepted");
   let command =
-    match Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text" with
+    match
+      Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text"
+        ~resources:[ { path = "web/App.re" } ]
+    with
     | Ok command -> command
     | Error message -> fail message
   in
   let expected =
     Yojson.Safe.from_string
-      {|{"commandId":"web-uuid","text":"plain text","images":[],"resources":[],"action":"prompt"}|}
+      {|{"commandId":"web-uuid","text":"plain text","images":[],"resources":[{"path":"web/App.re"}],"action":"prompt"}|}
   in
   if not (Yojson.Safe.equal expected (Prompt_command.to_yojson command)) then
     fail "prompt encoder emitted the wrong wire contract";
-  (match Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " with
+  (match
+     Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " ~resources:[]
+   with
   | Error _ -> ()
   | Ok _ -> fail "blank prompt was accepted");
   let requested =

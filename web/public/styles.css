@@ -360,6 +360,7 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .composer-insertions { display: flex; gap: 7px; }
 .composer-insertions button { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); color: var(--muted); cursor: pointer; }
 .composer-insertions button:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
+.composer-insertions button[aria-expanded="true"] { border-color: #9eb6a8; background: var(--accent-soft); color: var(--accent); }
 .composer-insertions button:active:not(:disabled) { transform: scale(.96); }
 .composer-insertions button:disabled { opacity: .72; cursor: not-allowed; }
 .composer-config { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 2px; }

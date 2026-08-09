@@ -58,6 +58,8 @@
                 ./web/clipboard.mli
                 ./web/command_id.ml
                 ./web/command_id.mli
+                ./web/composer.ml
+                ./web/composer.mli
                 ./web/control_plane.ml
                 ./web/control_plane.mli
                 ./web/control_plane_test.ml
@@ -69,6 +71,11 @@
                 ./web/event_stream.ml
                 ./web/event_stream.mli
                 ./web/main.ml
+                ./web/mention_picker.ml
+                ./web/mention_picker.mli
+                ./web/mention_picker_test.ml
+                ./web/mention_request.ml
+                ./web/mention_request.mli
                 ./web/permission_decision.ml
                 ./web/permission_decision.mli
                 ./web/permission_view.ml

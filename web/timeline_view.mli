@@ -9,14 +9,6 @@ type state =
   | Loaded of string * Event_buffer.t
   | Failed of string * string
 
-val composer :
-  prompt:string ->
-  submitting:bool ->
-  notice:string ->
-  on_prompt:(string -> unit Effect.t) ->
-  on_submit:(unit -> unit Effect.t) ->
-  Vdom.Node.t
-
 val render :
   session:Control_plane.Session.t option ->
   state:state ->

@@ -12,6 +12,7 @@ let window_listener : Js.Unsafe.any option ref = ref None
 let following = ref true
 let pinning = ref false
 let previous_top = ref 0
+let previous_client_height = ref 0
 
 let present value =
   Js.to_bool
@@ -90,14 +91,26 @@ and schedule () =
     if !following then pinning := true;
     frame := Some (request_frame pin))
 
-let on_scroll () =
+let on_scroll event =
   match !timeline with
   | None -> ()
   | Some value ->
       let top : int = Js.Unsafe.get value "scrollTop" in
-      if not !pinning then
-        if top < !previous_top - 1 then following := false
-        else following := distance value <= 80;
+      let client_height : int = Js.Unsafe.get value "clientHeight" in
+      let resized = client_height <> !previous_client_height in
+      previous_client_height := client_height;
+      let explicit =
+        try
+          let trusted : bool Js.t = Js.Unsafe.get event "isTrusted" in
+          not (Js.to_bool trusted)
+        with _ -> false
+      in
+      if
+        top < !previous_top - 1
+        && (explicit || not resized)
+        && ((not !pinning) || explicit)
+      then following := false
+      else if not !pinning then following := distance value <= 80;
       previous_top := top;
       update_button ()
 
@@ -144,7 +157,8 @@ let install () =
   if present value then (
     timeline := Some value;
     previous_top := Js.Unsafe.get value "scrollTop";
-    let callback = Js.wrap_callback (fun _ -> on_scroll ()) in
+    previous_client_height := Js.Unsafe.get value "clientHeight";
+    let callback = Js.wrap_callback on_scroll in
     let callback_any = Js.Unsafe.inject callback in
     listener := Some callback_any;
     ignore
@@ -202,3 +216,4 @@ let jump_to_latest () =
       schedule ())
 
 let cleanup () = action_effect cleanup_now
+let is_following () = !following

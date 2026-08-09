@@ -157,68 +157,6 @@ let load_history ~inject_history ~inject_deciding ~set_sessions
                             ~inject_history ~inject_deciding ~set_sessions
                             ~set_stream_notice)))))
 
-type composer_output = {
-  view : Vdom.Node.t;
-  reset : unit Effect.t;
-  set_notice : string -> unit Effect.t;
-}
-
-let composer_component session stream_notice graph =
-  let prompt, set_prompt = Bonsai.state "" graph in
-  let submitting, set_submitting = Bonsai.state false graph in
-  let notice, set_notice = Bonsai.state "" graph in
-  let%arr session = session
-  and stream_notice = stream_notice
-  and prompt = prompt
-  and submitting = submitting
-  and notice = notice
-  and set_prompt = set_prompt
-  and set_submitting = set_submitting
-  and set_notice = set_notice in
-  let submit () =
-    match (session, submitting) with
-    | None, _ | _, true -> Effect.Ignore
-    | Some (session : Control_plane.Session.t), false -> (
-        let command_id = Command_id.create () in
-        match Prompt_command.prompt ~command_id ~text:prompt with
-        | Error message -> set_notice message
-        | Ok command ->
-            Effect.bind (set_submitting true) ~f:(fun () ->
-                Effect.bind
-                  (Effect.of_deferred_thunk (fun () ->
-                       Browser_http.post_json
-                         ~query:[ ("session", session.id) ]
-                         "/api/v2/commands"
-                         (Prompt_command.to_yojson command)))
-                  ~f:(function
-                    | Error error ->
-                        Effect.Many
-                          [
-                            set_submitting false;
-                            set_notice (Error.to_string_hum error);
-                          ]
-                    | Ok _ ->
-                        Effect.Many
-                          [
-                            set_prompt "";
-                            set_submitting false;
-                            set_notice
-                              "Prompt accepted. Waiting for live events.";
-                          ])))
-  in
-  let combined_notice =
-    if String.is_empty stream_notice then notice
-    else if String.is_empty notice then stream_notice
-    else notice ^ " " ^ stream_notice
-  in
-  {
-    view =
-      Timeline_view.composer ~prompt ~submitting ~notice:combined_notice
-        ~on_prompt:set_prompt ~on_submit:submit;
-    reset = Effect.Many [ set_prompt ""; set_notice "" ];
-    set_notice;
-  }
-
 let component graph =
   let sessions, set_sessions = Bonsai.state Session_rail.Loading graph in
   let selected_id, set_selected_id = Bonsai.state None graph in
@@ -242,7 +180,7 @@ let component graph =
     let%arr sessions = sessions and selected_id = selected_id in
     selected_session sessions selected_id
   in
-  let composer = composer_component selected stream_notice graph in
+  let composer = Composer.component selected stream_notice graph in
   let load =
     let%arr set_sessions = set_sessions
     and set_selected_id = set_selected_id
@@ -307,7 +245,7 @@ let component graph =
         Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
             Effect.Many
               [
-                composer.reset;
+                composer.reset ();
                 set_stream_notice "";
                 load_history ~inject_history ~inject_deciding ~set_sessions
                   ~set_stream_notice id;
