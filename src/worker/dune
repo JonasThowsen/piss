@@ -1,5 +1,5 @@
 (executable
  (name main)
  (public_name piss-session-worker)
- (modules main harness config protocol)
+ (modules main harness config state protocol)
  (libraries piss.core eio_main eio.unix yojson unix))

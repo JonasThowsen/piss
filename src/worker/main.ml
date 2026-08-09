@@ -38,110 +38,6 @@ let run ~env (args : Config.args) =
         Eio.Stream.take outgoing |> write_json harness.Harness.stdin
       done);
   let pending_responses = Hashtbl.create 16 in
-  let running_commands : (string, float) Hashtbl.t = Hashtbl.create 4 in
-  let pending_permissions : (string, Config.pending_permission) Hashtbl.t =
-    Hashtbl.create 8
-  in
-  let configuration_changes = ref 0 in
-  let status = ref Domain.Starting in
-  let upgrade_target = ref None in
-  let upgrade_deadline = ref 0. in
-  let harness_session_id = ref "" in
-  let config_options = ref (`List []) in
-  let sessions_created_since_start = ref 0 in
-  let selected_config_values () =
-    match !config_options with
-    | `List options ->
-        `Assoc
-          (List.filter_map
-             (fun option ->
-               match
-                 ( Yojson.Safe.Util.member "id" option,
-                   Yojson.Safe.Util.member "currentValue" option )
-               with
-               | `String id, `String value -> Some (id, `String value)
-               | _ -> None)
-             options)
-    | _ -> `Assoc []
-  in
-  let persist_config_values () =
-    Store.set_metadata store "config_option_values"
-      (Yojson.Safe.to_string (selected_config_values ()))
-  in
-  let expire_stuck_commands () =
-    let now = Unix.gettimeofday () in
-    let stuck =
-      Hashtbl.fold
-        (fun command_id dispatched_at acc ->
-          if now -. dispatched_at > Config.dispatch_timeout_seconds then
-            (command_id, dispatched_at) :: acc
-          else acc)
-        running_commands []
-    in
-    List.iter
-      (fun (command_id, _) ->
-        let claimed =
-          Store.try_set_command_state_if_open store ~command_id Domain.Ambiguous
-        in
-        Hashtbl.remove running_commands command_id;
-        if claimed then (
-          status :=
-            if Hashtbl.length pending_permissions > 0 then
-              Domain.Requires_action
-            else if Hashtbl.length running_commands > 0 then Domain.Running
-            else Domain.Idle;
-          ignore
-            (Store.append_event store ~kind:"command.dispatch_timeout"
-               ~payload:
-                 (`Assoc
-                    [
-                      ("commandId", `String command_id);
-                      ("timeoutSeconds", `Float Config.dispatch_timeout_seconds);
-                      ( "reason",
-                        `String
-                          "harness did not acknowledge the dispatched command \
-                           within the configured budget" );
-                    ]))))
-      stuck
-  in
-  let expire_stuck_permissions () =
-    let now = Unix.gettimeofday () in
-    let stuck =
-      Hashtbl.fold
-        (fun request_id permission acc ->
-          if
-            now -. permission.Config.requested_at
-            > Config.permission_timeout_seconds
-          then (request_id, permission) :: acc
-          else acc)
-        pending_permissions []
-    in
-    List.iter
-      (fun (request_id, permission) ->
-        Hashtbl.remove pending_permissions request_id;
-        ignore
-          (Store.append_event store ~kind:"acp.permission.expired"
-             ~payload:
-               (`Assoc
-                  [
-                    ("requestId", `String request_id);
-                    ("timeoutSeconds", `Float Config.permission_timeout_seconds);
-                    ( "reason",
-                      `String
-                        "user did not respond to the permission request within \
-                         the configured budget; the worker is replying with \
-                         cancelled on the user's behalf" );
-                  ]));
-        send
-          (Acp.response_with_id ~id:permission.Config.raw_id
-             (`Assoc
-                [ ("outcome", `Assoc [ ("outcome", `String "cancelled") ]) ])))
-      stuck;
-    if stuck <> [] then
-      status :=
-        if Hashtbl.length running_commands > 0 then Domain.Running
-        else Domain.Idle
-  in
   let fail_pending message =
     Hashtbl.iter
       (fun _ resolver ->
@@ -149,101 +45,6 @@ let run ~env (args : Config.args) =
       pending_responses;
     Hashtbl.clear pending_responses
   in
-  Eio.Fiber.fork ~sw (fun () ->
-      while true do
-        Eio.Time.sleep clock 5.0;
-        expire_stuck_commands ();
-        expire_stuck_permissions ()
-      done);
-  Eio.Fiber.fork ~sw (fun () ->
-      try
-        while true do
-          let json = read_json harness_reader in
-          let durable_json = Acp.redact_user_image_data json in
-          ignore
-            (Store.append_event store ~kind:(Harness.event_kind json)
-               ~payload:durable_json);
-          match Acp.envelope_of_yojson json with
-          | Ok (Acp.Response { id; error; _ }) -> (
-              match Hashtbl.find_opt pending_responses id with
-              | Some resolver ->
-                  Hashtbl.remove pending_responses id;
-                  ignore (Eio.Promise.try_resolve resolver (Ok json))
-              | None when Hashtbl.mem running_commands id ->
-                  Hashtbl.remove running_commands id;
-                  let state =
-                    match (error, Harness.response_stop_reason json) with
-                    | Some _, _ -> Domain.Rejected
-                    | None, Some "cancelled" -> Domain.Cancelled
-                    | None, _ -> Domain.Completed
-                  in
-                  Store.set_command_state store ~command_id:id state;
-                  status :=
-                    if Hashtbl.length pending_permissions > 0 then
-                      Domain.Requires_action
-                    else if Hashtbl.length running_commands > 0 then
-                      Domain.Running
-                    else Domain.Idle
-              | None -> ())
-          | Ok
-              (Acp.Request
-                 { id; method_ = "session/request_permission"; params }) ->
-              let raw_id = Yojson.Safe.Util.member "id" json in
-              Hashtbl.replace pending_permissions id
-                { Config.raw_id; params; requested_at = Unix.gettimeofday () };
-              status := Domain.Requires_action
-          | Ok (Acp.Request { id; method_; _ }) ->
-              send
-                (Acp.error_response_with_id
-                   ~id:(Yojson.Safe.Util.member "id" json)
-                   ~code:(-32601)
-                   ~message:("unsupported ACP client method: " ^ method_));
-              ignore
-                (Store.append_event store ~kind:"acp.client_request.rejected"
-                   ~payload:
-                     (`Assoc
-                        [
-                          ("requestId", `String id); ("method", `String method_);
-                        ]))
-          | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
-              let update = Yojson.Safe.Util.member "update" params in
-              match Yojson.Safe.Util.member "configOptions" update with
-              | `List _ as options -> config_options := options
-              | _ -> ())
-          | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
-              match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
-              | Some id when Hashtbl.mem pending_permissions id ->
-                  Hashtbl.remove pending_permissions id;
-                  ignore
-                    (Store.append_event store ~kind:"acp.permission.cancelled"
-                       ~payload:(`Assoc [ ("requestId", `String id) ]));
-                  status :=
-                    if Hashtbl.length running_commands > 0 then Domain.Running
-                    else Domain.Idle
-              | _ -> ())
-          | Ok _ -> ()
-          | Error message -> raise (Failure message)
-        done
-      with
-      | End_of_file ->
-          status := Domain.Failed;
-          fail_pending "ACP harness disconnected";
-          ignore
-            (Store.append_event store ~kind:"harness.disconnected"
-               ~payload:(`Assoc [ ("harnessPid", `Int harness_pid) ]));
-          raise End_of_file
-      | exn ->
-          status := Domain.Failed;
-          fail_pending (Printexc.to_string exn);
-          ignore
-            (Store.append_event store ~kind:"harness.protocol_error"
-               ~payload:
-                 (`Assoc
-                    [
-                      ("harnessPid", `Int harness_pid);
-                      ("error", `String (Printexc.to_string exn));
-                    ]));
-          raise exn);
   let rpc_request ~id json =
     if Hashtbl.mem pending_responses id then
       Error ("duplicate in-flight ACP request: " ^ id)
@@ -261,6 +62,94 @@ let run ~env (args : Config.args) =
         | Ok result -> (result, response)
         | Error message -> raise (Failure message))
   in
+  let state =
+    State.make ~args ~store ~workspace ~harness_pid ~send ~require_rpc_result
+  in
+  Eio.Fiber.fork ~sw (fun () ->
+      while true do
+        Eio.Time.sleep clock 5.0;
+        let now = Unix.gettimeofday () in
+        State.expire_stuck_commands state ~now;
+        State.expire_stuck_permissions state ~now
+      done);
+  Eio.Fiber.fork ~sw (fun () ->
+      try
+        while true do
+          let json = read_json harness_reader in
+          let durable_json = Acp.redact_user_image_data json in
+          ignore
+            (Store.append_event store ~kind:(Harness.event_kind json)
+               ~payload:durable_json);
+          match Acp.envelope_of_yojson json with
+          | Ok (Acp.Response { id; error; _ }) -> (
+              match Hashtbl.find_opt pending_responses id with
+              | Some resolver ->
+                  Hashtbl.remove pending_responses id;
+                  ignore (Eio.Promise.try_resolve resolver (Ok json))
+              | None when State.is_running_command state ~command_id:id ->
+                  let command_state =
+                    match (error, Harness.response_stop_reason json) with
+                    | Some _, _ -> Domain.Rejected
+                    | None, Some "cancelled" -> Domain.Cancelled
+                    | None, _ -> Domain.Completed
+                  in
+                  State.record_completed state ~command_id:id
+                    ~state:command_state
+              | None -> ())
+          | Ok
+              (Acp.Request
+                 { id; method_ = "session/request_permission"; params }) ->
+              State.record_pending_permission state ~request_id:id
+                ~raw_id:(Yojson.Safe.Util.member "id" json)
+                ~params
+          | Ok (Acp.Request { id; method_; _ }) ->
+              send
+                (Acp.error_response_with_id
+                   ~id:(Yojson.Safe.Util.member "id" json)
+                   ~code:(-32601)
+                   ~message:("unsupported ACP client method: " ^ method_));
+              ignore
+                (Store.append_event store ~kind:"acp.client_request.rejected"
+                   ~payload:
+                     (`Assoc
+                        [
+                          ("requestId", `String id); ("method", `String method_);
+                        ]))
+          | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
+              let update = Yojson.Safe.Util.member "update" params in
+              match Yojson.Safe.Util.member "configOptions" update with
+              | `List _ as options -> State.set_config_options state options
+              | _ -> ())
+          | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
+              match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
+              | Some id when State.cancel_permission state ~request_id:id ->
+                  ignore
+                    (Store.append_event store ~kind:"acp.permission.cancelled"
+                       ~payload:(`Assoc [ ("requestId", `String id) ]))
+              | _ -> ())
+          | Ok _ -> ()
+          | Error message -> raise (Failure message)
+        done
+      with
+      | End_of_file ->
+          State.set_status state Domain.Failed;
+          fail_pending "ACP harness disconnected";
+          ignore
+            (Store.append_event store ~kind:"harness.disconnected"
+               ~payload:(`Assoc [ ("harnessPid", `Int harness_pid) ]));
+          raise End_of_file
+      | exn ->
+          State.set_status state Domain.Failed;
+          fail_pending (Printexc.to_string exn);
+          ignore
+            (Store.append_event store ~kind:"harness.protocol_error"
+               ~payload:
+                 (`Assoc
+                    [
+                      ("harnessPid", `Int harness_pid);
+                      ("error", `String (Printexc.to_string exn));
+                    ]));
+          raise exn);
   let initialize_result, initialize_response =
     require_rpc_result ~id:"initialize" Acp.initialize_request
   in
@@ -297,26 +186,7 @@ let run ~env (args : Config.args) =
     | `Bool value -> value
     | _ -> false
   in
-  let create_session () =
-    let result, response =
-      require_rpc_result ~id:"session-new"
-        (Acp.new_session_request ~cwd:workspace ~session_id:args.session_id
-           ~mcp_command:args.session_mcp ~broker_url:args.broker_url
-           ~broker_token:args.broker_token ~curl_command:args.curl_command)
-    in
-    let created =
-      match Yojson.Safe.Util.member "sessionId" result with
-      | `String value -> value
-      | _ -> raise (Failure "ACP agent did not return a sessionId")
-    in
-    Store.set_metadata store "acp_session_id" created;
-    (match Yojson.Safe.Util.member "configOptions" result with
-    | `List _ as options -> config_options := options
-    | _ -> ());
-    ignore
-      (Store.append_event store ~kind:"acp.session.created" ~payload:response);
-    created
-  in
+  State.initialize_agent state ~name:agent_name ~supports_load ~supports_images;
   let session_id_from_agent =
     match (Store.get_metadata store "acp_session_id", supports_load) with
     | Some existing, true -> (
@@ -331,7 +201,7 @@ let run ~env (args : Config.args) =
             match Acp.response_result ~expected_id:"session-load" response with
             | Ok result ->
                 (match Yojson.Safe.Util.member "configOptions" result with
-                | `List _ as options -> config_options := options
+                | `List _ as options -> State.set_config_options state options
                 | _ -> ());
                 ignore
                   (Store.append_event store ~kind:"acp.session.loaded"
@@ -346,7 +216,7 @@ let run ~env (args : Config.args) =
                             ("sessionId", `String existing);
                             ("error", `String message);
                           ]));
-                create_session ())
+                State.create_harness_session state)
         | Error message ->
             ignore
               (Store.append_event store ~kind:"acp.session.load_failed"
@@ -356,10 +226,10 @@ let run ~env (args : Config.args) =
                         ("sessionId", `String existing);
                         ("error", `String message);
                       ]));
-            create_session ())
-    | _ -> create_session ()
+            State.create_harness_session state)
+    | _ -> State.create_harness_session state
   in
-  harness_session_id := session_id_from_agent;
+  State.set_harness_session_id state session_id_from_agent;
   let persisted_config_values =
     match Store.get_metadata store "config_option_values" with
     | None -> []
@@ -378,22 +248,7 @@ let run ~env (args : Config.args) =
   |> List.stable_sort (fun left right ->
       Int.compare (config_restore_priority left) (config_restore_priority right))
   |> List.iter (fun (config_id, value) ->
-      let current_value =
-        match !config_options with
-        | `List options ->
-            List.find_map
-              (fun option ->
-                match
-                  ( Yojson.Safe.Util.member "id" option,
-                    Yojson.Safe.Util.member "currentValue" option )
-                with
-                | `String id, `String current when id = config_id ->
-                    Some current
-                | _ -> None)
-              options
-        | _ -> None
-      in
-      match current_value with
+      match State.current_config_value state ~config_id with
       | None -> ()
       | Some current when current = value -> ()
       | Some _ -> (
@@ -404,14 +259,9 @@ let run ~env (args : Config.args) =
                    (config_id ^ "\000" ^ value ^ "\000" ^ args.generation))
           in
           try
-            let result, response =
-              require_rpc_result ~id
-                (Acp.set_config_option_request ~id
-                   ~session_id:!harness_session_id ~config_id ~value)
+            let _, response =
+              State.change_config_option state ~id ~config_id ~value
             in
-            (match Yojson.Safe.Util.member "configOptions" result with
-            | `List _ as options -> config_options := options
-            | _ -> ());
             ignore
               (Store.append_event store ~kind:"acp.config_option.restored"
                  ~payload:
@@ -431,7 +281,7 @@ let run ~env (args : Config.args) =
                         ("value", `String value);
                         ("error", `String (Printexc.to_string exn));
                       ]))));
-  status := Domain.Idle;
+  State.set_status state Domain.Idle;
   let previous_generation = Store.get_metadata store "worker_generation" in
   Store.set_metadata store "worker_generation" args.generation;
   (match Store.get_metadata store "pending_worker_upgrade" with
@@ -450,38 +300,12 @@ let run ~env (args : Config.args) =
                 ]));
       Store.set_metadata store "pending_worker_upgrade" ""
   | _ -> ());
-  let protocol_state : Protocol.t =
-    {
-      args;
-      store;
-      workspace;
-      agent_name;
-      supports_load;
-      supports_images;
-      harness_pid;
-      harness_session_id;
-      config_options;
-      status;
-      running_commands;
-      pending_permissions;
-      configuration_changes;
-      upgrade_target;
-      upgrade_deadline;
-      sessions_created_since_start;
-      send;
-      persist_config_values;
-      create_session;
-      require_rpc_result;
-    }
-  in
   let handle_connection flow _address =
     let reader = Eio.Buf_read.of_flow flow ~max_size:Config.max_frame_bytes in
     let receive () =
       try
         let json = read_json reader in
-        match Wire.request_of_yojson json with
-        | Ok request -> Ok request
-        | Error message -> Error message
+        Wire.request_of_yojson json
       with
       | Yojson.Json_error message -> Error ("invalid JSON: " ^ message)
       | Eio.Buf_read.Buffer_limit_exceeded -> Error "worker frame is too large"
@@ -489,16 +313,15 @@ let run ~env (args : Config.args) =
     in
     match receive () with
     | Ok (Wire.Hello _ as hello) -> (
-        let negotiation = Protocol.handle protocol_state hello in
+        let negotiation = Protocol.handle state hello in
         write_json flow (Wire.response_to_yojson negotiation);
         match negotiation with
         | Error _ -> ()
         | Ok _ -> (
             match receive () with
             | Ok request ->
-                write_json flow
-                  (Wire.response_to_yojson
-                     (Protocol.handle protocol_state request))
+                Protocol.handle state request
+                |> Wire.response_to_yojson |> write_json flow
             | Error message ->
                 write_json flow (Wire.response_to_yojson (Error message))))
     | Ok _ ->
