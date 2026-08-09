@@ -16,10 +16,6 @@ depends: [
   "logs"
   "fmt"
   "alcotest"
-  "melange"
-  "reason"
-  "reason-react"
-  "reason-react-ppx"
   "odoc" {with-doc}
 ]
 build: [

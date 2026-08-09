@@ -1,32 +1,6 @@
-(melange.emit
- (target output)
- (alias web)
- (libraries reason-react)
- (modules app ModalSurface)
+(executable
+ (name main)
+ (modes js)
+ (libraries bonsai.web)
  (preprocess
-  (pps melange.ppx reason-react-ppx))
- (module_systems es6))
-
-(rule
- (alias web-bundle)
- (target app.js)
- (deps
-  (glob_files_rec output/web/*.js)
-  (glob_files_rec
-   output/node_modules/melange.__private__.melange_mini_stdlib/*.js)
-  (glob_files_rec output/node_modules/melange.dom/*.js)
-  (glob_files_rec output/node_modules/melange.js/*.js)
-  (glob_files_rec output/node_modules/melange/*.js)
-  (glob_files_rec output/node_modules/reason-react/*.js))
- (action
-  (with-stdout-to
-   %{target}
-   (run
-    esbuild
-    %{dep:output/web/App.js}
-    --bundle
-    --format=esm
-    --minify
-    --resolve-extensions=.js
-    --main-fields=browser
-    --outfile=%{target}))))
+  (pps ppx_jane bonsai.ppx_bonsai)))

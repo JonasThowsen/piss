@@ -12,9 +12,10 @@ nix flake check
 nix build .#piss
 ```
 
-The development shell provides OCaml 5.5, Dune, opam, formatters, native
-libraries, and the temporary browser build tools. npm supplies only the React
-runtime until the browser shell moves to Bonsai.
+The default development shell provides OCaml 5.5, Dune, formatters, and the
+native libraries. `just build` enters the separate OCaml 5.2 shell used for the
+Bonsai browser bundle. npm currently supplies only the Playwright browser test
+driver.
 
 ## Pull requests
 

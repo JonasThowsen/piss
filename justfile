@@ -4,7 +4,7 @@
 # Run `just` with no arguments to list every recipe.
 #
 # Conventions:
-#   * `just build` builds every OCaml artifact and the Melange browser bundle.
+#   * `just build` builds every native artifact and the Bonsai browser bundle.
 #   * `just serve` and `just worker` start the components locally with
 #     sensible defaults rooted under `.piss/`.
 #   * `just check` is the one command to run before pushing a change.
@@ -26,26 +26,28 @@ default:
 
 # ──────────────────────────────── Build ───────────────────────────────────
 
-# Build every OCaml artifact: native binaries, tests, and the Melange bundle.
+# Build every OCaml artifact: native binaries, tests, and the Bonsai bundle.
 build:
-    dune build @all @web-bundle
+    dune build @all
+    nix develop .#web -c dune build --root web main.bc.js
 
-# Build only the native OCaml components (no Melange bundle).
+# Build only the native OCaml components.
 build-native:
     dune build @all
 
-# Build only the Melange browser bundle under _build/default/web/app.js.
+# Build only the Bonsai browser bundle under web/_build/default/main.bc.js.
 build-web:
-    dune build @web-bundle
+    nix develop .#web -c dune build --root web main.bc.js
 
 # Watch the source tree and rebuild on change. Polls the filesystem so it
 # works on macOS where inotify is not available.
 watch:
-    dune build @all @web-bundle -w
+    dune build @all -w
 
 # Remove every build artifact.
 clean:
     dune clean
+    dune clean --root web
 
 # ──────────────────────────────── Test ────────────────────────────────────
 
@@ -66,13 +68,15 @@ check: format-check build test test-integration
 
 # ────────────────────────────── Format ────────────────────────────────────
 
-# Auto-format every OCaml and Reason source.
+# Auto-format every compiled OCaml source.
 format:
     dune fmt
+    nix develop .#web -c dune fmt --root web
 
 # Verify formatting without modifying any files (for CI).
 format-check:
     dune build @fmt
+    nix develop .#web -c dune build --root web @fmt
 
 # ──────────────────────────────── Doc ─────────────────────────────────────
 
@@ -120,7 +124,7 @@ serve *extra_args:
         --workspace-discovery-root "$PWD" \
         --max-active-sessions 1 \
         --public web/public \
-        --app-js _build/default/web/app.js \
+        --app-js web/_build/default/main.bc.js \
         --generation dev \
         --allowed-user local-dev \
         --dev-bypass-auth \

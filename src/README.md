@@ -125,10 +125,10 @@ to reattach to its harness session and replay conversation history.
 The Nix development shell provides OCaml 5.5 and all project dependencies:
 
 ```bash
-just build          # dune build @all @web-bundle
+just build          # native OCaml 5.5 and Bonsai OCaml 5.2 builds
 just test           # Alcotest unit suite
 just test-integration  # shell-driven interaction/isolation/mention/replaceability
-just format         # auto-format every OCaml and Reason source
+just format         # auto-format every compiled OCaml source
 just check          # format-check + build + test + test-integration
 ```
 

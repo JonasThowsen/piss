@@ -78,9 +78,9 @@ The host configuration decides when to restart the control plane and how to repl
 ```bash
 git clone https://github.com/JonasThowsen/piss
 cd piss
-nix develop                # ready OCaml 5.5 shell with dune and opam
-npm ci                     # temporary React runtime, removed by the Bonsai port
-just build                 # dune build @all @web-bundle
+nix develop                # OCaml 5.5 server shell
+npm ci                     # temporary Playwright driver for browser integration tests
+just build                 # native OCaml 5.5 and Bonsai OCaml 5.2 builds
 just serve                 # run the control plane locally with sensible defaults
 just worker                # run a single session worker pointed at the mock agent
 ```
@@ -91,12 +91,12 @@ Common recipes:
 
 | Recipe | What it does |
 | --- | --- |
-| `just build` | Build every OCaml artifact and the Melange bundle |
+| `just build` | Build the native artifacts and Bonsai bundle |
 | `just build-native` | Build only the native executables |
 | `just build-web` | Build only the browser bundle |
 | `just test` | Run the Alcotest unit suite |
 | `just test-integration` | Run the shell-driven integration tests |
-| `just format` | Auto-format every OCaml and Reason source |
+| `just format` | Auto-format every compiled OCaml source |
 | `just format-check` | Verify formatting without modifying files |
 | `just check` | format-check + build + test + test-integration |
 | `just serve` | Run the control plane against the mock harness |

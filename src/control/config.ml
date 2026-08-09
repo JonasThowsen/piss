@@ -46,7 +46,7 @@ let parse () =
   let bootstrap_session = ref "deployed-tracer" in
   let max_active_sessions = ref default_max_active_sessions in
   let public_dir = ref "web/public" in
-  let app_js = ref "_build/default/web/app.js" in
+  let app_js = ref "web/_build/default/main.bc.js" in
   let generation = ref "development" in
   let allowed_users = ref [] in
   let allowed_origins = ref [] in
@@ -92,7 +92,7 @@ let parse () =
         Arg.Set_int max_active_sessions,
         "Configured active session resource limit" );
       ("--public", Arg.Set_string public_dir, "Browser public directory");
-      ("--app-js", Arg.Set_string app_js, "Melange application module");
+      ("--app-js", Arg.Set_string app_js, "Browser application JavaScript");
       ( "--generation",
         Arg.Set_string generation,
         "Immutable control-plane generation" );
