@@ -1,7 +1,7 @@
 module Session : sig
   type harness = Pi | Opencode | Mock | Other of string
 
-  type status =
+  type status = Runtime_domain.status =
     | Starting
     | Idle
     | Running
@@ -11,20 +11,7 @@ module Session : sig
     | Offline
     | Archived
 
-  type runtime = {
-    worker_id : string;
-    worker_generation : string;
-    runtime_generation : int;
-    worker_pid : int;
-    harness_pid : int option;
-    agent_name : string;
-    status : status;
-    first_sequence : int64;
-    last_sequence : int64;
-    retention_pruned : bool;
-    upgrade_pending : bool;
-    accepts_images : bool;
-  }
+  type runtime = Runtime_domain.t
 
   type t = {
     id : string;

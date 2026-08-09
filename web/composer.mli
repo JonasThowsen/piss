@@ -9,5 +9,6 @@ type output = {
 val component :
   Control_plane.Session.t option Bonsai.t ->
   string Bonsai.t ->
+  Vdom.Node.t Bonsai.t ->
   Bonsai.graph ->
   output Bonsai.t

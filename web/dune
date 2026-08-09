@@ -10,6 +10,10 @@
   permission_decision
   prompt_command
   request_target
+  runtime_domain
+  session_tabs
+  working_view
+  workspace_catalog
   timeline_projection)
  (libraries core uri yojson))
 
@@ -20,9 +24,12 @@
   clipboard
   command_id
   composer
+  config_controls
+  details_view
   event_stream
   mention_request
   main
+  mobile_shell
   permission_view
   session_rail
   timeline_scroll
@@ -63,6 +70,13 @@
 (test
  (name timeline_projection_test)
  (modules timeline_projection_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name workbench_domain_test)
+ (modules workbench_domain_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

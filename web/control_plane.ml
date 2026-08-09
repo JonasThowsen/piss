@@ -3,7 +3,7 @@ open! Core
 module Session = struct
   type harness = Pi | Opencode | Mock | Other of string
 
-  type status =
+  type status = Runtime_domain.status =
     | Starting
     | Idle
     | Running
@@ -13,20 +13,7 @@ module Session = struct
     | Offline
     | Archived
 
-  type runtime = {
-    worker_id : string;
-    worker_generation : string;
-    runtime_generation : int;
-    worker_pid : int;
-    harness_pid : int option;
-    agent_name : string;
-    status : status;
-    first_sequence : int64;
-    last_sequence : int64;
-    retention_pruned : bool;
-    upgrade_pending : bool;
-    accepts_images : bool;
-  }
+  type runtime = Runtime_domain.t
 
   type t = {
     id : string;
@@ -45,15 +32,7 @@ module Session = struct
     | Mock -> "mock"
     | Other value -> value
 
-  let status_to_string = function
-    | Starting -> "starting"
-    | Idle -> "idle"
-    | Running -> "running"
-    | Requires_action -> "requires_action"
-    | Stopped -> "stopped"
-    | Failed -> "failed"
-    | Offline -> "offline"
-    | Archived -> "archived"
+  let status_to_string = Runtime_domain.status_to_string
 end
 
 let error path expected = Error (path ^ " " ^ expected)
@@ -66,26 +45,6 @@ let field fields path name =
 let string path = function
   | `String value -> Ok value
   | _ -> error path "must be a string"
-
-let bool path = function
-  | `Bool value -> Ok value
-  | _ -> error path "must be a boolean"
-
-let int path = function
-  | `Int value -> Ok value
-  | `Intlit value -> (
-      match Int.of_string_opt value with
-      | Some value -> Ok value
-      | None -> error path "must be an integer")
-  | _ -> error path "must be an integer"
-
-let int64 path = function
-  | `Int value -> Ok (Int64.of_int value)
-  | `Intlit value -> (
-      match Int64.of_string_opt value with
-      | Some value -> Ok value
-      | None -> error path "must be an integer")
-  | _ -> error path "must be an integer"
 
 let number path = function
   | `Int value -> Ok (Float.of_int value)
@@ -126,48 +85,8 @@ let bind_field fields path name decode f =
   Result.bind (field fields path name) ~f:(fun value ->
       Result.bind (decode (path ^ "." ^ name) value) ~f)
 
-let decode_runtime fields path session_id runtime_status =
-  bind_field fields path "sessionId" string (fun snapshot_session_id ->
-      if not (String.equal session_id snapshot_session_id) then
-        error (path ^ ".sessionId") "must match id"
-      else
-        bind_field fields path "workerId" string (fun worker_id ->
-            bind_field fields path "workerGeneration" string
-              (fun worker_generation ->
-                bind_field fields path "runtimeGeneration" int
-                  (fun runtime_generation ->
-                    bind_field fields path "workerPid" int (fun worker_pid ->
-                        bind_field fields path "harnessPid" (nullable int)
-                          (fun harness_pid ->
-                            bind_field fields path "agentName" string
-                              (fun agent_name ->
-                                bind_field fields path "firstSequence" int64
-                                  (fun first_sequence ->
-                                    bind_field fields path "lastSequence" int64
-                                      (fun last_sequence ->
-                                        bind_field fields path "retentionPruned"
-                                          bool (fun retention_pruned ->
-                                            bind_field fields path
-                                              "upgradePending" bool
-                                              (fun upgrade_pending ->
-                                                bind_field fields path
-                                                  "acceptsImages" bool
-                                                  (fun accepts_images ->
-                                                    Ok
-                                                      {
-                                                        Session.worker_id;
-                                                        worker_generation;
-                                                        runtime_generation;
-                                                        worker_pid;
-                                                        harness_pid;
-                                                        agent_name;
-                                                        status = runtime_status;
-                                                        first_sequence;
-                                                        last_sequence;
-                                                        retention_pruned;
-                                                        upgrade_pending;
-                                                        accepts_images;
-                                                      }))))))))))))
+let decode_runtime fields path session_id =
+  Runtime_domain.decode_json ~path ~expected_session:session_id (`Assoc fields)
 
 let decode_session index = function
   | `Assoc fields ->
@@ -201,9 +120,15 @@ let decode_session index = function
                                       finish None
                                   | _ ->
                                       Result.bind
-                                        (decode_runtime fields path id
-                                           runtime_status) ~f:(fun runtime ->
-                                          finish (Some runtime)))))))))
+                                        (decode_runtime fields path id)
+                                        ~f:(fun runtime ->
+                                          if
+                                            phys_equal runtime.status
+                                              runtime_status
+                                          then finish (Some runtime)
+                                          else
+                                            error (path ^ ".status")
+                                              "must match runtime status"))))))))
   | _ -> error (Printf.sprintf "sessions[%d]" index) "must be an object"
 
 let decode_sessions body =

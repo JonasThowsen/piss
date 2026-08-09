@@ -106,11 +106,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .boundary-note span { color: var(--accent); font: 600 9px/1.2 var(--sans); }
 .boundary-note p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; text-wrap: pretty; }
 
-.conversation-panel { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: grid; grid-template-rows: 56px minmax(0, 1fr) auto; background: var(--canvas); }
+.conversation-panel { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: grid; grid-template-rows: 56px 56px minmax(0, 1fr) auto; background: var(--canvas); }
 .conversation-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .conversation-heading h2 { margin: 0; font-size: 17px; }
 .sequence-label { color: var(--faint); font: 9px/1 "IBM Plex Mono", monospace; }
 .timeline-wrap { position: relative; min-height: 0; overflow: hidden; }
+.session-panel-stack { position: relative; min-height: 0; overflow: hidden; }
+.session-panel-stack > [role="tabpanel"] { height: 100%; }
+.session-panel-stack > [hidden] { position: absolute; inset: 0; display: block; visibility: hidden; pointer-events: none; }
 .timeline { width: 100%; height: 100%; overflow-y: auto; padding: 24px clamp(16px, 4vw, 54px) 34px; }
 .timeline-stream { width: min(920px, 100%); min-height: 100%; margin: 0 auto; }
 .timeline-jump { position: absolute; right: max(18px, calc((100% - 900px) / 2)); bottom: 18px; z-index: 4; width: 42px; height: 42px; display: grid; place-content: center; place-items: center; padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(32, 35, 31, .16); cursor: pointer; }
@@ -119,6 +122,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .timeline-jump span { font: 650 9px/1 var(--sans); letter-spacing: .06em; }
 .timeline-jump svg { width: 20px; height: 20px; }
 .session-details { min-height: 0; overflow-y: auto; padding: 34px max(24px, calc((100% - 860px) / 2)) 48px; }
+.details-panel { min-height: 0; overflow: hidden; }
+.details-panel .session-details { height: 100%; }
 .session-details > header { padding-bottom: 20px; border-bottom: 1px solid var(--line); }
 .session-details > header span, .session-details dt, .details-config h3 { color: var(--accent); font: 600 9px/1 var(--sans); }
 .session-details > header h2 { margin: 8px 0 6px; font-size: 25px; }
@@ -268,7 +273,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   .runtime-rail.mobile-open { transform: translateX(0); }
   .sidebar-scrim { position: fixed; z-index: 35; inset: 52px 0 0; display: block; width: 100%; height: auto; border: 0; background: rgba(32, 35, 31, .42); opacity: 0; pointer-events: none; transition: opacity 180ms cubic-bezier(.2, 0, 0, 1); }
   .sidebar-scrim.visible { opacity: 1; pointer-events: auto; }
-  .conversation-panel { height: calc(var(--app-height, 100dvh) - 52px); display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; }
+  .conversation-panel { height: calc(var(--app-height, 100dvh) - 52px); display: grid; grid-template-rows: 54px 52px minmax(0, 1fr) auto; }
   .conversation-heading { padding: 0 14px; }
   .conversation-heading .eyebrow, .sequence-label { display: none; }
   .timeline { padding: 20px 12px 28px; }
@@ -296,10 +301,10 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .create-session-trigger, .workspace-heading > button:last-child { display: grid; place-items: center; padding: 0; }
 .mobile-menu i, .mobile-menu i::before, .mobile-menu i::after,
 .search-trigger::before, .search-trigger::after { display: none; }
-.mobile-menu { display: grid; place-items: center; }
+.mobile-menu { place-items: center; }
 .search-trigger svg { width: 20px; height: 20px; }
 .create-session-trigger svg, .workspace-heading > button svg { width: 22px; height: 22px; }
-.workspace-heading { grid-template-columns: minmax(0, 1fr) 36px 36px; }
+.workspace-heading { grid-template-columns: minmax(0, 1fr); }
 .workspace-actions { position: relative; align-self: stretch; display: grid; place-items: center; }
 .workspace-more { width: 36px; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .workspace-more svg { width: 20px; height: 20px; }
@@ -376,6 +381,11 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .composer-config-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
 .composer-config-trigger:hover:not(:disabled) { color: var(--text); }
 .composer-config-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.details-config-option { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.details-config-option:last-child { border-bottom: 0; }
+.details-config-option header { display: flex; justify-content: space-between; gap: 12px; padding: 0 9px 7px; }
+.details-config-option header span { color: var(--muted); font: 9px/1 var(--mono); }
+.details-config-option .details-config-description { display: block; min-height: 0; padding-block: 8px; line-height: 1.5; }
 .composer-config-trigger.thinking:disabled { max-width: 105px; }
 .composer-config-menu { position: absolute; z-index: 80; right: 0; bottom: calc(100% + 9px); max-height: min(420px, calc(var(--app-height, 100dvh) - 24px)); overflow-y: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: 0 15px 42px rgba(32, 35, 31, .2); }
 .composer-config-menu.model-menu { width: min(370px, calc(100vw - 20px)); }
@@ -463,6 +473,7 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .global-search-empty b { color: var(--text); font-size: 13px; }
 .global-search-empty span { font-size: 10px; }
 @media (max-width: 760px) {
+  .mobile-menu { display: grid; }
   .capability-tabs { min-height: 52px; padding: 0 12px; gap: 0; }
   .capability-tabs button { min-width: 0; flex: 1; font-size: 14px; }
   .capability-tabs button svg { width: 19px; height: 19px; }

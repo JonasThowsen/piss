@@ -33,6 +33,8 @@ try {
     throw new Error(`${error.message}\n${errors.join("\n")}\nbody: ${await page.locator("body").innerText()}`);
   }
   await page.getByText("session / s-mention-browser", { exact: true }).waitFor();
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+  await page.locator(".app-header").getByText(/PISS rewrite \/ \/home/).waitFor();
   if (eventStreamRequests.length === 0) {
     await page.waitForRequest((request) => request.url().includes("/api/v2/event-stream"));
   }
@@ -50,6 +52,62 @@ try {
   ) {
     throw new Error(`unexpected event stream request: ${streamUrl}`);
   }
+  const tabs = page.getByRole("tablist", { name: "Session views" }).getByRole("tab");
+  const tabLabels = await tabs.allTextContents();
+  if (JSON.stringify(tabLabels) !== JSON.stringify(["Agent", "Working", "Changes", "Details"])) {
+    throw new Error(`unexpected session tabs: ${JSON.stringify(tabLabels)}`);
+  }
+  if (!(await page.getByRole("tab", { name: "Changes" }).isDisabled())) {
+    throw new Error("Changes tab was enabled before its product slice exists");
+  }
+  const agentTab = page.getByRole("tab", { name: "Agent" });
+  const workingTab = page.getByRole("tab", { name: "Working" });
+  const detailsTab = page.getByRole("tab", { name: "Details" });
+  await agentTab.focus();
+  await agentTab.press("ArrowRight");
+  await page.waitForFunction(() => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true");
+  await workingTab.press("ArrowLeft");
+  const modelButton = page.getByRole("button", { name: "Model: Mock Fast" });
+  await modelButton.click();
+  const modelRequestPromise = page.waitForRequest(
+    (request) => request.url().includes("/api/v2/config-options") && request.method() === "POST",
+  );
+  await page.getByRole("menu", { name: "Model options" }).getByRole("menuitemradio", { name: /Mock Deep/ }).click();
+  const modelRequest = await modelRequestPromise;
+  if (JSON.stringify(modelRequest.postDataJSON()) !== JSON.stringify({ configId: "model", value: "mock/deep" })) {
+    throw new Error(`unexpected model config request: ${modelRequest.postData()}`);
+  }
+  await page.getByRole("button", { name: "Model: Mock Deep" }).waitFor();
+  const thinkingButton = page.getByRole("button", { name: "Thinking: medium" });
+  await thinkingButton.click();
+  const configRequestPromise = page.waitForRequest(
+    (request) => request.url().includes("/api/v2/config-options") && request.method() === "POST",
+  );
+  await page.getByRole("menu", { name: "Thinking options" }).getByRole("menuitemradio", { name: /high/ }).click();
+  const configRequest = await configRequestPromise;
+  if (
+    JSON.stringify(configRequest.postDataJSON()) !== JSON.stringify({ configId: "thought_level", value: "high" })
+    || new URL(configRequest.url()).searchParams.get("session") !== "s-mention-browser"
+  ) {
+    throw new Error(`unexpected config request: ${configRequest.postData()}`);
+  }
+  await page.getByRole("button", { name: "Thinking: high" }).waitFor();
+  await detailsTab.click();
+  await page.getByRole("region", { name: "Session runtime details" }).getByText("worker-s-mention-browser", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Configuration options" }).getByText("Mock Fast", { exact: false }).waitFor();
+  await agentTab.click();
+  const returnToAgentAfterRun = async (required = false) => {
+    try {
+      await page.waitForFunction(
+        () => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true",
+        undefined,
+        { timeout: 3_000 },
+      );
+    } catch (error) {
+      if (required) throw error;
+    }
+    if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
+  };
   const sessions = await page.evaluate(async () => {
     const response = await fetch("/api/v2/sessions");
     if (!response.ok) throw new Error(await response.text());
@@ -64,6 +122,7 @@ try {
     (request) => request.url().includes("/api/v2/commands") && request.method() === "POST",
   );
   await page.getByRole("button", { name: "Send message" }).click();
+  await returnToAgentAfterRun(true);
   const request = await requestPromise;
   const body = request.postDataJSON();
   if (
@@ -111,9 +170,10 @@ try {
   const permissionPrompt = "permission: render the browser decision path";
   await page.getByRole("textbox", { name: "Message agent" }).fill(permissionPrompt);
   await page.getByRole("button", { name: "Send message" }).click();
+  await returnToAgentAfterRun();
   const permissionCard = page.locator(".timeline-permission");
   await permissionCard.getByText("Allow the stability proof", { exact: true }).waitFor();
-  await page.getByText("requires_action", { exact: true }).waitFor();
+  await page.getByText("requires_action", { exact: true }).first().waitFor();
   await permissionCard.getByText("mock-proof").waitFor();
   const decisionLabels = await permissionCard.getByRole("button").allTextContents();
   if (JSON.stringify(decisionLabels) !== JSON.stringify(["Allow once", "Reject", "Cancel"])) {
@@ -151,6 +211,7 @@ try {
   releasePermission();
   await clickPromise;
   await permissionCard.waitFor({ state: "detached", timeout: 10000 });
+  await returnToAgentAfterRun();
   await page.getByText("state / completed", { exact: true }).last().waitFor({ timeout: 10000 });
   if (eventPageRequests.length !== 1) {
     throw new Error(`permission flow polled event pages: ${JSON.stringify(eventPageRequests)}`);
@@ -169,6 +230,8 @@ try {
     if (!response.ok) throw new Error(await response.text());
   }, text);
   await waitForIdle();
+  const latestButton = page.getByRole("button", { name: "Jump to latest message" });
+  if (await latestButton.isVisible()) await latestButton.click();
   await page.waitForTimeout(1600);
   await page.setViewportSize({ width: 1280, height: 500 });
   const timeline = page.locator("#timeline");
@@ -177,6 +240,7 @@ try {
     return value && value.scrollHeight > value.clientHeight;
   });
   await page.waitForTimeout(500);
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   const initialScroll = await timeline.evaluate((value) => ({
     top: value.scrollTop,
     height: value.scrollHeight,
@@ -189,9 +253,20 @@ try {
     value.scrollTop = 0;
     value.dispatchEvent(new Event("scroll"));
   });
-  await page.getByRole("button", { name: "Jump to latest message" }).waitFor();
+  try {
+    await page.getByRole("button", { name: "Jump to latest message" }).waitFor({ timeout: 3_000 });
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      tab: document.getElementById("session-tab-agent")?.getAttribute("aria-selected"),
+      panelHidden: document.getElementById("session-panel-agent")?.hasAttribute("hidden"),
+      buttonHidden: document.querySelector('[aria-label="Jump to latest message"]')?.hasAttribute("hidden"),
+      scrollTop: document.getElementById("timeline")?.scrollTop,
+    }));
+    throw new Error(`${error.message}: ${JSON.stringify(state)}`);
+  }
   const agentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");
+  await returnToAgentAfterRun();
   await page.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, agentCount);
   if (await timeline.evaluate((value) => value.scrollTop) > 4) {
     throw new Error("stream overrode manual upward scrolling");
@@ -204,7 +279,11 @@ try {
   await waitForIdle();
   const nextAgentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream");
+  await returnToAgentAfterRun();
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
+  await page.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await page.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, nextAgentCount);
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await page.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
@@ -212,8 +291,28 @@ try {
   if (await page.locator("details.tool-disclosure[open]").count() !== 0) {
     throw new Error("streamed tool updates opened a collapsed disclosure");
   }
+  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const mobile = await mobileContext.newPage();
+  mobile.on("console", (message) => {
+    if (message.type() === "error") errors.push(`mobile console: ${message.text()}`);
+  });
+  mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
+  await mobile.goto(url, { waitUntil: "networkidle" });
+  const mobileMenu = mobile.getByRole("button", { name: "Open workspaces and sessions" });
+  await mobileMenu.tap();
+  await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
+  await mobile.getByRole("button", { name: /Pi \/ deployed/ }).tap();
+  await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false");
+  const viewportHeight = await mobile.evaluate(() => ({
+    css: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
+    visible: window.visualViewport?.height ?? window.innerHeight,
+  }));
+  if (Math.abs(viewportHeight.css - viewportHeight.visible) > 1) {
+    throw new Error(`app height did not follow visualViewport: ${JSON.stringify(viewportHeight)}`);
+  }
+  await mobileContext.close();
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: aggregation, collapsed tools, copy reset, sticky follow, manual-scroll escape, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, tabs, config, runtime details, mobile drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

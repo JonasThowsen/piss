@@ -54,6 +54,21 @@ let button () =
   in
   if present value then Some value else None
 
+let agent_panel_visible () =
+  let panel =
+    Js.Unsafe.meth_call
+      (Js.Unsafe.inject Dom_html.document)
+      "getElementById"
+      [| Js.Unsafe.inject (Js.string "session-panel-agent") |]
+  in
+  if not (present panel) then true
+  else
+    let hidden =
+      Js.Unsafe.meth_call panel "hasAttribute"
+        [| Js.Unsafe.inject (Js.string "hidden") |]
+    in
+    not (Js.to_bool (Js.Unsafe.coerce hidden))
+
 let update_button () =
   Option.iter (button ()) ~f:(fun value ->
       Js.Unsafe.set value "hidden" !following)
@@ -92,9 +107,10 @@ and schedule () =
     frame := Some (request_frame pin))
 
 let on_scroll event =
-  match !timeline with
-  | None -> ()
-  | Some value ->
+  match (!timeline, agent_panel_visible ()) with
+  | _, false -> ()
+  | None, _ -> ()
+  | Some value, true ->
       let top : int = Js.Unsafe.get value "scrollTop" in
       let client_height : int = Js.Unsafe.get value "clientHeight" in
       let resized = client_height <> !previous_client_height in
@@ -105,11 +121,9 @@ let on_scroll event =
           not (Js.to_bool trusted)
         with _ -> false
       in
-      if
-        top < !previous_top - 1
-        && (explicit || not resized)
-        && ((not !pinning) || explicit)
-      then following := false
+      if resized && not explicit then ()
+      else if top < !previous_top - 1 && ((not !pinning) || explicit) then
+        following := false
       else if not !pinning then following := distance value <= 80;
       previous_top := top;
       update_button ()
@@ -214,6 +228,22 @@ let jump_to_latest () =
   action_effect (fun () ->
       following := true;
       schedule ())
+
+let resume () = action_effect (fun () -> if !following then schedule ())
+
+let track () =
+  action_effect (fun () ->
+      let value =
+        Js.Unsafe.meth_call
+          (Js.Unsafe.inject Dom_html.document)
+          "getElementById"
+          [| Js.Unsafe.inject (Js.string "timeline") |]
+      in
+      if present value && agent_panel_visible () then (
+        timeline := Some value;
+        following := distance value <= 80;
+        previous_top := Js.Unsafe.get value "scrollTop";
+        update_button ()))
 
 let cleanup () = action_effect cleanup_now
 let is_following () = !following

@@ -18,6 +18,17 @@ try {
   });
   desktop.on("pageerror", (error) => errors.push(`desktop page: ${error.message}`));
   await desktop.goto(url, { waitUntil: "networkidle" });
+  const agentTab = desktop.getByRole("tab", { name: "Agent" });
+  const returnToAgentAfterRun = async () => {
+    try {
+      await desktop.waitForFunction(
+        () => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true",
+        undefined,
+        { timeout: 3_000 },
+      );
+    } catch {}
+    if (await desktop.getByRole("tab", { name: "Working" }).getAttribute("aria-selected") === "true") await agentTab.click();
+  };
   const textarea = desktop.getByRole("textbox", { name: "Message agent" });
   await textarea.fill("Review @App before release");
   await textarea.evaluate((field) => {
@@ -46,6 +57,7 @@ try {
     (request) => request.url().includes("/api/v2/commands") && request.method() === "POST",
   );
   await desktop.getByRole("button", { name: "Send message" }).click();
+  await returnToAgentAfterRun();
   const body = (await requestPromise).postDataJSON();
   if (body.text !== expected || body.resources?.[0]?.path !== "web/App.re") {
     throw new Error(`typed ACP resource input missing: ${JSON.stringify(body)}`);
@@ -91,12 +103,16 @@ try {
   }, text);
 
   await waitForIdle();
+  const latestButton = desktop.getByRole("button", { name: "Jump to latest message" });
+  if (await latestButton.isVisible()) await latestButton.click();
   await desktop.setViewportSize({ width: 1440, height: 500 });
   const timeline = desktop.locator("#timeline");
   await desktop.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight > value.clientHeight;
   });
+  await desktop.waitForTimeout(500);
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await desktop.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
@@ -105,6 +121,7 @@ try {
   await desktop.getByRole("button", { name: "Jump to latest message" }).waitFor();
   const agentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");
+  await returnToAgentAfterRun();
   await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, agentCount);
   if (await timeline.evaluate((value) => value.scrollTop) > 4) throw new Error("stream overrode the user's manual scroll position");
 
@@ -116,12 +133,16 @@ try {
   await waitForIdle();
   const nextAgentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream while typing");
+  await returnToAgentAfterRun();
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
+  await desktop.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await textarea.fill("");
   const typingStarted = Date.now();
   await textarea.pressSequentially("responsive input ".repeat(20));
   const typingElapsed = Date.now() - typingStarted;
   if (typingElapsed > 1500) throw new Error(`composer typing remained laggy: ${typingElapsed}ms`);
   await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, nextAgentCount);
+  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await desktop.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;

@@ -163,7 +163,7 @@ let picker_view picker ~on_hover ~on_choose =
            ]
         :: contents)
 
-let component session stream_notice graph =
+let component session stream_notice config_controls graph =
   let prompt, set_prompt = Bonsai.state "" graph in
   let resources, set_resources = Bonsai.state [] graph in
   let picker, set_picker = Bonsai.state Mention_picker.Closed graph in
@@ -171,6 +171,7 @@ let component session stream_notice graph =
   let notice, set_notice = Bonsai.state "" graph in
   let%arr session = session
   and stream_notice = stream_notice
+  and config_controls = config_controls
   and prompt = prompt
   and resources = resources
   and picker = picker
@@ -382,7 +383,7 @@ let component session stream_notice graph =
                         ]
                       [ text "@" ];
                   ];
-                Vdom.Node.span [];
+                config_controls;
                 Vdom.Node.button
                   ~attrs:
                     ([

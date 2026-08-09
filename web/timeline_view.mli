@@ -11,6 +11,12 @@ type state =
 
 val render :
   session:Control_plane.Session.t option ->
+  workspace:Workspace_catalog.workspace option ->
+  runtime:Runtime_domain.t option ->
+  runtime_loading:bool ->
+  runtime_error:string option ->
+  tab:Session_tabs.t ->
+  on_tab:(Session_tabs.t -> unit Effect.t) ->
   state:state ->
   composer:Vdom.Node.t option ->
   deciding_permissions:Core.String.Set.t ->

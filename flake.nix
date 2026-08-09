@@ -58,11 +58,15 @@
                 ./web/clipboard.mli
                 ./web/command_id.ml
                 ./web/command_id.mli
-                ./web/composer.ml
-                ./web/composer.mli
-                ./web/control_plane.ml
-                ./web/control_plane.mli
-                ./web/control_plane_test.ml
+                 ./web/composer.ml
+                 ./web/composer.mli
+                 ./web/config_controls.ml
+                 ./web/config_controls.mli
+                 ./web/control_plane.ml
+                 ./web/control_plane.mli
+                 ./web/control_plane_test.ml
+                 ./web/details_view.ml
+                 ./web/details_view.mli
                 ./web/event_buffer.ml
                 ./web/event_buffer.mli
                 ./web/event_buffer_test.ml
@@ -74,26 +78,37 @@
                 ./web/mention_picker.ml
                 ./web/mention_picker.mli
                 ./web/mention_picker_test.ml
-                ./web/mention_request.ml
-                ./web/mention_request.mli
+                 ./web/mention_request.ml
+                 ./web/mention_request.mli
+                 ./web/mobile_shell.ml
+                 ./web/mobile_shell.mli
                 ./web/permission_decision.ml
                 ./web/permission_decision.mli
                 ./web/permission_view.ml
                 ./web/permission_view.mli
                 ./web/prompt_command.ml
                 ./web/prompt_command.mli
-                ./web/request_target.ml
-                ./web/request_target.mli
-                ./web/session_protocol_test.ml
-                ./web/session_rail.ml
-                ./web/session_rail.mli
+                 ./web/request_target.ml
+                 ./web/request_target.mli
+                 ./web/runtime_domain.ml
+                 ./web/runtime_domain.mli
+                 ./web/session_protocol_test.ml
+                 ./web/session_rail.ml
+                 ./web/session_rail.mli
+                 ./web/session_tabs.ml
+                 ./web/session_tabs.mli
                 ./web/timeline_view.ml
                 ./web/timeline_view.mli
                 ./web/timeline_projection.ml
                 ./web/timeline_projection.mli
                 ./web/timeline_projection_test.ml
-                ./web/timeline_scroll.ml
-                ./web/timeline_scroll.mli
+                 ./web/timeline_scroll.ml
+                 ./web/timeline_scroll.mli
+                 ./web/working_view.ml
+                 ./web/working_view.mli
+                 ./web/workbench_domain_test.ml
+                 ./web/workspace_catalog.ml
+                 ./web/workspace_catalog.mli
               ];
             };
             nativeBuildInputs = [
