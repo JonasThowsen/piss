@@ -1,20 +1,15 @@
-(* Pure parts of the workspace file handling. The IO code (walking
-   the filesystem, resolving paths, etc.) lives in src/lib/
-   workspace_files.ml and uses the types declared here.
+(* Pure parts of the workspace file handling. The IO code (walking the
+   filesystem, resolving paths, etc.) lives in src/lib/ workspace_files.ml and
+   uses the types declared here.
 
-   The frontend depends on this module to render file mentions,
-   resolve the canonical workspace-relative path of a selected
-   mention, and display the size/mime-type metadata.
+   The frontend depends on this module to render file mentions, resolve the
+   canonical workspace-relative path of a selected mention, and display the
+   size/mime-type metadata.
 
-   The backend depends on this module to validate user-supplied
-   paths and to construct resource_link blocks for the ACP wire
-   protocol. *)
+   The backend depends on this module to validate user-supplied paths and to
+   construct resource_link blocks for the ACP wire protocol. *)
 
-type mention = {
-  path : string;
-  name : string;
-  size : int;
-}
+type mention = { path : string; name : string; size : int }
 
 type resource = {
   path : string;

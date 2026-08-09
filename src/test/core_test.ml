@@ -11,7 +11,8 @@ let with_store f =
         [ ""; "-wal"; "-shm" ])
     (fun () ->
       let store =
-        Store.open_ ~path ~session_id:(Domain.session_id "session")
+        Store.open_ ~path
+          ~session_id:(Domain.session_id "session")
           ~worker_id:(Domain.worker_id "worker")
       in
       Fun.protect ~finally:(fun () -> Store.close store) (fun () -> f store))
@@ -268,7 +269,8 @@ let test_command_content_migration () =
         "legacy schema created" true (Sqlite3.Rc.is_success rc);
       Alcotest.(check bool) "legacy database closed" true (Sqlite3.db_close db);
       let store =
-        Store.open_ ~path ~session_id:(Domain.session_id "session")
+        Store.open_ ~path
+          ~session_id:(Domain.session_id "session")
           ~worker_id:(Domain.worker_id "worker")
       in
       Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
@@ -314,7 +316,8 @@ let test_event_retention_preserves_durable_kinds () =
   List.iter
     (fun kind ->
       ignore
-        (Store.append_event store ~kind ~payload:(`Assoc [ ("kind", `String kind) ])))
+        (Store.append_event store ~kind
+           ~payload:(`Assoc [ ("kind", `String kind) ])))
     durable_kinds;
   let events = Store.list_recent_events store ~limit:65_536 in
   let kept_kinds =
@@ -334,9 +337,12 @@ let test_event_retention_first_sequence () =
   Alcotest.(check int64)
     "single event first sequence equals its sequence" first.sequence
     (Store.first_retained_sequence store);
-  ignore (Store.append_event store ~kind:"second" ~payload:(`String "two") |> fun _ -> ());
   ignore
-    (Store.append_event store ~kind:"third" ~payload:(`String "three") |> fun _ -> ());
+    ( Store.append_event store ~kind:"second" ~payload:(`String "two")
+    |> fun _ -> () );
+  ignore
+    ( Store.append_event store ~kind:"third" ~payload:(`String "three")
+    |> fun _ -> () );
   Alcotest.(check int64)
     "first sequence tracks the oldest live event" first.sequence
     (Store.first_retained_sequence store);
@@ -406,7 +412,8 @@ let test_restart_reconciliation () =
         [ ""; "-wal"; "-shm" ])
     (fun () ->
       let open_store () =
-        Store.open_ ~path ~session_id:(Domain.session_id "session")
+        Store.open_ ~path
+          ~session_id:(Domain.session_id "session")
           ~worker_id:(Domain.worker_id "worker")
       in
       let first = open_store () in
@@ -430,7 +437,9 @@ let test_restart_reconciliation () =
 let test_event_sequence () =
   with_store @@ fun store ->
   let first = Store.append_event store ~kind:"first" ~payload:(`String "one") in
-  let second = Store.append_event store ~kind:"second" ~payload:(`String "two") in
+  let second =
+    Store.append_event store ~kind:"second" ~payload:(`String "two")
+  in
   Alcotest.(check int64)
     "monotonic"
     Int64.(add first.sequence 1L)

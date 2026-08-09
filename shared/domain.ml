@@ -1,5 +1,5 @@
-(* Pure domain types for the PISS control plane, worker, and
-   browser shell. See [domain.mli] for the design notes. *)
+(* Pure domain types for the PISS control plane, worker, and browser shell. See
+   [domain.mli] for the design notes. *)
 
 type session_id = Session_id of string
 type worker_id = Worker_id of string
@@ -8,7 +8,6 @@ type runtime_generation = Runtime_generation of int
 let session_id s = Session_id s
 let worker_id s = Worker_id s
 let runtime_generation i = Runtime_generation i
-
 let session_id_to_string (Session_id s) = s
 let worker_id_to_string (Worker_id s) = s
 let runtime_generation_to_int (Runtime_generation i) = i
@@ -100,10 +99,9 @@ let worker_status_of_string = function
 
 let int64_of_json_exn field = function
   | `Int value -> Ok (Int64.of_int value)
-  | `Intlit value ->
-      (try Ok (Int64.of_string value)
-       with Failure _ ->
-         Error (field ^ " must be an integer"))
+  | `Intlit value -> (
+      try Ok (Int64.of_string value)
+      with Failure _ -> Error (field ^ " must be an integer"))
   | _ -> Error (field ^ " must be an integer")
 
 let string_of_json_exn field = function
@@ -130,9 +128,11 @@ let event_to_yojson event =
 
 let event_of_yojson json =
   let open Yojson.Safe.Util in
-  Result.bind (int64_of_json_exn "event.sequence" (member "sequence" json))
+  Result.bind
+    (int64_of_json_exn "event.sequence" (member "sequence" json))
     (fun sequence ->
-      Result.bind (string_of_json_exn "event.kind" (member "kind" json))
+      Result.bind
+        (string_of_json_exn "event.kind" (member "kind" json))
         (fun kind ->
           let payload =
             match member "payload" json with `Null -> `Null | value -> value
@@ -164,34 +164,34 @@ let snapshot_of_yojson json =
   let open Yojson.Safe.Util in
   let bind a b = Result.bind a b in
   let map f a = Result.map f a in
-  bind (string_of_json_exn "sessionId" (member "sessionId" json))
+  bind
+    (string_of_json_exn "sessionId" (member "sessionId" json))
     (fun session_id_str ->
-      bind (string_of_json_exn "workerId" (member "workerId" json))
+      bind
+        (string_of_json_exn "workerId" (member "workerId" json))
         (fun worker_id_str ->
           bind
             (int64_of_json_exn "runtimeGeneration"
                (member "runtimeGeneration" json)
-             |> map Int64.to_int)
+            |> map Int64.to_int)
             (fun runtime_generation_int ->
               bind
                 (int64_of_json_exn "workerPid" (member "workerPid" json)
-                 |> map Int64.to_int)
+                |> map Int64.to_int)
                 (fun worker_pid ->
                   bind
                     (match member "harnessPid" json with
-                     | `Null -> Ok None
-                     | value ->
-                         int64_of_json_exn "harnessPid" value
-                         |> map Int64.to_int
-                         |> map Option.some)
+                    | `Null -> Ok None
+                    | value ->
+                        int64_of_json_exn "harnessPid" value
+                        |> map Int64.to_int |> map Option.some)
                     (fun harness_pid ->
                       bind
                         (string_of_json_exn "agentName"
                            (member "agentName" json))
                         (fun agent_name ->
                           bind
-                            (string_of_json_exn "status"
-                               (member "status" json))
+                            (string_of_json_exn "status" (member "status" json))
                             (fun status_str ->
                               bind (worker_status_of_string status_str)
                                 (fun status ->
@@ -209,10 +209,13 @@ let snapshot_of_yojson json =
                                             (fun retention_pruned ->
                                               Ok
                                                 {
-                                                  session_id = Session_id session_id_str;
-                                                  worker_id = Worker_id worker_id_str;
+                                                  session_id =
+                                                    Session_id session_id_str;
+                                                  worker_id =
+                                                    Worker_id worker_id_str;
                                                   runtime_generation =
-                                                    Runtime_generation runtime_generation_int;
+                                                    Runtime_generation
+                                                      runtime_generation_int;
                                                   worker_pid;
                                                   harness_pid;
                                                   agent_name;

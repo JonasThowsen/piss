@@ -1,25 +1,23 @@
-(* PISS wire protocol. The control plane and every session worker
-   exchange JSON-RPC-like messages over a Unix-domain socket.
-   The shapes are designed so that every field has a bounded
-   length (no arbitrary blobs) and every variant has a clear
-   `op` discriminator.
+(* PISS wire protocol. The control plane and every session worker exchange
+   JSON-RPC-like messages over a Unix-domain socket. The shapes are designed so
+   that every field has a bounded length (no arbitrary blobs) and every variant
+   has a clear `op` discriminator.
 
-   Naming follows the Real World OCaml "Design with Modules"
-   conventions: this module is named `Wire`, the primary types are
-   `request` and `response`, the codec functions are named
-   `request_of_yojson` and `response_to_yojson` / `response_of_yojson`,
-   and every constant that limits a wire boundary is named
+   Naming follows the Real World OCaml "Design with Modules" conventions: this
+   module is named `Wire`, the primary types are `request` and `response`, the
+   codec functions are named `request_of_yojson` and `response_to_yojson` /
+   `response_of_yojson`, and every constant that limits a wire boundary is named
    `max_<thing>` so callers can find them in one place. *)
 
-(** Maximum number of images per prompt. *)
 val max_prompt_images : int
+(** Maximum number of images per prompt. *)
 
-(** Maximum total decoded byte size across all images in one prompt. *)
 val max_prompt_image_bytes : int
+(** Maximum total decoded byte size across all images in one prompt. *)
 
-(** MIME types the worker accepts in a [Prompt]. Anything else is
-    rejected at the wire boundary. *)
 val supported_image_mime_types : string list
+(** MIME types the worker accepts in a [Prompt]. Anything else is rejected at
+    the wire boundary. *)
 
 type request =
   | Hello of { protocol_version : int }
@@ -54,25 +52,24 @@ type request =
       text : string;
     }
 
-(** A response from the worker to the control plane. The `Ok` arm
-    carries the worker-supplied payload (already JSON); the `Error`
-    arm carries a human-readable diagnostic string. *)
 type response = (Yojson.Safe.t, string) result
+(** A response from the worker to the control plane. The `Ok` arm carries the
+    worker-supplied payload (already JSON); the `Error` arm carries a
+    human-readable diagnostic string. *)
 
 val request_of_yojson : Yojson.Safe.t -> (request, string) result
 val response_to_yojson : response -> Yojson.Safe.t
 val response_of_yojson : Yojson.Safe.t -> response
-
 val image_to_yojson : Domain.image_input -> Yojson.Safe.t
 val image_metadata_to_yojson : Domain.image_input -> Yojson.Safe.t
 val resource_to_yojson : Domain.resource_input -> Yojson.Safe.t
 
-(** Validate that a decoded prompt is non-empty and within size limits.
-    The first arg is the message used when the prompt contains no
-    text, images, or resources. *)
 val validate_prompt :
   empty_message:string ->
   text:string ->
   images:Domain.image_input list ->
   resources:Domain.resource_input list ->
   (unit, string) result
+(** Validate that a decoded prompt is non-empty and within size limits. The
+    first arg is the message used when the prompt contains no text, images, or
+    resources. *)

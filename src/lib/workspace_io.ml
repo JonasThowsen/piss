@@ -1,8 +1,7 @@
-(* Backend-only workspace file operations. The pure types and
-   validators live in `piss.shared.Workspace_files`; this module
-   adds the filesystem IO that walks the workspace, validates that
-   a path stays inside the workspace root, and produces mention
-   search results and resolved resource records. *)
+(* Backend-only workspace file operations. The pure types and validators live in
+   `piss.shared.Workspace_files`; this module adds the filesystem IO that walks
+   the workspace, validates that a path stays inside the workspace root, and
+   produces mention search results and resolved resource records. *)
 
 open Piss_shared.Workspace_files
 
@@ -60,18 +59,17 @@ let search ~root ~query =
                   try
                     match (Unix.lstat absolute).st_kind with
                     | Unix.S_REG ->
-                        if lowercase_contains relative
-                             (String.trim query)
-                        then
+                        if lowercase_contains relative (String.trim query) then
                           let stats = Unix.stat absolute in
                           matches :=
-                            { Piss_shared.Workspace_files.path = relative;
+                            {
+                              Piss_shared.Workspace_files.path = relative;
                               name;
-                              size = stats.st_size }
+                              size = stats.st_size;
+                            }
                             :: !matches
                     | Unix.S_DIR
-                      when depth < max_depth
-                           && not (ignored_directory name) ->
+                      when depth < max_depth && not (ignored_directory name) ->
                         Queue.add (relative, absolute, depth + 1) queue
                     | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK | Unix.S_LNK
                     | Unix.S_FIFO | Unix.S_SOCK ->
@@ -80,19 +78,17 @@ let search ~root ~query =
             entries
         done;
         let sorted =
-          List.sort
-            (compare_mentions (String.trim query))
-            !matches
+          List.sort (compare_mentions (String.trim query)) !matches
         in
-        let rec bounded count bytes (mentions : Piss_shared.Workspace_files.mention list)
+        let rec bounded count bytes
+            (mentions : Piss_shared.Workspace_files.mention list)
             (remaining : Piss_shared.Workspace_files.mention list) =
           match remaining with
           | [] -> List.rev mentions
           | _ when count >= max_results -> List.rev mentions
           | mention :: rest ->
               let next_bytes = bytes + String.length mention.path + 64 in
-              if next_bytes > max_response_bytes then
-                List.rev mentions
+              if next_bytes > max_response_bytes then List.rev mentions
               else bounded (count + 1) next_bytes (mention :: mentions) rest
         in
         Ok (bounded 0 2 [] sorted)
@@ -101,8 +97,7 @@ let search ~root ~query =
     | Sys_error _ -> Error "workspace file search is unavailable"
 
 let resolve_resource ~root ~path =
-  if not (valid_relative_path path) then
-    Error "resource path is invalid"
+  if not (valid_relative_path path) then Error "resource path is invalid"
   else
     try
       let root = Unix.realpath root in
