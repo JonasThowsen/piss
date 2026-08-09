@@ -5,6 +5,7 @@
   main
   config
   http
+  managed_routes
   routes
   workers
   workspaces
