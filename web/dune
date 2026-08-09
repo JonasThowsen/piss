@@ -1,6 +1,20 @@
+(library
+ (name control_plane_domain)
+ (wrapped false)
+ (modules control_plane)
+ (libraries core yojson))
+
 (executable
  (name main)
+ (modules main browser_http)
  (modes js)
- (libraries bonsai.web)
+ (libraries async_js bonsai.web control_plane_domain)
  (preprocess
   (pps ppx_jane bonsai.ppx_bonsai)))
+
+(test
+ (name control_plane_test)
+ (modules control_plane_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))

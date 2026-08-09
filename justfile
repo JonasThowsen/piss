@@ -60,7 +60,7 @@ test:
 # replaceability). Each one boots the full control + worker stack against the
 # deterministic mock agent.
 test-integration: build
-    dune build @interaction-test @mention-browser-test @replaceability-test @session-isolation-test
+    dune build @interaction-test @mention-browser-test @replaceability-test @session-browser-test @session-isolation-test
 
 # Format, build, and run every test. The single command to run before
 # opening a pull request.

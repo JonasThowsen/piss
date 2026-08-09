@@ -47,8 +47,14 @@
             src = nixpkgs.lib.fileset.toSource {
               root = ./web;
               fileset = nixpkgs.lib.fileset.unions [
+                ./web/.ocamlformat
                 ./web/dune
                 ./web/dune-project
+                ./web/browser_http.ml
+                ./web/browser_http.mli
+                ./web/control_plane.ml
+                ./web/control_plane.mli
+                ./web/control_plane_test.ml
                 ./web/main.ml
               ];
             };
@@ -59,6 +65,7 @@
             buildInputs = [
               bonsaiWeb.bonsai
               bonsaiWeb.ocamlPackages.ppx_pattern_bind
+              bonsaiWeb.ocamlPackages.yojson
             ];
             buildPhase = ''
               runHook preBuild
@@ -70,6 +77,12 @@
               mkdir -p "$out/share/piss-web"
               cp _build/default/main.bc.js "$out/share/piss-web/app.js"
               runHook postInstall
+            '';
+            doCheck = true;
+            checkPhase = ''
+              runHook preCheck
+              dune runtest
+              runHook postCheck
             '';
           };
           piss = ocamlPackages.buildDunePackage {

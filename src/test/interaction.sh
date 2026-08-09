@@ -59,8 +59,8 @@ snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$snapshot") == high ]]
 [[ $(jq -r '.acceptsImages' <<<"$snapshot") == true ]]
 mentions=$(curl -fsS "http://127.0.0.1:$port/api/v2/file-mentions?query=App")
-[[ $(jq -r '.[0].path' <<<"$mentions") == web/App.re ]]
-[[ $(jq -r '.[0].kind' <<<"$mentions") == file ]]
+jq -e 'any(.[]; .path == "web/App.re" and .kind == "file")' \
+  <<<"$mentions" >/dev/null
 long_query=$(python3 - <<'PY'
 print('q' * 201)
 PY

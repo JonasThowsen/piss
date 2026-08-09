@@ -8,7 +8,6 @@ public_dir=$(realpath "${4:?public directory is required}")
 app_js=$(realpath "${5:?browser bundle is required}")
 workspace=$(realpath "${6:?workspace is required}")
 browser_test=$(realpath "${7:?browser test is required}")
-source_root=$(realpath "$workspace/../..")
 port=${PISS_TEST_PORT:-$(python3 - <<'PY'
 import socket
 with socket.socket() as listener:
@@ -78,4 +77,4 @@ for _ in $(seq 1 500); do
   sleep .02
 done
 
-node "$browser_test" "http://127.0.0.1:$port" "$source_root"
+node "$browser_test" "http://127.0.0.1:$port" "$workspace"
