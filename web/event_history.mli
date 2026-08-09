@@ -1,4 +1,4 @@
-type command_state =
+type command_state = Timeline_projection.command_state =
   | Received
   | Accepted
   | Dispatched
@@ -8,9 +8,13 @@ type command_state =
   | Ambiguous
   | Rejected
 
-type permission_option = { option_id : string; name : string; kind : string }
+type permission_option = Timeline_projection.permission_option = {
+  option_id : string;
+  name : string;
+  kind : string;
+}
 
-type permission_tool = {
+type permission_tool = Timeline_projection.permission_tool = {
   tool_call_id : string;
   title : string;
   kind : string;
@@ -18,7 +22,7 @@ type permission_tool = {
   raw_input : Yojson.Safe.t option;
 }
 
-type permission_request = {
+type permission_request = Timeline_projection.permission_request = {
   request_id : string;
   session_id : string;
   tool : permission_tool;
@@ -27,15 +31,17 @@ type permission_request = {
 
 type pending_permission = { sequence : int64; request : permission_request }
 
-type entry =
+type entry = Timeline_projection.entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
   | Tool of {
       sequence : int64;
       tool_call_id : string;
       title : string;
-      detail : string;
+      input : string;
+      output : string;
       status : string;
+      artifacts : string list;
     }
   | Command_state of {
       sequence : int64;

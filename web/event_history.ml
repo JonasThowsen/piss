@@ -1,6 +1,6 @@
 open! Core
 
-type command_state =
+type command_state = Timeline_projection.command_state =
   | Received
   | Accepted
   | Dispatched
@@ -10,9 +10,13 @@ type command_state =
   | Ambiguous
   | Rejected
 
-type permission_option = { option_id : string; name : string; kind : string }
+type permission_option = Timeline_projection.permission_option = {
+  option_id : string;
+  name : string;
+  kind : string;
+}
 
-type permission_tool = {
+type permission_tool = Timeline_projection.permission_tool = {
   tool_call_id : string;
   title : string;
   kind : string;
@@ -20,24 +24,24 @@ type permission_tool = {
   raw_input : Yojson.Safe.t option;
 }
 
-type permission_request = {
+type permission_request = Timeline_projection.permission_request = {
   request_id : string;
   session_id : string;
   tool : permission_tool;
   options : permission_option list;
 }
 
-type pending_permission = { sequence : int64; request : permission_request }
-
-type entry =
+type entry = Timeline_projection.entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
   | Tool of {
       sequence : int64;
       tool_call_id : string;
       title : string;
-      detail : string;
+      input : string;
+      output : string;
       status : string;
+      artifacts : string list;
     }
   | Command_state of {
       sequence : int64;
@@ -52,7 +56,13 @@ type entry =
     }
   | Permission_cancelled of { sequence : int64; request_id : string }
 
-type event = { sequence : int64; kind : string; entry : entry option }
+type pending_permission = { sequence : int64; request : permission_request }
+
+type event = {
+  sequence : int64;
+  kind : string;
+  update : Timeline_projection.update option;
+}
 
 let ( let* ) result f = Result.bind result ~f
 let error path message = Error (path ^ " " ^ message)
@@ -162,16 +172,6 @@ let rec content_text path json =
       content_text (path ^ ".content") content
   | _ -> Ok None
 
-let content_list_text path json =
-  let* contents = list path json in
-  let* texts =
-    contents
-    |> List.mapi ~f:(fun index content ->
-        content_text (Printf.sprintf "%s[%d]" path index) content)
-    |> Result.all
-  in
-  Ok (texts |> List.filter_opt |> String.concat ~sep:"\n")
-
 let acp_update path expected_kind payload =
   let* payload_fields = assoc path payload in
   let* jsonrpc = field_as payload_fields path "jsonrpc" string in
@@ -228,13 +228,16 @@ let decode_command_accepted path sequence payload =
     error (path ^ ".resourceCount") "must match resources"
   else if String.is_empty text && image_count = 0 && resource_count = 0 then
     error path "must contain prompt content"
-  else Ok (Some (User { sequence; command_id; text }))
+  else
+    Ok (Some (Timeline_projection.User_update { sequence; command_id; text }))
 
 let decode_command_state path sequence payload =
   let* fields = assoc path payload in
   let* command_id = field_as fields path "commandId" nonempty_string in
   let* state = field_as fields path "state" command_state in
-  Ok (Some (Command_state { sequence; command_id; state }))
+  Ok
+    (Some
+       (Timeline_projection.Command_state_update { sequence; command_id; state }))
 
 let decode_message path sequence payload expected_kind role =
   let* update, update_path = acp_update path expected_kind payload in
@@ -242,7 +245,8 @@ let decode_message path sequence payload expected_kind role =
   let* content = field update update_path "content" in
   let* text = content_text (update_path ^ ".content") content in
   match (role, text) with
-  | `Agent, Some text -> Ok (Some (Agent { sequence; message_id; text }))
+  | `Agent, Some text ->
+      Ok (Some (Timeline_projection.Agent_chunk { sequence; message_id; text }))
   | `User, Some _ ->
       (* command.accepted is the durable user entry; the ACP echo would render
          the same prompt twice. *)
@@ -258,7 +262,17 @@ let decode_tool_call path sequence payload =
   let* _kind = field_as update update_path "kind" nonempty_string in
   let* status = field_as update update_path "status" tool_status in
   let* detail = describe_input update_path update in
-  Ok (Some (Tool { sequence; tool_call_id; title; detail; status }))
+  Ok
+    (Some
+       (Timeline_projection.Tool_call
+          {
+            sequence;
+            tool_call_id;
+            title;
+            input = detail;
+            status;
+            artifacts = [];
+          }))
 
 let decode_tool_update path sequence payload =
   let* update, update_path = acp_update path "tool_call_update" payload in
@@ -267,25 +281,31 @@ let decode_tool_update path sequence payload =
   in
   let* title = optional_field update update_path "title" nonempty_string in
   let* status = optional_field update update_path "status" tool_status in
-  let* input = describe_input update_path update in
-  let* output =
+  let* input =
+    match List.Assoc.find update ~equal:String.equal "rawInput" with
+    | None -> Ok None
+    | Some _ -> Result.map (describe_input update_path update) ~f:Option.some
+  in
+  let* output, content_artifacts =
     match List.Assoc.find update ~equal:String.equal "content" with
-    | None -> Ok ""
-    | Some content -> content_list_text (update_path ^ ".content") content
+    | None -> Ok (None, [])
+    | Some content ->
+        Result.map
+          (Acp_content.tool_content ~path:(update_path ^ ".content") content)
+          ~f:(fun (output, artifacts) -> (Some output, artifacts))
   in
-  let detail =
-    List.filter [ input; output ] ~f:(Fn.non String.is_empty)
-    |> String.concat ~sep:"\n"
-  in
+  let* location_artifacts = Acp_content.locations ~path:update_path update in
   Ok
     (Some
-       (Tool
+       (Timeline_projection.Tool_call_update
           {
             sequence;
             tool_call_id;
-            title = Option.value title ~default:"Tool update";
-            detail;
-            status = Option.value status ~default:"in_progress";
+            title;
+            input;
+            output;
+            status;
+            artifacts = content_artifacts @ location_artifacts;
           }))
 
 let decode_permission_option path json =
@@ -338,7 +358,7 @@ let decode_permission_requested path sequence payload =
       else
         Ok
           (Some
-             (Permission_requested
+             (Timeline_projection.Permission_requested_update
                 {
                   sequence;
                   request = { request_id; session_id; tool; options };
@@ -354,12 +374,17 @@ let decode_permission_resolved path sequence payload =
         Result.map (nonempty_string (path ^ ".optionId") json) ~f:Option.some
     | None -> error (path ^ ".optionId") "is required"
   in
-  Ok (Some (Permission_resolved { sequence; request_id; option_id }))
+  Ok
+    (Some
+       (Timeline_projection.Permission_resolved_update
+          { sequence; request_id; option_id }))
 
 let decode_permission_cancelled path sequence payload =
   let* fields = assoc path payload in
   let* request_id = field_as fields path "requestId" nonempty_string in
-  Ok (Some (Permission_cancelled { sequence; request_id }))
+  Ok
+    (Some
+       (Timeline_projection.Permission_cancelled_update { sequence; request_id }))
 
 let decode_event_json index json =
   let path = Printf.sprintf "events[%d]" index in
@@ -370,7 +395,7 @@ let decode_event_json index json =
   let* _payload_fields = assoc (path ^ ".payload") payload in
   let* _created_at = field_as fields path "createdAt" number in
   let payload_path = path ^ ".payload" in
-  let* entry =
+  let* update =
     match kind with
     | "command.accepted" ->
         decode_command_accepted payload_path sequence payload
@@ -392,7 +417,7 @@ let decode_event_json index json =
     | _ -> Ok None
   in
   if Int64.(sequence <= 0L) then error (path ^ ".sequence") "must be positive"
-  else Ok { sequence; kind; entry }
+  else Ok { sequence; kind; update }
 
 let validate_order events =
   let rec loop previous = function
@@ -417,7 +442,11 @@ let decode_event body =
   | Error exn -> Error ("event is not valid JSON: " ^ Exn.to_string exn)
   | Ok json -> decode_event_json 0 json
 
-let project events = List.filter_map events ~f:(fun event -> event.entry)
+let project events =
+  events
+  |> List.filter_map ~f:(fun event -> event.update)
+  |> Timeline_projection.project
+
 let decode body = Result.map (decode_events body) ~f:project
 let sequence event = event.sequence
 let kind event = event.kind

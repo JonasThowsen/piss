@@ -22,7 +22,29 @@ let empty_state glyph title message =
       Vdom.Node.p [ text message ];
     ]
 
-let message ~key ~class_name ~role ~status body =
+let copy_button ~key ~kind ~body ~copy_feedback ~on_copy =
+  let state =
+    match copy_feedback with
+    | Some (candidate, status) when String.equal candidate key -> Some status
+    | _ -> None
+  in
+  let adjective, class_name =
+    match state with
+    | None -> ("Copy", "")
+    | Some Clipboard.Copied -> ("Copied", " copied")
+    | Some Failed -> ("Copy failed", " failed")
+  in
+  Vdom.Node.button
+    ~attrs:
+      [
+        class_ ("timeline-copy" ^ class_name);
+        Vdom.Attr.create "type" "button";
+        Vdom.Attr.create "aria-label" (adjective ^ " " ^ kind);
+        Vdom.Attr.on_click (fun _ -> on_copy ~key ~text:body);
+      ]
+    [ Vdom.Node.b [ text (String.uppercase adjective) ] ]
+
+let message ~key ~class_name ~role ~status ?copy body =
   Vdom.Node.create "article" ~key
     ~attrs:[ class_ ("timeline-item " ^ class_name) ]
     [
@@ -31,26 +53,32 @@ let message ~key ~class_name ~role ~status body =
         [
           Vdom.Node.strong ~attrs:[ class_ "message-role" ] [ text role ];
           Vdom.Node.span ~attrs:[ class_ "message-status" ] [ text status ];
+          Option.value copy ~default:Vdom.Node.none;
         ];
       (if String.is_empty body then Vdom.Node.none
        else Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text body ]);
     ]
 
-let render_entry = function
+let render_entry ~copy_feedback ~on_copy = function
   | Event_history.User { sequence; command_id; text = body } ->
       Some
         (message
            ~key:(Int64.to_string sequence ^ "-user")
            ~class_name:"timeline-user" ~role:"You" ~status:command_id body)
-  | Agent { sequence; message_id; text = body } ->
+  | Agent { sequence = _; message_id; text = body } ->
+      let key = "agent:" ^ message_id in
       Some
-        (message
-           ~key:(Int64.to_string sequence ^ "-agent")
-           ~class_name:"timeline-agent" ~role:"Agent" ~status:message_id body)
-  | Tool { sequence; tool_call_id; title; detail; status } ->
+        (message ~key ~class_name:"timeline-agent" ~role:"Agent"
+           ~status:message_id
+           ~copy:
+             (copy_button ~key ~kind:"message" ~body ~copy_feedback ~on_copy)
+           body)
+  | Tool { sequence = _; tool_call_id; title; input; output; status; artifacts }
+    ->
+      let key = "tool:" ^ tool_call_id in
+      let detail = Timeline_projection.tool_text ~input ~output ~artifacts in
       Some
-        (Vdom.Node.create "article"
-           ~key:(Int64.to_string sequence ^ "-tool")
+        (Vdom.Node.create "article" ~key
            ~attrs:[ class_ "timeline-item timeline-tool" ]
            [
              Vdom.Node.create "details"
@@ -74,6 +102,12 @@ let render_entry = function
                      Vdom.Node.p
                        ~attrs:[ class_ "message-status" ]
                        [ text tool_call_id ];
+                     Vdom.Node.div
+                       ~attrs:[ class_ "tool-copy-row" ]
+                       [
+                         copy_button ~key ~kind:"tool output" ~body:detail
+                           ~copy_feedback ~on_copy;
+                       ];
                      Vdom.Node.p
                        ~attrs:[ class_ "message-body" ]
                        [ text detail ];
@@ -90,7 +124,8 @@ let render_entry = function
   | Permission_requested _ | Permission_resolved _ | Permission_cancelled _ ->
       None
 
-let timeline state selected_id ~deciding_permissions ~on_permission =
+let timeline state selected_id ~deciding_permissions ~copy_feedback ~on_copy
+    ~on_permission =
   let content =
     match (state, selected_id) with
     | Sessions_loading, _ ->
@@ -125,7 +160,7 @@ let timeline state selected_id ~deciding_permissions ~on_permission =
     | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
         let entries = Event_buffer.entries buffer in
-        List.filter_map entries ~f:render_entry
+        List.filter_map entries ~f:(render_entry ~copy_feedback ~on_copy)
         @ Permission_view.render_pending entries ~deciding:deciding_permissions
             ~on_decide:on_permission
     | Loaded _, _ ->
@@ -135,7 +170,7 @@ let timeline state selected_id ~deciding_permissions ~on_permission =
         ]
   in
   Vdom.Node.div
-    ~attrs:[ class_ "timeline" ]
+    ~attrs:[ class_ "timeline"; Vdom.Attr.id "timeline" ]
     [ Vdom.Node.div ~attrs:[ class_ "timeline-stream" ] content ]
 
 let composer ~prompt ~submitting ~notice ~on_prompt ~on_submit =
@@ -185,8 +220,8 @@ let composer ~prompt ~submitting ~notice ~on_prompt ~on_submit =
         ];
     ]
 
-let render ~session ~state ~prompt ~submitting ~notice ~deciding_permissions
-    ~on_prompt ~on_submit ~on_permission =
+let render ~session ~state ~composer ~deciding_permissions ~copy_feedback
+    ~on_copy ~on_permission =
   let selected_id =
     Option.map session ~f:(fun (session : Control_plane.Session.t) ->
         session.id)
@@ -212,9 +247,19 @@ let render ~session ~state ~prompt ~submitting ~notice ~deciding_permissions
          ];
        Vdom.Node.div
          ~attrs:[ class_ "timeline-wrap" ]
-         [ timeline state selected_id ~deciding_permissions ~on_permission ];
+         [
+           timeline state selected_id ~deciding_permissions ~copy_feedback
+             ~on_copy ~on_permission;
+           Vdom.Node.button
+             ~attrs:
+               [
+                 class_ "timeline-jump";
+                 Vdom.Attr.create "type" "button";
+                 Vdom.Attr.create "aria-label" "Jump to latest message";
+                 Vdom.Attr.create "hidden" "";
+                 Vdom.Attr.on_click (fun _ -> Timeline_scroll.jump_to_latest ());
+               ]
+             [ Vdom.Node.span [ text "LATEST" ] ];
+         ];
      ]
-    @
-    match session with
-    | None -> []
-    | Some _ -> [ composer ~prompt ~submitting ~notice ~on_prompt ~on_submit ])
+    @ Option.to_list composer)

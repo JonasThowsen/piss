@@ -2,23 +2,27 @@
  (name control_plane_domain)
  (wrapped false)
  (modules
+  acp_content
   control_plane
   event_buffer
   event_history
   permission_decision
   prompt_command
-  request_target)
+  request_target
+  timeline_projection)
  (libraries core uri yojson))
 
 (executable
  (name main)
  (modules
   browser_http
+  clipboard
   command_id
   event_stream
   main
   permission_view
   session_rail
+  timeline_scroll
   timeline_view)
  (modes js)
  (libraries async_js bonsai.web control_plane_domain js_of_ocaml)
@@ -42,6 +46,13 @@
 (test
  (name session_protocol_test)
  (modules session_protocol_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name timeline_projection_test)
+ (modules timeline_projection_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

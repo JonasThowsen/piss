@@ -9,14 +9,20 @@ type state =
   | Loaded of string * Event_buffer.t
   | Failed of string * string
 
-val render :
-  session:Control_plane.Session.t option ->
-  state:state ->
+val composer :
   prompt:string ->
   submitting:bool ->
   notice:string ->
-  deciding_permissions:Core.String.Set.t ->
   on_prompt:(string -> unit Effect.t) ->
   on_submit:(unit -> unit Effect.t) ->
+  Vdom.Node.t
+
+val render :
+  session:Control_plane.Session.t option ->
+  state:state ->
+  composer:Vdom.Node.t option ->
+  deciding_permissions:Core.String.Set.t ->
+  copy_feedback:(string * Clipboard.status) option ->
+  on_copy:(key:string -> text:string -> unit Effect.t) ->
   on_permission:(request_id:string -> option_id:string option -> unit Effect.t) ->
   Vdom.Node.t

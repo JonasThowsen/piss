@@ -111,7 +111,7 @@ let () =
   | [
    Event_history.User { text = "Run the proof"; _ };
    Agent { text = "Proof complete"; _ };
-   Tool { detail = "dune runtest"; status = "in_progress"; _ };
+   Tool { input = "dune runtest"; output = ""; status = "in_progress"; _ };
    Command_state { state = Completed; _ };
   ] ->
       ()

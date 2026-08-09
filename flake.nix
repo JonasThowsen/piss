@@ -48,10 +48,14 @@
               root = ./web;
               fileset = nixpkgs.lib.fileset.unions [
                 ./web/.ocamlformat
+                ./web/acp_content.ml
+                ./web/acp_content.mli
                 ./web/dune
                 ./web/dune-project
                 ./web/browser_http.ml
                 ./web/browser_http.mli
+                ./web/clipboard.ml
+                ./web/clipboard.mli
                 ./web/command_id.ml
                 ./web/command_id.mli
                 ./web/control_plane.ml
@@ -78,6 +82,11 @@
                 ./web/session_rail.mli
                 ./web/timeline_view.ml
                 ./web/timeline_view.mli
+                ./web/timeline_projection.ml
+                ./web/timeline_projection.mli
+                ./web/timeline_projection_test.ml
+                ./web/timeline_scroll.ml
+                ./web/timeline_scroll.mli
               ];
             };
             nativeBuildInputs = [
