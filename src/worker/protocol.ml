@@ -70,7 +70,7 @@ let resolve_resources ~workspace resources =
   List.fold_left
     (fun resolved (resource : Domain.resource_input) ->
       Result.bind resolved (fun resources ->
-          Workspace_io.resolve_resource ~root:workspace resource.path
+          Workspace_io.resolve_resource ~root:workspace ~path:resource.path
           |> Result.map (fun value -> value :: resources)))
     (Ok []) resources
   |> Result.map List.rev

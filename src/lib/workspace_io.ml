@@ -100,7 +100,7 @@ let search ~root ~query =
     | Unix.Unix_error _ -> Error "workspace file search is unavailable"
     | Sys_error _ -> Error "workspace file search is unavailable"
 
-let resolve_resource ~root path =
+let resolve_resource ~root ~path =
   if not (valid_relative_path path) then
     Error "resource path is invalid"
   else
