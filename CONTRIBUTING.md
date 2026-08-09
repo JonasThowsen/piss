@@ -7,14 +7,14 @@ PISS is security-sensitive. Keep changes narrow, typed, and covered by tests whe
 ```bash
 nix develop
 npm ci
-npm run check
-npm run test:browser
-npm run build
+just check
 nix flake check
 nix build .#piss
 ```
 
-`npm run typecheck` uses the pinned stable TypeScript 7 native Go compiler (`tsc`).
+The development shell provides OCaml 5.5, Dune, opam, formatters, native
+libraries, and the temporary browser build tools. npm supplies only the React
+runtime until the browser shell moves to Bonsai.
 
 ## Pull requests
 

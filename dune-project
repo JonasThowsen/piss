@@ -1,7 +1,7 @@
 (lang dune 3.20)
 (using melange 0.1)
 (name piss)
-(generate_opam_files false)
+(generate_opam_files true)
 (source (github JonasThowsen/piss))
 (license MIT)
 (authors "Jonas Ådland Thowsen")
@@ -10,7 +10,7 @@
  (name piss)
  (synopsis "A durable, harness-agnostic control plane for coding agents")
  (depends
-  (ocaml (>= 5.4))
+  (ocaml (= 5.5.0))
   dune
   eio_main
   cohttp-eio

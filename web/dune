@@ -1,10 +1,10 @@
 (melange.emit
  (target output)
  (alias web)
- (libraries reason-react styled-ppx.melange)
+ (libraries reason-react)
  (modules app ModalSurface)
  (preprocess
-  (pps styled-ppx melange.ppx reason-react-ppx))
+  (pps melange.ppx reason-react-ppx))
  (module_systems es6))
 
 (rule
@@ -12,7 +12,12 @@
  (target app.js)
  (deps
   (glob_files_rec output/web/*.js)
-  (glob_files_rec output/node_modules/styled-ppx.melange/*.js))
+  (glob_files_rec
+   output/node_modules/melange.__private__.melange_mini_stdlib/*.js)
+  (glob_files_rec output/node_modules/melange.dom/*.js)
+  (glob_files_rec output/node_modules/melange.js/*.js)
+  (glob_files_rec output/node_modules/melange/*.js)
+  (glob_files_rec output/node_modules/reason-react/*.js))
  (action
   (with-stdout-to
    %{target}

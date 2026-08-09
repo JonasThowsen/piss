@@ -11,9 +11,6 @@
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
-# OCaml compiler version for the local opam switch.
-ocaml_version := "5.5.0"
-
 # Local state directory (mirrors the systemd StateDirectory).
 state_dir := env_var_or_default("PISS_STATE_DIR", ".piss")
 
@@ -26,25 +23,6 @@ harness := env_var_or_default("PISS_HARNESS", "mock")
 # List every recipe.
 default:
     @just --list --unsorted
-
-# ──────────────────────────────── Setup ───────────────────────────────────
-
-# Create the local opam switch and install every OCaml dependency.
-# Re-run after editing dune-project or any *.opam file.
-switch:
-    @if [ ! -d .opam ]; then \
-        opam switch create . ocaml-base-compiler.{{ocaml_version}} --no-install; \
-    fi
-    opam install --deps-only --with-test --with-doc .
-
-# Refresh installed deps without recreating the switch.
-deps:
-    opam install --deps-only --with-test --with-doc .
-
-# Drop the local opam switch and its build directory.
-clean-switch:
-    opam switch remove . --yes || true
-    rm -rf .opam _build
 
 # ──────────────────────────────── Build ───────────────────────────────────
 
@@ -182,13 +160,12 @@ audit:
 
 # ──────────────────────────────── Misc ────────────────────────────────────
 
-# Open an opam shell with every dependency on PATH. Useful for ad-hoc REPL
-# work or one-off scripting.
+# Open a toplevel with the project libraries available.
 repl:
-    opam exec -- dune utop src/lib
+    dune utop src/lib
 
-# Print the active opam switch and OCaml compiler version.
+# Print the compiler and build-tool versions from the development shell.
 info:
-    @echo "switch:    $(opam switch show)"
-    @echo "compiler:  $(opam exec -- ocamlc --version)"
-    @echo "dune:      $(opam exec -- dune --version)"
+    @echo "compiler:  $(ocamlc --version)"
+    @echo "dune:      $(dune --version)"
+    @echo "opam:      $(opam --version)"

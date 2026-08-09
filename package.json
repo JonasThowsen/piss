@@ -25,5 +25,12 @@
   "scripts": {
     "build:web": "dune build @web-bundle",
     "audit": "npm audit --omit=dev --audit-level=high"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.0"
   }
 }

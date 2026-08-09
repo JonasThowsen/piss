@@ -122,10 +122,9 @@ to reattach to its harness session and replay conversation history.
 
 ## Build and test
 
-The project is opam-first for development:
+The Nix development shell provides OCaml 5.5 and all project dependencies:
 
 ```bash
-just switch         # one-time: create the OCaml 5.5 opam switch
 just build          # dune build @all @web-bundle
 just test           # Alcotest unit suite
 just test-integration  # shell-driven interaction/isolation/mention/replaceability
@@ -135,18 +134,15 @@ just check          # format-check + build + test + test-integration
 
 Direct dune equivalents remain available (`dune build @all`, etc.).
 
-Production Nix packages:
+Production Nix package:
 
 ```bash
-nix build .#pi-acp
-nix build .#piss-core
-nix build .#piss-control
-nix build .#piss-worker
-nix build .#piss-session-mcp
-nix build .#piss-mock-agent
-nix build .#piss-web
-nix build .#checks.x86_64-linux.nixos-module
+nix build .#piss
 ```
+
+The single output contains every PISS executable and the browser assets under
+`share/piss/public`. Agent adapters and service orchestration belong to the
+host NixOS configuration.
 
 `@interaction-test` proves bounded workspace file search, typed ACP
 resource-link and image delivery, monotonic SSE delivery, `Last-Event-ID`
