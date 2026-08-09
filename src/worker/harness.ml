@@ -5,8 +5,6 @@ let max_frame_bytes = Config.max_frame_bytes
 let write_json sink json =
   Eio.Flow.copy_string (Yojson.Safe.to_string json ^ "\n") sink
 
-let read_json reader = Eio.Buf_read.line reader |> Yojson.Safe.from_string
-
 let event_kind json =
   let open Yojson.Safe.Util in
   match member "method" json with
@@ -20,7 +18,7 @@ let event_kind json =
   | `String method_ -> "acp.request." ^ method_
   | _ -> "acp.response"
 
-let option_is_offered params option_id =
+let option_is_offered ~params ~option_id =
   match Yojson.Safe.Util.member "options" params with
   | `List options ->
       List.exists
@@ -43,13 +41,12 @@ type t = {
   send : Yojson.Safe.t -> unit;
 }
 
-let spawn ~sw ~env ~command ~args =
-  let process_mgr = Eio.Stdenv.process_mgr env in
+let spawn ~sw ~process_mgr ~stderr ~command ~args =
   let stdout, stdout_sink = Eio.Process.pipe ~sw process_mgr in
   let stdin_source, stdin_sink = Eio.Process.pipe ~sw process_mgr in
   let proc =
     Eio.Process.spawn ~sw process_mgr ~stdin:stdin_source ~stdout:stdout_sink
-      ~stderr:(Eio.Stdenv.stderr env) (command :: args)
+      ~stderr (command :: args)
   in
   Eio.Flow.close stdout_sink;
   Eio.Flow.close stdin_source;

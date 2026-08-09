@@ -50,8 +50,8 @@ let write_private_file path contents =
 let session_socket runtime_root session_id =
   Filename.concat (Filename.concat runtime_root session_id) "worker.sock"
 
-let write_session_spec registry runtime_root (session : Registry.session) =
-  let directory = Filename.concat runtime_root session.id in
+let write_session_spec registry state_root (session : Registry.session) =
+  let directory = Filename.concat state_root session.id in
   let workspace =
     match Registry.find_workspace registry session.workspace_id with
     | Some workspace -> workspace

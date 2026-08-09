@@ -23,8 +23,11 @@ let run ~env (args : Config.args) =
   Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
   Eio.Switch.run @@ fun sw ->
   let clock = Eio.Stdenv.clock env in
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let stderr = Eio.Stdenv.stderr env in
   let harness =
-    Harness.spawn ~sw ~env ~command:args.harness_command ~args:args.harness_args
+    Harness.spawn ~sw ~process_mgr ~stderr ~command:args.harness_command
+      ~args:args.harness_args
   in
   let harness_pid = harness.Harness.pid in
   let harness_reader = harness.Harness.stdout in
@@ -88,16 +91,17 @@ let run ~env (args : Config.args) =
             else if Hashtbl.length running_commands > 0 then Domain.Running
             else Domain.Idle;
           ignore
-            (Store.append_event store ~kind:"command.dispatch_timeout" ~payload:
-               (`Assoc
-                  [
-                    ("commandId", `String command_id);
-                    ("timeoutSeconds", `Float Config.dispatch_timeout_seconds);
-                    ( "reason",
-                      `String
-                        "harness did not acknowledge the dispatched command \
-                         within the configured budget" );
-                  ]))))
+            (Store.append_event store ~kind:"command.dispatch_timeout"
+               ~payload:
+                 (`Assoc
+                    [
+                      ("commandId", `String command_id);
+                      ("timeoutSeconds", `Float Config.dispatch_timeout_seconds);
+                      ( "reason",
+                        `String
+                          "harness did not acknowledge the dispatched command \
+                           within the configured budget" );
+                    ]))))
       stuck
   in
   let expire_stuck_permissions () =
@@ -116,17 +120,18 @@ let run ~env (args : Config.args) =
       (fun (request_id, permission) ->
         Hashtbl.remove pending_permissions request_id;
         ignore
-          (Store.append_event store ~kind:"acp.permission.expired" ~payload:
-             (`Assoc
-                [
-                  ("requestId", `String request_id);
-                  ("timeoutSeconds", `Float Config.permission_timeout_seconds);
-                  ( "reason",
-                    `String
-                      "user did not respond to the permission request within \
-                       the configured budget; the worker is replying with \
-                       cancelled on the user's behalf" );
-                ]));
+          (Store.append_event store ~kind:"acp.permission.expired"
+             ~payload:
+               (`Assoc
+                  [
+                    ("requestId", `String request_id);
+                    ("timeoutSeconds", `Float Config.permission_timeout_seconds);
+                    ( "reason",
+                      `String
+                        "user did not respond to the permission request within \
+                         the configured budget; the worker is replying with \
+                         cancelled on the user's behalf" );
+                  ]));
         send
           (Acp.response_with_id ~id:permission.Config.raw_id
              (`Assoc
@@ -194,9 +199,12 @@ let run ~env (args : Config.args) =
                    ~code:(-32601)
                    ~message:("unsupported ACP client method: " ^ method_));
               ignore
-                (Store.append_event store ~kind:"acp.client_request.rejected" ~payload:
-                   (`Assoc
-                      [ ("requestId", `String id); ("method", `String method_) ]))
+                (Store.append_event store ~kind:"acp.client_request.rejected"
+                   ~payload:
+                     (`Assoc
+                        [
+                          ("requestId", `String id); ("method", `String method_);
+                        ]))
           | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
               let update = Yojson.Safe.Util.member "update" params in
               match Yojson.Safe.Util.member "configOptions" update with
@@ -207,8 +215,8 @@ let run ~env (args : Config.args) =
               | Some id when Hashtbl.mem pending_permissions id ->
                   Hashtbl.remove pending_permissions id;
                   ignore
-                    (Store.append_event store ~kind:"acp.permission.cancelled" ~payload:
-                       (`Assoc [ ("requestId", `String id) ]));
+                    (Store.append_event store ~kind:"acp.permission.cancelled"
+                       ~payload:(`Assoc [ ("requestId", `String id) ]));
                   status :=
                     if Hashtbl.length running_commands > 0 then Domain.Running
                     else Domain.Idle
@@ -221,19 +229,20 @@ let run ~env (args : Config.args) =
           status := Domain.Failed;
           fail_pending "ACP harness disconnected";
           ignore
-            (Store.append_event store ~kind:"harness.disconnected" ~payload:
-               (`Assoc [ ("harnessPid", `Int harness_pid) ]));
+            (Store.append_event store ~kind:"harness.disconnected"
+               ~payload:(`Assoc [ ("harnessPid", `Int harness_pid) ]));
           raise End_of_file
       | exn ->
           status := Domain.Failed;
           fail_pending (Printexc.to_string exn);
           ignore
-            (Store.append_event store ~kind:"harness.protocol_error" ~payload:
-               (`Assoc
-                  [
-                    ("harnessPid", `Int harness_pid);
-                    ("error", `String (Printexc.to_string exn));
-                  ]));
+            (Store.append_event store ~kind:"harness.protocol_error"
+               ~payload:
+                 (`Assoc
+                    [
+                      ("harnessPid", `Int harness_pid);
+                      ("error", `String (Printexc.to_string exn));
+                    ]));
           raise exn);
   let rpc_request ~id json =
     if Hashtbl.mem pending_responses id then
@@ -255,7 +264,9 @@ let run ~env (args : Config.args) =
   let initialize_result, initialize_response =
     require_rpc_result ~id:"initialize" Acp.initialize_request
   in
-  ignore (Store.append_event store ~kind:"acp.initialize" ~payload: initialize_response);
+  ignore
+    (Store.append_event store ~kind:"acp.initialize"
+       ~payload:initialize_response);
   (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
   | `Int 1 -> ()
   | _ -> raise (Failure "ACP agent did not negotiate protocol version 1"));
@@ -302,7 +313,8 @@ let run ~env (args : Config.args) =
     (match Yojson.Safe.Util.member "configOptions" result with
     | `List _ as options -> config_options := options
     | _ -> ());
-    ignore (Store.append_event store ~kind:"acp.session.created" ~payload: response);
+    ignore
+      (Store.append_event store ~kind:"acp.session.created" ~payload:response);
     created
   in
   let session_id_from_agent =
@@ -322,24 +334,28 @@ let run ~env (args : Config.args) =
                 | `List _ as options -> config_options := options
                 | _ -> ());
                 ignore
-                  (Store.append_event store ~kind:"acp.session.loaded" ~payload: response);
+                  (Store.append_event store ~kind:"acp.session.loaded"
+                     ~payload:response);
                 existing
             | Error message ->
                 ignore
-                  (Store.append_event store ~kind:"acp.session.load_failed" ~payload:
-                     (`Assoc
-                        [
-                          ("sessionId", `String existing);
-                          ("error", `String message);
-                        ]));
+                  (Store.append_event store ~kind:"acp.session.load_failed"
+                     ~payload:
+                       (`Assoc
+                          [
+                            ("sessionId", `String existing);
+                            ("error", `String message);
+                          ]));
                 create_session ())
         | Error message ->
             ignore
-              (Store.append_event store ~kind:"acp.session.load_failed" ~payload:
-                 (`Assoc
-                    [
-                      ("sessionId", `String existing); ("error", `String message);
-                    ]));
+              (Store.append_event store ~kind:"acp.session.load_failed"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("sessionId", `String existing);
+                        ("error", `String message);
+                      ]));
             create_session ())
     | _ -> create_session ()
   in
@@ -397,38 +413,41 @@ let run ~env (args : Config.args) =
             | `List _ as options -> config_options := options
             | _ -> ());
             ignore
-              (Store.append_event store ~kind:"acp.config_option.restored" ~payload:
-                 (`Assoc
-                    [
-                      ("configId", `String config_id);
-                      ("value", `String value);
-                      ("response", response);
-                    ]))
+              (Store.append_event store ~kind:"acp.config_option.restored"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("configId", `String config_id);
+                        ("value", `String value);
+                        ("response", response);
+                      ]))
           with exn ->
             ignore
-              (Store.append_event store ~kind:"acp.config_option.restore_failed" ~payload:
-                 (`Assoc
-                    [
-                      ("configId", `String config_id);
-                      ("value", `String value);
-                      ("error", `String (Printexc.to_string exn));
-                    ]))));
+              (Store.append_event store ~kind:"acp.config_option.restore_failed"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("configId", `String config_id);
+                        ("value", `String value);
+                        ("error", `String (Printexc.to_string exn));
+                      ]))));
   status := Domain.Idle;
   let previous_generation = Store.get_metadata store "worker_generation" in
   Store.set_metadata store "worker_generation" args.generation;
   (match Store.get_metadata store "pending_worker_upgrade" with
   | Some target when String.equal target args.generation ->
       ignore
-        (Store.append_event store ~kind:"worker.upgrade.completed" ~payload:
-           (`Assoc
-              [
-                ( "fromGeneration",
-                  Option.fold ~none:`Null
-                    ~some:(fun value -> `String value)
-                    previous_generation );
-                ("toGeneration", `String args.generation);
-                ("workerPid", `Int (Unix.getpid ()));
-              ]));
+        (Store.append_event store ~kind:"worker.upgrade.completed"
+           ~payload:
+             (`Assoc
+                [
+                  ( "fromGeneration",
+                    Option.fold ~none:`Null
+                      ~some:(fun value -> `String value)
+                      previous_generation );
+                  ("toGeneration", `String args.generation);
+                  ("workerPid", `Int (Unix.getpid ()));
+                ]));
       Store.set_metadata store "pending_worker_upgrade" ""
   | _ -> ());
   let protocol_state : Protocol.t =
@@ -439,6 +458,7 @@ let run ~env (args : Config.args) =
       agent_name;
       supports_load;
       supports_images;
+      harness_pid;
       harness_session_id;
       config_options;
       status;

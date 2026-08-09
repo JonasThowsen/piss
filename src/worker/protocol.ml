@@ -9,6 +9,7 @@ type t = {
   agent_name : string;
   supports_load : bool;
   supports_images : bool;
+  harness_pid : int;
   harness_session_id : string ref;
   config_options : Yojson.Safe.t ref;
   status : Domain.worker_status ref;
@@ -39,11 +40,11 @@ let worker_snapshot (state : t) =
     Store.set_metadata state.store "retention_pruned" "true";
   Domain.
     {
-      session_id  = Domain.session_id state.args.session_id;
-      worker_id  = Domain.worker_id state.args.worker_id;
-      runtime_generation  = Domain.runtime_generation 1;
+      session_id = Domain.session_id state.args.session_id;
+      worker_id = Domain.worker_id state.args.worker_id;
+      runtime_generation = Domain.runtime_generation 1;
       worker_pid = Unix.getpid ();
-      harness_pid = None;
+      harness_pid = Some state.harness_pid;
       agent_name = state.agent_name;
       status = !(state.status);
       first_sequence;
@@ -58,8 +59,8 @@ let refresh_upgrade_lease (state : t) =
       state.upgrade_deadline := 0.;
       Store.set_metadata state.store "pending_worker_upgrade" "";
       ignore
-        (Store.append_event state.store ~kind:"worker.upgrade.expired" ~payload:
-           (`Assoc [ ("targetGeneration", `String target) ]))
+        (Store.append_event state.store ~kind:"worker.upgrade.expired"
+           ~payload:(`Assoc [ ("targetGeneration", `String target) ]))
   | _ -> ()
 
 let upgrade_preparing state =
@@ -191,13 +192,14 @@ let handle (state : t) request =
         state.persist_config_values ();
         Store.set_metadata state.store "pending_worker_upgrade" target;
         let event =
-          Store.append_event state.store ~kind:"worker.upgrade.prepared" ~payload:
-            (`Assoc
-               [
-                 ("fromGeneration", `String state.args.generation);
-                 ("toGeneration", `String target);
-                 ("leaseSeconds", `Int 30);
-               ])
+          Store.append_event state.store ~kind:"worker.upgrade.prepared"
+            ~payload:
+              (`Assoc
+                 [
+                   ("fromGeneration", `String state.args.generation);
+                   ("toGeneration", `String target);
+                   ("leaseSeconds", `Int 30);
+                 ])
         in
         Ok
           (`Assoc
@@ -240,8 +242,8 @@ let handle (state : t) request =
         state.harness_session_id := created;
         incr state.sessions_created_since_start;
         ignore
-          (Store.append_event state.store ~kind:"timeline.reset" ~payload:
-             (`Assoc [ ("acpSessionId", `String created) ]));
+          (Store.append_event state.store ~kind:"timeline.reset"
+             ~payload:(`Assoc [ ("acpSessionId", `String created) ]));
         state.status := Domain.Idle;
         Ok (`Assoc [ ("sessionId", `String created) ]))
   | Wire.Prompt { images; _ } when images <> [] && not state.supports_images ->
@@ -303,28 +305,30 @@ let handle (state : t) request =
         | _ -> ());
         state.persist_config_values ();
         ignore
-          (Store.append_event state.store ~kind:"acp.config_option.changed" ~payload:
-             response);
+          (Store.append_event state.store ~kind:"acp.config_option.changed"
+             ~payload:response);
         Ok (`Assoc [ ("configOptions", !(state.config_options)) ])
   | Wire.Cancel ->
       if Hashtbl.length state.running_commands = 0 then
         Error "the session has no active prompt"
       else (
         ignore
-          (Store.append_event state.store ~kind:"command.cancel.requested" ~payload:
-             (`Assoc [ ("sessionId", `String !(state.harness_session_id)) ]));
+          (Store.append_event state.store ~kind:"command.cancel.requested"
+             ~payload:
+               (`Assoc [ ("sessionId", `String !(state.harness_session_id)) ]));
         state.send
           (Acp.cancel_notification ~session_id:!(state.harness_session_id));
         Ok (`Assoc [ ("state", `String "cancelling") ]))
   | Wire.Peer_event { kind; request_id; peer_id; text } ->
       let event =
-        Store.append_event state.store ~kind ~payload:
-          (`Assoc
-             [
-               ("requestId", `String request_id);
-               ("peerId", `String peer_id);
-               ("text", `String text);
-             ])
+        Store.append_event state.store ~kind
+          ~payload:
+            (`Assoc
+               [
+                 ("requestId", `String request_id);
+                 ("peerId", `String peer_id);
+                 ("text", `String text);
+               ])
       in
       Ok (Domain.event_to_yojson event)
   | Wire.Permission { request_id; option_id } -> (
@@ -333,7 +337,9 @@ let handle (state : t) request =
       | Some permission -> (
           match option_id with
           | Some selected
-            when not (Harness.option_is_offered permission.params selected) ->
+            when not
+                   (Harness.option_is_offered ~params:permission.params
+                      ~option_id:selected) ->
               Error "permission option was not offered by the agent"
           | selected ->
               let outcome =
@@ -347,15 +353,16 @@ let handle (state : t) request =
                 | None -> `Assoc [ ("outcome", `String "cancelled") ]
               in
               ignore
-                (Store.append_event state.store ~kind:"acp.permission.resolved" ~payload:
-                   (`Assoc
-                      [
-                        ("requestId", `String request_id);
-                        ( "optionId",
-                          Option.fold ~none:`Null
-                            ~some:(fun value -> `String value)
-                            selected );
-                      ]));
+                (Store.append_event state.store ~kind:"acp.permission.resolved"
+                   ~payload:
+                     (`Assoc
+                        [
+                          ("requestId", `String request_id);
+                          ( "optionId",
+                            Option.fold ~none:`Null
+                              ~some:(fun value -> `String value)
+                              selected );
+                        ]));
               Hashtbl.remove state.pending_permissions request_id;
               state.send
                 (Acp.response_with_id ~id:permission.Config.raw_id

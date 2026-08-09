@@ -23,6 +23,10 @@ mkdir -p "$state/sessions" "$runtime" "$root/pids"
 control_pid=
 
 cleanup() {
+  if [[ ${PISS_KEEP_TEST_STATE:-0} == 1 ]]; then
+    echo "mention browser state retained at $root" >&2
+    return
+  fi
   [[ -z "$control_pid" ]] || kill "$control_pid" 2>/dev/null || true
   for file in "$root"/pids/*; do
     [[ -e "$file" ]] || continue

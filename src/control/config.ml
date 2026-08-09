@@ -190,7 +190,7 @@ let parse () =
              ~workspace_id:default_workspace_id);
       Registry.list registry ~include_archived:false
       |> List.iter (fun session ->
-          Lifecycle.write_session_spec registry manager.runtime_root session;
+          Lifecycle.write_session_spec registry manager.state_root session;
           match Lifecycle.run manager.launcher session.id with
           | Ok () -> ()
           | Error message ->

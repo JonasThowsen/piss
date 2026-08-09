@@ -60,7 +60,7 @@ let create_managed_session (manager : Config.managed_workers) ~harness
         ~workspace_id
     in
     try
-      Lifecycle.write_session_spec manager.registry manager.runtime_root session;
+      Lifecycle.write_session_spec manager.registry manager.state_root session;
       match Lifecycle.run manager.launcher id with
       | Ok () -> Ok session
       | Error message ->
@@ -93,7 +93,7 @@ let restore_managed_session (manager : Config.managed_workers) id =
         Error "session could not be restored"
       else
         try
-          Lifecycle.write_session_spec manager.registry manager.runtime_root
+          Lifecycle.write_session_spec manager.registry manager.state_root
             { session with archived_at = None };
           match Lifecycle.run manager.launcher id with
           | Ok () -> Ok ()
