@@ -7,6 +7,7 @@
   event_buffer
   event_decode
   event_history
+  global_search
   image_attachment
   image_batch
   mention_picker
@@ -38,14 +39,18 @@
   image_attachments
   mention_request
   main
+  modal
   mobile_shell
   outbox_view
   permission_view
   session_rail
+  session_lifecycle
+  search_dialog
   timeline_entry_view
   timeline_scroll
   timeline_view
-  working_panel)
+  working_panel
+  workspace_dialogs)
  (modes js)
  (libraries async_js bonsai.web control_plane_domain js_of_ocaml)
  (preprocess
@@ -68,6 +73,13 @@
 (test
  (name event_buffer_test)
  (modules event_buffer_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name managed_workflow_test)
+ (modules managed_workflow_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

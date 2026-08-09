@@ -68,6 +68,7 @@ chmod +x "$root/launch" "$root/stop"
   --session-launcher "$root/launch" --session-stopper "$root/stop" \
   --available-harness mock --default-harness mock \
   --workspace-spec "test-workspace|PISS rewrite|$workspace" \
+  --workspace-discovery-root "$workspace" \
   --bootstrap-session s-mention-browser --public "$public_dir" --app-js "$app_js" \
   --generation mention-browser --dev-bypass-auth >"$root/control.log" 2>&1 &
 control_pid=$!

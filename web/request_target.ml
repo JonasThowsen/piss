@@ -15,3 +15,16 @@ let same_origin ~path ~query =
       Uri.pct_encoder ~query_value:(`Custom (`Query_value, "", "/?")) ()
     in
     Ok (Uri.add_query_params' uri query |> Uri.to_string ~pct_encoder)
+
+let path_with_id ~prefix ~id ~suffix =
+  let unreserved = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '-' | '.' | '_' | '~' -> true
+    | _ -> false
+  in
+  let encoded = Buffer.create (String.length id) in
+  String.iter id ~f:(fun character ->
+      if unreserved character then Buffer.add_char encoded character
+      else
+        Buffer.add_string encoded
+          (Printf.sprintf "%%%02X" (Char.to_int character)));
+  prefix ^ Buffer.contents encoded ^ suffix

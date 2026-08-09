@@ -16,8 +16,8 @@ let selected state selected_id =
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
-let render_session_row ~selected_id ~on_select
-    (session : Control_plane.Session.t) =
+let render_session_row ~selected_id ~menu_open ~on_menu ~on_select ~on_rename
+    ~on_archive (session : Control_plane.Session.t) =
   let status = Control_plane.Session.status_to_string session.status in
   let selected =
     Option.value_map selected_id ~default:false ~f:(String.equal session.id)
@@ -25,6 +25,8 @@ let render_session_row ~selected_id ~on_select
   let row_class =
     "session-row" ^ if selected then " session-row-active" else ""
   in
+  let menu_key = "session:" ^ session.id in
+  let menu_visible = Option.exists menu_open ~f:(String.equal menu_key) in
   Vdom.Node.div ~key:session.id
     ~attrs:[ class_ "session-row-wrap" ]
     [
@@ -51,13 +53,62 @@ let render_session_row ~selected_id ~on_select
                 ];
             ];
         ];
+      Vdom.Node.div
+        ~attrs:[ class_ "session-menu-wrap" ]
+        [
+          Vdom.Node.button
+            ~attrs:
+              [
+                class_ "session-more";
+                Vdom.Attr.create "type" "button";
+                Vdom.Attr.create "aria-label"
+                  ("Session settings for " ^ session.title);
+                Vdom.Attr.create "aria-haspopup" "menu";
+                Vdom.Attr.create "aria-expanded" (Bool.to_string menu_visible);
+                Vdom.Attr.on_click (fun _ ->
+                    on_menu (if menu_visible then None else Some menu_key));
+              ]
+            [ text "..." ];
+          (if not menu_visible then Vdom.Node.none
+           else
+             Vdom.Node.div
+               ~attrs:
+                 [
+                   class_ "session-menu";
+                   Vdom.Attr.create "role" "menu";
+                   Vdom.Attr.create "aria-label"
+                     (session.title ^ " session settings");
+                 ]
+               [
+                 Vdom.Node.button
+                   ~attrs:
+                     [
+                       Vdom.Attr.create "type" "button";
+                       Vdom.Attr.create "role" "menuitem";
+                       Vdom.Attr.on_click (fun _ -> on_rename session);
+                     ]
+                   [ text "Rename session" ];
+                 Vdom.Node.button
+                   ~attrs:
+                     [
+                       class_ "danger";
+                       Vdom.Attr.create "type" "button";
+                       Vdom.Attr.create "role" "menuitem";
+                       Vdom.Attr.on_click (fun _ -> on_archive session);
+                     ]
+                   [ text "Archive session" ];
+               ]);
+        ];
     ]
 
-let render_group ~selected_id ~collapsed ~on_toggle ~on_select
+let render_group ~selected_id ~collapsed ~menu_open ~on_toggle ~on_menu
+    ~on_select ~on_remove_workspace ~on_create ~on_rename ~on_archive
     (group : Workspace_catalog.group) =
   let workspace = group.workspace in
   let is_collapsed = Set.mem collapsed workspace.id in
   let panel_id = "workspace-sessions-" ^ workspace.id in
+  let menu_key = "workspace:" ^ workspace.id in
+  let menu_visible = Option.exists menu_open ~f:(String.equal menu_key) in
   Vdom.Node.section ~key:workspace.id
     ~attrs:[ class_ "workspace-group" ]
     [
@@ -90,6 +141,56 @@ let render_group ~selected_id ~collapsed ~on_toggle ~on_select
                   Vdom.Node.small [ text workspace.root ];
                 ];
             ];
+          Vdom.Node.div
+            ~attrs:[ class_ "workspace-actions" ]
+            [
+              Vdom.Node.button
+                ~attrs:
+                  [
+                    class_ "workspace-more";
+                    Vdom.Attr.create "type" "button";
+                    Vdom.Attr.create "aria-label"
+                      ("Workspace settings for " ^ workspace.name);
+                    Vdom.Attr.create "aria-haspopup" "menu";
+                    Vdom.Attr.create "aria-expanded"
+                      (Bool.to_string menu_visible);
+                    Vdom.Attr.on_click (fun _ ->
+                        on_menu (if menu_visible then None else Some menu_key));
+                  ]
+                [ text "..." ];
+              (if not menu_visible then Vdom.Node.none
+               else
+                 Vdom.Node.div
+                   ~attrs:
+                     [
+                       class_ "workspace-menu";
+                       Vdom.Attr.create "role" "menu";
+                       Vdom.Attr.create "aria-label"
+                         (workspace.name ^ " workspace settings");
+                     ]
+                   [
+                     Vdom.Node.button
+                       ~attrs:
+                         [
+                           Vdom.Attr.create "type" "button";
+                           Vdom.Attr.create "role" "menuitem";
+                           Vdom.Attr.on_click (fun _ ->
+                               on_remove_workspace workspace);
+                         ]
+                       [ text "Remove workspace" ];
+                   ]);
+            ];
+          Vdom.Node.button
+            ~attrs:
+              [
+                class_ "create-session-trigger";
+                Vdom.Attr.create "type" "button";
+                Vdom.Attr.create "aria-label"
+                  ("New session in " ^ workspace.name);
+                Vdom.Attr.create "title" ("New session in " ^ workspace.name);
+                Vdom.Attr.on_click (fun _ -> on_create workspace);
+              ]
+            [ text "+" ];
         ];
       (if is_collapsed then Vdom.Node.none
        else
@@ -103,11 +204,15 @@ let render_group ~selected_id ~collapsed ~on_toggle ~on_select
                    [ text "No active sessions" ];
                ]
            | sessions ->
-               List.map sessions ~f:(render_session_row ~selected_id ~on_select)));
+               List.map sessions
+                 ~f:
+                   (render_session_row ~selected_id ~menu_open ~on_menu
+                      ~on_select ~on_rename ~on_archive)));
     ]
 
-let render state ~workspaces ~selected_id ~collapsed ~mobile_open ~on_toggle
-    ~on_select =
+let render state ~workspaces ~selected_id ~collapsed ~menu_open ~mobile_open
+    ~on_toggle ~on_menu ~on_select ~on_add_workspace ~on_remove_workspace
+    ~on_create ~on_rename ~on_archive =
   let contents =
     match state with
     | Loading ->
@@ -129,7 +234,10 @@ let render state ~workspaces ~selected_id ~collapsed ~mobile_open ~on_toggle
     | Loaded sessions ->
         Workspace_catalog.group workspaces sessions
         |> List.map
-             ~f:(render_group ~selected_id ~collapsed ~on_toggle ~on_select)
+             ~f:
+               (render_group ~selected_id ~collapsed ~menu_open ~on_toggle
+                  ~on_menu ~on_select ~on_remove_workspace ~on_create ~on_rename
+                  ~on_archive)
   in
   Vdom.Node.create "aside"
     ~attrs:
@@ -148,6 +256,16 @@ let render state ~workspaces ~selected_id ~collapsed ~mobile_open ~on_toggle
               Vdom.Node.h2 [ text "Sessions" ];
               Vdom.Node.p [ text "Live control-plane state" ];
             ];
+          Vdom.Node.button
+            ~attrs:
+              [
+                class_ "create-session-trigger";
+                Vdom.Attr.create "type" "button";
+                Vdom.Attr.create "aria-label" "Add workspace";
+                Vdom.Attr.create "title" "Add workspace";
+                Vdom.Attr.on_click (fun _ -> on_add_workspace ());
+              ]
+            [ text "+" ];
         ];
       Vdom.Node.create "nav" ~attrs:[ class_ "session-index" ] contents;
     ]

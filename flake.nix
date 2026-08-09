@@ -62,78 +62,89 @@
                 ./web/clipboard.mli
                 ./web/command_id.ml
                 ./web/command_id.mli
-                 ./web/composer.ml
-                 ./web/composer.mli
-                 ./web/composer_ui.ml
-                 ./web/composer_ui.mli
-                 ./web/composer_domain_test.ml
-                 ./web/composer_policy.ml
-                 ./web/composer_policy.mli
-                 ./web/config_controls.ml
-                 ./web/config_controls.mli
-                 ./web/control_plane.ml
-                 ./web/control_plane.mli
-                 ./web/control_plane_test.ml
-                 ./web/details_view.ml
-                 ./web/details_view.mli
-                 ./web/event_buffer.ml
-                 ./web/event_buffer.mli
-                 ./web/event_buffer_test.ml
-                 ./web/event_decode.ml
-                 ./web/event_decode.mli
-                 ./web/event_history.ml
+                ./web/composer.ml
+                ./web/composer.mli
+                ./web/composer_ui.ml
+                ./web/composer_ui.mli
+                ./web/composer_domain_test.ml
+                ./web/composer_policy.ml
+                ./web/composer_policy.mli
+                ./web/config_controls.ml
+                ./web/config_controls.mli
+                ./web/control_plane.ml
+                ./web/control_plane.mli
+                ./web/control_plane_test.ml
+                ./web/details_view.ml
+                ./web/details_view.mli
+                ./web/event_buffer.ml
+                ./web/event_buffer.mli
+                ./web/event_buffer_test.ml
+                ./web/event_decode.ml
+                ./web/event_decode.mli
+                ./web/event_history.ml
                 ./web/event_history.mli
+                ./web/global_search.ml
+                ./web/global_search.mli
                 ./web/event_stream.ml
                 ./web/event_stream.mli
-                 ./web/image_attachment.ml
-                 ./web/image_attachment.mli
-                 ./web/image_batch.ml
-                 ./web/image_batch.mli
-                 ./web/image_attachments.ml
+                ./web/image_attachment.ml
+                ./web/image_attachment.mli
+                ./web/image_batch.ml
+                ./web/image_batch.mli
+                ./web/image_attachments.ml
                 ./web/image_attachments.mli
                 ./web/main.ml
+                ./web/managed_workflow_test.ml
+                ./web/modal.ml
+                ./web/modal.mli
                 ./web/mention_picker.ml
                 ./web/mention_picker.mli
                 ./web/mention_picker_test.ml
-                 ./web/mention_request.ml
-                 ./web/mention_request.mli
-                 ./web/mobile_shell.ml
-                 ./web/mobile_shell.mli
-                 ./web/outbox_projection.ml
-                 ./web/outbox_projection.mli
-                 ./web/outbox_view.ml
-                 ./web/outbox_view.mli
+                ./web/mention_request.ml
+                ./web/mention_request.mli
+                ./web/mobile_shell.ml
+                ./web/mobile_shell.mli
+                ./web/outbox_projection.ml
+                ./web/outbox_projection.mli
+                ./web/outbox_view.ml
+                ./web/outbox_view.mli
                 ./web/permission_decision.ml
                 ./web/permission_decision.mli
                 ./web/permission_view.ml
                 ./web/permission_view.mli
                 ./web/prompt_command.ml
                 ./web/prompt_command.mli
-                 ./web/request_target.ml
-                 ./web/request_target.mli
-                 ./web/runtime_domain.ml
-                 ./web/runtime_domain.mli
-                 ./web/session_protocol_test.ml
-                 ./web/session_rail.ml
-                 ./web/session_rail.mli
-                 ./web/session_tabs.ml
-                 ./web/session_tabs.mli
+                ./web/request_target.ml
+                ./web/request_target.mli
+                ./web/runtime_domain.ml
+                ./web/runtime_domain.mli
+                ./web/session_protocol_test.ml
+                ./web/session_rail.ml
+                ./web/session_rail.mli
+                ./web/session_lifecycle.ml
+                ./web/session_lifecycle.mli
+                ./web/search_dialog.ml
+                ./web/search_dialog.mli
+                ./web/session_tabs.ml
+                ./web/session_tabs.mli
                 ./web/timeline_view.ml
                 ./web/timeline_view.mli
                 ./web/timeline_projection.ml
                 ./web/timeline_projection.mli
                 ./web/timeline_projection_test.ml
-                 ./web/timeline_scroll.ml
-                 ./web/timeline_scroll.mli
-                 ./web/timeline_entry_view.ml
-                 ./web/timeline_entry_view.mli
-                 ./web/working_view.ml
-                 ./web/working_view.mli
-                 ./web/working_panel.ml
-                 ./web/working_panel.mli
-                 ./web/workbench_domain_test.ml
-                 ./web/workspace_catalog.ml
-                 ./web/workspace_catalog.mli
+                ./web/timeline_scroll.ml
+                ./web/timeline_scroll.mli
+                ./web/timeline_entry_view.ml
+                ./web/timeline_entry_view.mli
+                ./web/working_view.ml
+                ./web/working_view.mli
+                ./web/working_panel.ml
+                ./web/working_panel.mli
+                ./web/workbench_domain_test.ml
+                ./web/workspace_catalog.ml
+                ./web/workspace_catalog.mli
+                ./web/workspace_dialogs.ml
+                ./web/workspace_dialogs.mli
               ];
             };
             nativeBuildInputs = [

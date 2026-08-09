@@ -9,7 +9,7 @@ let selected_workspace workspaces session =
       Workspace_catalog.find_workspace workspaces session.workspace_id)
 
 let render sessions workspaces selected_id (runtime : Runtime_domain.t option)
-    mobile_menu =
+    mobile_menu search =
   let selected = Session_rail.selected sessions selected_id in
   let workspace = selected_workspace workspaces selected in
   let status, status_class =
@@ -44,6 +44,7 @@ let render sessions workspaces selected_id (runtime : Runtime_domain.t option)
               Vdom.Node.p ~attrs:(class_ "eyebrow") [ text context ];
             ];
         ];
+      search;
       Vdom.Node.div
         ~attrs:(class_ ("connection-pill connection-" ^ status_class))
         [ Vdom.Node.create "i" []; Vdom.Node.span [ text status ] ];

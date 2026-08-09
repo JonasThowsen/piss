@@ -22,11 +22,11 @@ try {
     if (requestUrl.pathname === "/api/v2/event-stream") eventStreamRequests.push(request.url());
   });
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "error" && !message.text().includes("409 (Conflict)")) errors.push(`console: ${message.text()}`);
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const session = page.getByRole("button", { name: /Pi \/ deployed/ });
+  const session = page.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ });
   try {
     await session.waitFor();
   } catch (error) {
@@ -393,6 +393,108 @@ try {
   if (await page.locator("details.tool-disclosure[open]").count() !== 0) {
     throw new Error("streamed tool updates opened a collapsed disclosure");
   }
+
+  const workspaceSettings = page.getByRole("button", { name: "Workspace settings for PISS rewrite" });
+  await workspaceSettings.click();
+  await page.getByRole("menu", { name: "PISS rewrite workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
+  const blockedRemoval = page.getByRole("alertdialog", { name: "Remove workspace?" });
+  await blockedRemoval.getByText("This does not delete the directory or any files.", { exact: false }).waitFor();
+  await blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
+  await blockedRemoval.getByRole("alert").getByText(/Delete 1 session first, including archived sessions/).waitFor();
+  await blockedRemoval.getByRole("button", { name: "Close" }).click();
+
+  await page.getByRole("button", { name: "Add workspace" }).click();
+  const addWorkspace = page.getByRole("dialog", { name: "Add workspace" });
+  const directoryQuery = addWorkspace.getByRole("combobox", { name: "Search approved directories" });
+  await directoryQuery.fill("/web");
+  const webDirectory = addWorkspace.getByRole("option").filter({ hasText: /\/web$/ }).first();
+  await webDirectory.waitFor();
+  await webDirectory.click();
+  await addWorkspace.getByRole("button", { name: "ADD WORKSPACE" }).click();
+  await page.getByRole("button", { name: "Workspace settings for web" }).waitFor();
+  await page.getByRole("button", { name: "Workspace settings for web" }).click();
+  await page.getByRole("menu", { name: "web workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
+  const removeWeb = page.getByRole("alertdialog", { name: "Remove workspace?" });
+  await removeWeb.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
+  await page.getByRole("button", { name: "Workspace settings for web" }).waitFor({ state: "detached" });
+
+  await page.getByRole("button", { name: "New session in PISS rewrite" }).click();
+  const creator = page.getByRole("dialog", { name: "New session" });
+  await creator.getByLabel("Session title").fill("Lifecycle proof");
+  if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "mock") {
+    throw new Error("session creator offered a harness not derived from the managed host");
+  }
+  const createRequestPromise = page.waitForRequest(
+    (candidate) => new URL(candidate.url()).pathname === "/api/v2/sessions" && candidate.method() === "POST",
+  );
+  await creator.getByRole("button", { name: "START SESSION" }).click();
+  const createRequest = await createRequestPromise;
+  if (JSON.stringify(createRequest.postDataJSON()) !== JSON.stringify({ workspaceId: "test-workspace", title: "Lifecycle proof", harness: "mock" })) {
+    throw new Error(`unexpected create request: ${createRequest.postData()}`);
+  }
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Session settings for Lifecycle proof" }).click();
+  await page.getByRole("menu", { name: "Lifecycle proof session settings" }).getByRole("menuitem", { name: "Rename session" }).click();
+  const rename = page.getByRole("dialog", { name: "Rename session" });
+  await rename.getByLabel("Session title").fill("Lifecycle renamed");
+  const renameRequestPromise = page.waitForRequest(
+    (candidate) => /\/api\/v2\/sessions\/[^/]+\/rename$/.test(new URL(candidate.url()).pathname) && candidate.method() === "POST",
+  );
+  await rename.getByRole("button", { name: "SAVE" }).click();
+  const renameRequest = await renameRequestPromise;
+  if (JSON.stringify(renameRequest.postDataJSON()) !== JSON.stringify({ title: "Lifecycle renamed" })) {
+    throw new Error(`unexpected rename request: ${renameRequest.postData()}`);
+  }
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle renamed" }).waitFor();
+
+  const searchTrigger = page.getByRole("button", { name: "Search sessions" });
+  await searchTrigger.focus();
+  await page.keyboard.press("Control+K");
+  const activeSearch = page.getByRole("dialog", { name: "Search sessions" });
+  const sessionQuery = activeSearch.getByRole("combobox", { name: "Search sessions" });
+  await page.waitForFunction(() => document.activeElement?.id === "global-session-query");
+  await sessionQuery.fill("Lifecycle");
+  await activeSearch.getByRole("option", { name: /Lifecycle renamed/ }).waitFor();
+  const descendant = await sessionQuery.getAttribute("aria-activedescendant");
+  if (!descendant || await page.locator(`#${descendant}[role=option][aria-selected=true]`).count() !== 1) {
+    throw new Error(`invalid global search active descendant: ${descendant}`);
+  }
+  await activeSearch.getByRole("button", { name: "Close session search" }).focus();
+  await page.keyboard.press("Shift+Tab");
+  if (await page.locator("[role=option]:focus").count() !== 1) {
+    throw new Error("modal focus trap did not wrap from its first to last control");
+  }
+  await sessionQuery.focus();
+  await sessionQuery.press("Enter");
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle renamed" }).waitFor();
+
+  await page.getByRole("button", { name: "Session settings for Lifecycle renamed" }).click();
+  await page.getByRole("menu", { name: "Lifecycle renamed session settings" }).getByRole("menuitem", { name: "Archive session" }).click();
+  const archive = page.getByRole("alertdialog", { name: "Archive session?" });
+  await archive.getByRole("button", { name: "ARCHIVE SESSION" }).click();
+  await page.getByRole("button", { name: "Session settings for Lifecycle renamed" }).waitFor({ state: "detached" });
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+
+  await page.keyboard.press("Control+K");
+  const archivedSearch = page.getByRole("dialog", { name: "Search sessions" });
+  await archivedSearch.getByRole("button", { name: /Archived \(1\)/ }).click();
+  const archivedQuery = archivedSearch.getByRole("combobox", { name: "Search sessions" });
+  await archivedQuery.fill("Lifecycle renamed");
+  await archivedSearch.getByRole("option", { name: /Lifecycle renamed/ }).waitFor();
+  await archivedQuery.press("Control+n");
+  await archivedQuery.press("Control+p");
+  await archivedQuery.press("Enter");
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle renamed" }).waitFor({ timeout: 15_000 });
+  if (await page.getByRole("button", { name: "Session settings for Lifecycle renamed" }).count() !== 1) {
+    throw new Error("restored session was not recataloged and selected");
+  }
+
+  await searchTrigger.focus();
+  await searchTrigger.click();
+  await page.getByRole("dialog", { name: "Search sessions" }).getByRole("button", { name: "Close session search" }).click();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Search sessions");
+
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const mobile = await mobileContext.newPage();
   mobile.on("console", (message) => {
@@ -403,7 +505,7 @@ try {
   const mobileMenu = mobile.getByRole("button", { name: "Open workspaces and sessions" });
   await mobileMenu.tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
-  await mobile.getByRole("button", { name: /Pi \/ deployed/ }).tap();
+  await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false");
   const viewportHeight = await mobile.evaluate(() => ({
     css: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
@@ -412,9 +514,20 @@ try {
   if (Math.abs(viewportHeight.css - viewportHeight.visible) > 1) {
     throw new Error(`app height did not follow visualViewport: ${JSON.stringify(viewportHeight)}`);
   }
+  await mobile.getByRole("button", { name: "Search sessions" }).tap();
+  const mobileSearch = mobile.getByRole("dialog", { name: "Search sessions" });
+  const mobileBounds = await mobileSearch.evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  });
+  if (Math.abs(mobileBounds.width - 390) > 1 || Math.abs(mobileBounds.height - viewportHeight.visible) > 1) {
+    throw new Error(`mobile modal did not fill the visual viewport: ${JSON.stringify(mobileBounds)}`);
+  }
+  await mobile.keyboard.press("Escape");
+  await mobileSearch.waitFor({ state: "detached" });
   await mobileContext.close();
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, tabs, config, images, steer/follow-up, cancel, runtime details, mobile drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore, workspace conflict/add/remove, global search, tabs, config, images, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

@@ -29,3 +29,7 @@ module Session : sig
 end
 
 val decode_sessions : string -> (Session.t list, string) result
+val decode_archived_sessions : string -> (Session.t list, string) result
+
+val decode_created_session_id : string -> (string, string) result
+(** Strictly decodes the registry record returned by session creation. *)

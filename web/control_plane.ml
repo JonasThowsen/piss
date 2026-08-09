@@ -136,3 +136,34 @@ let decode_sessions body =
   | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
   | Ok (`List sessions) -> sessions |> List.mapi ~f:decode_session |> Result.all
   | Ok _ -> Error "response must be a JSON array"
+
+let decode_archived_sessions body =
+  Result.bind (decode_sessions body) ~f:(fun sessions ->
+      match
+        List.findi sessions ~f:(fun _ (session : Session.t) ->
+            (not (phys_equal session.status Session.Archived))
+            || Option.is_none session.archived_at)
+      with
+      | None -> Ok sessions
+      | Some (index, _) ->
+          error
+            (Printf.sprintf "sessions[%d]" index)
+            "must be an archived session")
+
+let decode_created_session_id body =
+  match Result.try_with (fun () -> Yojson.Safe.from_string body) with
+  | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
+  | Ok (`Assoc fields) ->
+      bind_field fields "session" "id" string (fun id ->
+          bind_field fields "session" "title" string (fun title ->
+              bind_field fields "session" "harness" harness (fun _ ->
+                  bind_field fields "session" "workspaceId" string (fun _ ->
+                      bind_field fields "session" "createdAt" number (fun _ ->
+                          bind_field fields "session" "archivedAt"
+                            (nullable number) (fun archived_at ->
+                              if String.is_empty (String.strip title) then
+                                error "session.title" "must not be empty"
+                              else if Option.is_some archived_at then
+                                error "session.archivedAt" "must be null"
+                              else Ok id))))))
+  | Ok _ -> Error "response must be a JSON object"

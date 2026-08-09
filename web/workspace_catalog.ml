@@ -8,6 +8,7 @@ type workspace = {
 }
 
 type group = { workspace : workspace; sessions : Control_plane.Session.t list }
+type directory = { name : string; path : string }
 
 let ( let* ) result f = Result.bind result ~f
 let error path expected = Error (path ^ " " ^ expected)
@@ -51,6 +52,22 @@ let decode body =
   match Result.try_with (fun () -> Yojson.Safe.from_string body) with
   | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
   | Ok (`List values) -> values |> List.mapi ~f:decode_workspace |> Result.all
+  | Ok _ -> Error "response must be a JSON array"
+
+let decode_directory index = function
+  | `Assoc fields ->
+      let path = Printf.sprintf "directories[%d]" index in
+      let* name = field_as fields path "name" string in
+      let* directory_path = field_as fields path "path" string in
+      if not (String.is_prefix directory_path ~prefix:"/") then
+        error (path ^ ".path") "must be an absolute path"
+      else Ok { name; path = directory_path }
+  | _ -> error (Printf.sprintf "directories[%d]" index) "must be an object"
+
+let decode_directories body =
+  match Result.try_with (fun () -> Yojson.Safe.from_string body) with
+  | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
+  | Ok (`List values) -> values |> List.mapi ~f:decode_directory |> Result.all
   | Ok _ -> Error "response must be a JSON array"
 
 let group workspaces sessions =

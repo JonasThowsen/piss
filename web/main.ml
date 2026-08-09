@@ -11,29 +11,39 @@ let history_request session_id =
     "/api/v2/events"
 
 let catalog_request () =
-  Async_kernel.Deferred.both
-    (Browser_http.get "/api/v2/workspaces")
-    (Browser_http.get "/api/v2/sessions")
+  Async_kernel.Deferred.all
+    [
+      Browser_http.get "/api/v2/workspaces";
+      Browser_http.get "/api/v2/sessions";
+      Browser_http.get ~query:[ ("archived", "true") ] "/api/v2/sessions";
+    ]
 
 let decode_catalog = function
-  | Error error, _ | _, Error error -> Error (Error.to_string_hum error)
-  | Ok workspace_body, Ok session_body -> (
+  | [ Ok workspace_body; Ok session_body; Ok archived_body ] -> (
       match
         ( Workspace_catalog.decode workspace_body,
-          Control_plane.decode_sessions session_body )
+          Control_plane.decode_sessions session_body,
+          Control_plane.decode_archived_sessions archived_body )
       with
-      | Ok workspaces, Ok sessions -> Ok (workspaces, sessions)
-      | Error message, _ | _, Error message -> Error message)
+      | Ok workspaces, Ok sessions, Ok archived ->
+          Ok (workspaces, sessions, archived)
+      | Error message, _, _ | _, Error message, _ | _, _, Error message ->
+          Error message)
+  | responses -> (
+      match List.find_map responses ~f:Result.error with
+      | Some error -> Error (Error.to_string_hum error)
+      | None -> Error "catalog response was incomplete")
 
-let refresh_catalog ~set_workspaces ~set_sessions =
+let refresh_catalog ~set_workspaces ~set_sessions ~set_archived =
   Effect.bind (Effect.of_deferred_thunk catalog_request) ~f:(fun response ->
       match decode_catalog response with
       | Error _ -> Effect.Ignore
-      | Ok (workspaces, sessions) ->
+      | Ok (workspaces, sessions, archived) ->
           Effect.Many
             [
               set_workspaces workspaces;
               set_sessions (Session_rail.Loaded sessions);
+              set_archived archived;
             ])
 
 let load_snapshot ~inject_shell session_id =
@@ -125,10 +135,12 @@ let load_history ~inject_history ~inject_deciding ~refresh_catalog_effect
 
 let component graph =
   let sessions, set_sessions = Bonsai.state Session_rail.Loading graph in
+  let archived, set_archived = Bonsai.state [] graph in
   let workspaces, set_workspaces = Bonsai.state [] graph in
   let selected_id, set_selected_id = Bonsai.state None graph in
   let mobile_open, set_mobile_open = Bonsai.state false graph in
   let collapsed, set_collapsed = Bonsai.state String.Set.empty graph in
+  let menu_open, set_menu_open = Bonsai.state None graph in
   let shell, inject_shell =
     Bonsai.state_machine0
       ~default_model:{ runtime = empty_runtime; tab = Session_tabs.Agent }
@@ -192,6 +204,8 @@ let component graph =
   let load =
     let%arr set_sessions = set_sessions
     and set_workspaces = set_workspaces
+    and set_archived = set_archived
+    and set_menu_open = set_menu_open
     and selected_id = selected_id
     and set_selected_id = set_selected_id
     and inject_history = inject_history
@@ -201,23 +215,30 @@ let component graph =
     Effect.bind (Effect.of_deferred_thunk catalog_request) ~f:(fun response ->
         match decode_catalog response with
         | Error message -> set_sessions (Session_rail.Failed message)
-        | Ok (next_workspaces, next_sessions) ->
+        | Ok (next_workspaces, next_sessions, next_archived) ->
             let next_id =
               Workspace_catalog.reconcile_selection ~previous:selected_id
                 next_sessions
             in
             let catalog_refresh =
-              refresh_catalog ~set_workspaces ~set_sessions
+              refresh_catalog ~set_workspaces ~set_sessions ~set_archived
             in
             Effect.bind
               (Effect.Many
                  [
                    set_workspaces next_workspaces;
                    set_sessions (Session_rail.Loaded next_sessions);
+                   set_archived next_archived;
                    set_selected_id next_id;
+                   set_menu_open None;
                  ])
               ~f:(fun () ->
-                Option.value_map next_id ~default:Effect.Ignore ~f:(fun id ->
+                Option.value_map next_id
+                  ~default:
+                    (Effect.of_deferred_thunk (fun () ->
+                         Event_stream.close ();
+                         Async_kernel.Deferred.return ()))
+                  ~f:(fun id ->
                     let snapshot_refresh = load_snapshot ~inject_shell id in
                     Effect.Many
                       [
@@ -228,6 +249,61 @@ let component graph =
                           ~set_stream_notice id;
                       ])))
   in
+  let select_session =
+    let%arr set_selected_id = set_selected_id
+    and set_mobile_open = set_mobile_open
+    and set_menu_open = set_menu_open
+    and inject_shell = inject_shell
+    and inject_history = inject_history
+    and inject_deciding = inject_deciding
+    and set_stream_notice = set_stream_notice
+    and set_sessions = set_sessions
+    and set_workspaces = set_workspaces
+    and set_archived = set_archived
+    and composer = composer in
+    fun id ->
+      let catalog_refresh =
+        refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+      in
+      let snapshot_refresh = load_snapshot ~inject_shell id in
+      Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
+          Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
+              Effect.Many
+                [
+                  composer.reset ();
+                  set_stream_notice "";
+                  set_mobile_open false;
+                  set_menu_open None;
+                  catalog_refresh;
+                  snapshot_refresh;
+                  load_history ~inject_history ~inject_deciding
+                    ~refresh_catalog_effect:catalog_refresh
+                    ~refresh_snapshot_effect:snapshot_refresh ~set_stream_notice
+                    id;
+                ]))
+  in
+  let active_sessions =
+    let%arr sessions = sessions in
+    match sessions with Session_rail.Loaded values -> values | _ -> []
+  in
+  let harnesses =
+    let%arr active = active_sessions and archived = archived in
+    Global_search.available_harnesses ~active ~archived
+  in
+  let lifecycle =
+    Session_lifecycle.component ~harnesses ~on_reload:load
+      ~on_select:select_session graph
+  in
+  let workspace_dialogs = Workspace_dialogs.component ~on_reload:load graph in
+  let close_navigation =
+    let%arr set_mobile_open = set_mobile_open
+    and set_menu_open = set_menu_open in
+    Effect.Many [ set_mobile_open false; set_menu_open None ]
+  in
+  let search =
+    Search_dialog.component ~workspaces ~active:active_sessions ~archived
+      ~on_open:close_navigation ~on_reload:load ~on_select:select_session graph
+  in
   let close_stream =
     let%arr () = Bonsai.return () in
     Effect.of_deferred_thunk (fun () ->
@@ -235,9 +311,12 @@ let component graph =
         Async_kernel.Deferred.return ())
   in
   let activate =
-    let%arr load = load and set_mobile_open = set_mobile_open in
+    let%arr load = load
+    and set_mobile_open = set_mobile_open
+    and set_menu_open = set_menu_open in
     Effect.bind
-      (Mobile_shell.start ~on_escape:(fun () -> set_mobile_open false))
+      (Mobile_shell.start ~on_escape:(fun () ->
+           Effect.Many [ set_mobile_open false; set_menu_open None ]))
       ~f:(fun () -> Effect.bind (Timeline_scroll.start ()) ~f:(fun () -> load))
   in
   let deactivate =
@@ -247,6 +326,8 @@ let component graph =
         close_stream;
         Timeline_scroll.cleanup ();
         Clipboard.cleanup ();
+        Modal.cleanup ();
+        Search_dialog.cleanup ();
         Mobile_shell.cleanup ();
       ]
   in
@@ -256,22 +337,23 @@ let component graph =
   and selected_id = selected_id
   and mobile_open = mobile_open
   and collapsed = collapsed
+  and menu_open = menu_open
   and shell = shell
   and runtime = runtime
   and history = history
   and deciding_permissions = deciding_permissions
   and composer = composer
+  and lifecycle = lifecycle
+  and workspace_dialogs = workspace_dialogs
+  and search = search
+  and select_session = select_session
   and copy_feedback = copy_feedback
-  and set_selected_id = set_selected_id
   and set_mobile_open = set_mobile_open
   and set_collapsed = set_collapsed
+  and set_menu_open = set_menu_open
   and inject_shell = inject_shell
-  and inject_history = inject_history
   and inject_deciding = inject_deciding
-  and set_stream_notice = set_stream_notice
-  and set_copy_feedback = set_copy_feedback
-  and set_sessions = set_sessions
-  and set_workspaces = set_workspaces in
+  and set_copy_feedback = set_copy_feedback in
   let session = Session_rail.selected sessions selected_id in
   let workspace = App_header.selected_workspace workspaces session in
   let visible_history =
@@ -281,23 +363,7 @@ let component graph =
     | Session_rail.Loaded [] -> No_sessions
     | Session_rail.Loaded (_ :: _) -> history
   in
-  let select id =
-    let catalog_refresh = refresh_catalog ~set_workspaces ~set_sessions in
-    let snapshot_refresh = load_snapshot ~inject_shell id in
-    Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
-        Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
-            Effect.Many
-              [
-                composer.reset ();
-                set_stream_notice "";
-                set_mobile_open false;
-                snapshot_refresh;
-                load_history ~inject_history ~inject_deciding
-                  ~refresh_catalog_effect:catalog_refresh
-                  ~refresh_snapshot_effect:snapshot_refresh ~set_stream_notice
-                  id;
-              ]))
-  in
+  let select = select_session in
   let close_mobile () =
     Effect.Many [ set_mobile_open false; Mobile_shell.focus_menu_button () ]
   in
@@ -341,22 +407,48 @@ let component graph =
   let copy ~key ~text =
     Clipboard.copy ~key ~text ~on_change:set_copy_feedback
   in
-  Vdom.Node.main ~attrs:(class_ "control-room")
+  let open_modal action =
+    Effect.bind
+      (Effect.Many [ set_mobile_open false; set_menu_open None ])
+      ~f:(fun () -> action)
+  in
+  Vdom.Node.div ~attrs:(class_ "app-shell")
     [
-      App_header.render sessions workspaces selected_id runtime
-        (Mobile_shell.menu_button ~open_:mobile_open ~on_open:open_mobile);
-      Vdom.Node.section ~attrs:(class_ "workspace-grid")
+      Vdom.Node.main
+        ~attrs:([ Vdom.Attr.id "control-room" ] @ class_ "control-room")
         [
-          Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile;
-          Session_rail.render sessions ~workspaces ~selected_id ~collapsed
-            ~mobile_open ~on_toggle:toggle_workspace ~on_select:select;
-          Timeline_view.render ~session ~workspace ~runtime
-            ~runtime_loading:shell.runtime.loading
-            ~runtime_error:shell.runtime.error ~tab:shell.tab ~on_tab:select_tab
-            ~state:visible_history ~composer:(Some composer.view)
-            ~deciding_permissions ~copy_feedback ~on_copy:copy
-            ~on_permission:decide;
+          App_header.render sessions workspaces selected_id runtime
+            (Mobile_shell.menu_button ~open_:mobile_open ~on_open:open_mobile)
+            search.trigger;
+          Vdom.Node.section ~attrs:(class_ "workspace-grid")
+            [
+              Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile;
+              Session_rail.render sessions ~workspaces ~selected_id ~collapsed
+                ~menu_open ~mobile_open ~on_toggle:toggle_workspace
+                ~on_menu:set_menu_open
+                ~on_select:(fun id ->
+                  Effect.Many [ set_menu_open None; select id ])
+                ~on_add_workspace:(fun () ->
+                  open_modal (workspace_dialogs.open_add ()))
+                ~on_remove_workspace:(fun workspace ->
+                  open_modal (workspace_dialogs.open_remove workspace))
+                ~on_create:(fun workspace ->
+                  open_modal (lifecycle.open_create workspace))
+                ~on_rename:(fun session ->
+                  open_modal (lifecycle.open_rename session))
+                ~on_archive:(fun session ->
+                  open_modal (lifecycle.open_archive session));
+              Timeline_view.render ~session ~workspace ~runtime
+                ~runtime_loading:shell.runtime.loading
+                ~runtime_error:shell.runtime.error ~tab:shell.tab
+                ~on_tab:select_tab ~state:visible_history
+                ~composer:(Some composer.view) ~deciding_permissions
+                ~copy_feedback ~on_copy:copy ~on_permission:decide;
+            ];
         ];
+      search.view;
+      lifecycle.view;
+      workspace_dialogs.view;
     ]
 
 let () = Bonsai_web.Start.start component
