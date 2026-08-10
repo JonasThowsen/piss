@@ -20,17 +20,6 @@ try {
   });
   desktop.on("pageerror", (error) => errors.push(`desktop page: ${error.message}`));
   await desktop.goto(url, { waitUntil: "domcontentloaded" });
-  const agentTab = desktop.getByRole("tab", { name: "Agent" });
-  const returnToAgentAfterRun = async () => {
-    try {
-      await desktop.waitForFunction(
-        () => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true",
-        undefined,
-        { timeout: 3_000 },
-      );
-    } catch {}
-    if (await desktop.getByRole("tab", { name: "Working" }).getAttribute("aria-selected") === "true") await agentTab.click();
-  };
   const textarea = desktop.getByRole("textbox", { name: "Message agent" });
   await textarea.fill("Review @web/main before release");
   await textarea.evaluate((field) => {
@@ -62,7 +51,6 @@ try {
     (request) => request.url().includes("/api/v2/commands") && request.method() === "POST",
   );
   await desktop.getByRole("button", { name: "Send message" }).click();
-  await returnToAgentAfterRun();
   const body = (await requestPromise).postDataJSON();
   if (body.text !== expected || body.resources?.[0]?.path !== "web/main.ml") {
     throw new Error(`typed ACP resource input missing: ${JSON.stringify(body)}`);
@@ -128,7 +116,6 @@ try {
   await desktop.getByRole("button", { name: "Jump to latest message" }).waitFor();
   const agentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");
-  await returnToAgentAfterRun();
   await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, agentCount);
   if (await timeline.evaluate((value) => value.scrollTop) > 4) throw new Error("stream overrode the user's manual scroll position");
 
@@ -140,7 +127,6 @@ try {
   await waitForIdle();
   const nextAgentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream while typing");
-  await returnToAgentAfterRun();
   await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await desktop.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await textarea.fill("");

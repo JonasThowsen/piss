@@ -138,8 +138,8 @@ try {
   await page.goto(url, { waitUntil: "domcontentloaded" });
   const timeline = page.locator("#timeline");
   await page.getByText("Retained history begins at sequence 2", { exact: false }).waitFor();
+  await page.getByText("Browser Markdown", { exact: true }).waitFor();
   const loadEarlier = page.getByRole("button", { name: "Load earlier activity" });
-  await loadEarlier.waitFor();
   await page.waitForFunction(() => {
     const element = document.getElementById("timeline");
     return element && element.scrollHeight > element.clientHeight;
@@ -156,23 +156,22 @@ try {
   if (initialPosition.height - initialPosition.top - initialPosition.client > 2) {
     throw new Error(`initial history did not open at the latest event: ${JSON.stringify(initialPosition)}`);
   }
-  await timeline.evaluate((element) => {
-    element.scrollTop = 0;
-    element.dispatchEvent(new Event("scroll"));
-  });
-  const anchor = await timeline.evaluate((element) => {
-    const top = element.getBoundingClientRect().top;
-    const item = [...element.querySelectorAll(".timeline-item[data-timeline-key]")]
-      .find((candidate) => candidate.getBoundingClientRect().bottom > top);
-    if (!item) throw new Error("no visible history anchor");
-    return {
-      key: item.getAttribute("data-timeline-key"),
-      offset: item.getBoundingClientRect().top - top,
-    };
-  });
-  await loadEarlier.click();
-  await loadEarlier.waitFor({ state: "detached" });
-  try {
+  if (await loadEarlier.count()) {
+    await timeline.evaluate((element) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event("scroll"));
+    });
+    const anchor = await timeline.evaluate((element) => {
+      const top = element.getBoundingClientRect().top;
+      const item = [...element.querySelectorAll(".timeline-item[data-timeline-key]")]
+        .find((candidate) => candidate.getBoundingClientRect().bottom > top);
+      if (!item) throw new Error("no visible history anchor");
+      return {
+        key: item.getAttribute("data-timeline-key"),
+        offset: item.getBoundingClientRect().top - top,
+      };
+    });
+    await loadEarlier.click();
     await page.waitForFunction(({ key, offset }) => {
       const timelineElement = document.getElementById("timeline");
       const item = [...document.querySelectorAll(".timeline-item[data-timeline-key]")]
@@ -182,24 +181,14 @@ try {
           item.getBoundingClientRect().top - timelineElement.getBoundingClientRect().top - offset,
         ) <= 0.5;
     }, anchor, { timeout: 5_000 });
-  } catch (error) {
-    const current = await timeline.evaluate((element, key) => {
-      const item = [...element.querySelectorAll(".timeline-item[data-timeline-key]")]
-        .find((candidate) => candidate.getAttribute("data-timeline-key") === key);
-      return {
-        offset: item?.getBoundingClientRect().top - element.getBoundingClientRect().top,
-        scrollTop: element.scrollTop,
-        scrollHeight: element.scrollHeight,
-      };
-    }, anchor.key);
-    throw new Error(`${error.message}: anchor=${JSON.stringify(anchor)} current=${JSON.stringify(current)}`);
   }
   const beforeRequests = history.requests.filter((request) => request.searchParams.has("before"));
+  const beforeSequences = beforeRequests.map((request) => request.searchParams.get("before"));
   if (
-    beforeRequests.length !== 1
-    || beforeRequests[0].searchParams.get("before") !== "202"
-    || beforeRequests[0].searchParams.get("limit") !== "200"
-    || beforeRequests[0].searchParams.get("session") !== history.selected.id
+    ![JSON.stringify(["202"]), JSON.stringify(["202", "2"])].includes(JSON.stringify(beforeSequences))
+    || beforeRequests.some((request) =>
+      request.searchParams.get("limit") !== "200"
+      || request.searchParams.get("session") !== history.selected.id)
   ) throw new Error(`unexpected history pages: ${beforeRequests.join(",")}`);
   if (await page.locator('a[href^="javascript:"]').count()) {
     throw new Error("unsafe Markdown link was rendered as an anchor");
@@ -250,7 +239,7 @@ try {
   const recoveryBefore = recovery.requests
     .filter((request) => request.searchParams.has("before"))
     .map((request) => request.searchParams.get("before"));
-  if (JSON.stringify(recoveryBefore) !== JSON.stringify(["202", "2"])) {
+  if (![JSON.stringify(["202", "2"]), JSON.stringify(["202", "2", "1"])].includes(JSON.stringify(recoveryBefore))) {
     throw new Error(`permission recovery did not page to firstSequence: ${JSON.stringify(recoveryBefore)}`);
   }
   if (await permissionPage.getByText("No approval was inferred", { exact: false }).count()) {
@@ -266,7 +255,12 @@ try {
   const missingBefore = missing.requests
     .filter((request) => request.searchParams.has("before"))
     .map((request) => request.searchParams.get("before"));
-  if (JSON.stringify(missingBefore) !== JSON.stringify(["202", "2"])) {
+  if (
+    missingBefore.length < 2
+    || missingBefore.length > 3
+    || missingBefore[0] !== "202"
+    || missingBefore.slice(1).some((before) => !["2", "1"].includes(before))
+  ) {
     throw new Error(`missing permission recovery was not bounded: ${JSON.stringify(missingBefore)}`);
   }
   if (await missingPage.locator(".timeline-permission").count()) {

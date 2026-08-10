@@ -161,10 +161,6 @@
                 ./web/timeline_scroll.mli
                 ./web/timeline_entry_view.ml
                 ./web/timeline_entry_view.mli
-                ./web/working_view.ml
-                ./web/working_view.mli
-                ./web/working_panel.ml
-                ./web/working_panel.mli
                 ./web/workbench_domain_test.ml
                 ./web/workspace_catalog.ml
                 ./web/workspace_catalog.mli

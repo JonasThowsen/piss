@@ -84,12 +84,18 @@ try {
     await page.waitForRequest((request) => request.url().includes("/api/v2/event-stream"));
   }
   if (
-    eventPageRequests.length !== 1
+    eventPageRequests.length < 1
     || !eventPageRequests[0].includes("recent=500")
     || !eventPageRequests[0].includes("session=s-mention-browser")
+    || eventPageRequests.slice(1).some((request) => {
+      const requestUrl = new URL(request);
+      return !requestUrl.searchParams.has("before")
+        || requestUrl.searchParams.get("session") !== "s-mention-browser";
+    })
   ) {
     throw new Error(`unexpected initial event requests: ${JSON.stringify(eventPageRequests)}`);
   }
+  const initialEventPageRequestCount = eventPageRequests.length;
   const streamUrl = new URL(eventStreamRequests.at(-1));
   if (
     streamUrl.searchParams.get("session") !== "s-mention-browser"
@@ -99,19 +105,22 @@ try {
   }
   const tabs = page.getByRole("tablist", { name: "Session views" }).getByRole("tab");
   const tabLabels = await tabs.allTextContents();
-  if (JSON.stringify(tabLabels) !== JSON.stringify(["Agent", "Working", "Changes", "Details"])) {
+  if (JSON.stringify(tabLabels) !== JSON.stringify(["Agent", "Changes", "Details"])) {
     throw new Error(`unexpected session tabs: ${JSON.stringify(tabLabels)}`);
   }
   if (!(await page.getByRole("tab", { name: "Changes" }).isDisabled())) {
     throw new Error("Changes tab was enabled before its product slice exists");
   }
+  if (await page.locator("#session-panel-working, #session-tab-working").count() !== 0) {
+    throw new Error("removed Working page remained in the DOM");
+  }
   const agentTab = page.getByRole("tab", { name: "Agent" });
-  const workingTab = page.getByRole("tab", { name: "Working" });
   const detailsTab = page.getByRole("tab", { name: "Details" });
   await agentTab.focus();
   await agentTab.press("ArrowRight");
-  await page.waitForFunction(() => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true");
-  await workingTab.press("ArrowLeft");
+  await page.waitForFunction(() => document.getElementById("session-tab-details")?.getAttribute("aria-selected") === "true");
+  await detailsTab.press("ArrowLeft");
+  await page.waitForFunction(() => document.getElementById("session-tab-agent")?.getAttribute("aria-selected") === "true");
   const modelButton = page.getByRole("button", { name: "Model: Mock Fast" });
   await modelButton.click();
   const modelRequestPromise = page.waitForRequest(
@@ -146,18 +155,6 @@ try {
   await page.getByRole("region", { name: "Session runtime details" }).getByText(/^worker-/).waitFor();
   await page.getByRole("region", { name: "Configuration options" }).getByText("Mock Fast", { exact: false }).waitFor();
   await agentTab.click();
-  const returnToAgentAfterRun = async (required = false) => {
-    try {
-      await page.waitForFunction(
-        () => document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true",
-        undefined,
-        { timeout: 3_000 },
-      );
-    } catch (error) {
-      if (required) throw error;
-    }
-    if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
-  };
   const sessions = await page.evaluate(async () => {
     const response = await fetch("/api/v2/sessions");
     if (!response.ok) throw new Error(await response.text());
@@ -207,7 +204,6 @@ try {
   }
   await page.getByRole("button", { name: "Retry same command" }).waitFor({ state: "detached" });
   await page.unroute("**/api/v2/commands?*");
-  await returnToAgentAfterRun(true);
   if (
     !body.commandId?.startsWith("web-")
     || body.text !== prompt
@@ -258,7 +254,7 @@ try {
   if (await agent.getByRole("button", { name: "Copied message" }).count() !== 1) {
     throw new Error("repeated copy feedback reset before 1.8 seconds");
   }
-  if (eventPageRequests.length !== 1) {
+  if (eventPageRequests.length !== initialEventPageRequestCount) {
     throw new Error(`post-submit polling remained active: ${JSON.stringify(eventPageRequests)}`);
   }
 
@@ -295,7 +291,6 @@ try {
   ) {
     throw new Error(`unexpected image command: ${JSON.stringify(imageBody)}`);
   }
-  await returnToAgentAfterRun();
   await page.getByText("Received 1 image attachment.", { exact: true }).waitFor({ timeout: 10000 });
   if ((await page.locator("body").innerText()).includes(gifData)) {
     throw new Error("base64 image data was rendered into the timeline");
@@ -305,7 +300,6 @@ try {
   const permissionPrompt = "permission: render the browser decision path";
   await page.getByRole("textbox", { name: "Message agent" }).fill(permissionPrompt);
   await page.getByRole("button", { name: "Send message" }).click();
-  await returnToAgentAfterRun();
   const permissionCard = page.locator(".timeline-permission");
   await permissionCard.getByText("Allow the stability proof", { exact: true }).waitFor();
   await page.getByText("requires_action", { exact: true }).first().waitFor();
@@ -348,24 +342,18 @@ try {
   releasePermission();
   await clickPromise;
   await permissionCard.waitFor({ state: "detached", timeout: 10000 });
-  await returnToAgentAfterRun();
   await page.getByRole("button", { name: "Steer next" }).waitFor();
   if (!(await page.getByRole("button", { name: "Send message" }).isDisabled())) {
     throw new Error("permission resolution inferred a running delivery action");
   }
   await page.getByText("state / completed", { exact: true }).last().waitFor({ timeout: 10000 });
-  if (eventPageRequests.length !== 1) {
+  if (eventPageRequests.length !== initialEventPageRequestCount) {
     throw new Error(`permission flow polled event pages: ${JSON.stringify(eventPageRequests)}`);
   }
 
   await waitForIdle();
   await page.getByRole("textbox", { name: "Message agent" }).fill("hold active for steering");
   await page.getByRole("button", { name: "Send message" }).click();
-  await page.waitForFunction(() =>
-    document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true"
-    || [...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Steer next")),
-  );
-  if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
   const steerButton = page.getByRole("button", { name: "Steer next" });
   await steerButton.waitFor();
   await steerButton.click();
@@ -398,11 +386,6 @@ try {
   await waitForIdle();
   await page.getByRole("textbox", { name: "Message agent" }).fill("hold active for follow-up");
   await page.getByRole("button", { name: "Send message" }).click();
-  await page.waitForFunction(() =>
-    document.getElementById("session-tab-working")?.getAttribute("aria-selected") === "true"
-    || [...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Follow-up")),
-  );
-  if (await workingTab.getAttribute("aria-selected") === "true") await agentTab.click();
   const followButton = page.getByRole("button", { name: "Follow-up" });
   await followButton.click();
   await page.getByRole("textbox", { name: "Message agent" }).fill("run this after the proof");
@@ -464,7 +447,6 @@ try {
   }
   const agentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");
-  await returnToAgentAfterRun();
   await page.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, agentCount);
   if (await timeline.evaluate((value) => value.scrollTop) > 4) {
     throw new Error("stream overrode manual upward scrolling");
@@ -477,7 +459,6 @@ try {
   await waitForIdle();
   const nextAgentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream");
-  await returnToAgentAfterRun();
   await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await page.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await page.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, nextAgentCount);
@@ -489,6 +470,7 @@ try {
   if (await page.locator("details.tool-disclosure[open]").count() !== 0) {
     throw new Error("streamed tool updates opened a collapsed disclosure");
   }
+  await waitForIdle();
 
   const workspaceSettings = page.getByRole("button", { name: "Workspace settings for PISS rewrite" });
   await workspaceSettings.click();

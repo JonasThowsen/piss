@@ -1,22 +1,10 @@
 open! Core
 
-type t = Agent | Working | Details
+type t = Agent | Details
 
-let all = [ Agent; Working; Details ]
-
-let label = function
-  | Agent -> "Agent"
-  | Working -> "Working"
-  | Details -> "Details"
-
+let all = [ Agent; Details ]
+let label = function Agent -> "Agent" | Details -> "Details"
 let id tab = String.lowercase (label tab)
-
-let select_after_snapshot ~previous ~next current =
-  match (previous, next, current) with
-  | Some previous, Runtime_domain.Running, Agent
-    when not (phys_equal previous Runtime_domain.Running) ->
-      Working
-  | _ -> current
 
 let navigate ~current ~key =
   let index =

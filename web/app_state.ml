@@ -52,9 +52,6 @@ let apply_shell _ model = function
         }
   | Runtime_loaded (session_id, snapshot)
     when Option.exists model.runtime.session_id ~f:(String.equal session_id) ->
-      let previous =
-        Option.map model.runtime.snapshot ~f:(fun value -> value.status)
-      in
       {
         runtime =
           {
@@ -63,9 +60,7 @@ let apply_shell _ model = function
             loading = false;
             error = None;
           };
-        tab =
-          Session_tabs.select_after_snapshot ~previous ~next:snapshot.status
-            model.tab;
+        tab = model.tab;
       }
   | Runtime_failed (session_id, message)
     when Option.exists model.runtime.session_id ~f:(String.equal session_id) ->

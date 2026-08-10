@@ -19,7 +19,6 @@
   request_target
   runtime_domain
   session_tabs
-  working_view
   workspace_catalog
   timeline_projection)
  (libraries core uri yojson))
@@ -53,7 +52,6 @@
   timeline_entry_view
   timeline_scroll
   timeline_view
-  working_panel
   workspace_dialogs)
  (modes js)
  (libraries async_js bonsai.web control_plane_domain js_of_ocaml)

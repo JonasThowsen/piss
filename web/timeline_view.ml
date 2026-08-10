@@ -193,7 +193,7 @@ let timeline state selected_id ~session ~runtime ~deciding_permissions
       ]
     [ Vdom.Node.div ~attrs:[ class_ "timeline-stream" ] content ]
 
-let render_tabs selected ~on_select working =
+let render_tabs selected ~on_select =
   let button tab =
     let active = phys_equal selected tab in
     let keydown event =
@@ -207,9 +207,7 @@ let render_tabs selected ~on_select working =
       ~attrs:
         [
           Vdom.Attr.id ("session-tab-" ^ Session_tabs.id tab);
-          class_
-            ((if phys_equal tab Session_tabs.Working then "working-tab " else "")
-            ^ if active then "active" else "");
+          class_ (if active then "active" else "");
           Vdom.Attr.create "type" "button";
           Vdom.Attr.create "role" "tab";
           Vdom.Attr.create "aria-selected" (Bool.to_string active);
@@ -219,27 +217,7 @@ let render_tabs selected ~on_select working =
           Vdom.Attr.on_keydown keydown;
           Vdom.Attr.on_click (fun _ -> on_select tab);
         ]
-      ([ text (Session_tabs.label tab) ]
-      @
-      if phys_equal tab Session_tabs.Working then
-        [
-          Vdom.Node.create "i"
-            ~attrs:
-              [
-                class_
-                  ("working-tab-pulse working-tab-pulse-"
-                  ^
-                  match working.Working_view.phase with
-                  | Running_tool -> "running"
-                  | Thinking -> "thinking"
-                  | Awaiting_permission -> "awaiting"
-                  | Connecting -> "connecting"
-                  | Idle -> "idle");
-                Vdom.Attr.create "aria-hidden" "true";
-              ]
-            [];
-        ]
-      else [])
+      [ text (Session_tabs.label tab) ]
   in
   Vdom.Node.div
     ~attrs:
@@ -250,7 +228,6 @@ let render_tabs selected ~on_select working =
       ]
     [
       button Agent;
-      button Working;
       Vdom.Node.button
         ~attrs:
           [
@@ -271,16 +248,12 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     Option.map session ~f:(fun (session : Control_plane.Session.t) ->
         session.id)
   in
-  let events, entries =
+  let events =
     match (state, selected_id) with
     | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
-        (Event_buffer.events buffer, Event_buffer.entries buffer)
-    | _ -> ([], [])
-  in
-  let working =
-    Working_view.derive ~snapshot:runtime ~connecting:runtime_loading ~events
-      ~entries
+        Event_buffer.events buffer
+    | _ -> []
   in
   let outbox_view = Outbox_view.render events in
   let agent_panel =
@@ -318,7 +291,6 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     | Some session ->
         [
           agent_panel;
-          Working_panel.render working ~hidden:(not (phys_equal tab Working));
           Vdom.Node.div
             ~attrs:
               ([
@@ -341,7 +313,7 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     ([
        (match session with
        | None -> Vdom.Node.none
-       | Some _ -> render_tabs tab ~on_select:on_tab working);
+       | Some _ -> render_tabs tab ~on_select:on_tab);
        Vdom.Node.div ~attrs:[ class_ "session-panel-stack" ] panels;
      ]
     @
