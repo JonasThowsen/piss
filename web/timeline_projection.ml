@@ -102,6 +102,10 @@ let add_or_replace state key entry =
   in
   { state with order; entries = Map.set state.entries ~key ~data:entry }
 
+let add_or_move_to_latest state key entry =
+  let order = key :: List.filter state.order ~f:(Fn.non (String.equal key)) in
+  { state with order; entries = Map.set state.entries ~key ~data:entry }
+
 let append_unique current incoming =
   List.fold incoming ~init:current ~f:(fun values value ->
       if List.mem values value ~equal:Acp_content.equal then values
@@ -124,8 +128,9 @@ let project updates =
               ("event:user:" ^ Int64.to_string sequence)
               (User { sequence; command_id; text })
         | Agent_chunk { sequence; message_id; text } ->
+            let idless = String.is_empty message_id in
             let message_id =
-              if not (String.is_empty message_id) then message_id
+              if not idless then message_id
               else
                 Option.value_map state.current_command
                   ~default:("event-" ^ Int64.to_string sequence)
@@ -135,10 +140,17 @@ let project updates =
             let entry =
               match Map.find state.entries key with
               | Some (Agent previous) ->
-                  Agent { previous with text = previous.text ^ text }
+                  Agent
+                    {
+                      previous with
+                      sequence =
+                        (if idless then sequence else previous.sequence);
+                      text = previous.text ^ text;
+                    }
               | _ -> Agent { sequence; message_id; text }
             in
-            add_or_replace state key entry
+            if idless then add_or_move_to_latest state key entry
+            else add_or_replace state key entry
         | Tool_call { sequence; tool_call_id; title; input; status; artifacts }
           ->
             let key = "tool:" ^ tool_call_id in

@@ -18,6 +18,32 @@ let () =
   ] ->
       ()
   | _ -> fail "id-less ACP chunks were not grouped by command");
+  let moved_idless_entries =
+    project
+      [
+        User_update { sequence = 1L; command_id = "command-1"; text = "Run" };
+        Agent_chunk { sequence = 2L; message_id = ""; text = "Working" };
+        Tool_call
+          {
+            sequence = 3L;
+            tool_call_id = "tool-between";
+            title = "Check";
+            input = "";
+            status = "completed";
+            artifacts = [];
+          };
+        Agent_chunk { sequence = 4L; message_id = ""; text = "Done" };
+      ]
+  in
+  (match moved_idless_entries with
+  | [
+   User _;
+   Tool _;
+   Agent
+     { sequence = 4L; message_id = "command-command-1"; text = "WorkingDone" };
+  ] ->
+      ()
+  | _ -> fail "updated id-less response did not move below intervening tools");
   let entries =
     project
       [
