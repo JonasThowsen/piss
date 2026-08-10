@@ -130,3 +130,22 @@ let has_conversation_boundary events =
             | Received | Accepted | Dispatched | Acknowledged | Ambiguous ->
                 false)
         | _ -> false))
+
+let has_unresolved_recoveries events =
+  let accepted, recovered =
+    List.fold events ~init:(String.Set.empty, String.Set.empty)
+      ~f:(fun (accepted, recovered) event ->
+        let accepted =
+          Option.value_map (Event_decode.accepted_command_id event)
+            ~default:accepted ~f:(Set.add accepted)
+        in
+        let recovered =
+          Option.value_map (Event_decode.recovered_command_id event)
+            ~default:recovered ~f:(Set.add recovered)
+        in
+        (accepted, recovered))
+  in
+  not (Set.is_subset recovered ~of_:accepted)
+
+let initial_history_is_complete events =
+  has_conversation_boundary events && not (has_unresolved_recoveries events)

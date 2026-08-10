@@ -7,18 +7,18 @@ let history_request session_id =
     ~query:[ ("recent", "500"); ("session", session_id) ]
     "/api/v2/events"
 
-let older_request ~session_id ~before =
+let older_request ~limit ~session_id ~before =
   Browser_http.get
     ~query:
       [
         ("before", Int64.to_string before);
-        ("limit", "200");
+        ("limit", Int.to_string limit);
         ("session", session_id);
       ]
     "/api/v2/events"
 
-let rec extend_initial_history ~session_id ~remaining events =
-  if remaining = 0 || Event_history.has_conversation_boundary events then
+let rec extend_initial_history ~session_id events =
+  if Event_history.initial_history_is_complete events then
     Async_kernel.Deferred.return (Ok events)
   else
     match List.hd events with
@@ -26,7 +26,8 @@ let rec extend_initial_history ~session_id ~remaining events =
     | Some earliest -> (
         let open Async_kernel.Deferred.Let_syntax in
         let%bind response =
-          older_request ~session_id ~before:(Event_history.sequence earliest)
+          older_request ~limit:500 ~session_id
+            ~before:(Event_history.sequence earliest)
         in
         match response with
         | Error error ->
@@ -34,10 +35,20 @@ let rec extend_initial_history ~session_id ~remaining events =
         | Ok body -> (
             match Event_history.decode_events body with
             | Error message -> Async_kernel.Deferred.return (Error message)
-            | Ok [] -> Async_kernel.Deferred.return (Ok events)
-            | Ok page ->
-                extend_initial_history ~session_id ~remaining:(remaining - 1)
-                  (page @ events)))
+            | Ok [] ->
+                if Event_history.has_unresolved_recoveries events then
+                  Async_kernel.Deferred.return
+                    (Error "recovered command acceptance is unavailable")
+                else Async_kernel.Deferred.return (Ok events)
+            | Ok (page_earliest :: _ as page) ->
+                if
+                  Int64.(
+                    Event_history.sequence page_earliest
+                    >= Event_history.sequence earliest)
+                then
+                  Async_kernel.Deferred.return
+                    (Error "older history page did not advance")
+                else extend_initial_history ~session_id (page @ events)))
 
 let initial_history_request session_id =
   let open Async_kernel.Deferred.Let_syntax in
@@ -48,7 +59,7 @@ let initial_history_request session_id =
   | Ok body -> (
       match Event_history.decode_events body with
       | Error message -> Async_kernel.Deferred.return (Error message)
-      | Ok events -> extend_initial_history ~session_id ~remaining:10 events)
+      | Ok events -> extend_initial_history ~session_id events)
 
 let terminal_permission event =
   match Event_history.project [ event ] with
@@ -130,7 +141,8 @@ let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
 let load_older ~inject_history ~set_stream_notice ~session_id ~before =
   Effect.bind (inject_history (Begin_older session_id)) ~f:(fun () ->
       Effect.bind
-        (Effect.of_deferred_thunk (fun () -> older_request ~session_id ~before))
+        (Effect.of_deferred_thunk (fun () ->
+             older_request ~limit:200 ~session_id ~before))
         ~f:(function
           | Error error ->
               let message = Error.to_string_hum error in

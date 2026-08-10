@@ -6,3 +6,5 @@ val sequence : t -> int64
 val kind : t -> string
 val update : t -> Timeline_projection.update option
 val outbox_update : t -> Outbox_projection.update option
+val accepted_command_id : t -> string option
+val recovered_command_id : t -> string option

@@ -158,6 +158,40 @@ let () =
   in
   if not (Event_history.has_conversation_boundary boundary_events) then
     fail "completed conversation boundary did not stop initial paging";
+  let recovery_without_acceptance =
+    match
+      Event_history.decode_events
+        {|[
+          {"sequence":1,"kind":"command.state","payload":{"commandId":"previous","state":"completed"},"createdAt":1},
+          {"sequence":2,"kind":"command.accepted","payload":{"commandId":"current","requestId":"current","action":"prompt","text":"next","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":2},
+          {"sequence":3,"kind":"command.recovered","payload":{"commandId":"older-recovery","action":"follow_up","reason":"operator recovery"},"createdAt":3}
+        ]|}
+    with
+    | Ok events -> events
+    | Error message -> fail message
+  in
+  if Event_history.initial_history_is_complete recovery_without_acceptance then
+    fail "history stopped before a recovered command acceptance was loaded";
+  let complete_recovery_history =
+    match
+      Event_history.decode_events
+        {|[
+          {"sequence":1,"kind":"command.state","payload":{"commandId":"previous","state":"completed"},"createdAt":1},
+          {"sequence":2,"kind":"command.accepted","payload":{"commandId":"older-recovery","requestId":"older-recovery","action":"follow_up","text":"restored","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":2},
+          {"sequence":3,"kind":"command.accepted","payload":{"commandId":"current","requestId":"current","action":"prompt","text":"next","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":3},
+          {"sequence":4,"kind":"command.recovered","payload":{"commandId":"older-recovery","action":"follow_up","reason":"operator recovery"},"createdAt":4}
+        ]|}
+    with
+    | Ok events -> events
+    | Error message -> fail message
+  in
+  if not (Event_history.initial_history_is_complete complete_recovery_history)
+  then fail "history did not stop after recovered acceptance was loaded";
+  (match Event_history.project complete_recovery_history with
+  | Command_state _ :: User { command_id = "older-recovery"; text = "restored"; _ }
+    :: _ ->
+      ()
+  | _ -> fail "resolved recovery did not restore its durable prompt text");
   (match entries with
   | [
    Event_history.User { text = "Run the proof"; _ };

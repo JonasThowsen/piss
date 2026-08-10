@@ -6,6 +6,8 @@ type t = {
   kind : string;
   update : Timeline_projection.update option;
   outbox_update : Outbox_projection.update option;
+  accepted_command_id : string option;
+  recovered_command_id : string option;
 }
 
 let ( let* ) result f = Result.bind result ~f
@@ -332,7 +334,7 @@ let decode_event_json index json =
   let* sequence = field_as fields path "sequence" int64 in
   let* kind = field_as fields path "kind" nonempty_string in
   let* payload = field fields path "payload" in
-  let* _payload_fields = assoc (path ^ ".payload") payload in
+  let* payload_fields = assoc (path ^ ".payload") payload in
   let* _created_at = field_as fields path "createdAt" number in
   let payload_path = path ^ ".payload" in
   let* update =
@@ -363,8 +365,31 @@ let decode_event_json index json =
         decode_outbox_state payload_path payload
     | _ -> Ok None
   in
+  let* accepted_command_id, recovered_command_id =
+    match kind with
+    | "command.accepted" ->
+        let* command_id =
+          field_as payload_fields payload_path "commandId" nonempty_string
+        in
+        Ok (Some command_id, None)
+    | "command.recovered" ->
+        let* command_id =
+          field_as payload_fields payload_path "commandId" nonempty_string
+        in
+        Ok (None, Some command_id)
+    | _ -> Ok (None, None)
+  in
   if Int64.(sequence <= 0L) then error (path ^ ".sequence") "must be positive"
-  else Ok { sequence; kind; update; outbox_update }
+  else
+    Ok
+      {
+        sequence;
+        kind;
+        update;
+        outbox_update;
+        accepted_command_id;
+        recovered_command_id;
+      }
 
 let validate_order events =
   let rec loop previous = function
@@ -393,3 +418,5 @@ let sequence event = event.sequence
 let kind event = event.kind
 let update event = event.update
 let outbox_update event = event.outbox_update
+let accepted_command_id event = event.accepted_command_id
+let recovered_command_id event = event.recovered_command_id
