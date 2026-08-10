@@ -123,17 +123,19 @@ let menu_icon () =
         [];
     ]
 
-let menu_button ~open_ ~on_open =
+let menu_button ~open_ ~on_toggle =
   Vdom.Node.button
     ~attrs:
       [
         Vdom.Attr.id "mobile-menu-button";
         Vdom.Attr.class_ "mobile-menu";
         Vdom.Attr.create "type" "button";
-        Vdom.Attr.create "aria-label" "Open workspaces and sessions";
+        Vdom.Attr.create "aria-label"
+          (if open_ then "Close workspaces and sessions"
+           else "Open workspaces and sessions");
         Vdom.Attr.create "aria-controls" "workspace-navigation";
         Vdom.Attr.create "aria-expanded" (Bool.to_string open_);
-        Vdom.Attr.on_click (fun _ -> on_open ());
+        Vdom.Attr.on_click (fun _ -> on_toggle ());
       ]
     [ menu_icon () ]
 

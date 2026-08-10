@@ -357,6 +357,9 @@ let component graph =
   let open_mobile () =
     Effect.Many [ set_mobile_open true; Mobile_shell.focus_navigation () ]
   in
+  let toggle_mobile () =
+    if mobile_open then close_mobile () else open_mobile ()
+  in
   let toggle_workspace id =
     set_collapsed
       (if Set.mem collapsed id then Set.remove collapsed id
@@ -424,7 +427,8 @@ let component graph =
         ~attrs:([ Vdom.Attr.id "control-room" ] @ class_ "control-room")
         [
           App_header.render sessions workspaces selected_id runtime
-            (Mobile_shell.menu_button ~open_:mobile_open ~on_open:open_mobile)
+            (Mobile_shell.menu_button ~open_:mobile_open
+               ~on_toggle:toggle_mobile)
             search.trigger;
           Vdom.Node.section ~attrs:(class_ "workspace-grid")
             [

@@ -669,9 +669,19 @@ try {
   });
   mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
   await mobile.goto(url, { waitUntil: "domcontentloaded" });
-  const mobileMenu = mobile.getByRole("button", { name: "Open workspaces and sessions" });
+  const mobileMenu = mobile.locator("#mobile-menu-button");
   await assertPaintedSvg(mobileMenu.locator("svg"), "mobile menu trigger");
+  await mobile.getByRole("button", { name: "Open workspaces and sessions" }).tap();
+  await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
+  if (await mobileMenu.getAttribute("aria-label") !== "Close workspaces and sessions") {
+    throw new Error("open mobile menu button did not expose its close action");
+  }
   await mobileMenu.tap();
+  await mobile.waitForFunction(() =>
+    document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false"
+    && document.activeElement?.id === "mobile-menu-button",
+  );
+  await mobile.getByRole("button", { name: "Open workspaces and sessions" }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
   await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false");
