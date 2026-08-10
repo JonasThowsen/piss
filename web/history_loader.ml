@@ -86,11 +86,12 @@ let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
                       Effect.bind
                         (inject_history (Initial (session_id, events)))
                         ~f:(fun () ->
-                          connect_stream ~selection ~session_id
-                            ~after:(Event_buffer.highest_sequence buffer)
-                            ~inject_history ~inject_deciding
-                            ~refresh_catalog_effect ~refresh_snapshot_effect
-                            ~set_stream_notice)))))
+                          Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
+                              connect_stream ~selection ~session_id
+                                ~after:(Event_buffer.highest_sequence buffer)
+                                ~inject_history ~inject_deciding
+                                ~refresh_catalog_effect ~refresh_snapshot_effect
+                                ~set_stream_notice))))))
 
 let load_older ~inject_history ~set_stream_notice ~session_id ~before =
   Effect.bind (inject_history (Begin_older session_id)) ~f:(fun () ->

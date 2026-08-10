@@ -140,6 +140,22 @@ try {
   await page.getByText("Retained history begins at sequence 2", { exact: false }).waitFor();
   const loadEarlier = page.getByRole("button", { name: "Load earlier activity" });
   await loadEarlier.waitFor();
+  await page.waitForFunction(() => {
+    const element = document.getElementById("timeline");
+    return element && element.scrollHeight > element.clientHeight;
+  });
+  await page.waitForFunction(() => {
+    const element = document.getElementById("timeline");
+    return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 2;
+  }, undefined, { timeout: 5_000 });
+  const initialPosition = await timeline.evaluate((element) => ({
+    top: element.scrollTop,
+    height: element.scrollHeight,
+    client: element.clientHeight,
+  }));
+  if (initialPosition.height - initialPosition.top - initialPosition.client > 2) {
+    throw new Error(`initial history did not open at the latest event: ${JSON.stringify(initialPosition)}`);
+  }
   await timeline.evaluate((element) => {
     element.scrollTop = 0;
     element.dispatchEvent(new Event("scroll"));
@@ -201,6 +217,30 @@ try {
   await page.getByRole("button", { name: "Copied code block" }).waitFor();
   await historyContext.close();
 
+  const mobileHistoryContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await configure(mobileHistoryContext, "history");
+  const mobileHistoryPage = await mobileHistoryContext.newPage();
+  mobileHistoryPage.on("pageerror", (error) => errors.push(`mobile history page: ${error.message}`));
+  await mobileHistoryPage.goto(url, { waitUntil: "domcontentloaded" });
+  await mobileHistoryPage.getByText("Browser Markdown", { exact: true }).waitFor();
+  await mobileHistoryPage.waitForFunction(() => {
+    const element = document.getElementById("timeline");
+    return element && element.scrollHeight > element.clientHeight;
+  });
+  await mobileHistoryPage.waitForFunction(() => {
+    const element = document.getElementById("timeline");
+    return element && element.scrollHeight - element.scrollTop - element.clientHeight <= 2;
+  }, undefined, { timeout: 5_000 });
+  const mobileInitialPosition = await mobileHistoryPage.locator("#timeline").evaluate((element) => ({
+    top: element.scrollTop,
+    height: element.scrollHeight,
+    client: element.clientHeight,
+  }));
+  if (mobileInitialPosition.height - mobileInitialPosition.top - mobileInitialPosition.client > 2) {
+    throw new Error(`mobile history did not open at the latest event: ${JSON.stringify(mobileInitialPosition)}`);
+  }
+  await mobileHistoryContext.close();
+
   const permissionContext = await browser.newContext({ viewport: { width: 1000, height: 700 } });
   const recovery = await configure(permissionContext, "permission");
   const permissionPage = await permissionContext.newPage();
@@ -234,7 +274,7 @@ try {
   }
   await missingContext.close();
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai timeline browser proof passed: exact history anchor, retention bound, safe code copy, and old permission reconstruction");
+  console.log("Bonsai timeline browser proof passed: latest-first desktop/mobile load, exact history anchor, retention bound, safe code copy, and old permission reconstruction");
 } finally {
   await browser.close();
 }

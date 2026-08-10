@@ -7,6 +7,7 @@ let mutation : Js.Unsafe.any option ref = ref None
 let resize : Js.Unsafe.any option ref = ref None
 let frame : Js.Unsafe.any option ref = ref None
 let settle_frame : Js.Unsafe.any option ref = ref None
+let opening_frame : Js.Unsafe.any option ref = ref None
 let listener : Js.Unsafe.any option ref = ref None
 let window_listener : Js.Unsafe.any option ref = ref None
 let following = ref true
@@ -44,6 +45,14 @@ let cancel_settle_frame () =
            (Js.Unsafe.inject Dom_html.window)
            "cancelAnimationFrame" [| value |]));
   settle_frame := None
+
+let cancel_opening_frame () =
+  Option.iter !opening_frame ~f:(fun value ->
+      ignore
+        (Js.Unsafe.meth_call
+           (Js.Unsafe.inject Dom_html.window)
+           "cancelAnimationFrame" [| value |]));
+  opening_frame := None
 
 let button () =
   let document = Js.Unsafe.inject Dom_html.document in
@@ -126,13 +135,14 @@ let on_scroll event =
       else if resized && not explicit then ()
       else if top < !previous_top - 1 && ((not !pinning) || explicit) then
         following := false
-      else if not !pinning then following := distance value <= 80;
+      else if (not !pinning) && distance value <= 80 then following := true;
       previous_top := top;
       update_button ()
 
 let cleanup_now () =
   cancel_frame ();
   cancel_settle_frame ();
+  cancel_opening_frame ();
   Option.iter !mutation ~f:(fun value ->
       ignore (Js.Unsafe.meth_call value "disconnect" [||]));
   Option.iter !resize ~f:(fun value ->
@@ -164,14 +174,15 @@ let observe constructor_name =
     Some (Js.Unsafe.new_obj constructor [| Js.Unsafe.inject callback |])
   else None
 
-let install () =
+let rec install () =
   frame := None;
   let document = Js.Unsafe.inject Dom_html.document in
   let value =
     Js.Unsafe.meth_call document "getElementById"
       [| Js.Unsafe.inject (Js.string "timeline") |]
   in
-  if present value then (
+  if not (present value) then frame := Some (request_frame install)
+  else (
     timeline := Some value;
     previous_top := Js.Unsafe.get value "scrollTop";
     previous_client_height := Js.Unsafe.get value "clientHeight";
@@ -219,13 +230,35 @@ let action_effect action =
 
 let start () = action_effect start_now
 
+let rec pin_opening frames =
+  opening_frame :=
+    Some
+      (request_frame (fun () ->
+           opening_frame := None;
+           let value =
+             Js.Unsafe.meth_call
+               (Js.Unsafe.inject Dom_html.document)
+               "getElementById"
+               [| Js.Unsafe.inject (Js.string "timeline") |]
+           in
+           if present value then (
+             timeline := Some value;
+             let height : int = Js.Unsafe.get value "scrollHeight" in
+             Js.Unsafe.set value "scrollTop" height;
+             previous_top := Js.Unsafe.get value "scrollTop");
+           if frames > 1 then pin_opening (frames - 1)
+           else (
+             pinning := false;
+             update_button ())))
+
 let reset () =
   action_effect (fun () ->
-      match !timeline with
-      | None -> start_now ()
-      | Some _ ->
-          following := true;
-          schedule ())
+      (match !timeline with None -> start_now () | Some _ -> ());
+      following := true;
+      pinning := true;
+      cancel_opening_frame ();
+      pin_opening 4;
+      schedule ())
 
 let jump_to_latest () =
   action_effect (fun () ->
@@ -329,6 +362,7 @@ let preserve_after_prepend action =
          anchoring := true;
          pinning := false;
          cancel_frame ();
+         cancel_opening_frame ();
          Async_kernel.Deferred.return (capture_anchor (), was_following)))
     ~f:(fun (anchor, was_following) ->
       Effect.bind action ~f:(fun () ->
@@ -356,8 +390,10 @@ let track () =
       in
       if present value && agent_panel_visible () then (
         timeline := Some value;
-        following := distance value <= 80;
-        previous_top := Js.Unsafe.get value "scrollTop";
+        let top : int = Js.Unsafe.get value "scrollTop" in
+        if top < !previous_top - 1 then following := false
+        else if distance value <= 80 then following := true;
+        previous_top := top;
         update_button ()))
 
 let cleanup () = action_effect cleanup_now
