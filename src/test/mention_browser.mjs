@@ -127,15 +127,12 @@ try {
   await waitForIdle();
   const nextAgentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream while typing");
-  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
-  await desktop.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await textarea.fill("");
   const typingStarted = Date.now();
   await textarea.pressSequentially("responsive input ".repeat(20));
   const typingElapsed = Date.now() - typingStarted;
   if (typingElapsed > 1500) throw new Error(`composer typing remained laggy: ${typingElapsed}ms`);
   await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, nextAgentCount);
-  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await desktop.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;

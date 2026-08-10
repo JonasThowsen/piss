@@ -67,8 +67,13 @@ let connect_stream ~selection ~session_id ~after ~inject_history
     | Error message ->
         dispatch (set_stream_notice ("Live event rejected: " ^ message))
     | Ok event ->
+        let append =
+          Effect.bind
+            (inject_history (Append (session_id, event)))
+            ~f:(fun () -> Timeline_scroll.resume ())
+        in
         let effects =
-          [ inject_history (Append (session_id, event)) ]
+          [ append ]
           @ Option.value_map (terminal_permission event) ~default:[]
               ~f:(fun request_id -> [ inject_deciding (Remove request_id) ])
           @

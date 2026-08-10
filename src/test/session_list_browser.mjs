@@ -459,10 +459,7 @@ try {
   await waitForIdle();
   const nextAgentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream");
-  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
-  await page.locator('[aria-label="Jump to latest message"]').evaluate((button) => button.click());
   await page.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, nextAgentCount);
-  await timeline.evaluate((value) => { value.scrollTop = value.scrollHeight; value.dispatchEvent(new Event("scroll")); });
   await page.waitForFunction(() => {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
