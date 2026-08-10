@@ -372,7 +372,16 @@ let test_command_recovery () =
     Store.recover_targeted_text_command store ~target
       ~command_id:"recover-image" ~action:"prompt"
   with
-  | Error _ -> ()
+  | Error _ -> (
+      match
+        Store.recover_targeted_text_command ~discard_cleared_attachments:true
+          store ~target ~command_id:"recover-image" ~action:"prompt"
+      with
+      | Ok recovered ->
+          Alcotest.(check string)
+            "explicit recovery retains image prompt text" "image command"
+            recovered.prompt
+      | Error reason -> Alcotest.fail reason)
   | Ok _ -> Alcotest.fail "image command was unsafely recovered without data"
 
 let test_command_deduplication () =

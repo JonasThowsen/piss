@@ -34,6 +34,7 @@ type request =
       target : runtime_target;
       command_id : string;
       action : string;
+      discard_cleared_attachments : bool;
     }
   | Cancel of { target : runtime_target; mutation_id : string }
   | Config_options
@@ -315,11 +316,20 @@ let request_of_yojson json =
       let* target = runtime_target_member json in
       let* command_id = string_member "commandId" json in
       let* action = string_member "action" json in
+      let* discard_cleared_attachments =
+        match member "discardClearedAttachments" json with
+        | `Null -> Ok false
+        | `Bool value -> Ok value
+        | _ -> Error "discardClearedAttachments must be a boolean"
+      in
       if command_id = "" || String.length command_id > 128 then
         Error "commandId must contain between 1 and 128 characters"
       else if action <> "prompt" && action <> "follow_up" then
         Error "recovery action must be prompt or follow_up"
-      else Ok (Recover_command { target; command_id; action })
+      else
+        Ok
+          (Recover_command
+             { target; command_id; action; discard_cleared_attachments })
   | "cancel" ->
       let* target = runtime_target_member json in
       let* mutation_id = mutation_id_member json in

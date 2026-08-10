@@ -521,7 +521,8 @@ let update_command_state store ~command_id state =
       bind_text statement 3 command_id;
       expect_done "update command" statement)
 
-let recover_targeted_text_command store ~target ~command_id ~action =
+let recover_targeted_text_command ?(discard_cleared_attachments = false) store
+    ~target ~command_id ~action =
   transaction store (fun () ->
       match stale_runtime_reason store target with
       | Some reason -> Error reason
@@ -537,15 +538,19 @@ let recover_targeted_text_command store ~target ~command_id ~action =
                     let open Yojson.Safe.Util in
                     let image_count = member "imageCount" acceptance in
                     let resource_count = member "resourceCount" acceptance in
-                    if
-                      not
-                        (String.equal content "[]"
-                        && image_count = `Int 0
-                        && resource_count = `Int 0)
+                    let has_cleared_attachments =
+                      image_count <> `Int 0 || resource_count <> `Int 0
+                    in
+                    if not (String.equal content "[]") then
+                      Error
+                        "ambiguous command content has not been cleared"
+                    else if
+                      has_cleared_attachments
+                      && not discard_cleared_attachments
                     then
                       Error
-                        "only text-only ambiguous commands can be explicitly \
-                         recovered"
+                        "recovery requires explicit acknowledgement of cleared \
+                         attachments"
                     else (
                       update_command_state store ~command_id Accepted;
                       ignore
@@ -555,11 +560,15 @@ let recover_targeted_text_command store ~target ~command_id ~action =
                                 [
                                   ("commandId", `String command_id);
                                   ("action", `String action);
-                                  ( "reason",
-                                    `String
-                                      "operator recovered an interrupted or \
-                                       lost queued command" );
-                                ]));
+                                   ( "reason",
+                                     `String
+                                       "operator recovered an interrupted or \
+                                        lost queued command" );
+                                   ( "discardedClearedAttachments",
+                                     `Bool has_cleared_attachments );
+                                   ("discardedImageCount", image_count);
+                                   ("discardedResourceCount", resource_count);
+                                 ]));
                       Ok { state = Accepted; duplicate = false; prompt }))))
 
 let set_command_state store ~command_id state =

@@ -47,6 +47,7 @@ type request =
       target : Domain.runtime_target;
       command_id : string;
       action : string;
+      discard_cleared_attachments : bool;
     }
   | Cancel of { target : Domain.runtime_target; mutation_id : string }
   | Config_options

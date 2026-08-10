@@ -249,15 +249,16 @@ let handle state request =
           | None ->
               dispatch_prompt state ~action ~target ~command_id ~text ~images
                 ~resources ())
-      | Wire.Recover_command { target; command_id; action } -> (
+      | Wire.Recover_command
+          { target; command_id; action; discard_cleared_attachments } -> (
           if action = "prompt" && State.running_command_count state > 0 then
             conflict "the session already has an active prompt"
           else if action = "follow_up" && State.running_command_count state = 0
           then conflict "follow_up recovery requires an active prompt"
           else
             match
-              Store.recover_targeted_text_command store ~target ~command_id
-                ~action
+              Store.recover_targeted_text_command ~discard_cleared_attachments
+                store ~target ~command_id ~action
             with
             | Error reason -> conflict reason
             | Ok recovered when recovered.duplicate ->

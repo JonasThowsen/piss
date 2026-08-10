@@ -143,14 +143,16 @@ val accept_targeted_command :
     one SQLite transaction. *)
 
 val recover_targeted_text_command :
+  ?discard_cleared_attachments:bool ->
   t ->
   target:Piss_shared.Domain.runtime_target ->
   command_id:string ->
   action:string ->
   (recovered_command, string) result
-(** Explicitly reset a text-only ambiguous command for same-ID redispatch.
-    Commands with images or resources fail closed because their cleared payload
-    cannot be reconstructed after the original dispatch. *)
+(** Explicitly reset an ambiguous command for same-ID text redispatch. Commands
+    with images or resources fail closed unless [discard_cleared_attachments] is
+    set, because their cleared payload cannot be reconstructed after the
+    original dispatch. *)
 
 val command_content : t -> string -> string option
 (** Read and clear the deferred prompt content (text, images, resources) for a
