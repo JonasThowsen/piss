@@ -435,7 +435,7 @@ try {
     value.dispatchEvent(new Event("scroll"));
   });
   try {
-    await page.getByRole("button", { name: "Jump to latest message" }).waitFor({ timeout: 3_000 });
+    await latestButton.waitFor({ timeout: 3_000 });
   } catch (error) {
     const state = await page.evaluate(() => ({
       tab: document.getElementById("session-tab-agent")?.getAttribute("aria-selected"),
@@ -444,6 +444,10 @@ try {
       scrollTop: document.getElementById("timeline")?.scrollTop,
     }));
     throw new Error(`${error.message}: ${JSON.stringify(state)}`);
+  }
+  await assertPaintedSvg(latestButton.locator("svg"), "latest jump button");
+  if ((await latestButton.innerText()).trim() !== "") {
+    throw new Error("latest jump button retained a visible text label");
   }
   const agentCount = await page.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");

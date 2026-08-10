@@ -15,6 +15,24 @@ type state =
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
+let down_arrow_icon () =
+  Vdom.Node.create_svg "svg"
+    ~attrs:
+      [
+        Vdom.Attr.create "viewBox" "0 0 24 24";
+        Vdom.Attr.create "fill" "none";
+        Vdom.Attr.create "stroke" "currentColor";
+        Vdom.Attr.create "stroke-width" "1.8";
+        Vdom.Attr.create "stroke-linecap" "round";
+        Vdom.Attr.create "stroke-linejoin" "round";
+        Vdom.Attr.create "aria-hidden" "true";
+      ]
+    [
+      Vdom.Node.create_svg "path"
+        ~attrs:[ Vdom.Attr.create "d" "M12 5v14m7-7-7 7-7-7" ]
+        [];
+    ]
+
 let event_key event =
   try
     Js.to_string
@@ -282,7 +300,7 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
             if Timeline_scroll.is_following () then
               [ Vdom.Attr.create "hidden" "" ]
             else [])
-          [ Vdom.Node.span [ text "LATEST" ] ];
+          [ down_arrow_icon () ];
       ]
   in
   let panels =
