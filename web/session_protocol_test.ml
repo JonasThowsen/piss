@@ -113,6 +113,24 @@ let delivery_history =
   ]
   |}
 
+let runtime =
+  {
+    Runtime_domain.session_id = "session";
+    worker_id = "worker-incarnation";
+    worker_generation = "generation";
+    runtime_generation = 7;
+    worker_pid = 1;
+    harness_pid = Some 2;
+    agent_name = "mock";
+    status = Idle;
+    first_sequence = 0L;
+    last_sequence = 0L;
+    retention_pruned = false;
+    upgrade_pending = false;
+    accepts_images = true;
+    config_options = [];
+  }
+
 let () =
   let entries = decode history in
   (match entries with
@@ -151,7 +169,8 @@ let () =
   | _ -> fail "out-of-order event history was accepted");
   let command =
     match
-      Prompt_command.prompt ~command_id:"web-uuid" ~text:"plain text" ~images:[]
+      Prompt_command.prompt ~runtime ~command_id:"web-uuid" ~text:"plain text"
+        ~images:[]
         ~resources:[ { path = "web/main.ml" } ]
     with
     | Ok command -> command
@@ -159,13 +178,20 @@ let () =
   in
   let expected =
     Yojson.Safe.from_string
-      {|{"commandId":"web-uuid","text":"plain text","images":[],"resources":[{"path":"web/main.ml"}],"action":"prompt"}|}
+      {|{"target":{"sessionId":"session","workerId":"worker-incarnation","runtimeGeneration":7},"commandId":"web-uuid","text":"plain text","images":[],"resources":[{"path":"web/main.ml"}],"action":"prompt"}|}
   in
   if not (Yojson.Safe.equal expected (Prompt_command.to_yojson command)) then
     fail "prompt encoder emitted the wrong wire contract";
+  let upgrade_event =
+    Event_history.decode_event
+      {|{"sequence":5,"kind":"worker.upgrade.completed","payload":{},"createdAt":4.0}|}
+  in
+  (match upgrade_event with
+  | Ok event when Event_history.refreshes_session event -> ()
+  | _ -> fail "worker upgrade completion did not refresh the runtime");
   (match
-     Prompt_command.prompt ~command_id:"web-uuid" ~text:"   " ~images:[]
-       ~resources:[]
+     Prompt_command.prompt ~runtime ~command_id:"web-uuid" ~text:"   "
+       ~images:[] ~resources:[]
    with
   | Error _ -> ()
   | Ok _ -> fail "blank prompt was accepted");
@@ -222,27 +248,31 @@ let () =
   | Error message when String.is_substring message ~substring:"kind" -> ()
   | _ -> fail "permission option without a kind was accepted");
   let decision =
-    Permission_decision.to_yojson ~request_id:"permission-web-command"
-      ~option_id:(Some "allow-once")
+    Permission_decision.to_yojson runtime ~mutation_id:"decision-one"
+      ~request_id:"permission-web-command" ~option_id:(Some "allow-once")
   in
   if
     not
       (Yojson.Safe.equal decision
          (`Assoc
             [
+              ("target", Runtime_domain.target_to_yojson runtime);
+              ("mutationId", `String "decision-one");
               ("requestId", `String "permission-web-command");
               ("optionId", `String "allow-once");
             ]))
   then fail "selected permission decision JSON was incorrect";
   let cancelled_decision =
-    Permission_decision.to_yojson ~request_id:"permission-web-command"
-      ~option_id:None
+    Permission_decision.to_yojson runtime ~mutation_id:"decision-cancel"
+      ~request_id:"permission-web-command" ~option_id:None
   in
   if
     not
       (Yojson.Safe.equal cancelled_decision
          (`Assoc
             [
+              ("target", Runtime_domain.target_to_yojson runtime);
+              ("mutationId", `String "decision-cancel");
               ("requestId", `String "permission-web-command");
               ("optionId", `Null);
             ]))

@@ -89,6 +89,7 @@ let refreshes_session event =
   String.equal kind "command.state"
   || String.is_prefix kind ~prefix:"acp.permission."
   || String.equal kind "acp.config_option.changed"
+  || String.equal kind "worker.upgrade.completed"
 
 let command_is_terminal ~command_id entries =
   List.exists entries ~f:(function

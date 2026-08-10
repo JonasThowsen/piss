@@ -2,6 +2,31 @@ open! Core
 open! Async_kernel
 open Js_of_ocaml
 
+type error_kind =
+  | Not_found
+  | Forbidden
+  | Conflict
+  | Upstream_unavailable
+  | Validation
+  | Internal
+  | Unknown of string
+
+type post_error = {
+  status : int option;
+  kind : error_kind option;
+  message : string;
+}
+
+let error_message error = error.message
+let is_conflict error = Option.exists error.kind ~f:(phys_equal Conflict)
+
+let is_stale_runtime_conflict error =
+  is_conflict error
+  && String.is_substring error.message ~substring:"stale runtime target:"
+
+let is_authoritative_terminal error =
+  Option.exists error.status ~f:(fun status -> status >= 400 && status < 500)
+
 let target path query =
   Request_target.same_origin ~path ~query |> Result.map_error ~f:Error.of_string
 
@@ -17,19 +42,43 @@ let present value =
           (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "Boolean")
           [| value |]))
 
-let error_body ~status body =
-  if String.is_empty body then Printf.sprintf "HTTP %d" status
-  else
-    match Result.try_with (fun () -> Yojson.Safe.from_string body) with
-    | Ok (`Assoc fields) -> (
+let kind_of_string = function
+  | "Not_found" -> Not_found
+  | "Forbidden" -> Forbidden
+  | "Conflict" -> Conflict
+  | "Upstream_unavailable" -> Upstream_unavailable
+  | "Validation" -> Validation
+  | "Internal" -> Internal
+  | value -> Unknown value
+
+let decode_http_error ~status body =
+  let fallback =
+    if String.is_empty body then Printf.sprintf "HTTP %d" status else body
+  in
+  match Result.try_with (fun () -> Yojson.Safe.from_string body) with
+  | Ok (`Assoc fields) ->
+      let message =
         match List.Assoc.find fields ~equal:String.equal "error" with
         | Some (`String message) when not (String.is_empty message) -> message
-        | _ -> body)
-    | _ -> body
+        | _ -> fallback
+      in
+      let kind =
+        match List.Assoc.find fields ~equal:String.equal "errorDetails" with
+        | Some (`Assoc details) -> (
+            match List.Assoc.find details ~equal:String.equal "kind" with
+            | Some (`String kind) -> Some (kind_of_string kind)
+            | _ -> None)
+        | _ -> None
+      in
+      { status = Some status; kind; message }
+  | _ -> { status = Some status; kind = None; message = fallback }
 
-let post_json ?(query = []) path json =
+let network_error message = { status = None; kind = None; message }
+
+let post_json_typed ?(query = []) path json =
   match target path query with
-  | Error error -> Deferred.return (Error error)
+  | Error error ->
+      Deferred.return (Error (network_error (Error.to_string_hum error)))
   | Ok url -> (
       let result = Ivar.create () in
       let finish value = Ivar.fill_if_empty result value in
@@ -42,7 +91,7 @@ let post_json ?(query = []) path json =
                 else "HTTP request failed"
               with _ -> "HTTP request failed"
             in
-            finish (Error (Error.of_string message)))
+            finish (Error (network_error message)))
       in
       try
         let headers =
@@ -70,8 +119,7 @@ let post_json ?(query = []) path json =
                 Js.wrap_callback (fun body ->
                     let body = Js.to_string (Js.Unsafe.coerce body) in
                     if Js.to_bool ok then finish (Ok body)
-                    else
-                      finish (Error (Error.of_string (error_body ~status body))))
+                    else finish (Error (decode_http_error ~status body)))
               in
               ignore
                 (Js.Unsafe.meth_call body_promise "then"
@@ -87,4 +135,9 @@ let post_json ?(query = []) path json =
           (Js.Unsafe.meth_call promise "then"
              [| Js.Unsafe.inject received; Js.Unsafe.inject rejected |]);
         Ivar.read result
-      with exn -> Deferred.return (Error (Error.of_exn exn)))
+      with exn -> Deferred.return (Error (network_error (Exn.to_string exn))))
+
+let post_json ?query path json =
+  Deferred.map
+    (post_json_typed ?query path json)
+    ~f:(Result.map_error ~f:(fun error -> Error.of_string error.message))

@@ -106,12 +106,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .boundary-note span { color: var(--accent); font: 600 9px/1.2 var(--sans); }
 .boundary-note p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; text-wrap: pretty; }
 
-.conversation-panel { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: grid; grid-template-rows: 56px 56px minmax(0, 1fr) auto; background: var(--canvas); }
-.conversation-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.conversation-heading h2 { margin: 0; font-size: 17px; }
-.sequence-label { color: var(--faint); font: 9px/1 "IBM Plex Mono", monospace; }
+.conversation-panel { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
 .timeline-wrap { position: relative; min-height: 0; overflow: hidden; }
-.session-panel-stack { position: relative; min-height: 0; overflow: hidden; }
+.session-panel-stack { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .session-panel-stack > [role="tabpanel"] { height: 100%; }
 .session-panel-stack > [hidden] { position: absolute; inset: 0; display: block; visibility: hidden; pointer-events: none; }
 .timeline { width: 100%; height: 100%; overflow-y: auto; padding: 24px clamp(16px, 4vw, 54px) 34px; }
@@ -281,9 +278,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   .runtime-rail.mobile-open { transform: translateX(0); }
   .sidebar-scrim { position: fixed; z-index: 35; inset: 52px 0 0; display: block; width: 100%; height: auto; border: 0; background: rgba(32, 35, 31, .42); opacity: 0; pointer-events: none; transition: opacity 180ms cubic-bezier(.2, 0, 0, 1); }
   .sidebar-scrim.visible { opacity: 1; pointer-events: auto; }
-  .conversation-panel { height: calc(var(--app-height, 100dvh) - 52px); display: grid; grid-template-rows: 54px 52px minmax(0, 1fr) auto; }
-  .conversation-heading { padding: 0 14px; }
-  .conversation-heading .eyebrow, .sequence-label { display: none; }
+  .conversation-panel { height: calc(var(--app-height, 100dvh) - 52px); display: flex; }
   .timeline { padding: 20px 12px 28px; }
   .timeline-item { padding: 15px; }
   .timeline-tool { padding: 0; }
@@ -332,14 +327,14 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .session-menu button:hover { background: var(--soft); }
 .session-menu button.danger { color: var(--danger); }
 .session-menu button svg { width: 16px; height: 16px; }
-.capability-tabs { min-height: 56px; display: flex; align-items: stretch; gap: 4px; padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.capability-tabs { min-height: 56px; display: flex; flex: none; align-items: stretch; gap: 4px; padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .capability-tabs button { position: relative; min-width: 106px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; transition-property: color, background-color, scale; transition-duration: 120ms; transition-timing-function: ease-out; }
 .capability-tabs button svg { width: 19px; height: 19px; stroke-width: 1.7; }
 .capability-tabs button.active { color: var(--text); }
 .capability-tabs button.active::after { content: ""; position: absolute; right: 10px; bottom: -1px; left: 10px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .capability-tabs button:disabled { opacity: .72; }
-.composer-wrap { padding: 8px 24px 18px; }
-.outbox-tray { max-height: 118px; overflow: auto; margin: 0 24px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.composer-wrap { flex: none; padding: 8px 24px 18px; }
+.outbox-tray { flex: none; max-height: 118px; overflow: auto; margin: 0 24px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
 .outbox-tray > header { min-height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted); font: 600 8px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; }
 .outbox-message { min-height: 42px; display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 9px; padding: 7px 10px; border-bottom: 1px solid var(--line); background: #fffdf7; }
 .outbox-message:last-child { border-bottom: 0; }
@@ -382,24 +377,28 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .composer-images figcaption b, .composer-images figcaption small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-images figcaption b { color: var(--text); font-size: 9px; font-weight: 650; }
 .composer-images figcaption small { color: var(--muted); font: 8px/1.2 var(--mono); }
-.composer-footer { min-height: 48px; display: grid; grid-template-columns: minmax(84px, 1fr) auto 42px; align-items: center; gap: 8px; padding: 2px 7px 6px 8px; }
-.composer-insertions { display: flex; gap: 7px; }
+.composer-footer { min-height: 48px; display: grid; grid-template-columns: 40px minmax(0, 1fr) 42px; align-items: center; gap: 8px; padding: 2px 7px 6px 8px; }
+.composer-insertions { display: flex; flex: none; gap: 7px; }
 .composer-insertions button { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); color: var(--muted); cursor: pointer; }
 .composer-insertions button:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
 .composer-insertions button[aria-expanded="true"] { border-color: #9eb6a8; background: var(--accent-soft); color: var(--accent); }
 .composer-insertions button:active:not(:disabled) { transform: scale(.96); }
 .composer-insertions button:disabled { opacity: .72; cursor: not-allowed; }
 .attachment-trigger { font-size: 20px; line-height: 1; }
+.composer-retry-actions { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-top: 1px solid var(--line); background: var(--surface); }
+.composer-retry-actions button { min-height: 40px; padding: 0 12px; border: 1px solid #9eb6a8; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 600 10px/1 var(--sans); cursor: pointer; }
+.composer-retry-actions button:hover { border-color: var(--accent); }
+.composer-retry-actions button:active { transform: scale(.96); }
+.composer-retry-actions .abandon-command { border-color: #e7bbb6; background: var(--danger-soft); color: var(--danger); }
 .composer-run-actions { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-top: 1px solid var(--line); background: var(--surface); }
 .composer-run-actions button { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font: 600 9px/1 var(--sans); cursor: pointer; }
 .composer-run-actions button:hover:not(:disabled), .composer-run-actions button.active { border-color: #9eb6a8; background: var(--accent-soft); color: var(--accent); }
 .composer-run-actions .cancel-run { margin-left: auto; border-color: #e7bbb6; background: var(--danger-soft); color: var(--danger); }
 .composer-run-actions button:disabled { opacity: .55; cursor: wait; }
-.composer-config { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 2px; }
+.composer-config { width: min(260px, 100%); min-width: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(68px, .8fr); align-items: center; justify-self: end; gap: 2px; }
 .config-control { position: relative; min-width: 0; }
-.composer-config-trigger { min-width: 0; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 0 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
-.composer-config-trigger.model { max-width: 142px; }
-.composer-config-trigger.thinking { max-width: 86px; }
+.composer-config-trigger { width: 100%; min-width: 0; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 0 6px; overflow: hidden; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.composer-config-trigger.model, .composer-config-trigger.thinking { max-width: 100%; }
 .composer-config-trigger > span { min-width: 0; display: block; text-align: center; }
 .composer-config-trigger small { display: none; }
 .composer-config-trigger b { display: block; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
@@ -510,11 +509,12 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
   .composer textarea { min-height: 58px; max-height: 128px; padding: 13px 14px 5px; font-size: 16px; }
   .file-mention-menu { max-height: min(330px, calc(var(--app-height, 100dvh) - 190px)); border-radius: 7px; }
   .file-mention-menu > button { min-height: 56px; }
-  .composer-footer { min-height: 50px; grid-template-columns: minmax(80px, 1fr) auto 42px; gap: 5px; padding: 2px 7px 6px 8px; }
+  .composer-footer { min-height: 50px; grid-template-columns: 40px minmax(0, 1fr) 42px; gap: 5px; padding: 2px 7px 6px 8px; }
+  .composer-config { width: 100%; max-width: none; }
   .composer-run-actions { padding: 6px 8px; }
   .composer-run-actions button { flex: 1; padding: 0 7px; }
   .composer-run-actions .cancel-run { margin-left: 0; }
-  .composer-config-menu { position: fixed; right: 8px; bottom: 74px; left: auto; }
+  .composer-config-menu { position: fixed; right: 8px; bottom: 74px; left: auto; max-height: calc(var(--app-height, 100dvh) - 90px); }
   .composer-config-menu.model-menu { width: min(370px, calc(100vw - 16px)); }
   .composer-config-menu.thinking-menu { width: min(210px, calc(100vw - 16px)); }
   .outbox-tray { max-height: 92px; margin-bottom: 7px; }

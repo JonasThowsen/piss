@@ -12,6 +12,7 @@ if (!executablePath) throw new Error("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is req
 
 const browser = await chromium.launch({ executablePath, headless: true });
 const errors = [];
+let intentionalNetworkFailures = 0;
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
@@ -24,7 +25,12 @@ try {
     if (requestUrl.pathname === "/api/v2/event-stream") eventStreamRequests.push(request.url());
   });
   page.on("console", (message) => {
-    if (message.type() === "error" && !message.text().includes("409 (Conflict)")) errors.push(`console: ${message.text()}`);
+    if (message.type() !== "error" || message.text().includes("409 (Conflict)")) return;
+    if (message.text().includes("net::ERR_FAILED") && intentionalNetworkFailures < 1) {
+      intentionalNetworkFailures += 1;
+      return;
+    }
+    errors.push(`console: ${message.text()}`);
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -34,9 +40,17 @@ try {
   } catch (error) {
     throw new Error(`${error.message}\n${errors.join("\n")}\nbody: ${await page.locator("body").innerText()}`);
   }
-  await page.getByText("session / s-mention-browser", { exact: true }).waitFor();
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
   await page.locator(".app-header").getByText(/PISS rewrite \/ \/home/).waitFor();
+  if (await page.getByText("session / s-mention-browser", { exact: true }).count() !== 0) {
+    throw new Error("duplicate selected-session header remained below the app header");
+  }
+  if (await page.getByRole("button", { name: "Search sessions" }).locator("svg").count() !== 1) {
+    throw new Error("search trigger did not render one SVG icon");
+  }
+  if (await page.locator("#mobile-menu-button svg").count() !== 1) {
+    throw new Error("mobile menu trigger did not render one SVG icon");
+  }
   if (eventStreamRequests.length === 0) {
     await page.waitForRequest((request) => request.url().includes("/api/v2/event-stream"));
   }
@@ -76,7 +90,8 @@ try {
   );
   await page.getByRole("menu", { name: "Model options" }).getByRole("menuitemradio", { name: /Mock Deep/ }).click();
   const modelRequest = await modelRequestPromise;
-  if (JSON.stringify(modelRequest.postDataJSON()) !== JSON.stringify({ configId: "model", value: "mock/deep" })) {
+  const modelBody = modelRequest.postDataJSON();
+  if (modelBody.configId !== "model" || modelBody.value !== "mock/deep" || !modelBody.mutationId?.startsWith("web-") || modelBody.target?.sessionId !== "s-mention-browser") {
     throw new Error(`unexpected model config request: ${modelRequest.postData()}`);
   }
   await page.getByRole("button", { name: "Model: Mock Deep" }).waitFor();
@@ -87,15 +102,19 @@ try {
   );
   await page.getByRole("menu", { name: "Thinking options" }).getByRole("menuitemradio", { name: /high/ }).click();
   const configRequest = await configRequestPromise;
+  const configBody = configRequest.postDataJSON();
   if (
-    JSON.stringify(configRequest.postDataJSON()) !== JSON.stringify({ configId: "thought_level", value: "high" })
+    configBody.configId !== "thought_level"
+    || configBody.value !== "high"
+    || !configBody.mutationId?.startsWith("web-")
+    || configBody.target?.sessionId !== "s-mention-browser"
     || new URL(configRequest.url()).searchParams.get("session") !== "s-mention-browser"
   ) {
     throw new Error(`unexpected config request: ${configRequest.postData()}`);
   }
   await page.getByRole("button", { name: "Thinking: high" }).waitFor();
   await detailsTab.click();
-  await page.getByRole("region", { name: "Session runtime details" }).getByText("worker-s-mention-browser", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Session runtime details" }).getByText(/^worker-/).waitFor();
   await page.getByRole("region", { name: "Configuration options" }).getByText("Mock Fast", { exact: false }).waitFor();
   await agentTab.click();
   const returnToAgentAfterRun = async (required = false) => {
@@ -127,19 +146,48 @@ try {
   };
   const prompt = "Render the deterministic Bonsai response";
   await page.getByRole("textbox", { name: "Message agent" }).fill(prompt);
+  let dropFirstCommandResponse = true;
+  await page.route("**/api/v2/commands?*", async (route) => {
+    if (!dropFirstCommandResponse) return route.continue();
+    dropFirstCommandResponse = false;
+    await route.fetch();
+    await route.abort("failed");
+  });
   const requestPromise = page.waitForRequest(
     (request) => request.url().includes("/api/v2/commands") && request.method() === "POST",
   );
   await page.getByRole("button", { name: "Send message" }).click();
-  await returnToAgentAfterRun(true);
   const request = await requestPromise;
   const body = request.postDataJSON();
+  await page.getByRole("button", { name: "Retry same command" }).waitFor({ timeout: 15000 });
+  const retryPromise = page.waitForRequest(
+    (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST" && candidate !== request,
+  );
+  const retryResponsePromise = page.waitForResponse(
+    (candidate) => candidate.url().includes("/api/v2/commands") && candidate.request().method() === "POST" && candidate.request().postDataJSON()?.commandId === body.commandId,
+  );
+  await page.getByRole("button", { name: "Retry same command" }).evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  const retryBody = (await retryPromise).postDataJSON();
+  const retryResponse = await retryResponsePromise;
+  if (!retryResponse.ok()) throw new Error(`same-command retry failed: ${await retryResponse.text()}`);
+  if (retryBody.commandId !== body.commandId || JSON.stringify(retryBody.target) !== JSON.stringify(body.target)) {
+    throw new Error(`uncertain retry changed command identity: ${JSON.stringify({ body, retryBody })}`);
+  }
+  await page.getByRole("button", { name: "Retry same command" }).waitFor({ state: "detached" });
+  await page.unroute("**/api/v2/commands?*");
+  await returnToAgentAfterRun(true);
   if (
     !body.commandId?.startsWith("web-")
     || body.text !== prompt
     || body.action !== "prompt"
     || body.images?.length !== 0
     || body.resources?.length !== 0
+    || body.target?.sessionId !== "s-mention-browser"
+    || !body.target?.workerId
+    || !Number.isInteger(body.target?.runtimeGeneration)
     || !request.url().includes("session=s-mention-browser")
   ) {
     throw new Error(`unexpected command request: ${JSON.stringify(body)}`);
@@ -148,6 +196,15 @@ try {
   await page.getByText("Running durability tests", { exact: true }).first().waitFor({ timeout: 10000 });
   await page.getByText("The worker retained ownership while the control plane was replaceable.", { exact: true }).waitFor({ timeout: 10000 });
   await page.getByText("state / completed", { exact: true }).waitFor({ timeout: 10000 });
+  const commandEventsResponse = await fetch(new URL("/api/v2/events?session=s-mention-browser&after=0", page.url()));
+  if (!commandEventsResponse.ok) throw new Error(await commandEventsResponse.text());
+  const commandEvents = await commandEventsResponse.json();
+  if (
+    commandEvents.filter((event) => event.kind === "command.accepted" && event.payload.commandId === body.commandId).length !== 1
+    || commandEvents.filter((event) => event.kind === "command.state" && event.payload.commandId === body.commandId && event.payload.state === "completed").length !== 1
+  ) {
+    throw new Error(`response-loss retry did not remain exactly-once: ${JSON.stringify(commandEvents)}`);
+  }
   const firstTool = page.locator(".timeline-tool");
   if (await firstTool.count() !== 1) throw new Error("tool lifecycle did not aggregate into one row");
   const disclosure = firstTool.locator("details.tool-disclosure");
@@ -248,6 +305,8 @@ try {
   if (
     permissionBody.requestId !== permissionRequestId
     || permissionBody.optionId !== "allow-once"
+    || !permissionBody.mutationId?.startsWith("web-")
+    || permissionBody.target?.sessionId !== "s-mention-browser"
     || !permissionRequest.url().includes("session=s-mention-browser")
   ) {
     throw new Error(`unexpected permission request: ${JSON.stringify(permissionBody)}`);
@@ -295,8 +354,12 @@ try {
   );
   await page.getByRole("button", { name: "Cancel" }).click();
   const cancelRequest = await cancelRequestPromise;
+  const cancelBody = cancelRequest.postDataJSON();
   if (
-    JSON.stringify(cancelRequest.postDataJSON()) !== "{}"
+    !cancelBody.mutationId?.startsWith("web-")
+    || cancelBody.target?.sessionId !== "s-mention-browser"
+    || !cancelBody.target?.workerId
+    || !Number.isInteger(cancelBody.target?.runtimeGeneration)
     || new URL(cancelRequest.url()).searchParams.get("session") !== "s-mention-browser"
   ) {
     throw new Error(`unexpected cancel request: ${cancelRequest.postData()}`);
@@ -326,10 +389,12 @@ try {
   await waitForIdle();
 
   const dispatchPrompt = (text) => page.evaluate(async (prompt) => {
+    const snapshot = await fetch("/api/v2/session?session=s-mention-browser").then((response) => response.json());
+    const target = { sessionId: snapshot.sessionId, workerId: snapshot.workerId, runtimeGeneration: snapshot.runtimeGeneration };
     const response = await fetch("/api/v2/commands?session=s-mention-browser", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commandId: `browser-${crypto.randomUUID()}`, text: prompt, images: [], resources: [], action: "prompt" }),
+      body: JSON.stringify({ target, commandId: `browser-${crypto.randomUUID()}`, text: prompt, images: [], resources: [], action: "prompt" }),
     });
     if (!response.ok) throw new Error(await response.text());
   }, text);
@@ -465,7 +530,8 @@ try {
   await activeSearch.getByRole("button", { name: "Close session search" }).focus();
   await page.keyboard.press("Shift+Tab");
   if (await page.locator("[role=option]:focus").count() !== 1) {
-    throw new Error("modal focus trap did not wrap from its first to last control");
+    const focused = await page.evaluate(() => document.activeElement?.outerHTML ?? "none");
+    throw new Error(`modal focus trap did not wrap from its first to last control: ${focused}`);
   }
   await sessionQuery.focus();
   await sessionQuery.press("Enter");
@@ -497,6 +563,93 @@ try {
   await page.getByRole("dialog", { name: "Search sessions" }).getByRole("button", { name: "Close session search" }).click();
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Search sessions");
 
+  const restoredSession = (await page.evaluate(async () => {
+    const response = await fetch("/api/v2/sessions");
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  })).find((candidate) => candidate.title === "Lifecycle renamed");
+  if (!restoredSession) throw new Error("restored session disappeared before stale-runtime retry proof");
+  const actualRuntime = await page.evaluate(async (sessionId) => {
+    const response = await fetch(`/api/v2/session?session=${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  }, restoredSession.id);
+  const replacementRuntime = {
+    ...actualRuntime,
+    workerId: `${actualRuntime.workerId}-replacement`,
+    runtimeGeneration: actualRuntime.runtimeGeneration + 1,
+  };
+  let staleCommandAttempts = 0;
+  const staleCommandBodies = [];
+  await page.route("**/api/v2/session?*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.get("session") !== restoredSession.id) return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(replacementRuntime),
+    });
+  });
+  await page.route("**/api/v2/commands?*", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.text !== "Retarget this command") return route.continue();
+    staleCommandAttempts += 1;
+    staleCommandBodies.push(body);
+    if (staleCommandAttempts === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "stale runtime target: worker incarnation changed",
+          errorDetails: {
+            kind: "Conflict",
+            reason: "stale runtime target: worker incarnation changed",
+          },
+        }),
+      });
+    } else {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ commandId: body.commandId, state: "dispatched", duplicate: false }),
+      });
+    }
+  });
+  await page.getByRole("textbox", { name: "Message agent" }).fill("Retarget this command");
+  await page.locator("form.composer").evaluate((form) => {
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+  });
+  try {
+    await page.getByRole("button", { name: "Retry same command" }).waitFor();
+  } catch (error) {
+    throw new Error(`${error.message}\nattempts: ${JSON.stringify(staleCommandBodies)}\nbody: ${await page.locator("body").innerText()}`);
+  }
+  await page.getByText(/The runtime is refreshing; retry the same command/).waitFor();
+  if (staleCommandBodies.length !== 1) {
+    throw new Error(`rapid duplicate submission allocated multiple command identities: ${JSON.stringify(staleCommandBodies)}`);
+  }
+  await page.getByRole("button", { name: "Session settings for Lifecycle renamed" }).click();
+  await page.getByRole("menu", { name: "Lifecycle renamed session settings" }).getByRole("menuitem", { name: "Archive session" }).click();
+  if (await page.getByRole("alertdialog", { name: "Archive session?" }).count() !== 0) {
+    throw new Error("pending command allowed its session to be archived");
+  }
+  await page.getByText(/Retry or abandon the uncertain command before archiving/).waitFor();
+  await page.getByRole("button", { name: "Retry same command" }).click();
+  await page.getByRole("button", { name: "Retry same command" }).waitFor({ state: "detached" });
+  if (
+    staleCommandBodies.length !== 2
+    || staleCommandBodies[0].commandId !== staleCommandBodies[1].commandId
+    || staleCommandBodies[0].text !== staleCommandBodies[1].text
+    || JSON.stringify(staleCommandBodies[0].target) === JSON.stringify(staleCommandBodies[1].target)
+    || staleCommandBodies[1].target.workerId !== replacementRuntime.workerId
+    || staleCommandBodies[1].target.runtimeGeneration !== replacementRuntime.runtimeGeneration
+  ) {
+    throw new Error(`stale-runtime retry did not preserve and retarget the command: ${JSON.stringify(staleCommandBodies)}`);
+  }
+  await page.unroute("**/api/v2/commands?*");
+  await page.unroute("**/api/v2/session?*");
+
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const mobile = await mobileContext.newPage();
   mobile.on("console", (message) => {
@@ -509,6 +662,52 @@ try {
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
   await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false");
+  if (await mobile.locator(".conversation-heading").count() !== 0) {
+    throw new Error("mobile layout retained the duplicate conversation header");
+  }
+  if (await mobile.getByRole("button", { name: "Mention a workspace file" }).count() !== 0) {
+    throw new Error("mobile composer retained the redundant mention button");
+  }
+  const composerLayout = await mobile.locator(".composer-footer").evaluate((footer) => {
+    const bounds = footer.getBoundingClientRect();
+    const controls = [...footer.querySelectorAll(".composer-config-trigger")].map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width };
+    });
+    const send = footer.querySelector(".send-action")?.getBoundingClientRect();
+    return {
+      footer: { left: bounds.left, right: bounds.right },
+      controls,
+      send: send ? { left: send.left, right: send.right } : null,
+    };
+  });
+  if (
+    composerLayout.controls.length !== 2
+    || composerLayout.controls.some((control) => control.width < 60)
+    || composerLayout.controls[0].right > composerLayout.controls[1].left
+    || composerLayout.controls[0].left < composerLayout.footer.left
+    || composerLayout.controls[1].right > (composerLayout.send?.left ?? composerLayout.footer.right)
+  ) {
+    throw new Error(`mobile composer controls overlap: ${JSON.stringify(composerLayout)}`);
+  }
+  for (const [triggerSelector, menuSelector] of [
+    [".composer-config-trigger.model", ".composer-config-menu.model-menu"],
+    [".composer-config-trigger.thinking", ".composer-config-menu.thinking-menu"],
+  ]) {
+    const trigger = mobile.locator(triggerSelector);
+    await trigger.tap();
+    const menu = mobile.locator(menuSelector);
+    await menu.waitFor();
+    const bounds = await menu.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left };
+    });
+    if (bounds.top < 8 || bounds.left < 8 || bounds.right > 382 || bounds.bottom > 770) {
+      throw new Error(`mobile config menu escaped the viewport: ${JSON.stringify({ menuSelector, bounds })}`);
+    }
+    await trigger.tap();
+    await menu.waitFor({ state: "detached" });
+  }
   const viewportHeight = await mobile.evaluate(() => ({
     css: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-height")),
     visible: window.visualViewport?.height ?? window.innerHeight,
@@ -528,8 +727,11 @@ try {
   await mobile.keyboard.press("Escape");
   await mobileSearch.waitFor({ state: "detached" });
   await mobileContext.close();
+  if (intentionalNetworkFailures !== 1) {
+    throw new Error(`expected one discarded command response, observed ${intentionalNetworkFailures}`);
+  }
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore, workspace conflict/add/remove, global search, tabs, config, images, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

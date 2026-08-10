@@ -4,6 +4,7 @@ type output = {
   view : Vdom.Node.t;
   reset : unit -> unit Effect.t;
   set_notice : string -> unit Effect.t;
+  has_pending : unit -> bool;
 }
 
 val component :
@@ -13,5 +14,6 @@ val component :
   string Bonsai.t ->
   Vdom.Node.t Bonsai.t ->
   on_busy:(bool -> unit Effect.t) Bonsai.t ->
+  refresh_runtime:unit Effect.t Bonsai.t ->
   Bonsai.graph ->
   output Bonsai.t

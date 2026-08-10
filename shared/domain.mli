@@ -24,9 +24,16 @@ type worker_id
     a session may be moved across workers when the active worker upgrades. *)
 
 type runtime_generation
-(** A monotonically increasing writable runtime generation, owned by the control
-    plane. Every command that targets a worker binds to a runtime generation so
+(** A monotonically increasing writable runtime generation, owned by the worker
+    ledger. Every command that targets a worker binds to a runtime generation so
     stale generations fail closed. *)
+
+type runtime_target = {
+  session_id : session_id;
+  worker_id : worker_id;
+  runtime_generation : runtime_generation;
+}
+(** The complete fencing identity supplied by a mutation initiator. *)
 
 (** Lifecycle state of a single command issued by the browser and accepted by
     the worker. Transitions are:

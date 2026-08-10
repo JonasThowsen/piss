@@ -10,6 +10,50 @@ type observation =
 let worker_request ~net socket request =
   Worker_client.request ~net ~socket request
 
+let runtime_target ~net socket =
+  match worker_request ~net socket (`Assoc [ ("op", `String "snapshot") ]) with
+  | Error error -> Error error
+  | Ok snapshot -> (
+      let open Yojson.Safe.Util in
+      let target =
+        `Assoc
+          [
+            ("sessionId", member "sessionId" snapshot);
+            ("workerId", member "workerId" snapshot);
+            ("runtimeGeneration", member "runtimeGeneration" snapshot);
+          ]
+      in
+      let probe =
+        `Assoc
+          [
+            ("op", `String "prompt");
+            ("target", target);
+            ("commandId", `String "broker-target-probe");
+            ("text", `String "probe");
+          ]
+      in
+      match Wire.request_of_yojson probe with
+      | Ok _ -> Ok target
+      | Error message ->
+          Error
+            (Error.Upstream_unavailable
+               {
+                 message =
+                   "worker returned an invalid runtime target: " ^ message;
+               }))
+
+let prompt_request ~net socket ~command_id ~text =
+  Result.map
+    (fun target ->
+      `Assoc
+        [
+          ("op", `String "prompt");
+          ("target", target);
+          ("commandId", `String command_id);
+          ("text", `String text);
+        ])
+    (runtime_target ~net socket)
+
 let peer_event ~net (manager : Config.managed_workers)
     (session : Registry.session) ~kind ~request_id ~peer_id ~text =
   worker_request ~net
@@ -133,15 +177,12 @@ let dispatch_peer_request ~net (manager : Config.managed_workers)
          Respond directly to the requesting session."
         source.title source.id request.prompt
     in
+    let socket = Lifecycle.session_socket manager.runtime_root target.id in
     match
-      worker_request ~net
-        (Lifecycle.session_socket manager.runtime_root target.id)
-        (`Assoc
-           [
-             ("op", `String "prompt");
-             ("commandId", `String request.command_id);
-             ("text", `String target_prompt);
-           ])
+      Result.bind
+        (prompt_request ~net socket ~command_id:request.command_id
+           ~text:target_prompt)
+        (worker_request ~net socket)
     with
     | Error message ->
         Registry.update_peer_request manager.registry request.id ~state:"queued"
@@ -452,15 +493,14 @@ let reconcile_peer_subscription ~net ~clock (manager : Config.managed_workers)
         Registry.mark_peer_subscription_dispatching manager.registry
           subscription.id;
         bounded_subscription_operation ~clock (fun () ->
+            let socket =
+              Lifecycle.session_socket manager.runtime_root source.id
+            in
             match
-              worker_request ~net
-                (Lifecycle.session_socket manager.runtime_root source.id)
-                (`Assoc
-                   [
-                     ("op", `String "prompt");
-                     ("commandId", `String subscription.command_id);
-                     ("text", `String (peer_wake_prompt subscription requests));
-                   ])
+              Result.bind
+                (prompt_request ~net socket ~command_id:subscription.command_id
+                   ~text:(peer_wake_prompt subscription requests))
+                (worker_request ~net socket)
             with
             | Error _ -> ()
             | Ok _ ->

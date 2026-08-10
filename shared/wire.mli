@@ -29,22 +29,34 @@ type request =
   | File_search of { query : string }
   | New_session
   | Prompt of {
+      target : Domain.runtime_target;
       command_id : string;
       text : string;
       images : Domain.image_input list;
       resources : Domain.resource_input list;
     }
   | Deliver of {
+      target : Domain.runtime_target;
       command_id : string;
       text : string;
       images : Domain.image_input list;
       resources : Domain.resource_input list;
       action : string;
     }
-  | Cancel
+  | Cancel of { target : Domain.runtime_target; mutation_id : string }
   | Config_options
-  | Set_config_option of { config_id : string; value : string }
-  | Permission of { request_id : string; option_id : string option }
+  | Set_config_option of {
+      target : Domain.runtime_target;
+      mutation_id : string;
+      config_id : string;
+      value : string;
+    }
+  | Permission of {
+      target : Domain.runtime_target;
+      mutation_id : string;
+      request_id : string;
+      option_id : string option;
+    }
   | Peer_event of {
       kind : string;
       request_id : string;
@@ -58,6 +70,15 @@ type response = (Yojson.Safe.t, Error.t) result
     shared error. *)
 
 val request_of_yojson : Yojson.Safe.t -> (request, string) result
+
+val request_of_yojson_v1 :
+  target:Domain.runtime_target ->
+  mutation_id:string ->
+  Yojson.Safe.t ->
+  (request, string) result
+(** Decode a request from a protocol-v1 control plane by binding legacy
+    targetless mutations to the receiving worker's current runtime. *)
+
 val response_to_yojson : response -> Yojson.Safe.t
 val response_of_yojson : Yojson.Safe.t -> response
 val image_to_yojson : Domain.image_input -> Yojson.Safe.t

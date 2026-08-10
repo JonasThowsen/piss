@@ -6,6 +6,22 @@ open Js_of_ocaml
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
+let chevron_down () =
+  Vdom.Node.create "svg"
+    ~attrs:
+      [
+        Vdom.Attr.create "viewBox" "0 0 24 24";
+        Vdom.Attr.create "fill" "none";
+        Vdom.Attr.create "stroke" "currentColor";
+        Vdom.Attr.create "stroke-width" "1.8";
+        Vdom.Attr.create "stroke-linecap" "round";
+        Vdom.Attr.create "stroke-linejoin" "round";
+        Vdom.Attr.create "aria-hidden" "true";
+      ]
+    [
+      Vdom.Node.create "path" ~attrs:[ Vdom.Attr.create "d" "m7 10 5 5 5-5" ] [];
+    ]
+
 let event_key event =
   try
     Js.to_string
@@ -70,7 +86,8 @@ let component runtime ~available ~refresh ~on_error graph =
                    Browser_http.post_json
                      ~query:[ ("session", runtime.session_id) ]
                      "/api/v2/config-options"
-                     (Runtime_domain.config_change_to_yojson
+                     (Runtime_domain.config_change_to_yojson runtime
+                        ~mutation_id:(Command_id.create ())
                         ~config_id:option.config_id ~value)))
               ~f:(function
                 | Error error ->
@@ -155,7 +172,7 @@ let component runtime ~available ~refresh ~on_error graph =
                        else current_name option);
                   ];
               ];
-            Vdom.Node.span [ text "v" ];
+            chevron_down ();
           ];
         (if not open_ then Vdom.Node.none
          else

@@ -101,7 +101,8 @@ let () =
   in
   let command =
     match
-      Prompt_command.create ~action:Follow_up ~images:[ wire_image ]
+      Prompt_command.create ~runtime:(runtime Idle) ~action:Follow_up
+        ~images:[ wire_image ]
         ~resources:[ { path = "web/main.ml" } ]
         ~command_id:"stable-id" ~text:""
     with
@@ -128,8 +129,8 @@ let () =
                ]))
   then fail "typed image command emitted the wrong wire JSON";
   expect_error
-    (Prompt_command.create ~action:Prompt ~images:[] ~resources:[]
-       ~command_id:"large" ~text:(String.make 65537 'x'));
+    (Prompt_command.create ~runtime:(runtime Idle) ~action:Prompt ~images:[]
+       ~resources:[] ~command_id:"large" ~text:(String.make 65537 'x'));
   if
     not
       (phys_equal
@@ -142,6 +143,54 @@ let () =
          (Composer_policy.action Running ~delivery:Follow_up)
          Follow_up)
   then fail "running follow-up action was lost";
+  let sending = Prompt_command.Submission.start command in
+  let uncertain = Prompt_command.Submission.mark_uncertain sending in
+  let retried = Prompt_command.Submission.retry uncertain in
+  (match Prompt_command.Submission.pending retried with
+  | Some retried_command
+    when String.equal
+           (Prompt_command.command_id retried_command)
+           (Prompt_command.command_id command) ->
+      ()
+  | _ -> fail "uncertain retry changed the command identity");
+  let replacement_runtime =
+    { (runtime Idle) with worker_id = "replacement"; runtime_generation = 8 }
+  in
+  let retargeted =
+    Prompt_command.retarget command ~runtime:replacement_runtime
+  in
+  let retargeted_json = Prompt_command.to_yojson retargeted in
+  if
+    (not
+       (String.equal
+          (Prompt_command.command_id retargeted)
+          (Prompt_command.command_id command)))
+    || (not
+          (Yojson.Safe.equal
+             (Yojson.Safe.Util.member "workerId"
+                (Yojson.Safe.Util.member "target" retargeted_json))
+             (`String "replacement")))
+    || not
+         (Yojson.Safe.equal
+            (Yojson.Safe.Util.member "text" retargeted_json)
+            (Yojson.Safe.Util.member "text" (Prompt_command.to_yojson command)))
+  then fail "retarget changed the command identity or payload";
+  let abandoned = Prompt_command.Submission.abandon uncertain in
+  if Option.is_some (Prompt_command.Submission.pending abandoned) then
+    fail "abandon retained the old command";
+  let later =
+    match
+      Prompt_command.create ~runtime:(runtime Idle) ~action:Prompt ~images:[]
+        ~resources:[] ~command_id:"later-id" ~text:"later"
+    with
+    | Ok command -> command
+    | Error message -> fail message
+  in
+  if
+    String.equal
+      (Prompt_command.command_id command)
+      (Prompt_command.command_id later)
+  then fail "abandon did not permit a later command identity";
   let outbox =
     Outbox_projection.project
       [

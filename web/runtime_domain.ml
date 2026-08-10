@@ -217,5 +217,20 @@ let find_category runtime category =
   List.find runtime.config_options ~f:(fun option ->
       String.equal option.category category)
 
-let config_change_to_yojson ~config_id ~value =
-  `Assoc [ ("configId", `String config_id); ("value", `String value) ]
+let target_to_yojson runtime =
+  `Assoc
+    [
+      ("sessionId", `String runtime.session_id);
+      ("workerId", `String runtime.worker_id);
+      ("runtimeGeneration", `Int runtime.runtime_generation);
+    ]
+
+let mutation_to_yojson runtime ~mutation_id fields =
+  `Assoc
+    (("target", target_to_yojson runtime)
+    :: ("mutationId", `String mutation_id)
+    :: fields)
+
+let config_change_to_yojson runtime ~mutation_id ~config_id ~value =
+  mutation_to_yojson runtime ~mutation_id
+    [ ("configId", `String config_id); ("value", `String value) ]

@@ -142,26 +142,26 @@ let handler ~net ~clock ~env _socket request body =
                     (authentication_error status message)
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
-                  match
-                    ( Yojson.Safe.Util.member "configId" json,
-                      Yojson.Safe.Util.member "value" json )
-                  with
-                  | `String config_id, `String value -> (
+                  let open Yojson.Safe.Util in
+                  let worker_json =
+                    `Assoc
+                      [
+                        ("op", `String "set_config_option");
+                        ("target", member "target" json);
+                        ("mutationId", member "mutationId" json);
+                        ("configId", member "configId" json);
+                        ("value", member "value" json);
+                      ]
+                  in
+                  match Wire.request_of_yojson worker_json with
+                  | Error message -> Headers.error_json (validation message)
+                  | Ok _ -> (
                       match
                         with_worker workers session_id (fun socket ->
-                            Worker_client.request ~net ~socket
-                              (`Assoc
-                                 [
-                                   ("op", `String "set_config_option");
-                                   ("configId", `String config_id);
-                                   ("value", `String value);
-                                 ]))
+                            Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result -> Headers.respond_json result
-                      | Error error -> Headers.error_json error)
-                  | _ ->
-                      Headers.error_json
-                        (validation "configId and value must be strings")))
+                      | Error error -> Headers.error_json error)))
           | Routes.Get_event_stream { session_id; after } -> (
               match worker_socket workers session_id with
               | Error error -> Headers.error_json error
@@ -269,6 +269,7 @@ let handler ~net ~clock ~env _socket request body =
                            `String
                              (if action = "prompt" then "prompt" else "deliver")
                          );
+                         ("target", json |> member "target");
                          ("commandId", json |> member "commandId");
                          ("text", json |> member "text");
                          ( "images",
@@ -303,14 +304,26 @@ let handler ~net ~clock ~env _socket request body =
                   Headers.error_json ~status
                     (authentication_error status message)
               | Ok () -> (
-                  ignore (read_body body);
-                  match
-                    with_worker workers session_id (fun socket ->
-                        Worker_client.request ~net ~socket
-                          (`Assoc [ ("op", `String "cancel") ]))
-                  with
-                  | Ok result -> Headers.respond_json ~status:`Accepted result
-                  | Error error -> Headers.error_json error))
+                  let json = read_body body |> Yojson.Safe.from_string in
+                  let open Yojson.Safe.Util in
+                  let worker_json =
+                    `Assoc
+                      [
+                        ("op", `String "cancel");
+                        ("target", member "target" json);
+                        ("mutationId", member "mutationId" json);
+                      ]
+                  in
+                  match Wire.request_of_yojson worker_json with
+                  | Error message -> Headers.error_json (validation message)
+                  | Ok _ -> (
+                      match
+                        with_worker workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
+                      with
+                      | Ok result ->
+                          Headers.respond_json ~status:`Accepted result
+                      | Error error -> Headers.error_json error)))
           | Routes.Post_permissions { session_id } -> (
               match
                 Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
@@ -322,27 +335,25 @@ let handler ~net ~clock ~env _socket request body =
               | Ok () -> (
                   let json = read_body body |> Yojson.Safe.from_string in
                   let open Yojson.Safe.Util in
-                  let request_id = json |> member "requestId" |> to_string in
-                  let option_id =
-                    match member "optionId" json with
-                    | `String value -> `String value
-                    | `Null -> `Null
-                    | _ ->
-                        raise
-                          (Type_error ("optionId must be a string or null", json))
+                  let worker_json =
+                    `Assoc
+                      [
+                        ("op", `String "permission");
+                        ("target", member "target" json);
+                        ("mutationId", member "mutationId" json);
+                        ("requestId", member "requestId" json);
+                        ("optionId", member "optionId" json);
+                      ]
                   in
-                  match
-                    with_worker workers session_id (fun socket ->
-                        Worker_client.request ~net ~socket
-                          (`Assoc
-                             [
-                               ("op", `String "permission");
-                               ("requestId", `String request_id);
-                               ("optionId", option_id);
-                             ]))
-                  with
-                  | Ok result -> Headers.respond_json result
-                  | Error error -> Headers.error_json error))
+                  match Wire.request_of_yojson worker_json with
+                  | Error message -> Headers.error_json (validation message)
+                  | Ok _ -> (
+                      match
+                        with_worker workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
+                      with
+                      | Ok result -> Headers.respond_json result
+                      | Error error -> Headers.error_json error)))
           | Routes.Get_app_js ->
               Assets.serve app_js "text/javascript; charset=utf-8"
           | Routes.Get_asset resource -> (

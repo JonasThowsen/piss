@@ -12,6 +12,12 @@ let session_id_to_string (Session_id s) = s
 let worker_id_to_string (Worker_id s) = s
 let runtime_generation_to_int (Runtime_generation i) = i
 
+type runtime_target = {
+  session_id : session_id;
+  worker_id : worker_id;
+  runtime_generation : runtime_generation;
+}
+
 type command_state =
   | Received
   | Accepted

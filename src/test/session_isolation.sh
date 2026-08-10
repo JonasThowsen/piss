@@ -136,6 +136,13 @@ command_completed() {
     jq -e --arg command "$command" 'any(.[]; .kind == "command.state" and .payload.commandId == $command and .payload.state == "completed")' >/dev/null
 }
 
+targeted_for() {
+  local id=$1 body=$2 target
+  target=$(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$id" |
+    jq -c '{sessionId,workerId,runtimeGeneration}')
+  jq -c --argjson target "$target" '. + {target:$target}' <<<"$body"
+}
+
 mkdir -p "$root/configured-empty"
 start_control
 wait_session_count 1
@@ -179,10 +186,10 @@ curl -fsS -X POST -H 'content-type: application/json' \
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r --arg id "$second" '.[]|select(.id==$id)|.title') == "OpenCode reviewer" ]]
 
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"first-command","text":"work in first"}' \
+  --data "$(targeted_for "$first" '{"commandId":"first-command","text":"work in first"}')" \
   "http://127.0.0.1:$port/api/v2/commands?session=$first" >/dev/null
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"second-command","text":"work in second"}' \
+  --data "$(targeted_for "$second" '{"commandId":"second-command","text":"work in second"}')" \
   "http://127.0.0.1:$port/api/v2/commands?session=$second" >/dev/null
 for _ in $(seq 1 400); do
   command_completed "$first" first-command && command_completed "$second" second-command && break
@@ -244,7 +251,7 @@ collect_json=$(jq -r 'select(.id==2)|.result.content[0].text|fromjson' <<<"$coll
 [[ $(jq '[.responses[].response|select(.=="The worker retained ownership while the control plane was replaceable.")]|length' <<<"$collect_json") == 2 ]]
 [[ "$fanout_elapsed" -lt 3800 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"source-still-active","text":"finish the original orchestrator turn"}' \
+  --data "$(targeted_for "$first" '{"commandId":"source-still-active","text":"finish the original orchestrator turn"}')" \
   "http://127.0.0.1:$port/api/v2/commands?session=$first" >/dev/null
 idle_subscription=$(jq -nc --arg first "$first_async" --arg second "$second_async" \
   '{subscriptionId:"wake-until-source-idle",requestIds:[$first,$second],waitFor:"all"}')

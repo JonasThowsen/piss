@@ -106,6 +106,23 @@ let focus id =
 let focus_navigation () = focus "workspace-navigation"
 let focus_menu_button () = focus "mobile-menu-button"
 
+let menu_icon () =
+  Vdom.Node.create "svg"
+    ~attrs:
+      [
+        Vdom.Attr.create "viewBox" "0 0 24 24";
+        Vdom.Attr.create "fill" "none";
+        Vdom.Attr.create "stroke" "currentColor";
+        Vdom.Attr.create "stroke-width" "1.8";
+        Vdom.Attr.create "stroke-linecap" "round";
+        Vdom.Attr.create "aria-hidden" "true";
+      ]
+    [
+      Vdom.Node.create "path"
+        ~attrs:[ Vdom.Attr.create "d" "M4 7h16M4 12h16M4 17h16" ]
+        [];
+    ]
+
 let menu_button ~open_ ~on_open =
   Vdom.Node.button
     ~attrs:
@@ -118,7 +135,7 @@ let menu_button ~open_ ~on_open =
         Vdom.Attr.create "aria-expanded" (Bool.to_string open_);
         Vdom.Attr.on_click (fun _ -> on_open ());
       ]
-    [ Vdom.Node.create "i" [] ]
+    [ menu_icon () ]
 
 let scrim ~open_ ~on_close =
   Vdom.Node.button

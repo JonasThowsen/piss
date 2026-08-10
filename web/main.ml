@@ -166,7 +166,7 @@ let component graph =
       shell.runtime.loading
     in
     Composer.component selected runtime connecting stream_notice config_controls
-      ~on_busy:set_composer_busy graph
+      ~on_busy:set_composer_busy ~refresh_runtime graph
   in
   let load =
     let%arr set_sessions = set_sessions
@@ -178,14 +178,24 @@ let component graph =
     and inject_history = inject_history
     and inject_deciding = inject_deciding
     and inject_shell = inject_shell
-    and set_stream_notice = set_stream_notice in
+    and set_stream_notice = set_stream_notice
+    and composer = composer in
     Effect.bind (Effect.of_deferred_thunk catalog_request) ~f:(fun response ->
         match decode_catalog response with
         | Error message -> set_sessions (Session_rail.Failed message)
         | Ok (next_workspaces, next_sessions, next_archived) ->
+            let selected_still_active =
+              Option.exists selected_id ~f:(fun selected ->
+                  List.exists next_sessions
+                    ~f:(fun (session : Control_plane.Session.t) ->
+                      String.equal session.id selected))
+            in
             let next_id =
-              Workspace_catalog.reconcile_selection ~previous:selected_id
-                next_sessions
+              if composer.has_pending () && selected_still_active then
+                selected_id
+              else
+                Workspace_catalog.reconcile_selection ~previous:selected_id
+                  next_sessions
             in
             let catalog_refresh =
               refresh_catalog ~set_workspaces ~set_sessions ~set_archived
@@ -218,7 +228,8 @@ let component graph =
                       ])))
   in
   let select_session =
-    let%arr set_selected_id = set_selected_id
+    let%arr selected_id = selected_id
+    and set_selected_id = set_selected_id
     and set_mobile_open = set_mobile_open
     and set_menu_open = set_menu_open
     and inject_shell = inject_shell
@@ -230,25 +241,31 @@ let component graph =
     and set_archived = set_archived
     and composer = composer in
     fun id ->
-      let catalog_refresh =
-        refresh_catalog ~set_workspaces ~set_sessions ~set_archived
-      in
-      let snapshot_refresh = load_snapshot ~inject_shell id in
-      Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
-          Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
-              Effect.Many
-                [
-                  composer.reset ();
-                  set_stream_notice "";
-                  set_mobile_open false;
-                  set_menu_open None;
-                  catalog_refresh;
-                  snapshot_refresh;
-                  History_loader.load_initial ~inject_history ~inject_deciding
-                    ~refresh_catalog_effect:catalog_refresh
-                    ~refresh_snapshot_effect:snapshot_refresh ~set_stream_notice
-                    id;
-                ]))
+      if Option.exists selected_id ~f:(String.equal id) then
+        Effect.Many [ set_mobile_open false; set_menu_open None ]
+      else if composer.has_pending () then
+        composer.set_notice
+          "Retry or abandon the uncertain command before switching sessions."
+      else
+        let catalog_refresh =
+          refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+        in
+        let snapshot_refresh = load_snapshot ~inject_shell id in
+        Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
+            Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
+                Effect.Many
+                  [
+                    composer.reset ();
+                    set_stream_notice "";
+                    set_mobile_open false;
+                    set_menu_open None;
+                    catalog_refresh;
+                    snapshot_refresh;
+                    History_loader.load_initial ~inject_history ~inject_deciding
+                      ~refresh_catalog_effect:catalog_refresh
+                      ~refresh_snapshot_effect:snapshot_refresh
+                      ~set_stream_notice id;
+                  ]))
   in
   let active_sessions =
     let%arr sessions = sessions in
@@ -352,17 +369,20 @@ let component graph =
     else inject_shell (Select_tab tab)
   in
   let decide ~request_id ~option_id =
-    match session with
-    | None -> Effect.Ignore
-    | Some _ when Set.mem deciding_permissions request_id -> Effect.Ignore
-    | Some session ->
+    match (session, runtime) with
+    | None, _ | _, None -> Effect.Ignore
+    | Some _, Some _ when Set.mem deciding_permissions request_id ->
+        Effect.Ignore
+    | Some session, Some runtime ->
         Effect.bind (inject_deciding (Add request_id)) ~f:(fun () ->
             Effect.bind
               (Effect.of_deferred_thunk (fun () ->
                    Browser_http.post_json
                      ~query:[ ("session", session.id) ]
                      "/api/v2/permissions"
-                     (Permission_decision.to_yojson ~request_id ~option_id)))
+                     (Permission_decision.to_yojson runtime
+                        ~mutation_id:(Command_id.create ()) ~request_id
+                        ~option_id)))
               ~f:(function
                 | Error error ->
                     Effect.Many
@@ -423,7 +443,11 @@ let component graph =
                 ~on_rename:(fun session ->
                   open_modal (lifecycle.open_rename session))
                 ~on_archive:(fun session ->
-                  open_modal (lifecycle.open_archive session));
+                  if composer.has_pending () then
+                    composer.set_notice
+                      "Retry or abandon the uncertain command before archiving \
+                       its session."
+                  else open_modal (lifecycle.open_archive session));
               Timeline_view.render ~session ~workspace ~runtime
                 ~runtime_loading:shell.runtime.loading
                 ~runtime_error:shell.runtime.error ~tab:shell.tab

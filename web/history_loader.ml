@@ -45,7 +45,13 @@ let connect_stream ~selection ~session_id ~after ~inject_history
         in
         dispatch (Effect.Many effects)
   in
-  let on_open () = dispatch (set_stream_notice "") in
+  let on_open () =
+    dispatch
+      (Effect.Many
+         [
+           set_stream_notice ""; refresh_catalog_effect; refresh_snapshot_effect;
+         ])
+  in
   let on_error () =
     dispatch (set_stream_notice "Event stream reconnecting...")
   in

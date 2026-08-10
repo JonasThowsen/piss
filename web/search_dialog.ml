@@ -11,6 +11,33 @@ type output = {
 
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
+
+let search_icon () =
+  Vdom.Node.create "svg"
+    ~attrs:
+      [
+        Vdom.Attr.create "viewBox" "0 0 24 24";
+        Vdom.Attr.create "fill" "none";
+        Vdom.Attr.create "stroke" "currentColor";
+        Vdom.Attr.create "stroke-width" "1.8";
+        Vdom.Attr.create "stroke-linecap" "round";
+        Vdom.Attr.create "stroke-linejoin" "round";
+        Vdom.Attr.create "aria-hidden" "true";
+      ]
+    [
+      Vdom.Node.create "circle"
+        ~attrs:
+          [
+            Vdom.Attr.create "cx" "11";
+            Vdom.Attr.create "cy" "11";
+            Vdom.Attr.create "r" "7";
+          ]
+        [];
+      Vdom.Node.create "path"
+        ~attrs:[ Vdom.Attr.create "d" "m20 20-3.5-3.5" ]
+        [];
+    ]
+
 let shortcut_listener : Js.Unsafe.any option ref = ref None
 let dispatch action = Vdom.Effect.Expert.handle_non_dom_event_exn action
 
@@ -206,6 +233,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
           Vdom.Attr.on_click (fun _ -> open_ ());
         ]
       [
+        search_icon ();
         Vdom.Node.span [ text "Search sessions" ];
         Vdom.Node.kbd [ text "Ctrl/Cmd+K" ];
       ]

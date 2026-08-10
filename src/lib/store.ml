@@ -2,11 +2,15 @@ open Piss_shared.Domain
 
 exception Store_error of string
 
-type t = { db : Sqlite3.db; session_id : session_id; worker_id : worker_id }
-
-let _ = fun (s : t) -> ignore (s.session_id, s.worker_id)
-
 type accepted_command = { state : command_state; duplicate : bool }
+type runtime_identity = { worker_id : string; runtime_generation : int }
+
+type t = {
+  db : Sqlite3.db;
+  session_id : session_id;
+  worker_id : worker_id;
+  claimed_runtime : runtime_identity option ref;
+}
 
 let max_retained_events = 65_536
 let max_retained_commands = 1024
@@ -108,7 +112,7 @@ let initialize db =
 let open_ ~path ~session_id ~worker_id =
   let db = Sqlite3.db_open path in
   initialize db;
-  { db; session_id; worker_id }
+  { db; session_id; worker_id; claimed_runtime = ref None }
 
 let close store =
   if not (Sqlite3.db_close store.db) then
@@ -158,6 +162,91 @@ let set_metadata store key value =
       bind_text statement 1 key;
       bind_text statement 2 value;
       expect_done "write metadata" statement)
+
+let claim_runtime store =
+  let identity =
+    transaction store (fun () ->
+        let session_id = session_id_to_string store.session_id in
+        let legacy_runtime =
+          Option.is_some (get_metadata store "worker_generation")
+          || Option.is_some (get_metadata store "acp_session_id")
+        in
+        (match get_metadata store "piss_session_id" with
+        | None -> set_metadata store "piss_session_id" session_id
+        | Some durable when String.equal durable session_id -> ()
+        | Some durable ->
+            raise
+              (Store_error
+                 (Printf.sprintf
+                    "worker database belongs to session %s, not requested \
+                     session %s"
+                    durable session_id)));
+        let previous =
+          match get_metadata store "runtime_generation" with
+          | None -> if legacy_runtime then 1 else 0
+          | Some value -> (
+              match int_of_string_opt value with
+              | Some generation when generation >= 0 -> generation
+              | _ -> raise (Store_error "durable runtime generation is invalid")
+              )
+        in
+        if previous = max_int then
+          raise (Store_error "durable runtime generation is exhausted");
+        let runtime_generation = previous + 1 in
+        let worker_seed = worker_id_to_string store.worker_id in
+        let worker_id =
+          "worker-"
+          ^ Digest.to_hex
+              (Digest.string
+                 (session_id ^ "\000" ^ worker_seed ^ "\000"
+                 ^ string_of_int runtime_generation))
+        in
+        set_metadata store "runtime_generation"
+          (string_of_int runtime_generation);
+        set_metadata store "runtime_worker_id" worker_id;
+        { worker_id; runtime_generation })
+  in
+  store.claimed_runtime := Some identity;
+  identity
+
+let stale_runtime_reason store (target : runtime_target) =
+  let requested_session = session_id_to_string target.session_id in
+  let process_session = session_id_to_string store.session_id in
+  let durable_session = get_metadata store "piss_session_id" in
+  let requested_worker = worker_id_to_string target.worker_id in
+  let durable_worker = get_metadata store "runtime_worker_id" in
+  let requested_generation =
+    runtime_generation_to_int target.runtime_generation
+  in
+  let durable_generation =
+    Option.bind (get_metadata store "runtime_generation") int_of_string_opt
+  in
+  match !(store.claimed_runtime) with
+  | None ->
+      Some "stale runtime target: worker process has not claimed a runtime"
+  | Some _ when not (String.equal process_session requested_session) ->
+      Some "stale runtime target: session identity changed"
+  | Some claimed when not (String.equal claimed.worker_id requested_worker) ->
+      Some "stale runtime target: worker incarnation changed"
+  | Some claimed when claimed.runtime_generation <> requested_generation ->
+      Some "stale runtime target: runtime generation changed"
+  | Some _ -> (
+      match (durable_session, durable_worker, durable_generation) with
+      | Some session, _, _ when not (String.equal session requested_session) ->
+          Some "stale runtime target: durable session identity changed"
+      | _, Some worker, _ when not (String.equal worker requested_worker) ->
+          Some "stale runtime target: worker incarnation changed"
+      | _, _, Some generation when generation <> requested_generation ->
+          Some "stale runtime target: runtime generation changed"
+      | Some _, Some _, Some _ -> None
+      | _ -> Some "stale runtime target: worker runtime identity is unavailable"
+      )
+
+let validate_runtime_target store target =
+  transaction store (fun () ->
+      match stale_runtime_reason store target with
+      | None -> Ok ()
+      | Some reason -> Error reason)
 
 let row_count store table =
   scalar_int64 store ~operation:("count " ^ table)
@@ -301,45 +390,59 @@ let find_command store command_id =
           fail_rc "find command" rc;
           None)
 
-let accept_command ?(action = "prompt") ?(content = `List []) ?(images = [])
-    ?(resources = []) store ~command_id ~request_id ~prompt =
+let accept_command_unlocked ?(action = "prompt") ?(content = `List [])
+    ?(images = []) ?(resources = []) store ~command_id ~request_id ~prompt =
+  match find_command store command_id with
+  | Some state -> { state; duplicate = true }
+  | None ->
+      if row_count store "commands" >= Int64.of_int max_retained_commands then
+        raise
+          (Store_error
+             (Printf.sprintf "command retention limit reached (%d)"
+                max_retained_commands));
+      let now = Unix.gettimeofday () in
+      with_statement store.db
+        "INSERT INTO commands(command_id, request_id, prompt, content, state, \
+         created_at, updated_at) VALUES (?, ?, ?, ?, 'accepted', ?, ?)"
+        (fun statement ->
+          bind_text statement 1 command_id;
+          bind_text statement 2 request_id;
+          bind_text statement 3 prompt;
+          bind_text statement 4 (Yojson.Safe.to_string content);
+          bind_float statement 5 now;
+          bind_float statement 6 now;
+          expect_done "accept command" statement);
+      ignore
+        (append_event store ~kind:"command.accepted"
+           ~payload:
+             (`Assoc
+                [
+                  ("commandId", `String command_id);
+                  ("requestId", `String request_id);
+                  ("action", `String action);
+                  ("text", `String prompt);
+                  ("imageCount", `Int (List.length images));
+                  ("images", `List images);
+                  ("resourceCount", `Int (List.length resources));
+                  ("resources", `List resources);
+                ]));
+      { state = Accepted; duplicate = false }
+
+let accept_command ?action ?content ?images ?resources store ~command_id
+    ~request_id ~prompt =
   transaction store (fun () ->
-      match find_command store command_id with
-      | Some state -> { state; duplicate = true }
+      accept_command_unlocked ?action ?content ?images ?resources store
+        ~command_id ~request_id ~prompt)
+
+let accept_targeted_command ?action ?content ?images ?resources store ~target
+    ~command_id ~request_id ~prompt =
+  transaction store (fun () ->
+      match stale_runtime_reason store target with
+      | Some reason -> Error reason
       | None ->
-          if row_count store "commands" >= Int64.of_int max_retained_commands
-          then
-            raise
-              (Store_error
-                 (Printf.sprintf "command retention limit reached (%d)"
-                    max_retained_commands));
-          let now = Unix.gettimeofday () in
-          with_statement store.db
-            "INSERT INTO commands(command_id, request_id, prompt, content, \
-             state, created_at, updated_at) VALUES (?, ?, ?, ?, 'accepted', ?, \
-             ?)" (fun statement ->
-              bind_text statement 1 command_id;
-              bind_text statement 2 request_id;
-              bind_text statement 3 prompt;
-              bind_text statement 4 (Yojson.Safe.to_string content);
-              bind_float statement 5 now;
-              bind_float statement 6 now;
-              expect_done "accept command" statement);
-          ignore
-            (append_event store ~kind:"command.accepted"
-               ~payload:
-                 (`Assoc
-                    [
-                      ("commandId", `String command_id);
-                      ("requestId", `String request_id);
-                      ("action", `String action);
-                      ("text", `String prompt);
-                      ("imageCount", `Int (List.length images));
-                      ("images", `List images);
-                      ("resourceCount", `Int (List.length resources));
-                      ("resources", `List resources);
-                    ]));
-          { state = Accepted; duplicate = false })
+          Ok
+            (accept_command_unlocked ?action ?content ?images ?resources store
+               ~command_id ~request_id ~prompt))
 
 let command_content store command_id =
   with_statement store.db "SELECT content FROM commands WHERE command_id = ?"
@@ -389,9 +492,9 @@ let set_command_state store ~command_id state =
    must use this whenever it cannot otherwise observe that a harness response
    has landed (for example, the dispatch-timeout watcher). *)
 let try_set_command_state_if_open store ~command_id state =
-  let updated =
-    transaction store (fun () ->
-        let now = Unix.gettimeofday () in
+  transaction store (fun () ->
+      let now = Unix.gettimeofday () in
+      let updated =
         with_statement store.db
           "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = ? \
            AND state IN ('accepted', 'dispatched', 'acknowledged')"
@@ -403,24 +506,23 @@ let try_set_command_state_if_open store ~command_id state =
             | Sqlite3.Rc.DONE -> Sqlite3.changes store.db
             | rc ->
                 fail_rc "try-set command state" rc;
-                0))
-  in
-  let claimed = updated > 0 in
-  (if claimed then
-     match state with
-     | Completed | Cancelled | Ambiguous | Rejected ->
-         clear_command_content store ~command_id
-     | Received | Accepted | Dispatched | Acknowledged ->
-         ();
-         ignore
-           (append_event store ~kind:"command.state"
-              ~payload:
-                (`Assoc
-                   [
-                     ("commandId", `String command_id);
-                     ("state", `String (command_state_to_string state));
-                   ])));
-  claimed
+                0)
+      in
+      let claimed = updated > 0 in
+      if claimed then (
+        (match state with
+        | Completed | Cancelled | Ambiguous | Rejected ->
+            clear_command_content store ~command_id
+        | Received | Accepted | Dispatched | Acknowledged -> ());
+        ignore
+          (append_event store ~kind:"command.state"
+             ~payload:
+               (`Assoc
+                  [
+                    ("commandId", `String command_id);
+                    ("state", `String (command_state_to_string state));
+                  ])));
+      claimed)
 
 let incomplete_command_ids store =
   with_statement store.db

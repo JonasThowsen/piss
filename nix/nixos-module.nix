@@ -184,11 +184,20 @@ let
             raise RuntimeError(envelope.get("error", "worker request failed"))
         return envelope.get("result")
 
-    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.settimeout(5)
-    connection.connect(socket_path)
-    connection.sendall(b'{"op":"hello","protocolVersion":1}\n')
-    receive(connection)
+    def connect(version):
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(5)
+        connection.connect(socket_path)
+        connection.sendall((json.dumps({"op": "hello", "protocolVersion": version}, separators=(",", ":")) + "\n").encode())
+        receive(connection)
+        return connection
+
+    try:
+        connection = connect(2)
+    except Exception:
+        # Read-only snapshots and idle upgrade preparation remain available for
+        # immutable protocol-v1 workers while the new control plane rolls out.
+        connection = connect(1)
     connection.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
     print(json.dumps(receive(connection), separators=(",", ":")))
   '';
@@ -619,6 +628,7 @@ in
 
     systemd.user.services.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
       description = "Upgrade idle PISS workers to the current immutable generation";
+      wantedBy = [ "default.target" ];
       after = [ "piss-ocaml.service" ];
       path = [ pkgs.coreutils ];
       serviceConfig = {

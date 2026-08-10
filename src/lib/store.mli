@@ -20,6 +20,10 @@ type accepted_command = {
   state : Piss_shared.Domain.command_state;
   duplicate : bool;
 }
+
+type runtime_identity = { worker_id : string; runtime_generation : int }
+(** The newly claimed worker incarnation and durable fencing generation. *)
+
 (** The state stored alongside each accepted command: the durable command state
     plus whether the just-completed accept was a duplicate. *)
 
@@ -72,6 +76,16 @@ val get_metadata : t -> string -> string option
 val set_metadata : t -> string -> string -> unit
 (** Write a metadata key. Overwrites any existing value. *)
 
+val claim_runtime : t -> runtime_identity
+(** Atomically increment and persist the writable generation and derive a new
+    worker-incarnation identity. Fails if the database belongs to another
+    durable session. *)
+
+val validate_runtime_target :
+  t -> Piss_shared.Domain.runtime_target -> (unit, string) result
+(** Compare a supplied target against both this process's claimed identity and
+    the current durable fencing identity. *)
+
 val append_event :
   t -> kind:string -> payload:Yojson.Safe.t -> Piss_shared.Domain.event
 (** Append a single event row. Runs the retention pass when the spool reaches
@@ -107,6 +121,20 @@ val accept_command :
 (** Accept a command. If [command_id] already exists in the ledger, the existing
     state is returned and [duplicate] is [true]; otherwise a fresh row is
     inserted with state [Accepted] and [duplicate] is [false]. *)
+
+val accept_targeted_command :
+  ?action:string ->
+  ?content:Yojson.Safe.t ->
+  ?images:Yojson.Safe.t list ->
+  ?resources:Yojson.Safe.t list ->
+  t ->
+  target:Piss_shared.Domain.runtime_target ->
+  command_id:string ->
+  request_id:string ->
+  prompt:string ->
+  (accepted_command, string) result
+(** Validate the runtime target and durably accept or deduplicate the command in
+    one SQLite transaction. *)
 
 val command_content : t -> string -> string option
 (** Read and clear the deferred prompt content (text, images, resources) for a

@@ -44,4 +44,10 @@ val decode_json :
 
 val decode_config_response : string -> (config_option list, string) result
 val find_category : t -> string -> config_option option
-val config_change_to_yojson : config_id:string -> value:string -> Yojson.Safe.t
+val target_to_yojson : t -> Yojson.Safe.t
+
+val mutation_to_yojson :
+  t -> mutation_id:string -> (string * Yojson.Safe.t) list -> Yojson.Safe.t
+
+val config_change_to_yojson :
+  t -> mutation_id:string -> config_id:string -> value:string -> Yojson.Safe.t

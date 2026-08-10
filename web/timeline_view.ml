@@ -271,10 +271,6 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     Option.map session ~f:(fun (session : Control_plane.Session.t) ->
         session.id)
   in
-  let title =
-    Option.value_map session ~default:"Active sessions"
-      ~f:(fun (session : Control_plane.Session.t) -> session.title)
-  in
   let events, entries =
     match (state, selected_id) with
     | Loaded (history_id, buffer), Some selected_id
@@ -343,18 +339,6 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
   Vdom.Node.section
     ~attrs:[ class_ "conversation-panel" ]
     ([
-       Vdom.Node.header
-         ~attrs:[ class_ "conversation-heading" ]
-         [
-           Vdom.Node.h2 [ text title ];
-           Vdom.Node.span
-             ~attrs:[ class_ "sequence-label" ]
-             [
-               text
-                 (Option.value_map selected_id ~default:"GET /api/v2/sessions"
-                    ~f:(fun id -> "session / " ^ id));
-             ];
-         ];
        (match session with
        | None -> Vdom.Node.none
        | Some _ -> render_tabs tab ~on_select:on_tab working);

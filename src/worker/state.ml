@@ -7,6 +7,8 @@ type t = {
   store : Store.t;
   workspace : string;
   harness_pid : int;
+  runtime_worker_id : string;
+  runtime_generation : int;
   agent_name : string ref;
   supports_load : bool ref;
   supports_images : bool ref;
@@ -24,12 +26,15 @@ type t = {
     id:string -> Yojson.Safe.t -> Yojson.Safe.t * Yojson.Safe.t;
 }
 
-let make ~args ~store ~workspace ~harness_pid ~send ~require_rpc_result =
+let make ~args ~store ~workspace ~harness_pid ~runtime_worker_id
+    ~runtime_generation ~send ~require_rpc_result =
   {
     args;
     store;
     workspace;
     harness_pid;
+    runtime_worker_id;
+    runtime_generation;
     agent_name = ref "ACP agent";
     supports_load = ref false;
     supports_images = ref false;
@@ -49,6 +54,15 @@ let make ~args ~store ~workspace ~harness_pid ~send ~require_rpc_result =
 let args t = t.args
 let store t = t.store
 let workspace t = t.workspace
+let runtime_worker_id t = t.runtime_worker_id
+
+let runtime_target t =
+  Domain.
+    {
+      session_id = session_id t.args.session_id;
+      worker_id = worker_id t.runtime_worker_id;
+      runtime_generation = runtime_generation t.runtime_generation;
+    }
 
 let initialize_agent t ~name ~supports_load ~supports_images =
   t.agent_name := name;
@@ -73,8 +87,8 @@ let snapshot t =
   Domain.
     {
       session_id = session_id t.args.session_id;
-      worker_id = worker_id t.args.worker_id;
-      runtime_generation = runtime_generation 1;
+      worker_id = worker_id t.runtime_worker_id;
+      runtime_generation = runtime_generation t.runtime_generation;
       worker_pid = Unix.getpid ();
       harness_pid = Some t.harness_pid;
       agent_name = !(t.agent_name);

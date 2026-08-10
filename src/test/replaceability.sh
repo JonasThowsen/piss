@@ -75,16 +75,44 @@ harness_pid=$(jq -r .harnessPid <<<"$snapshot_before")
 [[ "$reported_worker_pid" == "$worker_pid" ]]
 kill -0 "$harness_pid"
 initial_cursor=$(jq -r .lastSequence <<<"$snapshot_before")
+old_target=$(jq -c '{sessionId,workerId,runtimeGeneration}' <<<"$snapshot_before")
 curl -NsS --max-time 10 \
   "http://127.0.0.1:$port/api/v2/event-stream?after=$initial_cursor" \
   >"$state/generation-one.stream" 2>/dev/null &
 stream_pid=$!
 
-first_delivery=$(curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"replaceability-command","text":"prove replacement"}' \
-  "http://127.0.0.1:$port/api/v2/commands")
-[[ $(jq -r .duplicate <<<"$first_delivery") == false ]]
-[[ $(jq -r .state <<<"$first_delivery") == dispatched ]]
+command_body=$(jq -nc --argjson target "$old_target" \
+  '{target:$target,commandId:"replaceability-command",text:"prove replacement"}')
+# Send a complete authenticated HTTP request, then deliberately discard its
+# response. The durable acceptance is observed through the event ledger before
+# retrying the exact same command identity.
+python3 - "$port" "$command_body" <<'PY'
+import socket, sys, time
+port, body = int(sys.argv[1]), sys.argv[2].encode()
+request = (b"POST /api/v2/commands HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+           b"Content-Type: application/json\r\nContent-Length: "
+           + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+connection = socket.create_connection(("127.0.0.1", port))
+connection.sendall(request)
+time.sleep(.2)
+connection.close()
+PY
+for _ in $(seq 1 100); do
+  accepted=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "replaceability-command")] | length' <<<"$accepted") == 1 ]] && break
+  sleep .02
+done
+# Concurrent response-loss retries reuse the same identity. Both must observe
+# the one durable command rather than dispatching another ACP prompt.
+curl -fsS -X POST -H 'content-type: application/json' --data "$command_body" \
+  "http://127.0.0.1:$port/api/v2/commands" >"$state/retry-one.json" &
+retry_one=$!
+curl -fsS -X POST -H 'content-type: application/json' --data "$command_body" \
+  "http://127.0.0.1:$port/api/v2/commands" >"$state/retry-two.json" &
+retry_two=$!
+wait "$retry_one" "$retry_two"
+[[ $(jq -r .duplicate "$state/retry-one.json") == true ]]
+[[ $(jq -r .duplicate "$state/retry-two.json") == true ]]
 
 sleep 1
 kill -9 "$control_pid"
@@ -113,10 +141,11 @@ snapshot_after=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
 [[ $(jq -r .status <<<"$snapshot_after") == idle ]]
 
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
-[[ $(jq '[.[] | select(.kind == "command.accepted")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "replaceability-command")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.text == "prove replacement")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "acp.tool_call_update")] | length' <<<"$events") -ge 4 ]]
 [[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk")] | length' <<<"$events") == 1 ]]
-[[ $(jq '[.[] | select(.kind == "command.state" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "replaceability-command" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
 for _ in $(seq 1 100); do
   grep -q '"state":"completed"' "$state/generation-two.stream" 2>/dev/null && break
   sleep .02
@@ -132,19 +161,88 @@ ids = [int(line.split(':', 1)[1]) for line in open(path) if line.startswith('id:
 assert ids and ids == sorted(set(ids)) and min(ids) > cursor, ids
 PY
 
+# Race two first submissions of one fresh prompt. They cross independent HTTP
+# and worker connections, but only one may accept and write to the ACP harness.
+concurrent_body=$(jq -nc --argjson target "$old_target" \
+  '{target:$target,commandId:"concurrent-command",text:"dispatch concurrently once"}')
+concurrent_results=$(python3 - "$port" "$concurrent_body" <<'PY'
+import json, threading, urllib.request, sys
+port, body = int(sys.argv[1]), sys.argv[2].encode()
+barrier = threading.Barrier(3)
+results = []
+def submit():
+    barrier.wait()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/v2/commands", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        results.append(json.load(response))
+threads = [threading.Thread(target=submit) for _ in range(2)]
+for thread in threads: thread.start()
+barrier.wait()
+for thread in threads: thread.join()
+print(json.dumps(results, separators=(",", ":")))
+PY
+)
+[[ $(jq -c '[.[].duplicate] | sort' <<<"$concurrent_results") == '[false,true]' ]]
+for _ in $(seq 1 300); do
+  concurrent_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "concurrent-command" and .payload.state == "completed")] | length' <<<"$concurrent_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "concurrent-command")] | length' <<<"$concurrent_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.text == "dispatch concurrently once")] | length' <<<"$concurrent_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "concurrent-command" and .payload.state == "completed")] | length' <<<"$concurrent_events") == 1 ]]
+
 duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"replaceability-command","text":"must not run twice"}' \
+  --data "$command_body" \
   "http://127.0.0.1:$port/api/v2/commands")
 [[ $(jq -r .duplicate <<<"$duplicate") == true ]]
 [[ $(jq -r .state <<<"$duplicate") == completed ]]
 
+# Protocol-v1 control and upgrade helpers can still observe and prepare a v2
+# worker during a rollback window. Mutations remain decoded by the current
+# worker and therefore retain their v2 fencing semantics.
+legacy_snapshot=$(python3 - "$socket" <<'PY'
+import json, socket, sys
+connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.connect(sys.argv[1])
+stream = connection.makefile("rwb", buffering=0)
+def exchange(value):
+    stream.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+    envelope = json.loads(stream.readline())
+    assert envelope["ok"], envelope
+    return envelope["result"]
+hello = exchange({"op":"hello","protocolVersion":1})
+assert hello["protocolVersion"] == 1, hello
+print(json.dumps(exchange({"op":"snapshot"}), separators=(",", ":")))
+PY
+)
+[[ $(jq -r .workerPid <<<"$legacy_snapshot") == "$worker_pid" ]]
+
+legacy_config=$(python3 - "$socket" <<'PY'
+import json, socket, sys
+connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+connection.connect(sys.argv[1])
+stream = connection.makefile("rwb", buffering=0)
+def exchange(value):
+    stream.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
+    envelope = json.loads(stream.readline())
+    assert envelope["ok"], envelope
+    return envelope["result"]
+exchange({"op":"hello","protocolVersion":1})
+print(json.dumps(exchange({"op":"set_config_option","configId":"thought_level","value":"low"}), separators=(",", ":")))
+PY
+)
+[[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$legacy_config") == low ]]
+
 events_after_duplicate=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
-[[ $(jq '[.[] | select(.kind == "command.accepted")] | length' <<<"$events_after_duplicate") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "replaceability-command")] | length' <<<"$events_after_duplicate") == 1 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"configId":"model","value":"mock/deep"}' \
+  --data "$(jq -nc --argjson target "$old_target" '{target:$target,mutationId:"config-model",configId:"model",value:"mock/deep"}')" \
   "http://127.0.0.1:$port/api/v2/config-options" >/dev/null
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"configId":"thought_level","value":"high"}' \
+  --data "$(jq -nc --argjson target "$old_target" '{target:$target,mutationId:"config-thought",configId:"thought_level",value:"high"}')" \
   "http://127.0.0.1:$port/api/v2/config-options" >/dev/null
 
 prepared=$(python3 - "$socket" <<'PY'
@@ -157,7 +255,7 @@ def exchange(value):
     envelope = json.loads(stream.readline())
     assert envelope["ok"], envelope
     return envelope["result"]
-exchange({"op":"hello","protocolVersion":1})
+exchange({"op":"hello","protocolVersion":2})
 print(json.dumps(exchange({"op":"prepare_upgrade","generation":"worker-generation-two"})))
 PY
 )
@@ -182,6 +280,38 @@ replacement_snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
 [[ $(jq -r .workerPid <<<"$replacement_snapshot") != "$old_worker_pid" ]]
 [[ $(jq -r .workerGeneration <<<"$replacement_snapshot") == worker-generation-two ]]
 [[ $(jq -r .status <<<"$replacement_snapshot") == idle ]]
+[[ $(jq -r .runtimeGeneration <<<"$replacement_snapshot") -gt $(jq -r .runtimeGeneration <<<"$snapshot_before") ]]
+[[ $(jq -r .workerId <<<"$replacement_snapshot") != $(jq -r .workerId <<<"$snapshot_before") ]]
+# A response-loss retry is a durable receipt lookup, so the original command ID
+# remains recoverable even though its captured runtime target is now stale.
+post_replacement_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$command_body" "http://127.0.0.1:$port/api/v2/commands")
+[[ $(jq -r .duplicate <<<"$post_replacement_duplicate") == true ]]
+[[ $(jq -r .state <<<"$post_replacement_duplicate") == completed ]]
+stale_body=$(jq -nc --argjson target "$old_target" \
+  '{target:$target,commandId:"stale-runtime-command",text:"must be fenced"}')
+[[ $(curl -sS -o "$state/stale.json" -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data "$stale_body" \
+  "http://127.0.0.1:$port/api/v2/commands") == 409 ]]
+[[ $(jq -r .errorDetails.kind "$state/stale.json") == Conflict ]]
+[[ $(jq -r .error "$state/stale.json") == stale\ runtime\ target:* ]]
+stale_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "stale-runtime-command")] | length' <<<"$stale_events") == 0 ]]
+[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.text == "must be fenced")] | length' <<<"$stale_events") == 0 ]]
+replacement_target=$(jq -c '{sessionId,workerId,runtimeGeneration}' <<<"$replacement_snapshot")
+retargeted_body=$(jq -nc --argjson target "$replacement_target" \
+  '{target:$target,commandId:"stale-runtime-command",text:"must be fenced"}')
+retargeted=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$retargeted_body" "http://127.0.0.1:$port/api/v2/commands")
+[[ $(jq -r .duplicate <<<"$retargeted") == false ]]
+for _ in $(seq 1 300); do
+  retargeted_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "stale-runtime-command" and .payload.state == "completed")] | length' <<<"$retargeted_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "stale-runtime-command")] | length' <<<"$retargeted_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.user_message_chunk" and .payload.params.update.content.text == "must be fenced")] | length' <<<"$retargeted_events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "stale-runtime-command" and .payload.state == "completed")] | length' <<<"$retargeted_events") == 1 ]]
 [[ $(jq -r '.configOptions[]|select(.category=="model")|.currentValue' <<<"$replacement_snapshot") == mock/deep ]]
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$replacement_snapshot") == high ]]
 upgrade_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -190,4 +320,4 @@ upgrade_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "acp.config_option.restored" and .payload.configId == "model" and .payload.value == "mock/deep")] | length' <<<"$upgrade_events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "acp.config_option.restored" and .payload.configId == "thought_level" and .payload.value == "high")] | length' <<<"$upgrade_events") == 1 ]]
 
-echo "replaceability proof passed: control replacement, idle worker upgrade receipts, and restored ACP configuration"
+echo "replaceability proof passed: response-loss-safe/concurrent dedup, stale-runtime fencing and same-ID retarget, control replacement, protocol-v1 rollback reads, idle worker upgrade receipts, and restored ACP configuration"

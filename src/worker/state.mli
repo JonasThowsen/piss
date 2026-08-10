@@ -9,6 +9,8 @@ val make :
   store:Piss_core.Store.t ->
   workspace:string ->
   harness_pid:int ->
+  runtime_worker_id:string ->
+  runtime_generation:int ->
   send:(Yojson.Safe.t -> unit) ->
   require_rpc_result:
     (id:string -> Yojson.Safe.t -> Yojson.Safe.t * Yojson.Safe.t) ->
@@ -19,6 +21,8 @@ val make :
 val args : t -> Config.args
 val store : t -> Piss_core.Store.t
 val workspace : t -> string
+val runtime_worker_id : t -> string
+val runtime_target : t -> Piss_core.Domain.runtime_target
 
 val initialize_agent :
   t -> name:string -> supports_load:bool -> supports_images:bool -> unit

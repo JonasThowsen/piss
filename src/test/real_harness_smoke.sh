@@ -74,9 +74,11 @@ for _ in $(seq 1 500); do
   sleep .02
 done
 curl -fsS "http://127.0.0.1:$port/health" >/dev/null
+runtime_target=$(curl -fsS "http://127.0.0.1:$port/api/v2/session" | \
+  jq -c '{sessionId,workerId,runtimeGeneration}')
 
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"real-harness-command","text":"Reply with exactly PISS_REAL_HARNESS_OK and no other text. Do not use tools."}' \
+  --data "$(jq -nc --argjson target "$runtime_target" '{target:$target,commandId:"real-harness-command",text:"Reply with exactly PISS_REAL_HARNESS_OK and no other text. Do not use tools."}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 
 terminal_state=

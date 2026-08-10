@@ -16,22 +16,34 @@ type request =
   | File_search of { query : string }
   | New_session
   | Prompt of {
+      target : runtime_target;
       command_id : string;
       text : string;
       images : image_input list;
       resources : resource_input list;
     }
   | Deliver of {
+      target : runtime_target;
       command_id : string;
       text : string;
       images : image_input list;
       resources : resource_input list;
       action : string;
     }
-  | Cancel
+  | Cancel of { target : runtime_target; mutation_id : string }
   | Config_options
-  | Set_config_option of { config_id : string; value : string }
-  | Permission of { request_id : string; option_id : string option }
+  | Set_config_option of {
+      target : runtime_target;
+      mutation_id : string;
+      config_id : string;
+      value : string;
+    }
+  | Permission of {
+      target : runtime_target;
+      mutation_id : string;
+      request_id : string;
+      option_id : string option;
+    }
   | Peer_event of {
       kind : string;
       request_id : string;
@@ -73,6 +85,41 @@ let int64_member ?default name json =
   | _ -> Error (Printf.sprintf "%s must be an integer" name)
 
 let ( let* ) = Result.bind
+
+let bounded_identity ~field ~max value =
+  if value = "" || String.length value > max then
+    Error
+      (Printf.sprintf "%s must contain between 1 and %d characters" field max)
+  else if String.contains value '\000' then
+    Error (field ^ " must not contain NUL")
+  else Ok value
+
+let runtime_target_member json =
+  match member "target" json with
+  | `Assoc _ as target ->
+      let* session_id = string_member "sessionId" target in
+      let* session_id =
+        bounded_identity ~field:"target.sessionId" ~max:128 session_id
+      in
+      let* worker_id = string_member "workerId" target in
+      let* worker_id =
+        bounded_identity ~field:"target.workerId" ~max:128 worker_id
+      in
+      let* runtime_generation = int_member "runtimeGeneration" target in
+      if runtime_generation < 0 then
+        Error "target.runtimeGeneration must be non-negative"
+      else
+        Ok
+          {
+            session_id = Domain.session_id session_id;
+            worker_id = Domain.worker_id worker_id;
+            runtime_generation = Domain.runtime_generation runtime_generation;
+          }
+  | _ -> Error "target must be an object"
+
+let mutation_id_member json =
+  let* mutation_id = string_member "mutationId" json in
+  bounded_identity ~field:"mutationId" ~max:128 mutation_id
 
 let is_base64_character = function
   | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '+' | '/' -> true
@@ -227,6 +274,7 @@ let request_of_yojson json =
       else Ok (File_search { query })
   | "new_session" -> Ok New_session
   | "prompt" ->
+      let* target = runtime_target_member json in
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
       let* images = images_member json in
@@ -239,8 +287,9 @@ let request_of_yojson json =
             ~empty_message:"prompt must contain text, an image, or a resource"
             ~text ~images ~resources
         in
-        Ok (Prompt { command_id; text; images; resources })
+        Ok (Prompt { target; command_id; text; images; resources })
   | "deliver" ->
+      let* target = runtime_target_member json in
       let* command_id = string_member "commandId" json in
       let* text = string_member "text" json in
       let* images = images_member json in
@@ -256,17 +305,22 @@ let request_of_yojson json =
             ~empty_message:"delivery must contain text, an image, or a resource"
             ~text ~images ~resources
         in
-        Ok (Deliver { command_id; text; images; resources; action })
-  | "cancel" -> Ok Cancel
+        Ok (Deliver { target; command_id; text; images; resources; action })
+  | "cancel" ->
+      let* target = runtime_target_member json in
+      let* mutation_id = mutation_id_member json in
+      Ok (Cancel { target; mutation_id })
   | "config_options" -> Ok Config_options
   | "set_config_option" ->
+      let* target = runtime_target_member json in
+      let* mutation_id = mutation_id_member json in
       let* config_id = string_member "configId" json in
       let* value = string_member "value" json in
       if config_id = "" || String.length config_id > 128 then
         Error "configId must contain between 1 and 128 characters"
       else if value = "" || String.length value > 512 then
         Error "value must contain between 1 and 512 characters"
-      else Ok (Set_config_option { config_id; value })
+      else Ok (Set_config_option { target; mutation_id; config_id; value })
   | "peer_event" ->
       let* kind = string_member "kind" json in
       let* request_id = string_member "requestId" json in
@@ -292,6 +346,8 @@ let request_of_yojson json =
         Error "peer event text is too long"
       else Ok (Peer_event { kind; request_id; peer_id; text })
   | "permission" ->
+      let* target = runtime_target_member json in
+      let* mutation_id = mutation_id_member json in
       let* request_id = string_member "requestId" json in
       let option_id =
         match member "optionId" json with
@@ -307,8 +363,33 @@ let request_of_yojson json =
           ~some:(fun value -> String.length value > 128)
           option_id
       then Error "optionId is too long"
-      else Ok (Permission { request_id; option_id })
+      else Ok (Permission { target; mutation_id; request_id; option_id })
   | value -> Error ("unknown operation: " ^ value)
+
+let request_of_yojson_v1 ~(target : runtime_target) ~mutation_id json =
+  let target_json =
+    `Assoc
+      [
+        ("sessionId", `String (session_id_to_string target.session_id));
+        ("workerId", `String (worker_id_to_string target.worker_id));
+        ( "runtimeGeneration",
+          `Int (runtime_generation_to_int target.runtime_generation) );
+      ]
+  in
+  let with_fields fields =
+    match json with
+    | `Assoc existing -> `Assoc (fields @ existing)
+    | value -> value
+  in
+  match (member "op" json, member "target" json) with
+  | `String _, `Assoc _ -> request_of_yojson json
+  | `String ("prompt" | "deliver"), _ ->
+      request_of_yojson (with_fields [ ("target", target_json) ])
+  | `String ("cancel" | "set_config_option" | "permission"), _ ->
+      request_of_yojson
+        (with_fields
+           [ ("target", target_json); ("mutationId", `String mutation_id) ])
+  | _ -> request_of_yojson json
 
 let response_to_yojson = function
   | Ok result -> `Assoc [ ("ok", `Bool true); ("result", result) ]

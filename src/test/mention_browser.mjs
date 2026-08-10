@@ -99,10 +99,12 @@ try {
     return response.ok && (await response.json()).status === "idle";
   });
   const dispatchPrompt = (text) => desktop.evaluate(async (prompt) => {
+    const snapshot = await fetch("/api/v2/session?session=s-mention-browser").then((response) => response.json());
+    const target = { sessionId: snapshot.sessionId, workerId: snapshot.workerId, runtimeGeneration: snapshot.runtimeGeneration };
     const response = await fetch("/api/v2/commands?session=s-mention-browser", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commandId: `browser-${crypto.randomUUID()}`, text: prompt, images: [], resources: [], action: "prompt" }),
+      body: JSON.stringify({ target, commandId: `browser-${crypto.randomUUID()}`, text: prompt, images: [], resources: [], action: "prompt" }),
     });
     if (!response.ok) throw new Error(await response.text());
   }, text);
@@ -164,9 +166,10 @@ try {
   mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
   await mobile.goto(url, { waitUntil: "domcontentloaded" });
   const mobileTextarea = mobile.getByRole("textbox", { name: "Message agent" });
-  await mobileTextarea.fill("Touch mention ");
-  await mobile.getByRole("button", { name: "Mention a workspace file" }).tap();
-  await mobileTextarea.type("web/main");
+  if (await mobile.getByRole("button", { name: "Mention a workspace file" }).count() !== 0) {
+    throw new Error("redundant composer mention button remained visible");
+  }
+  await mobileTextarea.fill("Touch mention @web/main");
   const mobileOption = mobile.getByRole("option", { name: /^main\.ml web\/main\.ml$/ });
   await mobileOption.waitFor();
   await mobile.locator("#file-mention-options").ariaSnapshot();

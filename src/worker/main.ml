@@ -16,6 +16,7 @@ let run ~env (args : Config.args) =
       ~session_id:(Domain.session_id args.session_id)
       ~worker_id:(Domain.worker_id args.worker_id)
   in
+  let runtime_identity = Store.claim_runtime store in
   let reconciled_commands = Store.reconcile_incomplete_commands store in
   if reconciled_commands <> [] then
     Format.eprintf "reconciled %d incomplete command(s) as ambiguous@."
@@ -63,7 +64,10 @@ let run ~env (args : Config.args) =
         | Error message -> raise (Failure message))
   in
   let state =
-    State.make ~args ~store ~workspace ~harness_pid ~send ~require_rpc_result
+    State.make ~args ~store ~workspace ~harness_pid
+      ~runtime_worker_id:runtime_identity.worker_id
+      ~runtime_generation:runtime_identity.runtime_generation ~send
+      ~require_rpc_result
   in
   Eio.Fiber.fork ~sw (fun () ->
       while true do
@@ -302,10 +306,10 @@ let run ~env (args : Config.args) =
   | _ -> ());
   let handle_connection flow _address =
     let reader = Eio.Buf_read.of_flow flow ~max_size:Config.max_frame_bytes in
-    let receive () =
+    let receive decode =
       try
         let json = read_json reader in
-        Wire.request_of_yojson json
+        decode json
         |> Result.map_error (fun reason ->
             Error.Validation { field = "request"; reason })
       with
@@ -319,14 +323,28 @@ let run ~env (args : Config.args) =
                { field = "request"; reason = "worker frame is too large" })
       | exn -> Error (Error.Internal { message = Printexc.to_string exn })
     in
-    match receive () with
-    | Ok (Wire.Hello _ as hello) -> (
+    match receive Wire.request_of_yojson with
+    | Ok (Wire.Hello { protocol_version } as hello) -> (
         let negotiation = Protocol.handle state hello in
         write_json flow (Wire.response_to_yojson negotiation);
         match negotiation with
         | Error _ -> ()
         | Ok _ -> (
-            match receive () with
+            let decode =
+              if protocol_version = 1 then fun json ->
+                let mutation_id =
+                  "legacy-"
+                  ^ Digest.to_hex
+                      (Digest.string
+                         (Yojson.Safe.to_string json ^ "\000"
+                         ^ string_of_float (Unix.gettimeofday ())))
+                in
+                Wire.request_of_yojson_v1
+                  ~target:(State.runtime_target state)
+                  ~mutation_id json
+              else Wire.request_of_yojson
+            in
+            match receive decode with
             | Ok request ->
                 Protocol.handle state request
                 |> Wire.response_to_yojson |> write_json flow
@@ -353,7 +371,8 @@ let run ~env (args : Config.args) =
   Unix.chmod args.socket_path 0o600;
   Printf.printf
     "worker_ready session=%s worker=%s pid=%d harness_pid=%d socket=%s\n%!"
-    args.session_id args.worker_id (Unix.getpid ()) harness_pid args.socket_path;
+    args.session_id runtime_identity.worker_id (Unix.getpid ()) harness_pid
+    args.socket_path;
   Eio.Net.run_server socket handle_connection
     ~on_error:(fun exn ->
       Format.eprintf "worker connection failed: %a@." Eio.Exn.pp exn)

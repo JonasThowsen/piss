@@ -7,17 +7,24 @@ type output = {
   view : Vdom.Node.t;
   reset : unit -> unit Effect.t;
   set_notice : string -> unit Effect.t;
+  has_pending : unit -> bool;
 }
+
+type pending_submission = { session_id : string; command : Prompt_command.t }
 
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
 let component session runtime connecting stream_notice config_controls ~on_busy
-    graph =
+    ~refresh_runtime graph =
+  let submission_locked = ref false in
+  let request_in_flight = ref false in
   let prompt, set_prompt = Bonsai.state "" graph in
   let resources, set_resources = Bonsai.state [] graph in
   let picker, set_picker = Bonsai.state Mention_picker.Closed graph in
-  let submitting, set_submitting = Bonsai.state false graph in
+  let submission, set_submission =
+    Bonsai.state Prompt_command.Submission.ready graph
+  in
   let delivery, set_delivery = Bonsai.state Prompt_command.Prompt graph in
   let cancel_sequence, set_cancel_sequence = Bonsai.state None graph in
   let notice, set_notice = Bonsai.state "" graph in
@@ -40,8 +47,9 @@ let component session runtime connecting stream_notice config_controls ~on_busy
     let%arr session = session
     and runtime = runtime
     and connecting = connecting
-    and submitting = submitting in
-    Option.is_some session && (not connecting) && (not submitting)
+    and submission = submission in
+    Option.is_some session && (not connecting)
+    && Option.is_none (Prompt_command.Submission.pending submission)
     && Option.value_map runtime ~default:false
          ~f:(fun (runtime : Runtime_domain.t) ->
            runtime.accepts_images
@@ -60,21 +68,26 @@ let component session runtime connecting stream_notice config_controls ~on_busy
   and prompt = prompt
   and resources = resources
   and picker = picker
-  and submitting = submitting
+  and submission = submission
   and delivery = delivery
   and cancel_sequence = cancel_sequence
   and notice = notice
   and set_prompt = set_prompt
   and set_resources = set_resources
   and set_picker = set_picker
-  and set_submitting = set_submitting
+  and set_submission = set_submission
   and set_delivery = set_delivery
   and set_cancel_sequence = set_cancel_sequence
   and on_busy = on_busy
+  and refresh_runtime = refresh_runtime
   and set_notice = set_notice in
+  let submitting = Prompt_command.Submission.is_sending submission in
+  let pending = Prompt_command.Submission.pending submission in
   let policy =
     Composer_policy.derive ~has_session:(Option.is_some session) ~runtime
-      ~connecting ~submitting ~image_processing:attachments.processing
+      ~connecting
+      ~submitting:(submitting || Option.is_some pending)
+      ~image_processing:attachments.processing
   in
   let disabled = Composer_policy.disabled policy in
   let action_selected =
@@ -135,28 +148,86 @@ let component session runtime connecting stream_notice config_controls ~on_busy
             set_picker Mention_picker.Closed;
           ]
   in
-  let toolbar_mention () =
-    let live_text, selection_start, selection_end = field_snapshot prompt in
-    let insertion =
-      Mention_picker.insert_trigger ~text:live_text ~selection_start
-        ~selection_end
-    in
-    let active =
-      Mention_picker.active_at_cursor ~text:insertion.text
-        ~cursor:insertion.cursor
-      |> Option.value_exn
-    in
-    apply_to_field insertion;
-    Effect.Many [ set_prompt insertion.text; start_search active ]
+  let send_pending ({ session_id; command } as pending) =
+    Effect.bind
+      (Effect.of_deferred_thunk (fun () ->
+           Browser_http.post_json_typed
+             ~query:[ ("session", session_id) ]
+             "/api/v2/commands"
+             (Prompt_command.to_yojson command)))
+      ~f:(function
+        | Error error when Browser_http.is_stale_runtime_conflict error ->
+            request_in_flight := false;
+            Effect.Many
+              [
+                set_submission
+                  (Prompt_command.Submission.mark_uncertain
+                     (Prompt_command.Submission.start pending));
+                on_busy false;
+                refresh_runtime;
+                set_notice
+                  ("Runtime conflict: "
+                  ^ Browser_http.error_message error
+                  ^ " The runtime is refreshing; retry the same command.");
+              ]
+        | Error error when Browser_http.is_authoritative_terminal error ->
+            request_in_flight := false;
+            submission_locked := false;
+            Effect.Many
+              [
+                set_submission Prompt_command.Submission.ready;
+                on_busy false;
+                set_notice
+                  ((if Browser_http.is_conflict error then "Runtime conflict: "
+                    else "Command rejected: ")
+                  ^ Browser_http.error_message error);
+              ]
+        | Error error ->
+            request_in_flight := false;
+            Effect.Many
+              [
+                set_submission
+                  (Prompt_command.Submission.mark_uncertain
+                     (Prompt_command.Submission.start pending));
+                set_notice
+                  (Browser_http.error_message error
+                  ^ " The response is uncertain; retry the same command or "
+                  ^ "abandon it explicitly.");
+              ]
+        | Ok _ ->
+            request_in_flight := false;
+            submission_locked := false;
+            Mention_request.cancel ();
+            apply_to_field { text = ""; cursor = 0 };
+            Effect.Many
+              [
+                set_prompt "";
+                set_resources [];
+                set_picker Mention_picker.Closed;
+                attachments.clear ();
+                set_delivery Prompt_command.Prompt;
+                set_cancel_sequence None;
+                set_submission Prompt_command.Submission.ready;
+                on_busy false;
+                set_notice
+                  (match Prompt_command.action command with
+                  | Prompt -> "Prompt accepted. Waiting for live events."
+                  | Steer -> "Steer queued. Waiting for live events."
+                  | Follow_up -> "Follow-up queued. Waiting for live events.");
+              ])
   in
   let submit requested_action =
-    match (session, runtime, disabled) with
-    | None, _, _ | _, None, _ | _, _, true -> Effect.Ignore
-    | _, Some runtime, false
+    match (session, runtime, disabled, pending) with
+    | _, _, _, _ when !submission_locked -> Effect.Ignore
+    | None, _, _, _ | _, None, _, _ | _, _, true, _ | _, _, _, Some _ ->
+        Effect.Ignore
+    | _, Some runtime, false, None
       when phys_equal runtime.Runtime_domain.status Running
            && phys_equal requested_action Prompt_command.Prompt ->
         set_notice "Choose Steer next or Follow-up for the active run"
-    | Some (session : Control_plane.Session.t), Some runtime, false -> (
+    | Some (session : Control_plane.Session.t), Some runtime, false, None -> (
+        submission_locked := true;
+        request_in_flight := true;
         let live_text, _, _ = field_snapshot prompt in
         let selected = Mention_picker.reconcile ~text:live_text resources in
         let command_resources =
@@ -176,50 +247,74 @@ let component session runtime connecting stream_notice config_controls ~on_busy
         in
         let command_id = Command_id.create () in
         match
-          Prompt_command.create ~action ~command_id ~text:live_text
+          Prompt_command.create ~runtime ~action ~command_id ~text:live_text
             ~images:command_images ~resources:command_resources
         with
-        | Error message -> set_notice message
+        | Error message ->
+            request_in_flight := false;
+            submission_locked := false;
+            set_notice message
         | Ok command ->
+            let pending = { session_id = session.id; command } in
             Effect.bind
-              (Effect.Many [ set_submitting true; on_busy true ])
-              ~f:(fun () ->
-                Effect.bind
-                  (Effect.of_deferred_thunk (fun () ->
-                       Browser_http.post_json
-                         ~query:[ ("session", session.id) ]
-                         "/api/v2/commands"
-                         (Prompt_command.to_yojson command)))
-                  ~f:(function
-                    | Error error ->
-                        Effect.Many
-                          [
-                            set_submitting false;
-                            on_busy false;
-                            set_notice (Error.to_string_hum error);
-                          ]
-                    | Ok _ ->
-                        Mention_request.cancel ();
-                        apply_to_field { text = ""; cursor = 0 };
-                        Effect.Many
-                          [
-                            set_prompt "";
-                            set_resources [];
-                            set_picker Mention_picker.Closed;
-                            attachments.clear ();
-                            set_delivery Prompt_command.Prompt;
-                            set_cancel_sequence None;
-                            set_submitting false;
-                            on_busy false;
-                            set_notice
-                              (match action with
-                              | Prompt ->
-                                  "Prompt accepted. Waiting for live events."
-                              | Steer ->
-                                  "Steer queued. Waiting for live events."
-                              | Follow_up ->
-                                  "Follow-up queued. Waiting for live events.");
-                          ])))
+              (Effect.Many
+                 [
+                   set_submission (Prompt_command.Submission.start pending);
+                   on_busy true;
+                 ])
+              ~f:(fun () -> send_pending pending))
+  in
+  let retry () =
+    match (submission, runtime, connecting) with
+    | Prompt_command.Submission.Uncertain _, _, _ when !request_in_flight ->
+        Effect.Ignore
+    | Prompt_command.Submission.Uncertain _, _, true ->
+        set_notice "Waiting for the current runtime before retrying."
+    | Prompt_command.Submission.Uncertain pending, Some runtime, false
+      when String.equal pending.session_id runtime.Runtime_domain.session_id ->
+        request_in_flight := true;
+        let pending =
+          {
+            pending with
+            command = Prompt_command.retarget pending.command ~runtime;
+          }
+        in
+        Effect.bind
+          (Effect.Many
+             [
+               set_submission (Prompt_command.Submission.retry submission);
+               on_busy true;
+             ])
+          ~f:(fun () -> send_pending pending)
+    | Prompt_command.Submission.Uncertain _, Some _, false ->
+        set_notice
+          "Return to the command's original session before retrying or abandon \
+           it."
+    | Prompt_command.Submission.Uncertain _, None, false ->
+        Effect.Many
+          [
+            refresh_runtime;
+            set_notice "Waiting for the current runtime before retrying.";
+          ]
+    | ( (Prompt_command.Submission.Ready | Prompt_command.Submission.Sending _),
+        _,
+        _ ) ->
+        Effect.Ignore
+  in
+  let abandon () =
+    match pending with
+    | None -> Effect.Ignore
+    | Some _ when !request_in_flight -> Effect.Ignore
+    | Some _ ->
+        submission_locked := false;
+        Effect.Many
+          [
+            set_submission (Prompt_command.Submission.abandon submission);
+            on_busy false;
+            set_notice
+              ("Command abandoned. The draft is unchanged; submitting again "
+             ^ "will create a new command identity.");
+          ]
   in
   let keydown event =
     match (key event, picker) with
@@ -256,7 +351,9 @@ let component session runtime connecting stream_notice config_controls ~on_busy
               (Effect.of_deferred_thunk (fun () ->
                    Browser_http.post_json
                      ~query:[ ("session", session.id) ]
-                     "/api/v2/cancel" (`Assoc [])))
+                     "/api/v2/cancel"
+                     (Runtime_domain.mutation_to_yojson runtime
+                        ~mutation_id:(Command_id.create ()) [])))
               ~f:(function
                 | Error error ->
                     Effect.Many
@@ -292,7 +389,14 @@ let component session runtime connecting stream_notice config_controls ~on_busy
     Vdom.Node.div
       ~attrs:[ class_ "composer-wrap" ]
       [
-        Vdom.Node.p ~attrs:[ class_ "notice" ] [ text combined_notice ];
+        Vdom.Node.p
+          ~attrs:
+            [
+              class_ "notice";
+              Vdom.Attr.create "role" "status";
+              Vdom.Attr.create "aria-live" "polite";
+            ]
+          [ text combined_notice ];
         Vdom.Node.form
           ~attrs:
             [
@@ -326,30 +430,41 @@ let component session runtime connecting stream_notice config_controls ~on_busy
                 set_picker (Mention_picker.select_index picker index))
               ~on_choose;
             attachments.previews;
+            (match submission with
+            | Prompt_command.Submission.Uncertain _ ->
+                Vdom.Node.div
+                  ~attrs:
+                    [
+                      class_ "composer-retry-actions";
+                      Vdom.Attr.create "role" "group";
+                      Vdom.Attr.create "aria-label" "Uncertain command delivery";
+                    ]
+                  [
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.on_click (fun _ -> retry ());
+                        ]
+                      [ text "Retry same command" ];
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          class_ "abandon-command";
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.on_click (fun _ -> abandon ());
+                        ]
+                      [ text "Abandon command" ];
+                  ]
+            | Prompt_command.Submission.Ready
+            | Prompt_command.Submission.Sending _ ->
+                Vdom.Node.none);
             Vdom.Node.div
               ~attrs:[ class_ "composer-footer" ]
               [
                 Vdom.Node.div
                   ~attrs:[ class_ "composer-insertions" ]
-                  [
-                    attachments.view;
-                    Vdom.Node.button
-                      ~attrs:
-                        [
-                          Vdom.Attr.create "type" "button";
-                          Vdom.Attr.create "aria-label"
-                            "Mention a workspace file";
-                          Vdom.Attr.create "aria-haspopup" "listbox";
-                          Vdom.Attr.create "aria-controls"
-                            "file-mention-options";
-                          Vdom.Attr.create "aria-expanded"
-                            (Bool.to_string picker_open);
-                          Vdom.Attr.on_mousedown (fun _ ->
-                              Vdom.Effect.Prevent_default);
-                          Vdom.Attr.on_click (fun _ -> toolbar_mention ());
-                        ]
-                      [ text "@" ];
-                  ];
+                  [ attachments.view ];
                 config_controls;
                 Vdom.Node.button
                   ~attrs:
@@ -424,6 +539,9 @@ let component session runtime connecting stream_notice config_controls ~on_busy
     view;
     reset =
       (fun () ->
+        if Option.is_none pending then (
+          submission_locked := false;
+          request_in_flight := false);
         Mention_request.cancel ();
         apply_to_field { text = ""; cursor = 0 };
         Effect.Many
@@ -434,9 +552,8 @@ let component session runtime connecting stream_notice config_controls ~on_busy
             attachments.clear ();
             set_delivery Prompt_command.Prompt;
             set_cancel_sequence None;
-            set_submitting false;
-            on_busy false;
             set_notice "";
           ]);
     set_notice;
+    has_pending = (fun () -> !submission_locked || Option.is_some pending);
   }

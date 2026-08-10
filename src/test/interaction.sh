@@ -45,6 +45,9 @@ for _ in $(seq 1 300); do
   curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1 && break
   sleep .02
 done
+runtime_target=$(curl -fsS "http://127.0.0.1:$port/api/v2/session" | \
+  jq -c '{sessionId,workerId,runtimeGeneration}')
+targeted() { jq -c --argjson target "$runtime_target" '. + {target:$target}' <<<"$1"; }
 
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/session/new" >/dev/null
@@ -52,7 +55,7 @@ config_options=$(curl -fsS "http://127.0.0.1:$port/api/v2/config-options")
 [[ $(jq -r '.[]|select(.category=="model")|.currentValue' <<<"$config_options") == mock/fast ]]
 [[ $(jq -r '.[]|select(.category=="thought_level")|.currentValue' <<<"$config_options") == medium ]]
 updated_config=$(curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"configId":"thought_level","value":"high"}' \
+  --data "$(targeted '{"mutationId":"config-thought-high","configId":"thought_level","value":"high"}')" \
   "http://127.0.0.1:$port/api/v2/config-options")
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$updated_config") == high ]]
 snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
@@ -68,10 +71,10 @@ PY
 [[ $(curl -sS -o /dev/null -w '%{http_code}' \
   "http://127.0.0.1:$port/api/v2/file-mentions?query=$long_query") == 400 ]]
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"escaping-resource","text":"inspect","resources":[{"path":"../outside.txt"}]}' \
+  --data "$(targeted '{"commandId":"escaping-resource","text":"inspect","resources":[{"path":"../outside.txt"}]}')" \
   "http://127.0.0.1:$port/api/v2/commands") == 400 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"resource-command","text":"Inspect @web/main.ml safely","resources":[{"path":"web/main.ml"}]}' \
+  --data "$(targeted '{"commandId":"resource-command","text":"Inspect @web/main.ml safely","resources":[{"path":"web/main.ml"}]}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 for _ in $(seq 1 300); do
   resource_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -83,10 +86,10 @@ done
 [[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk" and .payload.params.update.content.text == "Received typed resource link: web/main.ml.")] | length' <<<"$resource_events") == 1 ]]
 image_data=R0lGODlhAQABAAAAACw=
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"bad-image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}' \
+  --data "$(targeted '{"commandId":"bad-image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}')" \
   "http://127.0.0.1:$port/api/v2/commands") == 400 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data "{\"commandId\":\"image-command\",\"text\":\"Inspect this pasted image\",\"images\":[{\"mimeType\":\"image/gif\",\"data\":\"$image_data\",\"name\":\"proof.gif\"}]}" \
+  --data "$(targeted "{\"commandId\":\"image-command\",\"text\":\"Inspect this pasted image\",\"images\":[{\"mimeType\":\"image/gif\",\"data\":\"$image_data\",\"name\":\"proof.gif\"}]}")" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 for _ in $(seq 1 300); do
   image_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -107,7 +110,7 @@ curl -NsS --max-time 12 \
 stream_pid=$!
 
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"permission-command","text":"permission: test the decision path"}' \
+  --data "$(targeted '{"commandId":"permission-command","text":"permission: test the decision path"}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 
 request_id=
@@ -119,10 +122,10 @@ for _ in $(seq 1 300); do
 done
 [[ -n "$request_id" ]]
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
-  --data "{\"requestId\":\"$request_id\",\"optionId\":\"not-offered\"}" \
+  --data "$(targeted "{\"mutationId\":\"permission-not-offered\",\"requestId\":\"$request_id\",\"optionId\":\"not-offered\"}")" \
   "http://127.0.0.1:$port/api/v2/permissions") == 409 ]]
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data "{\"requestId\":\"$request_id\",\"optionId\":\"allow-once\"}" \
+  --data "$(targeted "{\"mutationId\":\"permission-allow\",\"requestId\":\"$request_id\",\"optionId\":\"allow-once\"}")" \
   "http://127.0.0.1:$port/api/v2/permissions" >/dev/null
 sleep 3
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -150,14 +153,14 @@ assert ids and ids == sorted(set(ids)) and min(ids) > initial, ids
 PY
 
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"delivery-base","text":"run while delivery messages arrive"}' \
+  --data "$(targeted '{"commandId":"delivery-base","text":"run while delivery messages arrive"}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 sleep .1
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"delivery-steer","text":"steer this active run","action":"steer"}' \
+  --data "$(targeted '{"commandId":"delivery-steer","text":"steer this active run","action":"steer"}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"delivery-follow","text":"process this durable follow-up","action":"follow_up"}' \
+  --data "$(targeted '{"commandId":"delivery-follow","text":"process this durable follow-up","action":"follow_up"}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 for _ in $(seq 1 300); do
   events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -180,10 +183,11 @@ curl -NsS --max-time 12 -H "Last-Event-ID: $resume_cursor" \
   >"$state/cancel.stream" 2>"$state/cancel.stream.log" &
 stream_pid=$!
 curl -fsS -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"cancel-command","text":"cancel this prompt"}' \
+  --data "$(targeted '{"commandId":"cancel-command","text":"cancel this prompt"}')" \
   "http://127.0.0.1:$port/api/v2/commands" >/dev/null
 sleep .2
-curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"mutationId":"cancel-active-command"}')" \
   "http://127.0.0.1:$port/api/v2/cancel" >/dev/null
 sleep 2
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
@@ -218,7 +222,7 @@ def exchange(value):
     envelope = json.loads(stream.readline())
     assert envelope["ok"], envelope
     return envelope["result"]
-exchange({"op":"hello","protocolVersion":1})
+exchange({"op":"hello","protocolVersion":2})
 print(json.dumps(exchange({"op":"prepare_upgrade","generation":"interaction-next"})))
 PY
 )
@@ -227,7 +231,7 @@ PY
 events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "worker.upgrade.prepared" and .payload.fromGeneration == "interaction-generation" and .payload.toGeneration == "interaction-next")] | length' <<<"$events") == 1 ]]
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
-  --data '{"commandId":"upgrade-race","text":"must not enter a draining worker"}' \
+  --data "$(targeted '{"commandId":"upgrade-race","text":"must not enter a draining worker"}')" \
   "http://127.0.0.1:$port/api/v2/commands") == 503 ]]
 
 echo "interaction proof passed: bounded file mentions, typed resources, images, SSE, permissions, delivery, cancellation, and atomic idle-upgrade drain"

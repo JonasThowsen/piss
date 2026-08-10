@@ -200,6 +200,115 @@ let test_session_registry () =
     "delivered wake no longer open" 0
     (List.length (Registry.list_open_peer_subscriptions registry))
 
+let runtime_target ~session_id:session ~worker_id:worker
+    ~runtime_generation:generation =
+  Domain.
+    {
+      session_id = Domain.session_id session;
+      worker_id = Domain.worker_id worker;
+      runtime_generation = Domain.runtime_generation generation;
+    }
+
+let test_runtime_fencing () =
+  let path = Filename.temp_file "piss-runtime-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let open_store worker =
+        Store.open_ ~path
+          ~session_id:(Domain.session_id "session")
+          ~worker_id:(Domain.worker_id worker)
+      in
+      let old_store = open_store "configured-worker" in
+      Fun.protect ~finally:(fun () -> Store.close old_store) @@ fun () ->
+      let old_identity = Store.claim_runtime old_store in
+      Alcotest.(check int)
+        "first runtime generation" 1 old_identity.runtime_generation;
+      let replacement = open_store "configured-worker" in
+      Fun.protect ~finally:(fun () -> Store.close replacement) @@ fun () ->
+      let replacement_identity = Store.claim_runtime replacement in
+      Alcotest.(check int)
+        "replacement increments generation" 2
+        replacement_identity.runtime_generation;
+      Alcotest.(check bool)
+        "worker incarnation changes" true
+        (old_identity.worker_id <> replacement_identity.worker_id);
+      let stale_target =
+        runtime_target ~session_id:"session" ~worker_id:old_identity.worker_id
+          ~runtime_generation:old_identity.runtime_generation
+      in
+      (match
+         Store.accept_targeted_command old_store ~target:stale_target
+           ~command_id:"stale" ~request_id:"stale" ~prompt:"must not dispatch"
+       with
+      | Error reason ->
+          Alcotest.(check bool)
+            "typed stale wording" true
+            (String.starts_with ~prefix:"stale runtime target:" reason)
+      | Ok _ -> Alcotest.fail "stale runtime target was accepted");
+      Alcotest.(check (option string))
+        "stale command was not written" None
+        (Option.map Domain.command_state_to_string
+           (Store.find_command old_store "stale"));
+      let current_target =
+        runtime_target ~session_id:"session"
+          ~worker_id:replacement_identity.worker_id
+          ~runtime_generation:replacement_identity.runtime_generation
+      in
+      (match
+         Store.accept_targeted_command old_store ~target:current_target
+           ~command_id:"wrong-process" ~request_id:"wrong-process"
+           ~prompt:"must not reach the old harness"
+       with
+      | Error _ -> ()
+      | Ok _ ->
+          Alcotest.fail
+            "old worker accepted the replacement worker's runtime target");
+      Alcotest.(check (option string))
+        "replacement target was not written by old worker" None
+        (Option.map Domain.command_state_to_string
+           (Store.find_command old_store "wrong-process"));
+      let accepted =
+        match
+          Store.accept_targeted_command replacement ~target:current_target
+            ~command_id:"current" ~request_id:"current" ~prompt:"dispatch once"
+        with
+        | Ok accepted -> accepted
+        | Error reason -> Alcotest.fail reason
+      in
+      Alcotest.(check bool) "current target accepted" false accepted.duplicate;
+      let duplicate =
+        match
+          Store.accept_targeted_command replacement ~target:current_target
+            ~command_id:"current" ~request_id:"current"
+            ~prompt:"must not replace"
+        with
+        | Ok accepted -> accepted
+        | Error reason -> Alcotest.fail reason
+      in
+      Alcotest.(check bool)
+        "targeted duplicate detected" true duplicate.duplicate;
+      let accepted_events =
+        Store.list_events replacement ~after:0L ~limit:20
+        |> List.filter (fun event -> event.Domain.kind = "command.accepted")
+      in
+      Alcotest.(check int)
+        "one durable acceptance" 1
+        (List.length accepted_events))
+
+let test_legacy_runtime_migration () =
+  with_store @@ fun store ->
+  Store.set_metadata store "worker_generation" "legacy-generation";
+  let identity = Store.claim_runtime store in
+  Alcotest.(check int)
+    "first fenced generation follows the implicit legacy generation" 2
+    identity.runtime_generation
+
 let test_command_deduplication () =
   with_store @@ fun store ->
   let content =
@@ -379,12 +488,26 @@ let test_try_set_command_state_if_open () =
   in
   Alcotest.(check bool)
     "second transition into a terminal state fails" false second;
-  match Store.find_command store "race-cmd" with
+  (match Store.find_command store "race-cmd" with
   | Some Domain.Ambiguous -> ()
   | Some state ->
       Alcotest.failf "ambiguous was clobbered with %s"
         (Domain.command_state_to_string state)
-  | None -> Alcotest.fail "race-cmd disappeared"
+  | None -> Alcotest.fail "race-cmd disappeared");
+  Alcotest.(check (option string))
+    "terminal transition clears durable content" (Some "[]")
+    (Store.command_content store "race-cmd");
+  let ambiguous_events =
+    Store.list_events store ~after:0L ~limit:20
+    |> List.filter (fun event ->
+        String.equal event.Domain.kind "command.state"
+        && Yojson.Safe.equal
+             (Yojson.Safe.Util.member "state" event.payload)
+             (`String "ambiguous"))
+  in
+  Alcotest.(check int)
+    "terminal transition appends exactly one state event" 1
+    (List.length ambiguous_events)
 
 let test_dispatched_commands_lists_open_records () =
   with_store @@ fun store ->
@@ -459,6 +582,62 @@ let test_event_sequence () =
 
 let test_wire_bounds () =
   let decode json = Wire.request_of_yojson (Yojson.Safe.from_string json) in
+  let targeted json =
+    match Yojson.Safe.from_string json with
+    | `Assoc fields ->
+        `Assoc
+          (( "target",
+             `Assoc
+               [
+                 ("sessionId", `String "session");
+                 ("workerId", `String "worker-incarnation");
+                 ("runtimeGeneration", `Int 3);
+               ] )
+          :: fields)
+        |> Wire.request_of_yojson
+    | _ -> assert false
+  in
+  (match decode {|{"op":"prompt","commandId":"missing","text":"target"}|} with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "targetless prompt was accepted");
+  let legacy_target =
+    runtime_target ~session_id:"session" ~worker_id:"worker-incarnation"
+      ~runtime_generation:3
+  in
+  (match
+     Wire.request_of_yojson_v1 ~target:legacy_target
+       ~mutation_id:"legacy-mutation"
+       (Yojson.Safe.from_string
+          {|{"op":"prompt","commandId":"legacy-command","text":"rollback"}|})
+   with
+  | Ok
+      (Wire.Prompt
+         { target; command_id = "legacy-command"; text = "rollback"; _ }) ->
+      Alcotest.(check int)
+        "legacy prompt binds current generation" 3
+        (Domain.runtime_generation_to_int target.runtime_generation)
+  | Ok _ -> Alcotest.fail "legacy prompt decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  (match
+     Wire.request_of_yojson_v1 ~target:legacy_target
+       ~mutation_id:"legacy-mutation"
+       (Yojson.Safe.from_string {|{"op":"cancel"}|})
+   with
+  | Ok (Wire.Cancel { mutation_id = "legacy-mutation"; _ }) -> ()
+  | Ok _ -> Alcotest.fail "legacy cancel decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  (match
+     decode
+       {|{"op":"cancel","target":{"sessionId":"session","workerId":"worker","runtimeGeneration":-1},"mutationId":"cancel"}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "negative runtime generation was accepted");
+  (match
+     decode
+       {|{"op":"cancel","target":{"sessionId":"session","workerId":"worker","runtimeGeneration":1},"mutationId":""}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "empty mutation identity was accepted");
   (match decode {|{"op":"events","after":0,"limit":501}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized event page was accepted");
@@ -476,13 +655,13 @@ let test_wire_bounds () =
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "empty upgrade generation was accepted");
   (match
-     decode
+     targeted
        {|{"op":"deliver","commandId":"delivery","text":"message","action":"later"}|}
    with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unknown delivery action was accepted");
   (match
-     decode
+     targeted
        {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/gif","data":"R0lGODlhAQABAAAAACw=","name":"proof.gif"}]}|}
    with
   | Ok (Wire.Prompt { text = ""; images = [ image ]; _ }) ->
@@ -490,13 +669,13 @@ let test_wire_bounds () =
   | Ok _ -> Alcotest.fail "image-only prompt decoded incorrectly"
   | Error message -> Alcotest.fail message);
   (match
-     decode
+     targeted
        {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/svg+xml","data":"PHN2Zz4=","name":"unsafe.svg"}]}|}
    with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "unsupported image type was accepted");
   (match
-     decode
+     targeted
        {|{"op":"prompt","commandId":"image","text":"","images":[{"mimeType":"image/png","data":"not base64","name":"broken.png"}]}|}
    with
   | Error _ -> ()
@@ -518,11 +697,25 @@ let test_wire_bounds () =
         ("images", `List (List.init 5 (fun _ -> image)));
       ]
   in
+  let too_many_images =
+    match too_many_images with
+    | `Assoc fields ->
+        `Assoc
+          (( "target",
+             `Assoc
+               [
+                 ("sessionId", `String "session");
+                 ("workerId", `String "worker-incarnation");
+                 ("runtimeGeneration", `Int 3);
+               ] )
+          :: fields)
+    | _ -> assert false
+  in
   (match Wire.request_of_yojson too_many_images with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "more than four images were accepted");
   (match
-     decode
+     targeted
        {|{"op":"prompt","commandId":"escape","text":"inspect","resources":[{"path":"../outside.txt"}]}|}
    with
   | Error _ -> ()
@@ -546,6 +739,20 @@ let test_wire_bounds () =
         ("commandId", `String "bounded");
         ("text", `String oversized);
       ]
+  in
+  let prompt =
+    match prompt with
+    | `Assoc fields ->
+        `Assoc
+          (( "target",
+             `Assoc
+               [
+                 ("sessionId", `String "session");
+                 ("workerId", `String "worker-incarnation");
+                 ("runtimeGeneration", `Int 3);
+               ] )
+          :: fields)
+    | _ -> assert false
   in
   match Wire.request_of_yojson prompt with
   | Error _ -> ()
@@ -738,6 +945,9 @@ let () =
     [
       ( "durability",
         [
+          Alcotest.test_case "runtime fencing" `Quick test_runtime_fencing;
+          Alcotest.test_case "legacy runtime migration" `Quick
+            test_legacy_runtime_migration;
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
           Alcotest.test_case "legacy command schema migrates" `Quick
