@@ -2,12 +2,6 @@
 
 let max_frame_bytes = 16 * 1024 * 1024
 
-(* Wall-clock budget for an open ACP command. When the harness stops producing
-   session/prompt responses for this long the worker declares the command
-   ambiguous and surfaces a `command.dispatch_timeout` event so the UI is not
-   stuck on a silently silent harness. *)
-let dispatch_timeout_seconds = 600.
-
 (* Same idea, but for permission requests the harness never resolves. A stale
    permission keeps `status = Requires_action` even though no command is in
    flight, which confuses the UI (it sees a "running" session that actually

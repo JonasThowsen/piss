@@ -3,6 +3,13 @@ open Piss_shared.Domain
 exception Store_error of string
 
 type accepted_command = { state : command_state; duplicate : bool }
+
+type recovered_command = {
+  state : command_state;
+  duplicate : bool;
+  prompt : string;
+}
+
 type runtime_identity = { worker_id : string; runtime_generation : int }
 
 type t = {
@@ -25,7 +32,9 @@ let retained_event_kinds =
     "command.accepted";
     "command.state";
     "command.reconciled";
+    "command.recovered";
     "command.dispatch_timeout";
+    "acp.response";
     "acp.permission.requested";
     "acp.permission.resolved";
     "acp.permission.cancelled";
@@ -390,6 +399,48 @@ let find_command store command_id =
           fail_rc "find command" rc;
           None)
 
+let find_command_record store command_id =
+  with_statement store.db
+    "SELECT prompt, content, state FROM commands WHERE command_id = ?"
+    (fun statement ->
+      bind_text statement 1 command_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> (
+          match command_state_of_string (Sqlite3.column_text statement 2) with
+          | Ok state ->
+              Some
+                ( Sqlite3.column_text statement 0,
+                  Sqlite3.column_text statement 1,
+                  state )
+          | Error message -> raise (Store_error message))
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find command record" rc;
+          None)
+
+let command_acceptance store command_id =
+  with_statement store.db
+    "SELECT payload FROM events WHERE kind = 'command.accepted' ORDER BY \
+     sequence" (fun statement ->
+      let rec find found =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            let payload =
+              Sqlite3.column_text statement 0 |> Yojson.Safe.from_string
+            in
+            let found =
+              match Yojson.Safe.Util.member "commandId" payload with
+              | `String id when String.equal id command_id -> Some payload
+              | _ -> found
+            in
+            find found
+        | Sqlite3.Rc.DONE -> found
+        | rc ->
+            fail_rc "find command acceptance" rc;
+            found
+      in
+      find None)
+
 let accept_command_unlocked ?(action = "prompt") ?(content = `List [])
     ?(images = []) ?(resources = []) store ~command_id ~request_id ~prompt =
   match find_command store command_id with
@@ -469,6 +520,47 @@ let update_command_state store ~command_id state =
       bind_float statement 2 (Unix.gettimeofday ());
       bind_text statement 3 command_id;
       expect_done "update command" statement)
+
+let recover_targeted_text_command store ~target ~command_id ~action =
+  transaction store (fun () ->
+      match stale_runtime_reason store target with
+      | Some reason -> Error reason
+      | None -> (
+          match find_command_record store command_id with
+          | None -> Error "unknown command identity"
+          | Some (prompt, content, state) -> (
+              if state <> Ambiguous then Ok { state; duplicate = true; prompt }
+              else
+                match command_acceptance store command_id with
+                | None -> Error "command acceptance metadata is unavailable"
+                | Some acceptance ->
+                    let open Yojson.Safe.Util in
+                    let image_count = member "imageCount" acceptance in
+                    let resource_count = member "resourceCount" acceptance in
+                    if
+                      not
+                        (String.equal content "[]"
+                        && image_count = `Int 0
+                        && resource_count = `Int 0)
+                    then
+                      Error
+                        "only text-only ambiguous commands can be explicitly \
+                         recovered"
+                    else (
+                      update_command_state store ~command_id Accepted;
+                      ignore
+                        (append_event store ~kind:"command.recovered"
+                           ~payload:
+                             (`Assoc
+                                [
+                                  ("commandId", `String command_id);
+                                  ("action", `String action);
+                                  ( "reason",
+                                    `String
+                                      "operator recovered an interrupted or \
+                                       lost queued command" );
+                                ]));
+                      Ok { state = Accepted; duplicate = false; prompt }))))
 
 let set_command_state store ~command_id state =
   transaction store (fun () ->
@@ -573,3 +665,66 @@ let reconcile_incomplete_commands store =
                     ])))
         command_ids;
       command_ids)
+
+let reconcile_ambiguous_responses store =
+  transaction store (fun () ->
+      let responses =
+        with_statement store.db
+          "SELECT payload FROM events WHERE kind = 'acp.response' ORDER BY \
+           sequence" (fun statement ->
+            let rec collect responses =
+              match Sqlite3.step statement with
+              | Sqlite3.Rc.ROW ->
+                  let payload =
+                    Sqlite3.column_text statement 0 |> Yojson.Safe.from_string
+                  in
+                  let open Yojson.Safe.Util in
+                  let response =
+                    match member "id" payload with
+                    | `String command_id -> (
+                        match
+                          (member "error" payload, member "result" payload)
+                        with
+                        | (`Assoc _ | `String _), _ ->
+                            Some (command_id, Rejected)
+                        | _, `Assoc result ->
+                            let state =
+                              if
+                                member "stopReason" (`Assoc result)
+                                = `String "cancelled"
+                              then Cancelled
+                              else Completed
+                            in
+                            Some (command_id, state)
+                        | _ -> None)
+                    | _ -> None
+                  in
+                  collect
+                    (Option.fold ~none:responses
+                       ~some:(fun value -> value :: responses)
+                       response)
+              | Sqlite3.Rc.DONE -> List.rev responses
+              | rc ->
+                  fail_rc "list ACP command responses" rc;
+                  List.rev responses
+            in
+            collect [])
+      in
+      List.filter_map
+        (fun (command_id, state) ->
+          if find_command store command_id = Some Ambiguous then (
+            update_command_state store ~command_id state;
+            ignore
+              (append_event store ~kind:"command.reconciled"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("commandId", `String command_id);
+                        ("state", `String (command_state_to_string state));
+                        ( "reason",
+                          `String "durable ACP response arrived after ambiguity"
+                        );
+                      ]));
+            Some command_id)
+          else None)
+        responses)

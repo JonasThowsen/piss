@@ -6,9 +6,9 @@
    { Worker.run ~env ~socket_path:args.socket_path
    ~database_path:args.database_path ~session_id:args.session_id ... }
 
-   The dispatch and permission timeouts and the frame-size bound are wall-clock
-   guards shared by the harness reader and the protocol handler; exposing them
-   as named constants means every site that cares reads the same value. *)
+   The permission timeout and frame-size bound are wall-clock guards shared by
+   the harness reader and protocol handler; exposing them as named constants
+   means every site that cares reads the same value. *)
 
 type args = {
   socket_path : string;
@@ -29,11 +29,6 @@ val max_frame_bytes : int
 (** Maximum bytes of a single harness frame (request or response). Frames larger
     than this are rejected so a misbehaving harness cannot exhaust the worker's
     memory. *)
-
-val dispatch_timeout_seconds : float
-(** Wall-clock budget for an open ACP command. When the harness stops producing
-    session/prompt responses for this long the worker declares the command
-    [Ambiguous] and surfaces a `command.dispatch_timeout` event. *)
 
 val permission_timeout_seconds : float
 (** Wall-clock budget for an unanswered permission request. When the user does

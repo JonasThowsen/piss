@@ -69,11 +69,6 @@ val pending_permission :
 
 val resolve_permission : t -> request_id:string -> unit
 val cancel_permission : t -> request_id:string -> bool
-
-val expire_stuck_commands : t -> now:float -> unit
-(** Expire timed-out work and append the same durable timeout events emitted by
-    the previous inline state handling. *)
-
 val expire_stuck_permissions : t -> now:float -> unit
 
 val send : t -> Yojson.Safe.t -> unit

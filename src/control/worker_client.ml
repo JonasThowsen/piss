@@ -10,7 +10,8 @@ type legacy_operation = Fenced | Drain | Compatible
 
 let legacy_operation request =
   match Yojson.Safe.Util.member "op" request with
-  | `String ("prompt" | "deliver" | "set_config_option") -> Fenced
+  | `String ("prompt" | "deliver" | "recover_command" | "set_config_option") ->
+      Fenced
   | `String ("cancel" | "permission") -> Drain
   | _ -> Compatible
 

@@ -17,6 +17,39 @@ let older_request ~session_id ~before =
       ]
     "/api/v2/events"
 
+let rec extend_initial_history ~session_id ~remaining events =
+  if remaining = 0 || Event_history.has_conversation_boundary events then
+    Async_kernel.Deferred.return (Ok events)
+  else
+    match List.hd events with
+    | None -> Async_kernel.Deferred.return (Ok events)
+    | Some earliest -> (
+        let open Async_kernel.Deferred.Let_syntax in
+        let%bind response =
+          older_request ~session_id ~before:(Event_history.sequence earliest)
+        in
+        match response with
+        | Error error ->
+            Async_kernel.Deferred.return (Error (Error.to_string_hum error))
+        | Ok body -> (
+            match Event_history.decode_events body with
+            | Error message -> Async_kernel.Deferred.return (Error message)
+            | Ok [] -> Async_kernel.Deferred.return (Ok events)
+            | Ok page ->
+                extend_initial_history ~session_id ~remaining:(remaining - 1)
+                  (page @ events)))
+
+let initial_history_request session_id =
+  let open Async_kernel.Deferred.Let_syntax in
+  let%bind response = history_request session_id in
+  match response with
+  | Error error ->
+      Async_kernel.Deferred.return (Error (Error.to_string_hum error))
+  | Ok body -> (
+      match Event_history.decode_events body with
+      | Error message -> Async_kernel.Deferred.return (Error message)
+      | Ok events -> extend_initial_history ~session_id ~remaining:10 events)
+
 let terminal_permission event =
   match Event_history.project [ event ] with
   | [ Event_history.Permission_resolved { request_id; _ } ]
@@ -69,29 +102,25 @@ let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
   Effect.bind (inject_deciding Reset) ~f:(fun () ->
       Effect.bind (inject_history (Start session_id)) ~f:(fun () ->
           Effect.bind
-            (Effect.of_deferred_thunk (fun () -> history_request session_id))
+            (Effect.of_deferred_thunk (fun () ->
+                 initial_history_request session_id))
             ~f:(function
-              | Error error ->
-                  inject_history
-                    (History_failed (session_id, Error.to_string_hum error))
-              | Ok body -> (
-                  match Event_history.decode_events body with
-                  | Error message ->
-                      inject_history (History_failed (session_id, message))
-                  | Ok events ->
-                      let buffer =
-                        Event_buffer.create ~live_capacity:live_event_capacity
-                          events
-                      in
-                      Effect.bind
-                        (inject_history (Initial (session_id, events)))
-                        ~f:(fun () ->
-                          Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
-                              connect_stream ~selection ~session_id
-                                ~after:(Event_buffer.highest_sequence buffer)
-                                ~inject_history ~inject_deciding
-                                ~refresh_catalog_effect ~refresh_snapshot_effect
-                                ~set_stream_notice))))))
+              | Error message ->
+                  inject_history (History_failed (session_id, message))
+              | Ok events ->
+                  let buffer =
+                    Event_buffer.create ~live_capacity:live_event_capacity
+                      events
+                  in
+                  Effect.bind
+                    (inject_history (Initial (session_id, events)))
+                    ~f:(fun () ->
+                      Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
+                          connect_stream ~selection ~session_id
+                            ~after:(Event_buffer.highest_sequence buffer)
+                            ~inject_history ~inject_deciding
+                            ~refresh_catalog_effect ~refresh_snapshot_effect
+                            ~set_stream_notice)))))
 
 let load_older ~inject_history ~set_stream_notice ~session_id ~before =
   Effect.bind (inject_history (Begin_older session_id)) ~f:(fun () ->

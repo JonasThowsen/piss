@@ -113,3 +113,20 @@ let pending_permissions entries =
   |> List.sort
        ~compare:(fun (left : pending_permission) (right : pending_permission) ->
          Int64.compare left.sequence right.sequence)
+
+let has_conversation_boundary events =
+  let entries = project events in
+  let first_user =
+    List.find_map entries ~f:(function
+      | User { sequence; _ } -> Some sequence
+      | _ -> None)
+  in
+  Option.exists first_user ~f:(fun first_user ->
+      List.exists entries ~f:(function
+        | Command_state { sequence; state; _ }
+          when Int64.(sequence < first_user) -> (
+            match state with
+            | Completed | Cancelled | Rejected -> true
+            | Received | Accepted | Dispatched | Acknowledged | Ambiguous ->
+                false)
+        | _ -> false))

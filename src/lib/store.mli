@@ -21,6 +21,12 @@ type accepted_command = {
   duplicate : bool;
 }
 
+type recovered_command = {
+  state : Piss_shared.Domain.command_state;
+  duplicate : bool;
+  prompt : string;
+}
+
 type runtime_identity = { worker_id : string; runtime_generation : int }
 (** The newly claimed worker incarnation and durable fencing generation. *)
 
@@ -136,6 +142,16 @@ val accept_targeted_command :
 (** Validate the runtime target and durably accept or deduplicate the command in
     one SQLite transaction. *)
 
+val recover_targeted_text_command :
+  t ->
+  target:Piss_shared.Domain.runtime_target ->
+  command_id:string ->
+  action:string ->
+  (recovered_command, string) result
+(** Explicitly reset a text-only ambiguous command for same-ID redispatch.
+    Commands with images or resources fail closed because their cleared payload
+    cannot be reconstructed after the original dispatch. *)
+
 val command_content : t -> string -> string option
 (** Read and clear the deferred prompt content (text, images, resources) for a
     command, stored as a Yojson text column. Returns [None] when no content has
@@ -175,3 +191,8 @@ val reconcile_incomplete_commands : t -> string list
     harness never acknowledged the dispatch). The worker logs each transition so
     the operator can see which commands did not complete. Returns the list of
     reconciled ids. *)
+
+val reconcile_ambiguous_responses : t -> string list
+(** Repair ambiguous rows for which a durable terminal ACP response already
+    exists, such as a response that arrived after the former dispatch timeout.
+*)

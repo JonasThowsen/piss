@@ -43,6 +43,11 @@ type request =
       resources : Domain.resource_input list;
       action : string;
     }
+  | Recover_command of {
+      target : Domain.runtime_target;
+      command_id : string;
+      action : string;
+    }
   | Cancel of { target : Domain.runtime_target; mutation_id : string }
   | Config_options
   | Set_config_option of {

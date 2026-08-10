@@ -30,6 +30,11 @@ type request =
       resources : resource_input list;
       action : string;
     }
+  | Recover_command of {
+      target : runtime_target;
+      command_id : string;
+      action : string;
+    }
   | Cancel of { target : runtime_target; mutation_id : string }
   | Config_options
   | Set_config_option of {
@@ -306,6 +311,15 @@ let request_of_yojson json =
             ~text ~images ~resources
         in
         Ok (Deliver { target; command_id; text; images; resources; action })
+  | "recover_command" ->
+      let* target = runtime_target_member json in
+      let* command_id = string_member "commandId" json in
+      let* action = string_member "action" json in
+      if command_id = "" || String.length command_id > 128 then
+        Error "commandId must contain between 1 and 128 characters"
+      else if action <> "prompt" && action <> "follow_up" then
+        Error "recovery action must be prompt or follow_up"
+      else Ok (Recover_command { target; command_id; action })
   | "cancel" ->
       let* target = runtime_target_member json in
       let* mutation_id = mutation_id_member json in

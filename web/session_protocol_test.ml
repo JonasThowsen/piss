@@ -138,6 +138,26 @@ let runtime =
 
 let () =
   let entries = decode history in
+  let history_events =
+    match Event_history.decode_events history with
+    | Ok events -> events
+    | Error message -> fail message
+  in
+  if Event_history.has_conversation_boundary history_events then
+    fail "history stopped paging without a prior completed conversation";
+  let boundary_events =
+    match
+      Event_history.decode_events
+        {|[
+          {"sequence":1,"kind":"command.state","payload":{"commandId":"previous","state":"completed"},"createdAt":1},
+          {"sequence":2,"kind":"command.accepted","payload":{"commandId":"current","requestId":"current","action":"prompt","text":"next","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":2}
+        ]|}
+    with
+    | Ok events -> events
+    | Error message -> fail message
+  in
+  if not (Event_history.has_conversation_boundary boundary_events) then
+    fail "completed conversation boundary did not stop initial paging";
   (match entries with
   | [
    Event_history.User { text = "Run the proof"; _ };

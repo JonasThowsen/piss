@@ -227,37 +227,6 @@ let cancel_permission t ~request_id =
     true)
   else false
 
-let expire_stuck_commands t ~now =
-  let stuck =
-    Hashtbl.fold
-      (fun command_id dispatched_at acc ->
-        if now -. dispatched_at > Config.dispatch_timeout_seconds then
-          command_id :: acc
-        else acc)
-      t.running_commands []
-  in
-  List.iter
-    (fun command_id ->
-      let claimed =
-        Store.try_set_command_state_if_open t.store ~command_id Domain.Ambiguous
-      in
-      Hashtbl.remove t.running_commands command_id;
-      if claimed then (
-        recompute_status t;
-        ignore
-          (Store.append_event t.store ~kind:"command.dispatch_timeout"
-             ~payload:
-               (`Assoc
-                  [
-                    ("commandId", `String command_id);
-                    ("timeoutSeconds", `Float Config.dispatch_timeout_seconds);
-                    ( "reason",
-                      `String
-                        "harness did not acknowledge the dispatched command \
-                         within the configured budget" );
-                  ]))))
-    stuck
-
 let expire_stuck_permissions t ~now =
   let stuck =
     Hashtbl.fold

@@ -249,6 +249,49 @@ let handle state request =
           | None ->
               dispatch_prompt state ~action ~target ~command_id ~text ~images
                 ~resources ())
+      | Wire.Recover_command { target; command_id; action } -> (
+          if action = "prompt" && State.running_command_count state > 0 then
+            conflict "the session already has an active prompt"
+          else if action = "follow_up" && State.running_command_count state = 0
+          then conflict "follow_up recovery requires an active prompt"
+          else
+            match
+              Store.recover_targeted_text_command store ~target ~command_id
+                ~action
+            with
+            | Error reason -> conflict reason
+            | Ok recovered when recovered.duplicate ->
+                Ok
+                  (`Assoc
+                     [
+                       ("commandId", `String command_id);
+                       ( "state",
+                         `String
+                           (Domain.command_state_to_string recovered.state) );
+                       ("duplicate", `Bool true);
+                       ("recovered", `Bool true);
+                     ])
+            | Ok recovered -> (
+                try
+                  let delivery =
+                    if action = "follow_up" then Some action else None
+                  in
+                  State.record_dispatched state ~command_id;
+                  State.send state
+                    (Acp.prompt_request ~delivery ~command_id
+                       ~session_id:(State.harness_session_id state)
+                       ~text:recovered.prompt ~images:[] ~resources:[]);
+                  Ok
+                    (`Assoc
+                       [
+                         ("commandId", `String command_id);
+                         ("state", `String "dispatched");
+                         ("duplicate", `Bool false);
+                         ("recovered", `Bool true);
+                       ])
+                with exn ->
+                  State.record_dispatch_failed state ~command_id;
+                  internal (Printexc.to_string exn)))
       (* TODO(tracer): Add a durable generic mutation-receipt ledger before
          making configuration, cancellation, or permission decisions
          automatically retryable after response loss. This prompt tracer binds

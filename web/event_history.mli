@@ -70,3 +70,4 @@ val refreshes_session : event -> bool
 val command_state_to_string : command_state -> string
 val command_is_terminal : command_id:string -> entry list -> bool
 val pending_permissions : entry list -> pending_permission list
+val has_conversation_boundary : event list -> bool

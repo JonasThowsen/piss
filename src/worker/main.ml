@@ -21,6 +21,10 @@ let run ~env (args : Config.args) =
   if reconciled_commands <> [] then
     Format.eprintf "reconciled %d incomplete command(s) as ambiguous@."
       (List.length reconciled_commands);
+  let terminal_commands = Store.reconcile_ambiguous_responses store in
+  if terminal_commands <> [] then
+    Format.eprintf "reconciled %d ambiguous command(s) from ACP responses@."
+      (List.length terminal_commands);
   Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
   Eio.Switch.run @@ fun sw ->
   let clock = Eio.Stdenv.clock env in
@@ -73,7 +77,6 @@ let run ~env (args : Config.args) =
       while true do
         Eio.Time.sleep clock 5.0;
         let now = Unix.gettimeofday () in
-        State.expire_stuck_commands state ~now;
         State.expire_stuck_permissions state ~now
       done);
   Eio.Fiber.fork ~sw (fun () ->
@@ -90,7 +93,9 @@ let run ~env (args : Config.args) =
               | Some resolver ->
                   Hashtbl.remove pending_responses id;
                   ignore (Eio.Promise.try_resolve resolver (Ok json))
-              | None when State.is_running_command state ~command_id:id ->
+              | None
+                when State.is_running_command state ~command_id:id
+                     || Store.find_command store id = Some Domain.Ambiguous ->
                   let command_state =
                     match (error, Harness.response_stop_reason json) with
                     | Some _, _ -> Domain.Rejected

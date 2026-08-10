@@ -309,6 +309,72 @@ let test_legacy_runtime_migration () =
     "first fenced generation follows the implicit legacy generation" 2
     identity.runtime_generation
 
+let test_command_recovery () =
+  with_store @@ fun store ->
+  let identity = Store.claim_runtime store in
+  let target =
+    runtime_target ~session_id:"session" ~worker_id:identity.worker_id
+      ~runtime_generation:identity.runtime_generation
+  in
+  let accept ?(images = []) command_id prompt =
+    match
+      Store.accept_targeted_command ~action:"follow_up" ~images store ~target
+        ~command_id ~request_id:command_id ~prompt
+    with
+    | Ok accepted -> accepted
+    | Error reason -> Alcotest.fail reason
+  in
+  ignore (accept "late-response" "already finished");
+  Store.set_command_state store ~command_id:"late-response" Domain.Ambiguous;
+  ignore
+    (Store.append_event store ~kind:"acp.response"
+       ~payload:
+         (`Assoc
+            [
+              ("jsonrpc", `String "2.0");
+              ("id", `String "late-response");
+              ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
+            ]));
+  Alcotest.(check (list string))
+    "late response reconciles its command" [ "late-response" ]
+    (Store.reconcile_ambiguous_responses store);
+  (match Store.find_command store "late-response" with
+  | Some Domain.Completed -> ()
+  | _ -> Alcotest.fail "late terminal response remained ambiguous");
+  ignore (accept "recover-text" "queued text");
+  Store.set_command_state store ~command_id:"recover-text" Domain.Ambiguous;
+  let recovered =
+    match
+      Store.recover_targeted_text_command store ~target
+        ~command_id:"recover-text" ~action:"prompt"
+    with
+    | Ok recovered -> recovered
+    | Error reason -> Alcotest.fail reason
+  in
+  Alcotest.(check bool) "first recovery is fresh" false recovered.duplicate;
+  Alcotest.(check string)
+    "recovery retains prompt" "queued text" recovered.prompt;
+  let duplicate =
+    match
+      Store.recover_targeted_text_command store ~target
+        ~command_id:"recover-text" ~action:"prompt"
+    with
+    | Ok recovered -> recovered
+    | Error reason -> Alcotest.fail reason
+  in
+  Alcotest.(check bool) "recovery deduplicates" true duplicate.duplicate;
+  ignore
+    (accept
+       ~images:[ `Assoc [ ("name", `String "proof.png") ] ]
+       "recover-image" "image command");
+  Store.set_command_state store ~command_id:"recover-image" Domain.Ambiguous;
+  match
+    Store.recover_targeted_text_command store ~target
+      ~command_id:"recover-image" ~action:"prompt"
+  with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "image command was unsafely recovered without data"
+
 let test_command_deduplication () =
   with_store @@ fun store ->
   let content =
@@ -948,6 +1014,7 @@ let () =
           Alcotest.test_case "runtime fencing" `Quick test_runtime_fencing;
           Alcotest.test_case "legacy runtime migration" `Quick
             test_legacy_runtime_migration;
+          Alcotest.test_case "command recovery" `Quick test_command_recovery;
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
           Alcotest.test_case "legacy command schema migrates" `Quick
