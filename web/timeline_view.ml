@@ -190,8 +190,7 @@ let timeline state selected_id ~session ~runtime ~deciding_permissions
               "The worker has not published a visible timeline event.";
           ]
         else
-          List.filter_map entries
-            ~f:(Timeline_entry_view.render ~copy_feedback ~on_copy)
+          Timeline_entry_view.render_timeline ~copy_feedback ~on_copy entries
           @ Permission_view.render_pending entries
               ~deciding:deciding_permissions ~on_decide:on_permission
     | Loaded _, _ ->

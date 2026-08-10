@@ -90,6 +90,59 @@ type entry =
     }
   | Permission_cancelled of { sequence : int64; request_id : string }
 
+type timeline_block =
+  | Message_entry of entry
+  | Activity_group of { key : string; sequence : int64; entries : entry list }
+
+let entry_sequence = function
+  | User { sequence; _ }
+  | Agent { sequence; _ }
+  | Tool { sequence; _ }
+  | Command_state { sequence; _ }
+  | Permission_requested { sequence; _ }
+  | Permission_resolved { sequence; _ }
+  | Permission_cancelled { sequence; _ } ->
+      sequence
+
+let group_timeline entries =
+  let boundary_key = function
+    | User { command_id; _ } -> "user:" ^ command_id
+    | Agent { message_id; _ } -> "agent:" ^ message_id
+    | Tool _ | Command_state _ | Permission_requested _ | Permission_resolved _
+    | Permission_cancelled _ ->
+        assert false
+  in
+  let flush boundary activity blocks =
+    match activity with
+    | None -> blocks
+    | Some (sequence, entries) ->
+        let boundary = Option.value boundary ~default:"leading" in
+        Activity_group
+          {
+            key = "activity-after:" ^ boundary;
+            sequence;
+            entries = List.rev entries;
+          }
+        :: blocks
+  in
+  let rec loop boundary activity blocks = function
+    | [] -> List.rev (flush boundary activity blocks)
+    | ((User _ | Agent _) as entry) :: rest ->
+        let blocks = Message_entry entry :: flush boundary activity blocks in
+        loop (Some (boundary_key entry)) None blocks rest
+    | ((Tool _ | Command_state _) as entry) :: rest ->
+        let activity =
+          match activity with
+          | None -> Some (entry_sequence entry, [ entry ])
+          | Some (sequence, entries) -> Some (sequence, entry :: entries)
+        in
+        loop boundary activity blocks rest
+    | (Permission_requested _ | Permission_resolved _ | Permission_cancelled _)
+      :: rest ->
+        loop boundary activity blocks rest
+  in
+  loop None None [] entries
+
 type projection = {
   order : string list;
   entries : entry String.Map.t;

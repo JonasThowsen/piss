@@ -218,9 +218,26 @@ try {
     throw new Error(`unexpected command request: ${JSON.stringify(body)}`);
   }
   await page.getByText(prompt, { exact: true }).waitFor({ timeout: 10000 });
-  await page.getByText("Running durability tests", { exact: true }).first().waitFor({ timeout: 10000 });
+  const liveActivity = page.locator("details.timeline-activity-live").filter({ hasText: "Running durability tests" });
+  await liveActivity.waitFor({ timeout: 10000 });
+  if (await liveActivity.getAttribute("open") !== null) {
+    throw new Error("live tool activity expanded itself");
+  }
+  const liveSummary = liveActivity.locator(":scope > summary");
+  if (!(await liveSummary.innerText()).includes("In progress · 1 tool")) {
+    throw new Error(`live activity omitted its running summary: ${await liveSummary.innerText()}`);
+  }
+  const liveActivityKey = await liveActivity.getAttribute("data-timeline-key");
+  if (!liveActivityKey?.startsWith("activity-after:")) {
+    throw new Error(`live activity lacked a boundary-stable key: ${liveActivityKey}`);
+  }
+  await liveSummary.click();
   await page.getByText("The worker retained ownership while the control plane was replaceable.", { exact: true }).waitFor({ timeout: 10000 });
-  await page.getByText("state / completed", { exact: true }).waitFor({ timeout: 10000 });
+  await page.waitForFunction((commandId) =>
+    [...document.querySelectorAll(".timeline-command")].some((entry) =>
+      entry.textContent?.includes(commandId)
+      && entry.textContent?.includes("state / completed")),
+  body.commandId);
   const commandEventsResponse = await fetch(new URL("/api/v2/events?session=s-mention-browser&after=0", page.url()));
   if (!commandEventsResponse.ok) throw new Error(await commandEventsResponse.text());
   const commandEvents = await commandEventsResponse.json();
@@ -232,8 +249,17 @@ try {
   }
   const firstTool = page.locator(".timeline-tool");
   if (await firstTool.count() !== 1) throw new Error("tool lifecycle did not aggregate into one row");
+  const toolActivity = page.locator("details.timeline-activity").filter({ has: firstTool });
+  if (await toolActivity.count() !== 1) throw new Error("tool row was not grouped into one activity accordion");
+  const activityKey = await toolActivity.getAttribute("data-timeline-key");
+  if (activityKey !== liveActivityKey) {
+    throw new Error(`live reconciliation changed the activity key: ${liveActivityKey} -> ${activityKey}`);
+  }
+  if (await toolActivity.getAttribute("open") === null || !(await firstTool.isVisible())) {
+    throw new Error("live reconciliation discarded the expanded activity state");
+  }
   const disclosure = firstTool.locator("details.tool-disclosure");
-  if (await disclosure.getAttribute("open") !== null) throw new Error("tool call was expanded by default");
+  if (await disclosure.getAttribute("open") !== null) throw new Error("nested tool call was expanded by default");
   await disclosure.locator(":scope > summary").click();
   await firstTool.getByRole("button", { name: "Copy tool output" }).click();
   const toolClipboard = await page.evaluate(() => navigator.clipboard.readText());
@@ -241,6 +267,7 @@ try {
     throw new Error(`aggregated tool copy was incomplete: ${toolClipboard}`);
   }
   await disclosure.locator(":scope > summary").click();
+  await toolActivity.locator(":scope > summary").click();
 
   const response = "The worker retained ownership while the control plane was replaceable.";
   const agent = page.locator(".timeline-agent").last();
@@ -346,7 +373,10 @@ try {
   if (!(await page.getByRole("button", { name: "Send message" }).isDisabled())) {
     throw new Error("permission resolution inferred a running delivery action");
   }
-  await page.getByText("state / completed", { exact: true }).last().waitFor({ timeout: 10000 });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".timeline-command .message-status")]
+      .some((status) => status.textContent === "state / completed"),
+  );
   if (eventPageRequests.length !== initialEventPageRequestCount) {
     throw new Error(`permission flow polled event pages: ${JSON.stringify(eventPageRequests)}`);
   }
@@ -468,8 +498,8 @@ try {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
   });
-  if (await page.locator("details.tool-disclosure[open]").count() !== 0) {
-    throw new Error("streamed tool updates opened a collapsed disclosure");
+  if (await page.locator("details.timeline-activity[open], details.tool-disclosure[open]").count() !== 0) {
+    throw new Error("streamed activity opened a collapsed disclosure");
   }
   await waitForIdle();
 

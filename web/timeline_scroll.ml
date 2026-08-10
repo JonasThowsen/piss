@@ -291,7 +291,12 @@ let visible_key value =
   let timeline_top = bounds_top value in
   let items =
     Js.Unsafe.meth_call value "querySelectorAll"
-      [| Js.Unsafe.inject (Js.string ".timeline-item[data-timeline-key]") |]
+      [|
+        Js.Unsafe.inject
+          (Js.string
+             ".timeline-item[data-timeline-key]:not(details[open]),details[open] \
+              .timeline-item[data-timeline-key]");
+      |]
   in
   let length : int = Js.Unsafe.get items "length" in
   let rec loop index =
@@ -341,7 +346,19 @@ let find_key value key =
   loop 0
 
 let restore_anchor anchor =
-  match !timeline with
+  let current =
+    Js.Unsafe.meth_call
+      (Js.Unsafe.inject Dom_html.document)
+      "getElementById"
+      [| Js.Unsafe.inject (Js.string "timeline") |]
+  in
+  let value =
+    if present current then (
+      timeline := Some current;
+      Some current)
+    else !timeline
+  in
+  match value with
   | None -> ()
   | Some value ->
       let next_top =
@@ -368,16 +385,18 @@ let preserve_after_prepend action =
       Effect.bind action ~f:(fun () ->
           Effect.of_deferred_thunk (fun () ->
               let finished = Async_kernel.Ivar.create () in
-              ignore
-                (request_frame (fun () ->
-                     Option.iter anchor ~f:restore_anchor;
-                     ignore
-                       (request_frame (fun () ->
-                            Option.iter anchor ~f:restore_anchor;
-                            anchoring := false;
-                            following := was_following;
-                            update_button ();
-                            Async_kernel.Ivar.fill_if_empty finished ()))));
+              let rec settle frames =
+                ignore
+                  (request_frame (fun () ->
+                       Option.iter anchor ~f:restore_anchor;
+                       if frames > 1 then settle (frames - 1)
+                       else (
+                         anchoring := false;
+                         following := was_following;
+                         update_button ();
+                         Async_kernel.Ivar.fill_if_empty finished ())))
+              in
+              settle 4;
               Async_kernel.Ivar.read finished)))
 
 let track () =

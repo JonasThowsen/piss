@@ -88,7 +88,12 @@ type entry =
     }
   | Permission_cancelled of { sequence : int64; request_id : string }
 
+type timeline_block =
+  | Message_entry of entry
+  | Activity_group of { key : string; sequence : int64; entries : entry list }
+
 val project : update list -> entry list
+val group_timeline : entry list -> timeline_block list
 
 val tool_text :
   input:string -> output:string -> artifacts:artifact list -> string

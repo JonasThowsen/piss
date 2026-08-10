@@ -127,3 +127,101 @@ let render ~copy_feedback ~on_copy = function
            ~status:("state / " ^ state) command_id)
   | Permission_requested _ | Permission_resolved _ | Permission_cancelled _ ->
       None
+
+let activity_chevron () =
+  Vdom.Node.create_svg "svg"
+    ~attrs:
+      [
+        Vdom.Attr.create "viewBox" "0 0 24 24";
+        Vdom.Attr.create "fill" "none";
+        Vdom.Attr.create "stroke" "currentColor";
+        Vdom.Attr.create "stroke-width" "1.8";
+        Vdom.Attr.create "stroke-linecap" "round";
+        Vdom.Attr.create "stroke-linejoin" "round";
+        Vdom.Attr.create "aria-hidden" "true";
+      ]
+    [
+      Vdom.Node.create_svg "path"
+        ~attrs:[ Vdom.Attr.create "d" "m9 18 6-6-6-6" ]
+        [];
+    ]
+
+let running_status status =
+  List.mem [ "pending"; "in_progress"; "running" ] status ~equal:String.equal
+
+let count_label count singular =
+  Int.to_string count ^ " " ^ if count = 1 then singular else singular ^ "s"
+
+let activity ~copy_feedback ~on_copy ~key ~sequence entries =
+  let tools =
+    List.filter_map entries ~f:(function
+      | Event_history.Tool { title; status; _ } -> Some (title, status)
+      | User _ | Agent _ | Command_state _ | Permission_requested _
+      | Permission_resolved _ | Permission_cancelled _ ->
+          None)
+  in
+  let command_count =
+    List.count entries ~f:(function Command_state _ -> true | _ -> false)
+  in
+  let live_tool =
+    List.find (List.rev tools) ~f:(fun (_, status) -> running_status status)
+  in
+  let title =
+    match (live_tool, tools) with
+    | Some (title, _), _ -> title
+    | None, [ (title, _) ] -> title
+    | None, [] -> "Command activity"
+    | None, _ :: _ -> "Tool activity"
+  in
+  let counts =
+    [ (List.length tools, "tool"); (command_count, "command update") ]
+    |> List.filter_map ~f:(fun (count, singular) ->
+        if count = 0 then None else Some (count_label count singular))
+    |> String.concat ~sep:" · "
+  in
+  let status =
+    Option.value_map live_tool ~default:counts ~f:(fun (_, tool_status) ->
+        let status =
+          tool_status
+          |> String.tr ~target:'_' ~replacement:' '
+          |> String.capitalize
+        in
+        if String.is_empty counts then status else status ^ " · " ^ counts)
+  in
+  Vdom.Node.create "details" ~key
+    ~attrs:
+      [
+        class_
+          ("timeline-item timeline-activity"
+          ^ if Option.is_some live_tool then " timeline-activity-live" else "");
+        Vdom.Attr.create "data-timeline-key" key;
+        Vdom.Attr.create "data-timeline-sequence" (Int64.to_string sequence);
+      ]
+    [
+      Vdom.Node.create "summary"
+        [
+          Vdom.Node.span
+            ~attrs:[ class_ "activity-chevron" ]
+            [ activity_chevron () ];
+          Vdom.Node.span
+            ~attrs:[ class_ "activity-summary-copy" ]
+            [
+              Vdom.Node.strong ~attrs:[ class_ "activity-title" ] [ text title ];
+              Vdom.Node.span ~attrs:[ class_ "activity-meta" ] [ text status ];
+            ];
+          Option.value_map live_tool ~default:Vdom.Node.none ~f:(fun _ ->
+              Vdom.Node.span
+                ~attrs:[ class_ "activity-live-badge" ]
+                [ Vdom.Node.create "i" []; text "LIVE" ]);
+        ];
+      Vdom.Node.div
+        ~attrs:[ class_ "activity-entries" ]
+        (List.filter_map entries ~f:(render ~copy_feedback ~on_copy));
+    ]
+
+let render_timeline ~copy_feedback ~on_copy entries =
+  Timeline_projection.group_timeline entries
+  |> List.filter_map ~f:(function
+    | Message_entry entry -> render ~copy_feedback ~on_copy entry
+    | Activity_group { key; sequence; entries } ->
+        Some (activity ~copy_feedback ~on_copy ~key ~sequence entries))

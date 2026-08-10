@@ -59,6 +59,11 @@ try {
   const agentResponse = "Received typed resource link: web/main.ml.";
   await desktop.getByText(agentResponse).waitFor({ timeout: 10000 });
   const firstTool = desktop.locator(".timeline-tool").last();
+  const firstActivity = desktop.locator("details.timeline-activity").filter({ has: firstTool });
+  if (await firstActivity.getAttribute("open") !== null || await firstTool.isVisible()) {
+    throw new Error("tool activity was expanded by default");
+  }
+  await firstActivity.locator(":scope > summary").click();
   const firstDisclosure = firstTool.locator("details.tool-disclosure");
   if (await firstDisclosure.getAttribute("open") !== null) throw new Error("tool call was expanded by default");
   await firstDisclosure.locator("summary").first().click();
@@ -68,6 +73,7 @@ try {
     throw new Error(`tool copy returned the wrong text: ${toolClipboard}`);
   }
   await firstDisclosure.locator("summary").first().click();
+  await firstActivity.locator(":scope > summary").click();
 
   const message = desktop.locator(".timeline-agent").last();
   const messageCopy = message.getByRole("button", { name: "Copy message" });
@@ -137,8 +143,8 @@ try {
     const value = document.getElementById("timeline");
     return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
   });
-  if (await desktop.locator("details.tool-disclosure[open]").count() !== 0) {
-    throw new Error("a streamed tool call opened itself");
+  if (await desktop.locator("details.timeline-activity[open], details.tool-disclosure[open]").count() !== 0) {
+    throw new Error("streamed activity opened itself");
   }
 
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
@@ -148,6 +154,26 @@ try {
   });
   mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
   await mobile.goto(url, { waitUntil: "domcontentloaded" });
+  const mobileActivity = mobile.locator("details.timeline-activity").first();
+  await mobileActivity.waitFor();
+  const mobileActivityBounds = await mobileActivity.evaluate((activity) => {
+    const activityBounds = activity.getBoundingClientRect();
+    const timelineBounds = activity.closest("#timeline")?.getBoundingClientRect();
+    return {
+      activityLeft: activityBounds.left,
+      activityRight: activityBounds.right,
+      timelineLeft: timelineBounds?.left,
+      timelineRight: timelineBounds?.right,
+    };
+  });
+  if (
+    await mobileActivity.getAttribute("open") !== null
+    || mobileActivityBounds.timelineLeft === undefined
+    || mobileActivityBounds.activityLeft < mobileActivityBounds.timelineLeft
+    || mobileActivityBounds.activityRight > mobileActivityBounds.timelineRight
+  ) {
+    throw new Error(`mobile activity accordion escaped or expanded: ${JSON.stringify(mobileActivityBounds)}`);
+  }
   const mobileTextarea = mobile.getByRole("textbox", { name: "Message agent" });
   if (await mobile.getByRole("button", { name: "Mention a workspace file" }).count() !== 0) {
     throw new Error("redundant composer mention button remained visible");

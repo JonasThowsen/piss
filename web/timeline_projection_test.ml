@@ -44,6 +44,74 @@ let () =
   ] ->
       ()
   | _ -> fail "updated id-less response did not move below intervening tools");
+  let grouped =
+    group_timeline
+      [
+        Command_state { sequence = 1L; command_id = "before"; state = Accepted };
+        Tool
+          {
+            sequence = 2L;
+            tool_call_id = "tool-a";
+            title = "Inspect";
+            input = "read";
+            output = "";
+            status = "in_progress";
+            artifacts = [];
+          };
+        Permission_resolved
+          { sequence = 3L; request_id = "permission"; option_id = None };
+        Agent { sequence = 4L; message_id = "agent-a"; text = "Done" };
+        Command_state { sequence = 5L; command_id = "after"; state = Completed };
+        User { sequence = 6L; command_id = "next"; text = "Continue" };
+      ]
+  in
+  (match grouped with
+  | [
+   Activity_group
+     {
+       key = "activity-after:leading";
+       sequence = 1L;
+       entries =
+         [ Command_state { sequence = 1L; _ }; Tool { sequence = 2L; _ } ];
+     };
+   Message_entry (Agent { sequence = 4L; _ });
+   Activity_group
+     {
+       key = "activity-after:agent:agent-a";
+       sequence = 5L;
+       entries = [ Command_state { sequence = 5L; _ } ];
+     };
+   Message_entry (User { sequence = 6L; _ });
+  ] ->
+      ()
+  | _ -> fail "timeline activity was not grouped between message boundaries");
+  let stable_leading_key entries =
+    match group_timeline entries with
+    | [ Activity_group { key; _ } ] -> key
+    | _ -> fail "leading activity did not form one group"
+  in
+  let tool =
+    Tool
+      {
+        sequence = 2L;
+        tool_call_id = "stable-tool";
+        title = "Stable";
+        input = "";
+        output = "";
+        status = "in_progress";
+        artifacts = [];
+      }
+  in
+  let before = stable_leading_key [ tool ] in
+  let after =
+    stable_leading_key
+      [
+        Command_state { sequence = 1L; command_id = "older"; state = Accepted };
+        tool;
+      ]
+  in
+  if not (String.equal before after) then
+    fail "prepending contiguous activity changed its stable group key";
   let entries =
     project
       [
