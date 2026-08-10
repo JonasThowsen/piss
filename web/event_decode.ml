@@ -128,10 +128,10 @@ let acp_update path expected_kind payload =
       else error (update_path ^ ".sessionUpdate") ("must be " ^ expected_kind)
 
 let describe_input path fields =
-  let* raw_input = optional_field fields path "rawInput" assoc in
-  match raw_input with
-  | None -> Ok ""
-  | Some input ->
+  match List.Assoc.find fields ~equal:String.equal "rawInput" with
+  | None | Some `Null -> Ok ""
+  | Some value ->
+      let* input = assoc (path ^ ".rawInput") value in
       let first_string names =
         List.find_map names ~f:(fun name ->
             match List.Assoc.find input ~equal:String.equal name with
@@ -231,7 +231,7 @@ let decode_tool_update path sequence payload =
   let* status = optional_field update update_path "status" tool_status in
   let* input =
     match List.Assoc.find update ~equal:String.equal "rawInput" with
-    | None -> Ok None
+    | None | Some `Null -> Ok None
     | Some _ -> Result.map (describe_input update_path update) ~f:Option.some
   in
   let* output, content_artifacts =

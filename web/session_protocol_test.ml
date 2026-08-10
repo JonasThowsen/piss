@@ -113,6 +113,11 @@ let delivery_history =
   ]
   |}
 
+let null_raw_input kind sequence =
+  Printf.sprintf
+    {|{"sequence":%d,"kind":"acp.%s","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"%s","toolCallId":"null-input-tool","title":"edit","kind":"edit","status":"completed","rawInput":null}}},"createdAt":1723123465}|}
+    sequence kind kind
+
 let runtime =
   {
     Runtime_domain.session_id = "session";
@@ -142,6 +147,18 @@ let () =
   ] ->
       ()
   | _ -> fail "decoded history did not preserve typed timeline entries");
+  List.iter [ "tool_call"; "tool_call_update" ] ~f:(fun kind ->
+      match Event_history.decode_event (null_raw_input kind 10) with
+      | Ok _ -> ()
+      | Error message -> fail ("null rawInput was rejected: " ^ message));
+  let malformed_raw_input =
+    null_raw_input "tool_call" 10
+    |> String.substr_replace_first ~pattern:"\"rawInput\":null"
+         ~with_:"\"rawInput\":\"edit\""
+  in
+  (match Event_history.decode_event malformed_raw_input with
+  | Error message when String.is_substring message ~substring:"rawInput" -> ()
+  | _ -> fail "non-object rawInput did not fail closed");
   if not (Event_history.command_is_terminal ~command_id:"web-command" entries)
   then fail "completed command was not terminal";
   let malformed =
