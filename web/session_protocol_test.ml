@@ -134,6 +134,14 @@ let () =
   | Error message when String.is_substring message ~substring:"unsupported" ->
       ()
   | _ -> fail "unsupported command state was accepted");
+  let idless_message =
+    String.substr_replace_first history
+      ~pattern:"\"messageId\": \"agent-web-command\"," ~with_:""
+  in
+  (match decode idless_message with
+  | [ User _; Agent { text = "Proof complete"; _ }; Tool _; Command_state _ ] ->
+      ()
+  | _ -> fail "agent message without an ACP messageId was not retained");
   let out_of_order =
     String.substr_replace_first history ~pattern:"\"sequence\": 4"
       ~with_:"\"sequence\": 2"

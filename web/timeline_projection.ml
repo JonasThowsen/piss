@@ -90,13 +90,17 @@ type entry =
     }
   | Permission_cancelled of { sequence : int64; request_id : string }
 
-type projection = { order : string list; entries : entry String.Map.t }
+type projection = {
+  order : string list;
+  entries : entry String.Map.t;
+  current_command : string option;
+}
 
 let add_or_replace state key entry =
   let order =
     if Map.mem state.entries key then state.order else key :: state.order
   in
-  { order; entries = Map.set state.entries ~key ~data:entry }
+  { state with order; entries = Map.set state.entries ~key ~data:entry }
 
 let append_unique current incoming =
   List.fold incoming ~init:current ~f:(fun values value ->
@@ -110,14 +114,23 @@ let append_output current = function
 
 let project updates =
   let projected =
-    List.fold updates ~init:{ order = []; entries = String.Map.empty }
+    List.fold updates
+      ~init:{ order = []; entries = String.Map.empty; current_command = None }
       ~f:(fun state update ->
         match update with
         | User_update { sequence; command_id; text } ->
-            add_or_replace state
+            add_or_replace
+              { state with current_command = Some command_id }
               ("event:user:" ^ Int64.to_string sequence)
               (User { sequence; command_id; text })
         | Agent_chunk { sequence; message_id; text } ->
+            let message_id =
+              if not (String.is_empty message_id) then message_id
+              else
+                Option.value_map state.current_command
+                  ~default:("event-" ^ Int64.to_string sequence)
+                  ~f:(fun command_id -> "command-" ^ command_id)
+            in
             let key = "agent:" ^ message_id in
             let entry =
               match Map.find state.entries key with

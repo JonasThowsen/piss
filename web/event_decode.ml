@@ -186,7 +186,11 @@ let decode_outbox_state path payload =
 
 let decode_message path sequence payload expected_kind role =
   let* update, update_path = acp_update path expected_kind payload in
-  let* message_id = field_as update update_path "messageId" nonempty_string in
+  let* message_id =
+    match List.Assoc.find update ~equal:String.equal "messageId" with
+    | None | Some `Null -> Ok ""
+    | Some value -> nonempty_string (update_path ^ ".messageId") value
+  in
   let* content = field update update_path "content" in
   let* text = content_text (update_path ^ ".content") content in
   match (role, text) with

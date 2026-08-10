@@ -4,6 +4,20 @@ let fail message = raise_s [%message message]
 
 let () =
   let open Timeline_projection in
+  let idless_entries =
+    project
+      [
+        User_update { sequence = 1L; command_id = "command-1"; text = "Run" };
+        Agent_chunk { sequence = 2L; message_id = ""; text = "Hello " };
+        Agent_chunk { sequence = 3L; message_id = ""; text = "world" };
+      ]
+  in
+  (match idless_entries with
+  | [
+   User _; Agent { message_id = "command-command-1"; text = "Hello world"; _ };
+  ] ->
+      ()
+  | _ -> fail "id-less ACP chunks were not grouped by command");
   let entries =
     project
       [

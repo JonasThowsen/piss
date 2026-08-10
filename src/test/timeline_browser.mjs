@@ -39,7 +39,6 @@ const agent = (sequence, sessionId) => ({
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
-        messageId: "markdown-browser-proof",
         content: {
           type: "text",
           text: "# Browser Markdown\n\nSafe [link](https://example.test) and unsafe [label](javascript:alert(1)).\n\n```js\nconst proof = true;\n```",
