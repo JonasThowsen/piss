@@ -107,7 +107,7 @@ let focus_navigation () = focus "workspace-navigation"
 let focus_menu_button () = focus "mobile-menu-button"
 
 let menu_icon () =
-  Vdom.Node.create "svg"
+  Vdom.Node.create_svg "svg"
     ~attrs:
       [
         Vdom.Attr.create "viewBox" "0 0 24 24";
@@ -118,7 +118,7 @@ let menu_icon () =
         Vdom.Attr.create "aria-hidden" "true";
       ]
     [
-      Vdom.Node.create "path"
+      Vdom.Node.create_svg "path"
         ~attrs:[ Vdom.Attr.create "d" "M4 7h16M4 12h16M4 17h16" ]
         [];
     ]

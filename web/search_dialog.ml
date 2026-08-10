@@ -13,7 +13,7 @@ let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
 let search_icon () =
-  Vdom.Node.create "svg"
+  Vdom.Node.create_svg "svg"
     ~attrs:
       [
         Vdom.Attr.create "viewBox" "0 0 24 24";
@@ -25,7 +25,7 @@ let search_icon () =
         Vdom.Attr.create "aria-hidden" "true";
       ]
     [
-      Vdom.Node.create "circle"
+      Vdom.Node.create_svg "circle"
         ~attrs:
           [
             Vdom.Attr.create "cx" "11";
@@ -33,7 +33,7 @@ let search_icon () =
             Vdom.Attr.create "r" "7";
           ]
         [];
-      Vdom.Node.create "path"
+      Vdom.Node.create_svg "path"
         ~attrs:[ Vdom.Attr.create "d" "m20 20-3.5-3.5" ]
         [];
     ]

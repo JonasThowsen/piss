@@ -7,7 +7,7 @@ let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
 let chevron_down () =
-  Vdom.Node.create "svg"
+  Vdom.Node.create_svg "svg"
     ~attrs:
       [
         Vdom.Attr.create "viewBox" "0 0 24 24";
@@ -19,7 +19,9 @@ let chevron_down () =
         Vdom.Attr.create "aria-hidden" "true";
       ]
     [
-      Vdom.Node.create "path" ~attrs:[ Vdom.Attr.create "d" "m7 10 5 5 5-5" ] [];
+      Vdom.Node.create_svg "path"
+        ~attrs:[ Vdom.Attr.create "d" "m7 10 5 5 5-5" ]
+        [];
     ]
 
 let event_key event =

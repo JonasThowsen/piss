@@ -10,6 +10,37 @@ const { chromium } = require(playwrightCorePath);
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 if (!executablePath) throw new Error("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is required");
 
+async function assertPaintedSvg(icon, label) {
+  await icon.waitFor();
+  const proof = await icon.evaluate((node) => {
+    const shapes = [...node.querySelectorAll("path, circle")];
+    const boxes = shapes.map((shape) => {
+      try {
+        const box = shape.getBBox();
+        return { width: box.width, height: box.height };
+      } catch {
+        return { width: 0, height: 0 };
+      }
+    });
+    return {
+      namespace: node.namespaceURI,
+      shapeNamespaces: shapes.map((shape) => shape.namespaceURI),
+      shapeCount: shapes.length,
+      stroke: shapes[0] ? getComputedStyle(shapes[0]).stroke : "none",
+      boxes,
+    };
+  });
+  if (
+    proof.namespace !== "http://www.w3.org/2000/svg"
+    || proof.shapeCount === 0
+    || proof.shapeNamespaces.some((namespace) => namespace !== "http://www.w3.org/2000/svg")
+    || proof.stroke === "none"
+    || !proof.boxes.some((box) => box.width > 0 && box.height > 0)
+  ) {
+    throw new Error(`${label} SVG was present but not painted: ${JSON.stringify(proof)}`);
+  }
+}
+
 const browser = await chromium.launch({ executablePath, headless: true });
 const errors = [];
 let intentionalNetworkFailures = 0;
@@ -45,12 +76,10 @@ try {
   if (await page.getByText("session / s-mention-browser", { exact: true }).count() !== 0) {
     throw new Error("duplicate selected-session header remained below the app header");
   }
-  if (await page.getByRole("button", { name: "Search sessions" }).locator("svg").count() !== 1) {
-    throw new Error("search trigger did not render one SVG icon");
-  }
-  if (await page.locator("#mobile-menu-button svg").count() !== 1) {
-    throw new Error("mobile menu trigger did not render one SVG icon");
-  }
+  await assertPaintedSvg(
+    page.getByRole("button", { name: "Search sessions" }).locator("svg"),
+    "search trigger",
+  );
   if (eventStreamRequests.length === 0) {
     await page.waitForRequest((request) => request.url().includes("/api/v2/event-stream"));
   }
@@ -658,6 +687,7 @@ try {
   mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
   await mobile.goto(url, { waitUntil: "domcontentloaded" });
   const mobileMenu = mobile.getByRole("button", { name: "Open workspaces and sessions" });
+  await assertPaintedSvg(mobileMenu.locator("svg"), "mobile menu trigger");
   await mobileMenu.tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
   await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ }).tap();
