@@ -542,11 +542,9 @@ let recover_targeted_text_command ?(discard_cleared_attachments = false) store
                       image_count <> `Int 0 || resource_count <> `Int 0
                     in
                     if not (String.equal content "[]") then
-                      Error
-                        "ambiguous command content has not been cleared"
+                      Error "ambiguous command content has not been cleared"
                     else if
-                      has_cleared_attachments
-                      && not discard_cleared_attachments
+                      has_cleared_attachments && not discard_cleared_attachments
                     then
                       Error
                         "recovery requires explicit acknowledgement of cleared \
@@ -560,15 +558,15 @@ let recover_targeted_text_command ?(discard_cleared_attachments = false) store
                                 [
                                   ("commandId", `String command_id);
                                   ("action", `String action);
-                                   ( "reason",
-                                     `String
-                                       "operator recovered an interrupted or \
-                                        lost queued command" );
-                                   ( "discardedClearedAttachments",
-                                     `Bool has_cleared_attachments );
-                                   ("discardedImageCount", image_count);
-                                   ("discardedResourceCount", resource_count);
-                                 ]));
+                                  ( "reason",
+                                    `String
+                                      "operator recovered an interrupted or \
+                                       lost queued command" );
+                                  ( "discardedClearedAttachments",
+                                    `Bool has_cleared_attachments );
+                                  ("discardedImageCount", image_count);
+                                  ("discardedResourceCount", resource_count);
+                                ]));
                       Ok { state = Accepted; duplicate = false; prompt }))))
 
 let set_command_state store ~command_id state =
