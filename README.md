@@ -104,6 +104,8 @@ Common recipes:
 
 Run `just` with no arguments to list every recipe.
 
+Browser changes should follow the [web performance guidelines](./docs/WEB-PERFORMANCE.md), especially the Bonsai invalidation-boundary and regression-test checklist.
+
 ## Security
 
 See [SECURITY.md](./SECURITY.md) for the supported deployment boundary and vulnerability reporting.
