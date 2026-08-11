@@ -413,6 +413,13 @@ start_control
 [[ "$control_pid" != "$empty_control" ]]
 wait_session_count 0
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 3 ]]
+deleted=$(curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/sessions/delete-archived")
+[[ $(jq -r '.deleted' <<<"$deleted") == 3 ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" | jq 'length') == 0 ]]
+for id in "$first" "$second" "$third"; do
+  [[ ! -e "$state/sessions/$id" ]]
+done
 
-printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s third=%s fanout_ms=%s control=%s->%s final_archive=preserved\n' \
+printf 'session isolation proof passed: first=%s replacement=%s restored=%s second=%s third=%s fanout_ms=%s control=%s->%s final_archive=preserved deleted=3\n' \
   "$first_worker" "$replacement" "$restored_worker" "$second_worker" "$third" "$fanout_elapsed" "$old_control" "$control_pid"

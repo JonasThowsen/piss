@@ -496,6 +496,9 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .global-search-scope { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
 .global-search-scope button { min-height: 34px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: 600 11px/1 var(--sans); cursor: pointer; }
 .global-search-scope button.active { background: var(--panel); color: var(--accent); box-shadow: 0 1px 3px rgba(25, 31, 26, .1); }
+.global-search-delete-archived { min-height: 44px; border: 1px solid #d8aaa5; border-radius: 5px; background: #fff7f5; color: var(--danger); font: 700 10px/1 var(--sans); cursor: pointer; }
+.global-search-delete-archived:hover { border-color: #bd7770; background: #fff1ef; }
+.global-search-delete-archived:active { transform: scale(.96); }
 .global-search-field { position: relative; display: flex; align-items: center; }
 .global-search-field > svg { position: absolute; left: 14px; width: 19px; height: 19px; color: var(--accent); pointer-events: none; }
 .global-search-field input { width: 100%; height: 44px; padding: 0 14px 0 44px; border: 1px solid var(--line-strong); border-radius: 6px; outline: 0; background: #f8faf6; font-size: 16px; }

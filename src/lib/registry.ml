@@ -438,6 +438,22 @@ let list_archived registry =
   list registry ~include_archived:true
   |> List.filter (fun session -> Option.is_some session.archived_at)
 
+let delete_archived registry =
+  transaction registry (fun () ->
+      with_statement registry.db
+        "DELETE FROM peer_subscriptions WHERE source_id IN (SELECT id FROM \
+         sessions WHERE archived_at IS NOT NULL)" (fun statement ->
+          expect_done "delete archived peer subscriptions" statement);
+      with_statement registry.db
+        "DELETE FROM peer_requests WHERE source_id IN (SELECT id FROM sessions \
+         WHERE archived_at IS NOT NULL) OR target_id IN (SELECT id FROM \
+         sessions WHERE archived_at IS NOT NULL)" (fun statement ->
+          expect_done "delete archived peer requests" statement);
+      with_statement registry.db
+        "DELETE FROM sessions WHERE archived_at IS NOT NULL" (fun statement ->
+          expect_done "delete archived sessions" statement);
+      Sqlite3.changes registry.db)
+
 let active_count registry = List.length (list registry ~include_archived:false)
 let session_to_yojson = Registry_support.session_to_yojson
 let workspace_to_yojson = Registry_support.workspace_to_yojson

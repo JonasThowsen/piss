@@ -315,6 +315,20 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
                 Headers.respond_json ~status:`Created
                   (Registry.session_to_yojson session)
             | Error message -> Headers.error_json (conflict message)))
+  | Routes.Post_archived_sessions_delete ->
+      Some
+        (match
+           Authentication.valid_json_mutation ~dev_bypass ~allowed_origins
+             request
+         with
+        | Error (status, message) ->
+            Headers.error_json ~status (authentication_error status message)
+        | Ok () -> (
+            ignore (read_body ());
+            match Workers.delete_archived_sessions manager with
+            | Ok deleted ->
+                Headers.respond_json (`Assoc [ ("deleted", `Int deleted) ])
+            | Error message -> Headers.error_json (conflict message)))
   | Routes.Post_session_action action ->
       Some
         (match

@@ -780,11 +780,41 @@ try {
   await mobile.keyboard.press("Escape");
   await mobileSearch.waitFor({ state: "detached" });
   await mobileContext.close();
+
+  await page.evaluate(async (sessionId) => {
+    const response = await fetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    if (!response.ok) throw new Error(await response.text());
+  }, restoredSession.id);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+  await searchTrigger.click();
+  const deleteSearch = page.getByRole("dialog", { name: "Search sessions" });
+  await deleteSearch.getByRole("button", { name: /Archived \(1\)/ }).click();
+  await deleteSearch.getByRole("button", { name: "Delete all archived sessions" }).click();
+  const deleteArchived = page.getByRole("alertdialog", { name: "Delete archived sessions?" });
+  await deleteArchived.getByText(/1 archived session and all of their conversation data will be permanently deleted/).waitFor();
+  await deleteArchived.getByRole("button", { name: "DELETE ARCHIVED SESSIONS" }).click();
+  await deleteArchived.waitFor({ state: "detached" });
+  const archivedAfterDelete = await page.evaluate(async () => {
+    const response = await fetch("/api/v2/sessions?archived=true");
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  });
+  if (archivedAfterDelete.length !== 0) {
+    throw new Error(`archived sessions remained after deletion: ${JSON.stringify(archivedAfterDelete)}`);
+  }
+  if (await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).count() !== 1) {
+    throw new Error("deleting archived sessions affected the active session");
+  }
   if (intentionalNetworkFailures !== 1) {
     throw new Error(`expected one discarded command response, observed ${intentionalNetworkFailures}`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/delete, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

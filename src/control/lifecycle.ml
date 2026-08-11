@@ -50,6 +50,15 @@ let write_private_file path contents =
 let session_socket runtime_root session_id =
   Filename.concat (Filename.concat runtime_root session_id) "worker.sock"
 
+let rec remove_tree path =
+  match Unix.lstat path with
+  | { Unix.st_kind = Unix.S_DIR; _ } ->
+      Sys.readdir path
+      |> Array.iter (fun name -> remove_tree (Filename.concat path name));
+      Unix.rmdir path
+  | _ -> Unix.unlink path
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+
 let write_session_spec registry state_root (session : Registry.session) =
   let directory = Filename.concat state_root session.id in
   let workspace =

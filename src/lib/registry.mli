@@ -201,5 +201,10 @@ val restore : t -> string -> bool
 val list_archived : t -> session list
 (** Every archived session. *)
 
+val delete_archived : t -> int
+(** Permanently delete every archived session and its control-plane peer
+    metadata. Returns the number of deleted session rows. Active sessions are
+    never changed. *)
+
 val workspace_to_yojson : workspace -> Yojson.Safe.t
 val session_to_yojson : session -> Yojson.Safe.t

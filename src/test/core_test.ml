@@ -198,7 +198,28 @@ let test_session_registry () =
     (Registry.complete_peer_subscription registry "wake-one");
   Alcotest.(check int)
     "delivered wake no longer open" 0
-    (List.length (Registry.list_open_peer_subscriptions registry))
+    (List.length (Registry.list_open_peer_subscriptions registry));
+  Alcotest.(check bool)
+    "session can be archived for deletion" true
+    (Registry.archive registry "s-one");
+  Alcotest.(check int)
+    "one archived session deleted" 1
+    (Registry.delete_archived registry);
+  Alcotest.(check bool)
+    "deleted session row is gone" true
+    (Option.is_none (Registry.find registry "s-one"));
+  Alcotest.(check bool)
+    "deleted session peer metadata is gone" true
+    (Option.is_none (Registry.find_peer_request registry "peer-one"));
+  Alcotest.(check int)
+    "active session is preserved" 1
+    (Registry.active_count registry);
+  Alcotest.(check int)
+    "workspace count excludes deleted session" 1
+    (Registry.workspace_session_count registry "workspace-one");
+  Alcotest.(check int)
+    "repeated archived deletion is empty" 0
+    (Registry.delete_archived registry)
 
 let runtime_target ~session_id:session ~worker_id:worker
     ~runtime_generation:generation =

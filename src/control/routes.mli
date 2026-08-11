@@ -20,6 +20,7 @@ type route =
   | Post_workspaces
   | Get_sessions of { archived : bool }
   | Post_sessions
+  | Post_archived_sessions_delete
   | Post_session_action of session_action
   | Get_health
   | Get_session of { session_id : string option }

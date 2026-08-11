@@ -20,6 +20,7 @@ type route =
   | Post_workspaces
   | Get_sessions of { archived : bool }
   | Post_sessions
+  | Post_archived_sessions_delete
   | Post_session_action of session_action
   | Get_health
   | Get_session of { session_id : string option }
@@ -133,6 +134,8 @@ let rec parse ~managed ~method_ ~uri ~last_event_id =
     | `GET, "/api/v2/sessions", _, _ ->
         Ok (Get_sessions { archived = query "archived" = "true" })
     | `POST, "/api/v2/sessions", _, _ -> Ok Post_sessions
+    | `POST, "/api/v2/sessions/delete-archived", _, _ ->
+        Ok Post_archived_sessions_delete
     | `POST, _, _, Some action -> Ok (Post_session_action action)
     | _ -> parse_generic ~method_ ~uri ~last_event_id ~path ~session_id
   else parse_generic ~method_ ~uri ~last_event_id ~path ~session_id

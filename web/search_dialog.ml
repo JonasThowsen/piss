@@ -89,14 +89,15 @@ let cleanup () =
 
 let option_id index = Printf.sprintf "global-session-option-%d" index
 
-let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
-    graph =
+let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
+    =
   let open_state, set_open = Bonsai.state false graph in
   let scope, set_scope = Bonsai.state Global_search.Active graph in
   let query, set_query = Bonsai.state "" graph in
   let selected, set_selected = Bonsai.state 0 graph in
   let busy, set_busy = Bonsai.state false graph in
   let error, set_error = Bonsai.state None graph in
+  let confirm_delete, set_confirm_delete = Bonsai.state false graph in
   let values =
     let%arr scope = scope
     and query = query
@@ -113,6 +114,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
     and set_selected = set_selected
     and set_busy = set_busy
     and set_error = set_error
+    and set_confirm_delete = set_confirm_delete
     and on_open = on_open in
     fun () ->
       if open_state then Effect.Ignore
@@ -129,6 +131,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
                set_selected 0;
                set_busy false;
                set_error None;
+               set_confirm_delete false;
                on_open;
              ])
           ~f:(fun () ->
@@ -147,6 +150,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
     graph;
   let%arr active = active
   and archived = archived
+  and on_reload = on_reload
   and on_select = on_select
   and open_state = open_state
   and scope = scope
@@ -154,6 +158,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
   and selected = selected
   and busy = busy
   and error = error
+  and confirm_delete = confirm_delete
   and values = values
   and shortcut_open = shortcut_open
   and set_open = set_open
@@ -161,10 +166,18 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
   and set_query = set_query
   and set_selected = set_selected
   and set_busy = set_busy
-  and set_error = set_error in
+  and set_error = set_error
+  and set_confirm_delete = set_confirm_delete in
   let close () =
     if busy then Effect.Ignore
-    else Effect.Many [ Modal.deactivate (); set_open false; set_error None ]
+    else
+      Effect.Many
+        [
+          Modal.deactivate ();
+          set_open false;
+          set_error None;
+          set_confirm_delete false;
+        ]
   in
   let open_ = shortcut_open in
   let finish id =
@@ -197,6 +210,56 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
                           set_error (Some message);
                         ]
                   | Ok () -> finish item.session.id))
+  in
+  let show_delete_confirmation () =
+    if busy || List.is_empty archived then Effect.Ignore
+    else
+      Effect.bind
+        (Effect.Many [ set_confirm_delete true; set_error None ])
+        ~f:(fun () ->
+          Modal.activate ~surface_id:"global-search-dialog"
+            ~initial_focus:"delete-archived-cancel" ~dismissible:true
+            ~on_close:close)
+  in
+  let cancel_delete () =
+    if busy then Effect.Ignore
+    else
+      Effect.bind
+        (Effect.Many [ set_confirm_delete false; set_error None ])
+        ~f:(fun () ->
+          Modal.activate ~surface_id:"global-search-dialog"
+            ~initial_focus:"global-session-query" ~dismissible:true
+            ~on_close:close)
+  in
+  let delete_archived () =
+    if busy then Effect.Ignore
+    else
+      Effect.bind
+        (Effect.Many
+           [ Modal.set_dismissible false; set_busy true; set_error None ])
+        ~f:(fun () ->
+          Effect.bind
+            (Effect.of_deferred_thunk (fun () ->
+                 Browser_http.post_json "/api/v2/sessions/delete-archived"
+                   (`Assoc [])))
+            ~f:(function
+              | Error error ->
+                  Effect.Many
+                    [
+                      Modal.set_dismissible true;
+                      set_busy false;
+                      set_error (Some (Error.to_string_hum error));
+                    ]
+              | Ok _ ->
+                  Effect.bind
+                    (Effect.Many
+                       [
+                         set_busy false;
+                         Modal.deactivate ();
+                         set_open false;
+                         set_confirm_delete false;
+                       ])
+                    ~f:(fun () -> on_reload)))
   in
   let navigate event =
     let count = List.length values in
@@ -240,6 +303,101 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
   in
   let view =
     if not open_state then Vdom.Node.none
+    else if confirm_delete then
+      let title_id = "delete-archived-title"
+      and description_id = "delete-archived-description" in
+      Modal.surface ~kind:Alertdialog ~surface_id:"global-search-dialog"
+        ~labelled_by:title_id ~described_by:description_id
+        ~class_name:"archive-dialog" ~dismissible:(not busy)
+        ~on_close:cancel_delete
+        [
+          Vdom.Node.form
+            ~attrs:
+              [
+                Vdom.Attr.on_submit (fun _ ->
+                    Effect.Many
+                      [ Vdom.Effect.Prevent_default; delete_archived () ]);
+              ]
+            [
+              Vdom.Node.header
+                ~attrs:[ class_ "modal-surface-header" ]
+                [
+                  Vdom.Node.div
+                    [
+                      Vdom.Node.span
+                        ~attrs:[ class_ "modal-surface-label" ]
+                        [ text "ARCHIVED SESSIONS" ];
+                      Vdom.Node.h2
+                        ~attrs:
+                          [
+                            Vdom.Attr.id title_id; class_ "modal-surface-title";
+                          ]
+                        [ text "Delete archived sessions?" ];
+                    ];
+                  Vdom.Node.button
+                    ~attrs:
+                      ([
+                         class_ "modal-surface-close";
+                         Vdom.Attr.create "type" "button";
+                         Vdom.Attr.create "aria-label" "Close";
+                         Vdom.Attr.on_click (fun _ -> cancel_delete ());
+                       ]
+                      @ if busy then [ Vdom.Attr.disabled ] else [])
+                    [ text "x" ];
+                ];
+              Vdom.Node.div
+                ~attrs:[ class_ "modal-surface-body" ]
+                [
+                  Vdom.Node.p
+                    ~attrs:[ Vdom.Attr.id description_id ]
+                    [
+                      text
+                        (Printf.sprintf
+                           "%d archived %s and all of their conversation data \
+                            will be permanently deleted. This cannot be \
+                            undone."
+                           (List.length archived)
+                           (if List.length archived = 1 then "session"
+                            else "sessions"));
+                    ];
+                  Option.value_map error ~default:Vdom.Node.none
+                    ~f:(fun message ->
+                      Vdom.Node.p
+                        ~attrs:
+                          [
+                            class_ "dialog-error";
+                            Vdom.Attr.create "role" "alert";
+                          ]
+                        [ text message ]);
+                ];
+              Vdom.Node.footer
+                ~attrs:[ class_ "modal-surface-footer" ]
+                [
+                  Vdom.Node.button
+                    ~attrs:
+                      ([
+                         Vdom.Attr.id "delete-archived-cancel";
+                         class_ "cancel";
+                         Vdom.Attr.create "type" "button";
+                         Vdom.Attr.on_click (fun _ -> cancel_delete ());
+                       ]
+                      @ if busy then [ Vdom.Attr.disabled ] else [])
+                    [ text "CANCEL" ];
+                  Vdom.Node.button
+                    ~attrs:
+                      ([
+                         class_ "danger-action";
+                         Vdom.Attr.create "type" "submit";
+                       ]
+                      @ if busy then [ Vdom.Attr.disabled ] else [])
+                    [
+                      text
+                        (if busy then "DELETING..."
+                         else "DELETE ARCHIVED SESSIONS");
+                    ];
+                ];
+            ];
+        ]
     else
       let title_id = "global-search-title" in
       let active_descendant =
@@ -308,6 +466,16 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload:_ ~on_select
                         (Printf.sprintf "Archived (%d)" (List.length archived));
                     ];
                 ];
+              (if phys_equal scope Archived && not (List.is_empty archived) then
+                 Vdom.Node.button
+                   ~attrs:
+                     [
+                       class_ "global-search-delete-archived";
+                       Vdom.Attr.create "type" "button";
+                       Vdom.Attr.on_click (fun _ -> show_delete_confirmation ());
+                     ]
+                   [ text "Delete all archived sessions" ]
+               else Vdom.Node.none);
               Vdom.Node.div
                 ~attrs:[ class_ "global-search-field" ]
                 [

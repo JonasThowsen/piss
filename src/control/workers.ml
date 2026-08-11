@@ -80,6 +80,27 @@ let archive_managed_session (manager : Config.managed_workers) id =
           if Registry.archive manager.registry id then Ok ()
           else Error "session was already archived")
 
+let delete_archived_sessions (manager : Config.managed_workers) =
+  let archived = Registry.list_archived manager.registry in
+  match
+    List.find_opt
+      (fun (session : Registry.session) ->
+        not (Lifecycle.valid_session_id session.id))
+      archived
+  with
+  | Some _ -> Error "archived session has an invalid identity"
+  | None -> (
+      try
+        List.iter
+          (fun (session : Registry.session) ->
+            Lifecycle.remove_tree
+              (Filename.concat manager.state_root session.id);
+            Lifecycle.remove_tree
+              (Filename.concat manager.runtime_root session.id))
+          archived;
+        Ok (Registry.delete_archived manager.registry)
+      with exn -> Error (Printexc.to_string exn))
+
 let restore_managed_session (manager : Config.managed_workers) id =
   (* TODO(tracer): Persist started/completed lifecycle receipts before replacing
      the local synchronous systemd launcher with a remote or queued launcher. *)
