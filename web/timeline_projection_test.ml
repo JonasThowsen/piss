@@ -38,12 +38,12 @@ let () =
   (match moved_idless_entries with
   | [
    User _;
+   Agent { sequence = 2L; message_id = "command-command-1"; text = "Working" };
    Tool _;
-   Agent
-     { sequence = 4L; message_id = "command-command-1"; text = "WorkingDone" };
+   Agent { sequence = 4L; message_id = "command-command-1"; text = "Done" };
   ] ->
       ()
-  | _ -> fail "updated id-less response did not move below intervening tools");
+  | _ -> fail "id-less response segments did not remain around the tool call");
   let grouped =
     group_timeline
       [
@@ -77,7 +77,7 @@ let () =
    Message_entry (Agent { sequence = 4L; _ });
    Activity_group
      {
-       key = "activity-after:agent:agent-a";
+       key = "activity-after:agent:agent-a:4";
        sequence = 5L;
        entries = [ Command_state { sequence = 5L; _ } ];
      };
@@ -154,7 +154,7 @@ let () =
   in
   match entries with
   | [
-   Agent { sequence = 1L; message_id = "message-1"; text = "Hello world" };
+   Agent { sequence = 1L; message_id = "message-1"; text = "Hello " };
    Tool
      {
        sequence = 2L;
@@ -169,6 +169,7 @@ let () =
            Location { path = "proof.txt"; line = None; text = None };
          ];
      };
+   Agent { sequence = 3L; message_id = "message-1"; text = "world" };
   ] ->
       let copied =
         tool_text ~input:"dune runtest" ~output:"partial\n2 tests passed"
@@ -184,4 +185,6 @@ let () =
           && String.is_substring copied ~substring:"location: proof.txt")
       then fail "full tool copy omitted typed artifacts"
   | _ ->
-      fail "timeline projection did not aggregate stable message and tool rows"
+      fail
+        "timeline projection did not preserve agent segments around the tool \
+         row"

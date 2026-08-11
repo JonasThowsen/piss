@@ -62,8 +62,8 @@ let render ~copy_feedback ~on_copy = function
         (message
            ~key:(Int64.to_string sequence ^ "-user")
            ~class_name:"timeline-user" ~role:"You" ~status:command_id body)
-  | Agent { sequence = _; message_id; text = body } ->
-      let key = "agent:" ^ message_id in
+  | Agent { sequence; message_id; text = body } ->
+      let key = "agent:" ^ message_id ^ ":" ^ Int64.to_string sequence in
       Some
         (message ~key ~class_name:"timeline-agent" ~role:"Agent"
            ~status:message_id

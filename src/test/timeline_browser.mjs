@@ -36,7 +36,7 @@ const completedCommand = (sequence) => ({
   createdAt: 1_723_123_456 + sequence,
 });
 
-const agent = (sequence, sessionId) => ({
+const agent = (sequence, sessionId, text = "# Browser Markdown\n\nSafe [link](https://example.test) and unsafe [label](javascript:alert(1)).\n\n```js\nconst proof = true;\n```") => ({
   sequence,
   kind: "acp.agent_message_chunk",
   payload: {
@@ -46,10 +46,28 @@ const agent = (sequence, sessionId) => ({
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
-        content: {
-          type: "text",
-          text: "# Browser Markdown\n\nSafe [link](https://example.test) and unsafe [label](javascript:alert(1)).\n\n```js\nconst proof = true;\n```",
-        },
+        content: { type: "text", text },
+      },
+    },
+  },
+  createdAt: 1_723_123_456 + sequence,
+});
+
+const tool = (sequence, sessionId) => ({
+  sequence,
+  kind: "acp.tool_call",
+  payload: {
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "interleaved-tool",
+        title: "Inspect interleaving",
+        kind: "read",
+        status: "completed",
+        rawInput: { path: "web/timeline_projection.ml" },
       },
     },
   },
@@ -120,6 +138,8 @@ const configure = async (context, mode) => {
       events = Array.from({ length: 500 }, (_, index) => command(index + 202));
       if (mode === "history") {
         events[0] = completedCommand(202);
+        events[497] = agent(699, selected.id, "Before the tool call.");
+        events[498] = tool(700, selected.id);
         events[499] = agent(701, selected.id);
       }
     } else {
@@ -149,6 +169,19 @@ try {
   const timeline = page.locator("#timeline");
   await page.getByText("Retained history begins at sequence 2", { exact: false }).waitFor();
   await page.getByText("Browser Markdown", { exact: true }).waitFor();
+  const agentSegments = page.locator(".timeline-stream > .timeline-agent");
+  const interleavedActivity = page.locator(".timeline-stream > .timeline-activity").filter({ hasText: "Inspect interleaving" });
+  if (await agentSegments.count() !== 2 || await interleavedActivity.count() !== 1) {
+    throw new Error("agent text around a tool call was not rendered as two message segments");
+  }
+  const interleavedOrder = await page.locator(".timeline-stream > .timeline-item").evaluateAll((items) =>
+    items.map((item) => item.textContent ?? ""));
+  const beforeIndex = interleavedOrder.findIndex((text) => text.includes("Before the tool call."));
+  const toolIndex = interleavedOrder.findIndex((text) => text.includes("Inspect interleaving"));
+  const afterIndex = interleavedOrder.findIndex((text) => text.includes("Browser Markdown"));
+  if (!(beforeIndex >= 0 && beforeIndex < toolIndex && toolIndex < afterIndex)) {
+    throw new Error(`agent/tool chronology was not preserved: ${JSON.stringify(interleavedOrder)}`);
+  }
   let initialTimelineRender = await timeline.getAttribute("data-timeline-render-count");
   if (!/^\d+$/.test(initialTimelineRender ?? "")) {
     throw new Error(`timeline omitted its render diagnostic: ${initialTimelineRender}`);
