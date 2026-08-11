@@ -199,15 +199,24 @@ let test_session_registry () =
   Alcotest.(check int)
     "delivered wake no longer open" 0
     (List.length (Registry.list_open_peer_subscriptions registry));
+  ignore
+    (Registry.insert registry ~id:"s-old" ~title:"Old session" ~harness:"pi"
+       ~workspace_id:"workspace-one");
   Alcotest.(check bool)
     "session can be archived for deletion" true
     (Registry.archive registry "s-one");
+  Alcotest.(check bool)
+    "second archived session is available" true
+    (Registry.archive registry "s-old");
   Alcotest.(check int)
-    "one archived session deleted" 1
-    (Registry.delete_archived registry);
+    "selected archived session deleted" 1
+    (Registry.delete_archived_ids registry [ "s-one" ]);
   Alcotest.(check bool)
     "deleted session row is gone" true
     (Option.is_none (Registry.find registry "s-one"));
+  Alcotest.(check bool)
+    "unselected archived session remains" true
+    (Option.is_some (Registry.find registry "s-old"));
   Alcotest.(check bool)
     "deleted session peer metadata is gone" true
     (Option.is_none (Registry.find_peer_request registry "peer-one"));
@@ -215,8 +224,11 @@ let test_session_registry () =
     "active session is preserved" 1
     (Registry.active_count registry);
   Alcotest.(check int)
-    "workspace count excludes deleted session" 1
+    "workspace count excludes selected deletion" 2
     (Registry.workspace_session_count registry "workspace-one");
+  Alcotest.(check int)
+    "remaining archived session deleted" 1
+    (Registry.delete_archived registry);
   Alcotest.(check int)
     "repeated archived deletion is empty" 0
     (Registry.delete_archived registry)

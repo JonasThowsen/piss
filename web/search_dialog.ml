@@ -97,7 +97,11 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
   let selected, set_selected = Bonsai.state 0 graph in
   let busy, set_busy = Bonsai.state false graph in
   let error, set_error = Bonsai.state None graph in
+  let selected_sessions, set_selected_sessions =
+    Bonsai.state String.Set.empty graph
+  in
   let confirm_delete, set_confirm_delete = Bonsai.state false graph in
+  let delete_all, set_delete_all = Bonsai.state false graph in
   let values =
     let%arr scope = scope
     and query = query
@@ -114,7 +118,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
     and set_selected = set_selected
     and set_busy = set_busy
     and set_error = set_error
+    and set_selected_sessions = set_selected_sessions
     and set_confirm_delete = set_confirm_delete
+    and set_delete_all = set_delete_all
     and on_open = on_open in
     fun () ->
       if open_state then Effect.Ignore
@@ -131,7 +137,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                set_selected 0;
                set_busy false;
                set_error None;
+               set_selected_sessions String.Set.empty;
                set_confirm_delete false;
+               set_delete_all false;
                on_open;
              ])
           ~f:(fun () ->
@@ -158,7 +166,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
   and selected = selected
   and busy = busy
   and error = error
+  and selected_sessions = selected_sessions
   and confirm_delete = confirm_delete
+  and delete_all = delete_all
   and values = values
   and shortcut_open = shortcut_open
   and set_open = set_open
@@ -167,7 +177,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
   and set_selected = set_selected
   and set_busy = set_busy
   and set_error = set_error
-  and set_confirm_delete = set_confirm_delete in
+  and set_selected_sessions = set_selected_sessions
+  and set_confirm_delete = set_confirm_delete
+  and set_delete_all = set_delete_all in
   let close () =
     if busy then Effect.Ignore
     else
@@ -176,7 +188,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
           Modal.deactivate ();
           set_open false;
           set_error None;
+          set_selected_sessions String.Set.empty;
           set_confirm_delete false;
+          set_delete_all false;
         ]
   in
   let open_ = shortcut_open in
@@ -211,11 +225,15 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                         ]
                   | Ok () -> finish item.session.id))
   in
-  let show_delete_confirmation () =
-    if busy || List.is_empty archived then Effect.Ignore
+  let show_delete_confirmation ~all =
+    if
+      busy || List.is_empty archived
+      || ((not all) && Set.is_empty selected_sessions)
+    then Effect.Ignore
     else
       Effect.bind
-        (Effect.Many [ set_confirm_delete true; set_error None ])
+        (Effect.Many
+           [ set_confirm_delete true; set_delete_all all; set_error None ])
         ~f:(fun () ->
           Modal.activate ~surface_id:"global-search-dialog"
             ~initial_focus:"delete-archived-cancel" ~dismissible:true
@@ -240,8 +258,18 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
         ~f:(fun () ->
           Effect.bind
             (Effect.of_deferred_thunk (fun () ->
-                 Browser_http.post_json "/api/v2/sessions/delete-archived"
-                   (`Assoc [])))
+                 let body =
+                   if delete_all then `Assoc []
+                   else
+                     `Assoc
+                       [
+                         ( "ids",
+                           `List
+                             (Set.to_list selected_sessions
+                             |> List.map ~f:(fun id -> `String id)) );
+                       ]
+                 in
+                 Browser_http.post_json "/api/v2/sessions/delete-archived" body))
             ~f:(function
               | Error error ->
                   Effect.Many
@@ -257,9 +285,16 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                          set_busy false;
                          Modal.deactivate ();
                          set_open false;
+                         set_selected_sessions String.Set.empty;
                          set_confirm_delete false;
+                         set_delete_all false;
                        ])
                     ~f:(fun () -> on_reload)))
+  in
+  let toggle_session id =
+    set_selected_sessions
+      (if Set.mem selected_sessions id then Set.remove selected_sessions id
+       else Set.add selected_sessions id)
   in
   let navigate event =
     let count = List.length values in
@@ -304,6 +339,10 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
   let view =
     if not open_state then Vdom.Node.none
     else if confirm_delete then
+      let delete_count =
+        if delete_all then List.length archived
+        else Set.length selected_sessions
+      in
       let title_id = "delete-archived-title"
       and description_id = "delete-archived-description" in
       Modal.surface ~kind:Alertdialog ~surface_id:"global-search-dialog"
@@ -332,7 +371,11 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                           [
                             Vdom.Attr.id title_id; class_ "modal-surface-title";
                           ]
-                        [ text "Delete archived sessions?" ];
+                        [
+                          text
+                            (if delete_all then "Delete archived sessions?"
+                             else "Delete selected sessions?");
+                        ];
                     ];
                   Vdom.Node.button
                     ~attrs:
@@ -353,12 +396,12 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                     [
                       text
                         (Printf.sprintf
-                           "%d archived %s and all of their conversation data \
-                            will be permanently deleted. This cannot be \
+                           "%d %sarchived %s and all of their conversation \
+                            data will be permanently deleted. This cannot be \
                             undone."
-                           (List.length archived)
-                           (if List.length archived = 1 then "session"
-                            else "sessions"));
+                           delete_count
+                           (if delete_all then "" else "selected ")
+                           (if delete_count = 1 then "session" else "sessions"));
                     ];
                   Option.value_map error ~default:Vdom.Node.none
                     ~f:(fun message ->
@@ -393,7 +436,8 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                     [
                       text
                         (if busy then "DELETING..."
-                         else "DELETE ARCHIVED SESSIONS");
+                         else if delete_all then "DELETE ARCHIVED SESSIONS"
+                         else "DELETE SELECTED SESSIONS");
                     ];
                 ];
             ];
@@ -467,14 +511,43 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                     ];
                 ];
               (if phys_equal scope Archived && not (List.is_empty archived) then
-                 Vdom.Node.button
+                 Vdom.Node.div
                    ~attrs:
                      [
-                       class_ "global-search-delete-archived";
-                       Vdom.Attr.create "type" "button";
-                       Vdom.Attr.on_click (fun _ -> show_delete_confirmation ());
+                       class_
+                         (if Set.is_empty selected_sessions then
+                            "global-search-delete-actions"
+                          else "global-search-delete-actions has-selection");
                      ]
-                   [ text "Delete all archived sessions" ]
+                   ([
+                      Vdom.Node.button
+                        ~attrs:
+                          [
+                            class_ "global-search-delete-archived";
+                            Vdom.Attr.create "type" "button";
+                            Vdom.Attr.on_click (fun _ ->
+                                show_delete_confirmation ~all:true);
+                          ]
+                        [ text "Delete all archived sessions" ];
+                    ]
+                   @
+                   if Set.is_empty selected_sessions then []
+                   else
+                     [
+                       Vdom.Node.button
+                         ~attrs:
+                           [
+                             class_ "global-search-delete-archived selected";
+                             Vdom.Attr.create "type" "button";
+                             Vdom.Attr.on_click (fun _ ->
+                                 show_delete_confirmation ~all:false);
+                           ]
+                         [
+                           text
+                             (Printf.sprintf "Delete selected (%d)"
+                                (Set.length selected_sessions));
+                         ];
+                     ])
                else Vdom.Node.none);
               Vdom.Node.div
                 ~attrs:[ class_ "global-search-field" ]
@@ -535,31 +608,8 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                            ~default:"Unknown workspace" ~f:(fun value ->
                              value.name ^ " / " ^ value.root)
                        in
-                       Vdom.Node.button ~key:item.session.id
-                         ~attrs:
-                           [
-                             Vdom.Attr.id (option_id index);
-                             Vdom.Attr.create "type" "button";
-                             Vdom.Attr.create "role" "option";
-                             Vdom.Attr.create "aria-selected"
-                               (Bool.to_string (index = selected));
-                             Vdom.Attr.on_mouseenter (fun _ ->
-                                 set_selected index);
-                             Vdom.Attr.on_mousedown (fun _ ->
-                                 Vdom.Effect.Prevent_default);
-                             Vdom.Attr.on_click (fun _ -> choose item);
-                           ]
+                       let details =
                          [
-                           Vdom.Node.create "i"
-                             ~attrs:
-                               [
-                                 class_ "global-search-glyph";
-                                 Vdom.Attr.create "aria-hidden" "true";
-                               ]
-                             [
-                               text
-                                 (if phys_equal scope Active then ">" else "A");
-                             ];
                            Vdom.Node.span
                              [
                                Vdom.Node.b [ text item.session.title ];
@@ -572,7 +622,80 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                                  (Control_plane.Session.status_to_string
                                     item.session.status);
                              ];
-                         ]));
+                         ]
+                       in
+                       if phys_equal scope Active then
+                         Vdom.Node.button ~key:item.session.id
+                           ~attrs:
+                             [
+                               Vdom.Attr.id (option_id index);
+                               Vdom.Attr.create "type" "button";
+                               Vdom.Attr.create "role" "option";
+                               Vdom.Attr.create "aria-selected"
+                                 (Bool.to_string (index = selected));
+                               Vdom.Attr.on_mouseenter (fun _ ->
+                                   set_selected index);
+                               Vdom.Attr.on_mousedown (fun _ ->
+                                   Vdom.Effect.Prevent_default);
+                               Vdom.Attr.on_click (fun _ -> choose item);
+                             ]
+                           (Vdom.Node.create "i"
+                              ~attrs:
+                                [
+                                  class_ "global-search-glyph";
+                                  Vdom.Attr.create "aria-hidden" "true";
+                                ]
+                              [ text ">" ]
+                           :: details)
+                       else
+                         let marked =
+                           Set.mem selected_sessions item.session.id
+                         in
+                         Vdom.Node.div ~key:item.session.id
+                           ~attrs:
+                             [
+                               class_ "global-search-result";
+                               Vdom.Attr.create "role" "presentation";
+                             ]
+                           [
+                             Vdom.Node.button
+                               ~attrs:
+                                 [
+                                   class_ "global-search-select";
+                                   Vdom.Attr.create "type" "button";
+                                   Vdom.Attr.create "aria-label"
+                                     ((if marked then "Deselect" else "Select")
+                                     ^ " archived session " ^ item.session.title
+                                     );
+                                   Vdom.Attr.create "aria-pressed"
+                                     (Bool.to_string marked);
+                                   Vdom.Attr.on_mousedown (fun _ ->
+                                       Vdom.Effect.Prevent_default);
+                                   Vdom.Attr.on_click (fun _ ->
+                                       toggle_session item.session.id);
+                                 ]
+                               [
+                                 Vdom.Node.span
+                                   ~attrs:[ class_ "global-search-checkmark" ]
+                                   [ text (if marked then "✓" else "") ];
+                               ];
+                             Vdom.Node.button
+                               ~attrs:
+                                 [
+                                   Vdom.Attr.id (option_id index);
+                                   class_ "global-search-option";
+                                   Vdom.Attr.create "type" "button";
+                                   Vdom.Attr.create "role" "option";
+                                   Vdom.Attr.create "aria-selected"
+                                     (Bool.to_string (index = selected));
+                                   Vdom.Attr.on_mouseenter (fun _ ->
+                                       set_selected index);
+                                   Vdom.Attr.on_mousedown (fun _ ->
+                                       Vdom.Effect.Prevent_default);
+                                   Vdom.Attr.on_click (fun _ -> choose item);
+                                 ]
+                               details;
+                           ]));
               Option.value_map error ~default:Vdom.Node.none ~f:(fun message ->
                   Vdom.Node.p
                     ~attrs:

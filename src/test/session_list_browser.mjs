@@ -781,22 +781,68 @@ try {
   await mobileSearch.waitFor({ state: "detached" });
   await mobileContext.close();
 
-  await page.evaluate(async (sessionId) => {
-    const response = await fetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/archive`, {
+  const keptArchived = await page.evaluate(async (sessionId) => {
+    const createResponse = await fetch("/api/v2/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ workspaceId: "test-workspace", title: "Keep archived", harness: "opencode" }),
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!createResponse.ok) throw new Error(await createResponse.text());
+    const created = await createResponse.json();
+    for (const id of [sessionId, created.id]) {
+      const response = await fetch(`/api/v2/sessions/${encodeURIComponent(id)}/archive`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(await response.text());
+    }
+    return created;
   }, restoredSession.id);
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
   await searchTrigger.click();
   const deleteSearch = page.getByRole("dialog", { name: "Search sessions" });
-  await deleteSearch.getByRole("button", { name: /Archived \(1\)/ }).click();
-  await deleteSearch.getByRole("button", { name: "Delete all archived sessions" }).click();
+  await deleteSearch.getByRole("button", { name: /Archived \(2\)/ }).click();
+  const selectLifecycle = deleteSearch.getByRole("button", { name: "Select archived session Lifecycle renamed" });
+  if (await selectLifecycle.getAttribute("aria-pressed") !== "false") {
+    throw new Error("archived session checkbox started selected");
+  }
+  await selectLifecycle.click();
+  await deleteSearch.getByRole("button", { name: "Deselect archived session Lifecycle renamed" }).waitFor();
+  const archivedAfterSelection = await page.evaluate(async () => {
+    const response = await fetch("/api/v2/sessions?archived=true");
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  });
+  if (archivedAfterSelection.length !== 2) {
+    throw new Error(`selecting an archived session restored it: ${JSON.stringify(archivedAfterSelection)}`);
+  }
+  const selectedDeleteRequestPromise = page.waitForRequest(
+    (candidate) => new URL(candidate.url()).pathname === "/api/v2/sessions/delete-archived" && candidate.method() === "POST",
+  );
+  await deleteSearch.getByRole("button", { name: "Delete selected (1)" }).click();
+  const deleteSelected = page.getByRole("alertdialog", { name: "Delete selected sessions?" });
+  await deleteSelected.getByText(/1 selected archived session and all of their conversation data will be permanently deleted/).waitFor();
+  await deleteSelected.getByRole("button", { name: "DELETE SELECTED SESSIONS" }).click();
+  const selectedDeleteRequest = await selectedDeleteRequestPromise;
+  if (JSON.stringify(selectedDeleteRequest.postDataJSON()) !== JSON.stringify({ ids: [restoredSession.id] })) {
+    throw new Error(`unexpected selected delete request: ${selectedDeleteRequest.postData()}`);
+  }
+  await deleteSelected.waitFor({ state: "detached" });
+  const archivedAfterSelectedDelete = await page.evaluate(async () => {
+    const response = await fetch("/api/v2/sessions?archived=true");
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  });
+  if (archivedAfterSelectedDelete.length !== 1 || archivedAfterSelectedDelete[0].id !== keptArchived.id) {
+    throw new Error(`selected deletion affected unselected sessions: ${JSON.stringify(archivedAfterSelectedDelete)}`);
+  }
+  await searchTrigger.click();
+  const remainingSearch = page.getByRole("dialog", { name: "Search sessions" });
+  await remainingSearch.getByRole("button", { name: /Archived \(1\)/ }).click();
+  await remainingSearch.getByRole("button", { name: "Delete all archived sessions" }).click();
   const deleteArchived = page.getByRole("alertdialog", { name: "Delete archived sessions?" });
-  await deleteArchived.getByText(/1 archived session and all of their conversation data will be permanently deleted/).waitFor();
   await deleteArchived.getByRole("button", { name: "DELETE ARCHIVED SESSIONS" }).click();
   await deleteArchived.waitFor({ state: "detached" });
   const archivedAfterDelete = await page.evaluate(async () => {
@@ -805,7 +851,7 @@ try {
     return response.json();
   });
   if (archivedAfterDelete.length !== 0) {
-    throw new Error(`archived sessions remained after deletion: ${JSON.stringify(archivedAfterDelete)}`);
+    throw new Error(`archived sessions remained after bulk deletion: ${JSON.stringify(archivedAfterDelete)}`);
   }
   if (await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).count() !== 1) {
     throw new Error("deleting archived sessions affected the active session");
@@ -814,7 +860,7 @@ try {
     throw new Error(`expected one discarded command response, observed ${intentionalNetworkFailures}`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/delete, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   await browser.close();
 }

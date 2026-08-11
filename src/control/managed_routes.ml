@@ -324,11 +324,36 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
         | Error (status, message) ->
             Headers.error_json ~status (authentication_error status message)
         | Ok () -> (
-            ignore (read_body ());
-            match Workers.delete_archived_sessions manager with
-            | Ok deleted ->
-                Headers.respond_json (`Assoc [ ("deleted", `Int deleted) ])
-            | Error message -> Headers.error_json (conflict message)))
+            let json = read_body () |> Yojson.Safe.from_string in
+            let open Yojson.Safe.Util in
+            let requested_ids =
+              match member "ids" json with
+              | `Null -> Ok None
+              | `List values ->
+                  let ids = List.map to_string values in
+                  if ids = [] then Error "select at least one archived session"
+                  else if List.length ids > 500 then
+                    Error "select at most 500 archived sessions"
+                  else if
+                    List.length (List.sort_uniq String.compare ids)
+                    <> List.length ids
+                  then Error "selected session ids must be unique"
+                  else if
+                    List.exists
+                      (fun id -> not (Lifecycle.valid_session_id id))
+                      ids
+                  then Error "selected session id is invalid"
+                  else Ok (Some ids)
+              | _ -> Error "ids must be an array of session ids"
+            in
+            match requested_ids with
+            | Error message ->
+                Headers.error_json (validation ~field:"ids" message)
+            | Ok ids -> (
+                match Workers.delete_archived_sessions ?ids manager with
+                | Ok deleted ->
+                    Headers.respond_json (`Assoc [ ("deleted", `Int deleted) ])
+                | Error message -> Headers.error_json (conflict message))))
   | Routes.Post_session_action action ->
       Some
         (match

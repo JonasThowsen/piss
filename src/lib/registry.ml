@@ -438,21 +438,33 @@ let list_archived registry =
   list registry ~include_archived:true
   |> List.filter (fun session -> Option.is_some session.archived_at)
 
-let delete_archived registry =
+let delete_archived_ids registry ids =
   transaction registry (fun () ->
-      with_statement registry.db
-        "DELETE FROM peer_subscriptions WHERE source_id IN (SELECT id FROM \
-         sessions WHERE archived_at IS NOT NULL)" (fun statement ->
-          expect_done "delete archived peer subscriptions" statement);
-      with_statement registry.db
-        "DELETE FROM peer_requests WHERE source_id IN (SELECT id FROM sessions \
-         WHERE archived_at IS NOT NULL) OR target_id IN (SELECT id FROM \
-         sessions WHERE archived_at IS NOT NULL)" (fun statement ->
-          expect_done "delete archived peer requests" statement);
-      with_statement registry.db
-        "DELETE FROM sessions WHERE archived_at IS NOT NULL" (fun statement ->
-          expect_done "delete archived sessions" statement);
-      Sqlite3.changes registry.db)
+      List.fold_left
+        (fun deleted id ->
+          with_statement registry.db
+            "DELETE FROM peer_subscriptions WHERE source_id = ?"
+            (fun statement ->
+              bind_text statement 1 id;
+              expect_done "delete archived peer subscriptions" statement);
+          with_statement registry.db
+            "DELETE FROM peer_requests WHERE source_id = ? OR target_id = ?"
+            (fun statement ->
+              bind_text statement 1 id;
+              bind_text statement 2 id;
+              expect_done "delete archived peer requests" statement);
+          with_statement registry.db
+            "DELETE FROM sessions WHERE id = ? AND archived_at IS NOT NULL"
+            (fun statement ->
+              bind_text statement 1 id;
+              expect_done "delete archived session" statement);
+          deleted + Sqlite3.changes registry.db)
+        0 ids)
+
+let delete_archived registry =
+  list_archived registry
+  |> List.map (fun (session : session) -> session.id)
+  |> delete_archived_ids registry
 
 let active_count registry = List.length (list registry ~include_archived:false)
 let session_to_yojson = Registry_support.session_to_yojson

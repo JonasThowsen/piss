@@ -201,6 +201,11 @@ val restore : t -> string -> bool
 val list_archived : t -> session list
 (** Every archived session. *)
 
+val delete_archived_ids : t -> string list -> int
+(** Permanently delete the archived sessions with the requested ids and their
+    control-plane peer metadata. Active sessions and unrequested archived
+    sessions are never changed. Returns the number of deleted session rows. *)
+
 val delete_archived : t -> int
 (** Permanently delete every archived session and its control-plane peer
     metadata. Returns the number of deleted session rows. Active sessions are
