@@ -136,11 +136,13 @@ let has_unresolved_recoveries events =
     List.fold events ~init:(String.Set.empty, String.Set.empty)
       ~f:(fun (accepted, recovered) event ->
         let accepted =
-          Option.value_map (Event_decode.accepted_command_id event)
+          Option.value_map
+            (Event_decode.accepted_command_id event)
             ~default:accepted ~f:(Set.add accepted)
         in
         let recovered =
-          Option.value_map (Event_decode.recovered_command_id event)
+          Option.value_map
+            (Event_decode.recovered_command_id event)
             ~default:recovered ~f:(Set.add recovered)
         in
         (accepted, recovered))

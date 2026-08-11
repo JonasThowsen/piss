@@ -188,7 +188,8 @@ let () =
   if not (Event_history.initial_history_is_complete complete_recovery_history)
   then fail "history did not stop after recovered acceptance was loaded";
   (match Event_history.project complete_recovery_history with
-  | Command_state _ :: User { command_id = "older-recovery"; text = "restored"; _ }
+  | Command_state _
+    :: User { command_id = "older-recovery"; text = "restored"; _ }
     :: _ ->
       ()
   | _ -> fail "resolved recovery did not restore its durable prompt text");

@@ -12,7 +12,9 @@ val component :
   Runtime_domain.t option Bonsai.t ->
   bool Bonsai.t ->
   string Bonsai.t ->
+  string Bonsai.t ->
   Vdom.Node.t Bonsai.t ->
+  set_notice:(string -> unit Effect.t) Bonsai.t ->
   on_busy:(bool -> unit Effect.t) Bonsai.t ->
   refresh_runtime:unit Effect.t Bonsai.t ->
   Bonsai.graph ->

@@ -90,6 +90,7 @@ let component graph =
       graph
   in
   let stream_notice, set_stream_notice = Bonsai.state "" graph in
+  let composer_notice, set_composer_notice = Bonsai.state "" graph in
   let copy_feedback, set_copy_feedback = Bonsai.state None graph in
   let composer_busy, set_composer_busy = Bonsai.state false graph in
   let selected =
@@ -165,8 +166,94 @@ let component graph =
       let%arr shell = shell in
       shell.runtime.loading
     in
-    Composer.component selected runtime connecting stream_notice config_controls
-      ~on_busy:set_composer_busy ~refresh_runtime graph
+    Composer.component selected runtime connecting stream_notice composer_notice
+      config_controls ~set_notice:set_composer_notice ~on_busy:set_composer_busy
+      ~refresh_runtime graph
+  in
+  let visible_history =
+    let%arr sessions = sessions and history = history in
+    match sessions with
+    | Session_rail.Loading -> Timeline_view.Sessions_loading
+    | Session_rail.Failed message -> Sessions_failed message
+    | Session_rail.Loaded [] -> No_sessions
+    | Session_rail.Loaded (_ :: _) -> history
+  in
+  let selected_workspace =
+    let%arr workspaces = workspaces and session = selected in
+    App_header.selected_workspace workspaces session
+  in
+  let decide_permission =
+    let%arr session = selected
+    and runtime = runtime
+    and deciding_permissions = deciding_permissions
+    and inject_deciding = inject_deciding
+    and set_composer_notice = set_composer_notice in
+    fun ~request_id ~option_id ->
+      match (session, runtime) with
+      | None, _ | _, None -> Effect.Ignore
+      | Some _, Some _ when Set.mem deciding_permissions request_id ->
+          Effect.Ignore
+      | Some session, Some runtime ->
+          Effect.bind (inject_deciding (Add request_id)) ~f:(fun () ->
+              Effect.bind
+                (Effect.of_deferred_thunk (fun () ->
+                     Browser_http.post_json
+                       ~query:[ ("session", session.id) ]
+                       "/api/v2/permissions"
+                       (Permission_decision.to_yojson runtime
+                          ~mutation_id:(Command_id.create ()) ~request_id
+                          ~option_id)))
+                ~f:(function
+                  | Error error ->
+                      Effect.Many
+                        [
+                          inject_deciding (Remove request_id);
+                          set_composer_notice (Error.to_string_hum error);
+                        ]
+                  | Ok _ ->
+                      set_composer_notice
+                        "Decision submitted. Waiting for the session event."))
+  in
+  let copy_timeline =
+    let%arr set_copy_feedback = set_copy_feedback in
+    fun ~key ~text -> Clipboard.copy ~key ~text ~on_change:set_copy_feedback
+  in
+  let load_older =
+    let%arr session = selected
+    and runtime = runtime
+    and visible_history = visible_history
+    and inject_history = inject_history
+    and set_stream_notice = set_stream_notice in
+    fun () ->
+      match (session, visible_history) with
+      | Some session, Timeline_view.Loaded (history_id, buffer)
+        when String.equal session.id history_id -> (
+          let snapshot = Option.first_some runtime session.runtime in
+          match snapshot with
+          | Some snapshot
+            when Event_buffer.can_page_before buffer
+                   ~first_sequence:snapshot.first_sequence ->
+              Option.value_map (Event_buffer.earliest_sequence buffer)
+                ~default:Effect.Ignore ~f:(fun before ->
+                  History_loader.load_older ~inject_history ~set_stream_notice
+                    ~session_id:session.id ~before)
+          | None | Some _ -> Effect.Ignore)
+      | None, _ | Some _, _ -> Effect.Ignore
+  in
+  let timeline_content =
+    let%arr session = selected
+    and runtime = runtime
+    and visible_history = visible_history
+    and selected_id = selected_id
+    and deciding_permissions = deciding_permissions
+    and copy_feedback = copy_feedback
+    and on_copy = copy_timeline
+    and on_permission = decide_permission
+    and on_load_older = load_older in
+    ( Timeline_view.render_timeline visible_history selected_id ~session
+        ~runtime ~deciding_permissions ~copy_feedback ~on_copy ~on_permission
+        ~on_load_older,
+      Timeline_view.render_outbox visible_history selected_id )
   in
   let load =
     let%arr set_sessions = set_sessions
@@ -320,36 +407,24 @@ let component graph =
   let%arr sessions = sessions
   and workspaces = workspaces
   and selected_id = selected_id
+  and session = selected
+  and workspace = selected_workspace
   and mobile_open = mobile_open
   and collapsed = collapsed
   and menu_open = menu_open
   and shell = shell
   and runtime = runtime
-  and history = history
-  and deciding_permissions = deciding_permissions
+  and timeline_content = timeline_content
   and composer = composer
   and lifecycle = lifecycle
   and workspace_dialogs = workspace_dialogs
   and search = search
   and select_session = select_session
-  and copy_feedback = copy_feedback
   and set_mobile_open = set_mobile_open
   and set_collapsed = set_collapsed
   and set_menu_open = set_menu_open
-  and inject_shell = inject_shell
-  and inject_deciding = inject_deciding
-  and inject_history = inject_history
-  and set_stream_notice = set_stream_notice
-  and set_copy_feedback = set_copy_feedback in
-  let session = Session_rail.selected sessions selected_id in
-  let workspace = App_header.selected_workspace workspaces session in
-  let visible_history =
-    match sessions with
-    | Session_rail.Loading -> Timeline_view.Sessions_loading
-    | Session_rail.Failed message -> Sessions_failed message
-    | Session_rail.Loaded [] -> No_sessions
-    | Session_rail.Loaded (_ :: _) -> history
-  in
+  and inject_shell = inject_shell in
+  let timeline, outbox = timeline_content in
   let select = select_session in
   let close_mobile () =
     Effect.Many [ set_mobile_open false; Mobile_shell.focus_menu_button () ]
@@ -371,55 +446,10 @@ let component graph =
           Timeline_scroll.resume ())
     else inject_shell (Select_tab tab)
   in
-  let decide ~request_id ~option_id =
-    match (session, runtime) with
-    | None, _ | _, None -> Effect.Ignore
-    | Some _, Some _ when Set.mem deciding_permissions request_id ->
-        Effect.Ignore
-    | Some session, Some runtime ->
-        Effect.bind (inject_deciding (Add request_id)) ~f:(fun () ->
-            Effect.bind
-              (Effect.of_deferred_thunk (fun () ->
-                   Browser_http.post_json
-                     ~query:[ ("session", session.id) ]
-                     "/api/v2/permissions"
-                     (Permission_decision.to_yojson runtime
-                        ~mutation_id:(Command_id.create ()) ~request_id
-                        ~option_id)))
-              ~f:(function
-                | Error error ->
-                    Effect.Many
-                      [
-                        inject_deciding (Remove request_id);
-                        composer.set_notice (Error.to_string_hum error);
-                      ]
-                | Ok _ ->
-                    composer.set_notice
-                      "Decision submitted. Waiting for the session event."))
-  in
-  let copy ~key ~text =
-    Clipboard.copy ~key ~text ~on_change:set_copy_feedback
-  in
   let open_modal action =
     Effect.bind
       (Effect.Many [ set_mobile_open false; set_menu_open None ])
       ~f:(fun () -> action)
-  in
-  let load_older () =
-    match (session, visible_history) with
-    | Some session, Timeline_view.Loaded (history_id, buffer)
-      when String.equal session.id history_id -> (
-        let snapshot = Option.first_some runtime session.runtime in
-        match snapshot with
-        | Some snapshot
-          when Event_buffer.can_page_before buffer
-                 ~first_sequence:snapshot.first_sequence ->
-            Option.value_map (Event_buffer.earliest_sequence buffer)
-              ~default:Effect.Ignore ~f:(fun before ->
-                History_loader.load_older ~inject_history ~set_stream_notice
-                  ~session_id:session.id ~before)
-        | None | Some _ -> Effect.Ignore)
-    | None, _ | Some _, _ -> Effect.Ignore
   in
   Vdom.Node.div ~attrs:(class_ "app-shell")
     [
@@ -455,10 +485,8 @@ let component graph =
               Timeline_view.render ~session ~workspace ~runtime
                 ~runtime_loading:shell.runtime.loading
                 ~runtime_error:shell.runtime.error ~tab:shell.tab
-                ~on_tab:select_tab ~state:visible_history
-                ~composer:(Some composer.view) ~deciding_permissions
-                ~copy_feedback ~on_copy:copy ~on_permission:decide
-                ~on_load_older:load_older;
+                ~on_tab:select_tab ~timeline ~outbox
+                ~composer:(Some composer.view);
             ];
         ];
       search.view;

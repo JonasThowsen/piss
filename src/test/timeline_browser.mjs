@@ -29,6 +29,13 @@ const command = (sequence, label = `history-${sequence}`) => ({
   createdAt: 1_723_123_456 + sequence,
 });
 
+const completedCommand = (sequence) => ({
+  sequence,
+  kind: "command.state",
+  payload: { commandId: `completed-${sequence}`, state: "completed" },
+  createdAt: 1_723_123_456 + sequence,
+});
+
 const agent = (sequence, sessionId) => ({
   sequence,
   kind: "acp.agent_message_chunk",
@@ -111,7 +118,10 @@ const configure = async (context, mode) => {
     let events;
     if (requestUrl.searchParams.has("recent")) {
       events = Array.from({ length: 500 }, (_, index) => command(index + 202));
-      if (mode === "history") events[499] = agent(701, selected.id);
+      if (mode === "history") {
+        events[0] = completedCommand(202);
+        events[499] = agent(701, selected.id);
+      }
     } else {
       const before = Number(requestUrl.searchParams.get("before"));
       if (mode === "history" && before === 202) {
@@ -139,6 +149,32 @@ try {
   const timeline = page.locator("#timeline");
   await page.getByText("Retained history begins at sequence 2", { exact: false }).waitFor();
   await page.getByText("Browser Markdown", { exact: true }).waitFor();
+  let initialTimelineRender = await timeline.getAttribute("data-timeline-render-count");
+  if (!/^\d+$/.test(initialTimelineRender ?? "")) {
+    throw new Error(`timeline omitted its render diagnostic: ${initialTimelineRender}`);
+  }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await page.waitForTimeout(100);
+    const nextRender = await timeline.getAttribute("data-timeline-render-count");
+    if (nextRender === initialTimelineRender) break;
+    initialTimelineRender = nextRender;
+  }
+  const performanceField = page.getByRole("textbox", { name: "Message agent" });
+  await performanceField.pressSequentially("performance-proof-".repeat(8), { delay: 1 });
+  await page.evaluate(() => new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const afterTypingRender = await timeline.getAttribute("data-timeline-render-count");
+  if (afterTypingRender !== initialTimelineRender) {
+    throw new Error(`large-history typing rebuilt the timeline: ${initialTimelineRender} -> ${afterTypingRender}`);
+  }
+  await performanceField.fill("");
+  const modelButton = page.getByRole("button", { name: /^Model:/ });
+  await modelButton.click();
+  await page.getByRole("menu", { name: "Model options" }).waitFor();
+  if (await timeline.getAttribute("data-timeline-render-count") !== initialTimelineRender) {
+    throw new Error("opening a composer control rebuilt the timeline");
+  }
+  await page.keyboard.press("Escape");
   const loadEarlier = page.getByRole("button", { name: "Load earlier activity" });
   await page.waitForFunction(() => {
     const element = document.getElementById("timeline");
@@ -185,7 +221,7 @@ try {
   const beforeRequests = history.requests.filter((request) => request.searchParams.has("before"));
   const beforeSequences = beforeRequests.map((request) => request.searchParams.get("before"));
   if (
-    ![JSON.stringify(["202"]), JSON.stringify(["202", "2"])].includes(JSON.stringify(beforeSequences))
+    JSON.stringify(beforeSequences) !== JSON.stringify(["202"])
     || beforeRequests.some((request) =>
       request.searchParams.get("limit") !== "200"
       || request.searchParams.get("session") !== history.selected.id)

@@ -9,6 +9,20 @@ type state =
   | Loaded of string * Event_buffer.t
   | Failed of string * string
 
+val render_timeline :
+  state ->
+  string option ->
+  session:Control_plane.Session.t option ->
+  runtime:Runtime_domain.t option ->
+  deciding_permissions:Core.String.Set.t ->
+  copy_feedback:(string * Clipboard.status) option ->
+  on_copy:(key:string -> text:string -> unit Effect.t) ->
+  on_permission:(request_id:string -> option_id:string option -> unit Effect.t) ->
+  on_load_older:(unit -> unit Effect.t) ->
+  Vdom.Node.t
+
+val render_outbox : state -> string option -> Vdom.Node.t
+
 val render :
   session:Control_plane.Session.t option ->
   workspace:Workspace_catalog.workspace option ->
@@ -17,11 +31,7 @@ val render :
   runtime_error:string option ->
   tab:Session_tabs.t ->
   on_tab:(Session_tabs.t -> unit Effect.t) ->
-  state:state ->
+  timeline:Vdom.Node.t ->
+  outbox:Vdom.Node.t ->
   composer:Vdom.Node.t option ->
-  deciding_permissions:Core.String.Set.t ->
-  copy_feedback:(string * Clipboard.status) option ->
-  on_copy:(key:string -> text:string -> unit Effect.t) ->
-  on_permission:(request_id:string -> option_id:string option -> unit Effect.t) ->
-  on_load_older:(unit -> unit Effect.t) ->
   Vdom.Node.t

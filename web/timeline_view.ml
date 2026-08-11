@@ -14,6 +14,7 @@ type state =
 
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
+let timeline_render_count = ref 0
 
 let down_arrow_icon () =
   Vdom.Node.create_svg "svg"
@@ -147,8 +148,9 @@ let history_controls ~session ~runtime ~buffer ~on_load_older =
   in
   retention @ error @ permission_gap @ paging
 
-let timeline state selected_id ~session ~runtime ~deciding_permissions
+let render_timeline state selected_id ~session ~runtime ~deciding_permissions
     ~copy_feedback ~on_copy ~on_permission ~on_load_older =
+  Int.incr timeline_render_count;
   let content =
     match (state, selected_id) with
     | Sessions_loading, _ ->
@@ -204,11 +206,20 @@ let timeline state selected_id ~session ~runtime ~deciding_permissions
       [
         class_ "timeline";
         Vdom.Attr.id "timeline";
+        Vdom.Attr.create "data-timeline-render-count"
+          (Int.to_string !timeline_render_count);
         Vdom.Attr.create "tabindex" "0";
         Vdom.Attr.create "aria-live" "polite";
         Vdom.Attr.on_scroll (fun _ -> Timeline_scroll.track ());
       ]
     [ Vdom.Node.div ~attrs:[ class_ "timeline-stream" ] content ]
+
+let render_outbox state selected_id =
+  match (state, selected_id) with
+  | Loaded (history_id, buffer), Some selected_id
+    when String.equal history_id selected_id ->
+      Outbox_view.render (Event_buffer.events buffer)
+  | _ -> Outbox_view.render []
 
 let render_tabs selected ~on_select =
   let button tab =
@@ -259,20 +270,7 @@ let render_tabs selected ~on_select =
     ]
 
 let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
-    ~on_tab ~state ~composer ~deciding_permissions ~copy_feedback ~on_copy
-    ~on_permission ~on_load_older =
-  let selected_id =
-    Option.map session ~f:(fun (session : Control_plane.Session.t) ->
-        session.id)
-  in
-  let events =
-    match (state, selected_id) with
-    | Loaded (history_id, buffer), Some selected_id
-      when String.equal history_id selected_id ->
-        Event_buffer.events buffer
-    | _ -> []
-  in
-  let outbox_view = Outbox_view.render events in
+    ~on_tab ~timeline ~outbox ~composer =
   let agent_panel =
     Vdom.Node.div
       ~attrs:
@@ -285,8 +283,7 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
         @ if phys_equal tab Agent then [] else [ Vdom.Attr.create "hidden" "" ]
         )
       [
-        timeline state selected_id ~session ~runtime ~deciding_permissions
-          ~copy_feedback ~on_copy ~on_permission ~on_load_older;
+        timeline;
         Vdom.Node.button
           ~attrs:
             ([
@@ -333,6 +330,4 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
        | Some _ -> render_tabs tab ~on_select:on_tab);
        Vdom.Node.div ~attrs:[ class_ "session-panel-stack" ] panels;
      ]
-    @
-    if phys_equal tab Agent then outbox_view :: Option.to_list composer else []
-    )
+    @ if phys_equal tab Agent then outbox :: Option.to_list composer else [])

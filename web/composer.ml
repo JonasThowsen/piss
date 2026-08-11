@@ -15,8 +15,8 @@ type pending_submission = { session_id : string; command : Prompt_command.t }
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
-let component session runtime connecting stream_notice config_controls ~on_busy
-    ~refresh_runtime graph =
+let component session runtime connecting stream_notice notice config_controls
+    ~set_notice ~on_busy ~refresh_runtime graph =
   let submission_locked = ref false in
   let request_in_flight = ref false in
   let prompt, set_prompt = Bonsai.state "" graph in
@@ -27,7 +27,6 @@ let component session runtime connecting stream_notice config_controls ~on_busy
   in
   let delivery, set_delivery = Bonsai.state Prompt_command.Prompt graph in
   let cancel_sequence, set_cancel_sequence = Bonsai.state None graph in
-  let notice, set_notice = Bonsai.state "" graph in
   let runtime_status =
     let%arr runtime = runtime in
     Option.map runtime ~f:(fun runtime -> runtime.Runtime_domain.status)
