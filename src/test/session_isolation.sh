@@ -64,6 +64,11 @@ set -euo pipefail
 id=\${1:?}
 root='$root'
 mkdir -p "\$root/supervisors" "\$root/runtime/\$id" "\$root/state/sessions/\$id"
+if [[ -f "\$root/launch-delay" ]]; then
+  echo "start \$id" >>"\$root/launch-events"
+  sleep "\$(cat "\$root/launch-delay")"
+  echo "finish \$id" >>"\$root/launch-events"
+fi
 if [[ -f "\$root/supervisors/\$id.pid" ]] && kill -0 "\$(cat "\$root/supervisors/\$id.pid")" 2>/dev/null; then exit 0; fi
 setsid -f "\$root/supervise" "\$id" </dev/null >/dev/null 2>&1
 for _ in \$(seq 1 100); do [[ -f "\$root/supervisors/\$id.pid" ]] && exit 0; sleep .01; done
@@ -321,8 +326,13 @@ old_control=$control_pid
 kill -9 "$control_pid"
 wait "$control_pid" 2>/dev/null || true
 control_pid=
+printf '0.2\n' >"$root/launch-delay"
+: >"$root/launch-events"
 start_control
+rm -f "$root/launch-delay"
 [[ "$control_pid" != "$old_control" ]]
+[[ $(head -3 "$root/launch-events" | grep -c '^start ') == 3 ]]
+[[ $(grep -c '^finish ' "$root/launch-events") == 3 ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$third" | jq -r .workerPid) == "$third_worker" ]]

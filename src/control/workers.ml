@@ -2,6 +2,17 @@
 
 open Piss_core
 
+let start_registered ~process_mgr (manager : Config.managed_workers) =
+  let start (session : Registry.session) =
+    try Eio.Process.run process_mgr [ manager.launcher; session.id ]
+    with exn ->
+      Format.eprintf "could not start session %s: %s@." session.id
+        (Printexc.to_string exn)
+  in
+  Eio.Switch.run (fun sw ->
+      Registry.list manager.registry ~include_archived:false
+      |> List.iter (fun session -> Eio.Fiber.fork ~sw (fun () -> start session)))
+
 let active_session (manager : Config.managed_workers) requested =
   let selected =
     match requested with

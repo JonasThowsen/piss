@@ -189,13 +189,7 @@ let parse () =
              ~title:"Pi / deployed" ~harness:!default_harness
              ~workspace_id:default_workspace_id);
       Registry.list registry ~include_archived:false
-      |> List.iter (fun session ->
-          Lifecycle.write_session_spec registry manager.state_root session;
-          match Lifecycle.run manager.launcher session.id with
-          | Ok () -> ()
-          | Error message ->
-              Format.eprintf "could not start session %s: %s@." session.id
-                message);
+      |> List.iter (Lifecycle.write_session_spec registry manager.state_root);
       (Managed manager, fun () -> Registry.close registry))
     else
       raise
