@@ -28,8 +28,16 @@ module Session : sig
   val status_to_string : status -> string
 end
 
+module Session_creation : sig
+  type t = {
+    available_harnesses : Session.harness list;
+    default_harness : Session.harness;
+  }
+end
+
 val decode_sessions : string -> (Session.t list, string) result
 val decode_archived_sessions : string -> (Session.t list, string) result
+val decode_session_creation : string -> (Session_creation.t, string) result
 
 val decode_created_session_id : string -> (string, string) result
 (** Strictly decodes the registry record returned by session creation. *)

@@ -14,6 +14,7 @@ type route =
   | Post_broker_ask
   | Post_broker_collect
   | Get_workspaces
+  | Get_session_creation
   | Post_workspace_delete of string
   | Get_workspace_directories of { query : string }
   | Post_workspaces

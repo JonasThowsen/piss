@@ -11,7 +11,7 @@ val valid_title : string -> bool
 val restore_and_wait : string -> (unit, string) result Async_kernel.Deferred.t
 
 val component :
-  harnesses:Control_plane.Session.harness list Bonsai.t ->
+  creation_options:Control_plane.Session_creation.t option Bonsai.t ->
   on_reload:unit Effect.t Bonsai.t ->
   on_select:(string -> unit Effect.t) Bonsai.t ->
   Bonsai.graph ->

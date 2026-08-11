@@ -44,7 +44,6 @@ root='$root'
 mkdir -p "\$root/state/sessions/\$id" "\$root/runtime/\$id"
 if [[ -f "\$root/pids/\$id" ]] && kill -0 "\$(cat "\$root/pids/\$id")" 2>/dev/null; then exit 0; fi
 harness=\$(tr -d '\n' <"\$root/state/sessions/\$id/harness")
-[[ "\$harness" == mock ]] || exit 64
 PISS_MOCK_DURATION=5 '$worker_exe' \\
   --socket "\$root/runtime/\$id/worker.sock" \\
   --database "\$root/state/sessions/\$id/worker.sqlite3" \\
@@ -67,7 +66,8 @@ chmod +x "$root/launch" "$root/stop"
 "$control_exe" --port "$port" --registry "$state/registry.sqlite3" \
   --session-state-root "$state/sessions" --session-runtime-root "$runtime" \
   --session-launcher "$root/launch" --session-stopper "$root/stop" \
-  --available-harness mock --default-harness mock \
+  --available-harness pi --available-harness opencode --available-harness mock \
+  --default-harness opencode \
   --workspace-spec "test-workspace|PISS rewrite|$workspace" \
   --workspace-discovery-root "$workspace" \
   --bootstrap-session s-mention-browser --public "$public_dir" --app-js "$app_js" \

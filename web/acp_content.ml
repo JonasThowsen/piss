@@ -50,9 +50,10 @@ let optional_field fields path name decode =
 
 let decode_diff path fields =
   let* path_value = field_as fields path "path" nonempty_string in
-  let* before = field_as fields path "oldText" string in
+  let* before = optional_field fields path "oldText" string in
   let* after = field_as fields path "newText" string in
-  Ok (Diff { path = path_value; before; after })
+  Ok
+    (Diff { path = path_value; before = Option.value before ~default:""; after })
 
 let decode_terminal path fields =
   let* terminal_id = field_as fields path "terminalId" nonempty_string in

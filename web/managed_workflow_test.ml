@@ -66,13 +66,25 @@ let () =
     fail "archived scope was not searched";
   if Global_search.move ~count:3 ~current:0 ~delta:(-1) <> 2 then
     fail "keyboard selection did not wrap backward";
-  let harnesses = Global_search.available_harnesses ~active ~archived in
-  if
-    not
-      (List.equal String.equal
-         (List.map harnesses ~f:Control_plane.Session.harness_to_string)
-         [ "mock"; "opencode"; "pi" ])
-  then fail "available harnesses were not derived and deduplicated";
+  (match
+     Control_plane.decode_session_creation
+       {|{"availableHarnesses":["pi","opencode","mock"],"defaultHarness":"pi"}|}
+   with
+  | Ok { available_harnesses = [ Pi; Opencode; Mock ]; default_harness = Pi } ->
+      ()
+  | Ok _ -> fail "session creation options lost server harness order/default"
+  | Error message -> fail message);
+  expect_error
+    (Control_plane.decode_session_creation
+       {|{"availableHarnesses":["mock"],"defaultHarness":"pi"}|})
+    "must be available";
+  (match
+     Control_plane.decode_session_creation
+       {|{"availableHarnesses":["pi","pi","mock"],"defaultHarness":"pi"}|}
+   with
+  | Ok { available_harnesses = [ Pi; Mock ]; default_harness = Pi } -> ()
+  | Ok _ -> fail "duplicate server harnesses were not normalized"
+  | Error message -> fail message);
   let archived_body =
     {|[{"id":"s-old","title":"Retired proof","harness":"pi","workspaceId":"w-a","createdAt":1,"archivedAt":2,"status":"archived"}]|}
   in

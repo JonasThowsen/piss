@@ -165,6 +165,18 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
         ( Registry.list_workspaces manager.registry
         |> List.map Registry.workspace_to_yojson
         |> fun workspaces -> Headers.respond_json (`List workspaces) )
+  | Routes.Get_session_creation ->
+      Some
+        (Headers.respond_json
+           (`Assoc
+              [
+                ( "availableHarnesses",
+                  `List
+                    (List.map
+                       (fun harness -> `String harness)
+                       manager.available_harnesses) );
+                ("defaultHarness", `String manager.default_harness);
+              ]))
   | Routes.Post_workspace_delete id ->
       Some
         (match

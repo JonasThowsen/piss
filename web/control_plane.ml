@@ -35,6 +35,13 @@ module Session = struct
   let status_to_string = Runtime_domain.status_to_string
 end
 
+module Session_creation = struct
+  type t = {
+    available_harnesses : Session.harness list;
+    default_harness : Session.harness;
+  }
+end
+
 let error path expected = Error (path ^ " " ^ expected)
 
 let field fields path name =
@@ -45,6 +52,10 @@ let field fields path name =
 let string path = function
   | `String value -> Ok value
   | _ -> error path "must be a string"
+
+let list path = function
+  | `List values -> Ok values
+  | _ -> error path "must be an array"
 
 let number path = function
   | `Int value -> Ok (Float.of_int value)
@@ -149,6 +160,50 @@ let decode_archived_sessions body =
           error
             (Printf.sprintf "sessions[%d]" index)
             "must be an archived session")
+
+let decode_session_creation body =
+  match Result.try_with (fun () -> Yojson.Safe.from_string body) with
+  | Error exn -> Error ("response is not valid JSON: " ^ Exn.to_string exn)
+  | Ok (`Assoc fields) ->
+      bind_field fields "sessionCreation" "availableHarnesses" list
+        (fun available_json ->
+          Result.bind
+            (available_json
+            |> List.mapi ~f:(fun index value ->
+                harness
+                  (Printf.sprintf "sessionCreation.availableHarnesses[%d]" index)
+                  value)
+            |> Result.all)
+            ~f:(fun available_harnesses ->
+              let available_harnesses =
+                List.fold available_harnesses ~init:[]
+                  ~f:(fun unique candidate ->
+                    let candidate_name = Session.harness_to_string candidate in
+                    if
+                      List.exists unique ~f:(fun existing ->
+                          String.equal candidate_name
+                            (Session.harness_to_string existing))
+                    then unique
+                    else unique @ [ candidate ])
+              in
+              bind_field fields "sessionCreation" "defaultHarness" harness
+                (fun default_harness ->
+                  let names =
+                    List.map available_harnesses ~f:Session.harness_to_string
+                  in
+                  if List.is_empty available_harnesses then
+                    error "sessionCreation.availableHarnesses"
+                      "must not be empty"
+                  else if
+                    not
+                      (List.mem names
+                         (Session.harness_to_string default_harness)
+                         ~equal:String.equal)
+                  then
+                    error "sessionCreation.defaultHarness" "must be available"
+                  else
+                    Ok { Session_creation.available_harnesses; default_harness })))
+  | Ok _ -> Error "response must be a JSON object"
 
 let decode_created_session_id body =
   match Result.try_with (fun () -> Yojson.Safe.from_string body) with

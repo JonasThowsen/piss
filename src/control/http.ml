@@ -382,9 +382,10 @@ let handler ~net ~clock ~env _socket request body =
           | Routes.Get_broker_sessions | Routes.Post_broker_send
           | Routes.Post_broker_subscribe | Routes.Post_broker_ask
           | Routes.Post_broker_collect | Routes.Get_workspaces
-          | Routes.Post_workspace_delete _ | Routes.Get_workspace_directories _
-          | Routes.Post_workspaces | Routes.Get_sessions _
-          | Routes.Post_sessions | Routes.Post_session_action _ ->
+          | Routes.Get_session_creation | Routes.Post_workspace_delete _
+          | Routes.Get_workspace_directories _ | Routes.Post_workspaces
+          | Routes.Get_sessions _ | Routes.Post_sessions
+          | Routes.Post_session_action _ ->
               assert false)
   with
   | Eio.Io _ as exn -> Headers.error_json (upstream (Printexc.to_string exn))

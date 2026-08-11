@@ -14,6 +14,7 @@ type route =
   | Post_broker_ask
   | Post_broker_collect
   | Get_workspaces
+  | Get_session_creation
   | Post_workspace_delete of string
   | Get_workspace_directories of { query : string }
   | Post_workspaces
@@ -124,6 +125,7 @@ let rec parse ~managed ~method_ ~uri ~last_event_id =
     | `POST, "/api/v2/broker/ask", _, _ -> Ok Post_broker_ask
     | `POST, "/api/v2/broker/collect", _, _ -> Ok Post_broker_collect
     | `GET, "/api/v2/workspaces", _, _ -> Ok Get_workspaces
+    | `GET, "/api/v2/session-creation", _, _ -> Ok Get_session_creation
     | `POST, _, Some id, _ -> Ok (Post_workspace_delete id)
     | `GET, "/api/v2/workspace-directories", _, _ ->
         Ok (Get_workspace_directories { query = query "query" })

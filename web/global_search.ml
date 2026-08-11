@@ -50,13 +50,5 @@ let items ~scope ~query ~workspaces ~active ~archived =
       if by_title <> 0 then by_title
       else String.compare left.session.id right.session.id)
 
-let available_harnesses ~active ~archived =
-  active @ archived
-  |> List.map ~f:(fun session -> session.Control_plane.Session.harness)
-  |> List.dedup_and_sort ~compare:(fun left right ->
-      String.compare
-        (Control_plane.Session.harness_to_string left)
-        (Control_plane.Session.harness_to_string right))
-
 let move ~count ~current ~delta =
   if count <= 0 then 0 else (current + delta + count) mod count

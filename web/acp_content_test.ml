@@ -44,6 +44,14 @@ let () =
     when String.equal (Image_attachment.mime_type image) "image/png" ->
       ()
   | _ -> fail "typed ACP artifacts were not preserved");
+  List.iter
+    [
+      {|[{"type":"diff","path":"/work/new-null.ml","oldText":null,"newText":"new"}]|};
+      {|[{"type":"diff","path":"/work/new-omitted.ml","newText":"new"}]|};
+    ] ~f:(fun body ->
+      match decode body with
+      | "", [ Acp_content.Diff { before = ""; after = "new"; _ } ] -> ()
+      | _ -> fail "new-file diff did not normalize missing oldText");
   let locations =
     match
       Acp_content.locations ~path:"update"
@@ -65,4 +73,7 @@ let () =
     {|[{"type":"image","mimeType":"image/svg+xml","data":"aGVsbG8="}]|}
     "Unsupported image type";
   expect_error {|[{"type":"image","mimeType":"image/png","data":"not-base64"}]|}
-    "valid base64"
+    "valid base64";
+  expect_error
+    {|[{"type":"diff","path":"/work/bad.ml","oldText":1,"newText":"new"}]|}
+    "oldText"

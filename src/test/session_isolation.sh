@@ -147,6 +147,9 @@ mkdir -p "$root/configured-empty"
 start_control
 wait_session_count 1
 workspaces=$(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces")
+session_creation=$(curl -fsS "http://127.0.0.1:$port/api/v2/session-creation")
+[[ $(jq -c .availableHarnesses <<<"$session_creation") == '["pi","opencode"]' ]]
+[[ $(jq -r .defaultHarness <<<"$session_creation") == pi ]]
 [[ $(jq -r '.[0].id' <<<"$workspaces") == test-workspace ]]
 [[ $(jq -r '.[0].root' <<<"$workspaces") == "$workspace" ]]
 [[ $(jq --arg id configured-empty 'any(.[]; .id==$id)' <<<"$workspaces") == true ]]

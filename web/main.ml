@@ -11,34 +11,57 @@ let catalog_request () =
       Browser_http.get "/api/v2/workspaces";
       Browser_http.get "/api/v2/sessions";
       Browser_http.get ~query:[ ("archived", "true") ] "/api/v2/sessions";
+      Browser_http.get "/api/v2/session-creation";
     ]
 
 let decode_catalog = function
-  | [ Ok workspace_body; Ok session_body; Ok archived_body ] -> (
-      match
-        ( Workspace_catalog.decode workspace_body,
-          Control_plane.decode_sessions session_body,
-          Control_plane.decode_archived_sessions archived_body )
-      with
-      | Ok workspaces, Ok sessions, Ok archived ->
-          Ok (workspaces, sessions, archived)
-      | Error message, _, _ | _, Error message, _ | _, _, Error message ->
-          Error message)
+  | [
+      workspace_response; session_response; archived_response; creation_response;
+    ] -> (
+      match (workspace_response, session_response, archived_response) with
+      | Ok workspace_body, Ok session_body, Ok archived_body -> (
+          match
+            ( Workspace_catalog.decode workspace_body,
+              Control_plane.decode_sessions session_body,
+              Control_plane.decode_archived_sessions archived_body )
+          with
+          | Ok workspaces, Ok sessions, Ok archived ->
+              let creation_options =
+                match creation_response with
+                | Error _ -> None
+                | Ok body -> (
+                    match Control_plane.decode_session_creation body with
+                    | Ok options -> Some options
+                    | Error _ -> None)
+              in
+              Ok (workspaces, sessions, archived, creation_options)
+          | Error message, _, _ | _, Error message, _ | _, _, Error message ->
+              Error message)
+      | _ -> (
+          match
+            List.find_map
+              [ workspace_response; session_response; archived_response ]
+              ~f:Result.error
+          with
+          | Some error -> Error (Error.to_string_hum error)
+          | None -> Error "catalog response was incomplete"))
   | responses -> (
       match List.find_map responses ~f:Result.error with
       | Some error -> Error (Error.to_string_hum error)
       | None -> Error "catalog response was incomplete")
 
-let refresh_catalog ~set_workspaces ~set_sessions ~set_archived =
+let refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+    ~set_creation_options =
   Effect.bind (Effect.of_deferred_thunk catalog_request) ~f:(fun response ->
       match decode_catalog response with
       | Error _ -> Effect.Ignore
-      | Ok (workspaces, sessions, archived) ->
+      | Ok (workspaces, sessions, archived, creation_options) ->
           Effect.Many
             [
               set_workspaces workspaces;
               set_sessions (Session_rail.Loaded sessions);
               set_archived archived;
+              set_creation_options creation_options;
             ])
 
 let load_snapshot ~inject_shell session_id =
@@ -63,6 +86,7 @@ let component graph =
   let sessions, set_sessions = Bonsai.state Session_rail.Loading graph in
   let archived, set_archived = Bonsai.state [] graph in
   let workspaces, set_workspaces = Bonsai.state [] graph in
+  let creation_options, set_creation_options = Bonsai.state None graph in
   let selected_id, set_selected_id = Bonsai.state None graph in
   let mobile_open, set_mobile_open = Bonsai.state false graph in
   let collapsed, set_collapsed = Bonsai.state String.Set.empty graph in
@@ -259,6 +283,7 @@ let component graph =
     let%arr set_sessions = set_sessions
     and set_workspaces = set_workspaces
     and set_archived = set_archived
+    and set_creation_options = set_creation_options
     and set_menu_open = set_menu_open
     and selected_id = selected_id
     and set_selected_id = set_selected_id
@@ -270,7 +295,11 @@ let component graph =
     Effect.bind (Effect.of_deferred_thunk catalog_request) ~f:(fun response ->
         match decode_catalog response with
         | Error message -> set_sessions (Session_rail.Failed message)
-        | Ok (next_workspaces, next_sessions, next_archived) ->
+        | Ok
+            ( next_workspaces,
+              next_sessions,
+              next_archived,
+              next_creation_options ) ->
             let selected_still_active =
               Option.exists selected_id ~f:(fun selected ->
                   List.exists next_sessions
@@ -286,6 +315,7 @@ let component graph =
             in
             let catalog_refresh =
               refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+                ~set_creation_options
             in
             Effect.bind
               (Effect.Many
@@ -293,6 +323,7 @@ let component graph =
                    set_workspaces next_workspaces;
                    set_sessions (Session_rail.Loaded next_sessions);
                    set_archived next_archived;
+                   set_creation_options next_creation_options;
                    set_selected_id next_id;
                    set_menu_open None;
                  ])
@@ -326,6 +357,7 @@ let component graph =
     and set_sessions = set_sessions
     and set_workspaces = set_workspaces
     and set_archived = set_archived
+    and set_creation_options = set_creation_options
     and composer = composer in
     fun id ->
       if Option.exists selected_id ~f:(String.equal id) then
@@ -336,6 +368,7 @@ let component graph =
       else
         let catalog_refresh =
           refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+            ~set_creation_options
         in
         let snapshot_refresh = load_snapshot ~inject_shell id in
         Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
@@ -358,12 +391,8 @@ let component graph =
     let%arr sessions = sessions in
     match sessions with Session_rail.Loaded values -> values | _ -> []
   in
-  let harnesses =
-    let%arr active = active_sessions and archived = archived in
-    Global_search.available_harnesses ~active ~archived
-  in
   let lifecycle =
-    Session_lifecycle.component ~harnesses ~on_reload:load
+    Session_lifecycle.component ~creation_options ~on_reload:load
       ~on_select:select_session graph
   in
   let workspace_dialogs = Workspace_dialogs.component ~on_reload:load graph in

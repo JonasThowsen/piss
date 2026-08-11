@@ -65,7 +65,7 @@ try {
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const session = page.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ });
+  const session = page.getByRole("button", { name: /^Pi \/ deployed idle \/ opencode$/ });
   try {
     await session.waitFor();
   } catch (error) {
@@ -530,15 +530,15 @@ try {
   await page.getByRole("button", { name: "New session in PISS rewrite" }).click();
   const creator = page.getByRole("dialog", { name: "New session" });
   await creator.getByLabel("Session title").fill("Lifecycle proof");
-  if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "mock") {
-    throw new Error("session creator offered a harness not derived from the managed host");
+  if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "opencode") {
+    throw new Error("session creator did not select the managed host default");
   }
   const createRequestPromise = page.waitForRequest(
     (candidate) => new URL(candidate.url()).pathname === "/api/v2/sessions" && candidate.method() === "POST",
   );
   await creator.getByRole("button", { name: "START SESSION" }).click();
   const createRequest = await createRequestPromise;
-  if (JSON.stringify(createRequest.postDataJSON()) !== JSON.stringify({ workspaceId: "test-workspace", title: "Lifecycle proof", harness: "mock" })) {
+  if (JSON.stringify(createRequest.postDataJSON()) !== JSON.stringify({ workspaceId: "test-workspace", title: "Lifecycle proof", harness: "opencode" })) {
     throw new Error(`unexpected create request: ${createRequest.postData()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor({ timeout: 15_000 });
@@ -713,7 +713,7 @@ try {
   );
   await mobile.getByRole("button", { name: "Open workspaces and sessions" }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "true");
-  await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ mock$/ }).tap();
+  await mobile.getByRole("button", { name: /^Pi \/ deployed idle \/ opencode$/ }).tap();
   await mobile.waitForFunction(() => document.getElementById("mobile-menu-button")?.getAttribute("aria-expanded") === "false");
   if (await mobile.locator(".conversation-heading").count() !== 0) {
     throw new Error("mobile layout retained the duplicate conversation header");

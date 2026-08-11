@@ -139,13 +139,13 @@ let footer ~close ~busy ~danger label pending_label =
         [ text (if busy then pending_label else label) ];
     ]
 
-let component ~harnesses ~on_reload ~on_select graph =
+let component ~creation_options ~on_reload ~on_select graph =
   let dialog, set_dialog = Bonsai.state Closed graph in
   let title, set_title = Bonsai.state "" graph in
   let harness, set_harness = Bonsai.state None graph in
   let busy, set_busy = Bonsai.state false graph in
   let error, set_error = Bonsai.state None graph in
-  let%arr harnesses = harnesses
+  let%arr creation_options = creation_options
   and on_reload = on_reload
   and on_select = on_select
   and dialog = dialog
@@ -158,6 +158,10 @@ let component ~harnesses ~on_reload ~on_select graph =
   and set_harness = set_harness
   and set_busy = set_busy
   and set_error = set_error in
+  let harnesses =
+    Option.value_map creation_options ~default:[] ~f:(fun options ->
+        options.Control_plane.Session_creation.available_harnesses)
+  in
   let close () =
     if busy then Effect.Ignore
     else Effect.Many [ Modal.deactivate (); set_dialog Closed; set_error None ]
@@ -170,7 +174,10 @@ let component ~harnesses ~on_reload ~on_select graph =
           ~dismissible:true ~on_close:close)
   in
   let open_create workspace =
-    let selected = Option.map (List.hd harnesses) ~f:Fn.id in
+    let selected =
+      Option.map creation_options ~f:(fun options ->
+          options.Control_plane.Session_creation.default_harness)
+    in
     Effect.bind
       (Effect.Many
          [
@@ -293,6 +300,9 @@ let component ~harnesses ~on_reload ~on_select graph =
                           ~attrs:
                             [
                               Vdom.Attr.create "aria-label" "Session harness";
+                              Vdom.Attr.value
+                                (Option.value_map harness ~default:""
+                                   ~f:Control_plane.Session.harness_to_string);
                               Vdom.Attr.on_change (fun _ value ->
                                   set_harness
                                     (List.find harnesses ~f:(fun candidate ->
@@ -306,7 +316,17 @@ let component ~harnesses ~on_reload ~on_select graph =
                                    candidate
                                in
                                Vdom.Node.option
-                                 ~attrs:[ Vdom.Attr.value value ]
+                                 ~attrs:
+                                   ([ Vdom.Attr.value value ]
+                                   @
+                                   if
+                                     Option.exists harness ~f:(fun selected ->
+                                         String.equal value
+                                           (Control_plane.Session
+                                            .harness_to_string selected))
+                                   then
+                                     [ Vdom.Attr.create "selected" "selected" ]
+                                   else [])
                                  [ text value ]));
                       ];
                     error_view;
