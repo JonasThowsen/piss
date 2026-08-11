@@ -13,6 +13,7 @@ let window_listener : Js.Unsafe.any option ref = ref None
 let following = ref true
 let pinning = ref false
 let anchoring = ref false
+let anchor_generation = ref 0
 let previous_top = ref 0
 let previous_client_height = ref 0
 
@@ -140,6 +141,7 @@ let on_scroll event =
       update_button ()
 
 let cleanup_now () =
+  Int.incr anchor_generation;
   cancel_frame ();
   cancel_settle_frame ();
   cancel_opening_frame ();
@@ -253,6 +255,8 @@ let rec pin_opening frames =
 
 let reset () =
   action_effect (fun () ->
+      Int.incr anchor_generation;
+      anchoring := false;
       (match !timeline with None -> start_now () | Some _ -> ());
       following := true;
       pinning := true;
@@ -382,19 +386,23 @@ let preserve_after_prepend action =
          cancel_opening_frame ();
          Async_kernel.Deferred.return (capture_anchor (), was_following)))
     ~f:(fun (anchor, was_following) ->
+      let generation = !anchor_generation in
       Effect.bind action ~f:(fun () ->
           Effect.of_deferred_thunk (fun () ->
               let finished = Async_kernel.Ivar.create () in
               let rec settle frames =
                 ignore
                   (request_frame (fun () ->
-                       Option.iter anchor ~f:restore_anchor;
-                       if frames > 1 then settle (frames - 1)
+                       if generation <> !anchor_generation then
+                         Async_kernel.Ivar.fill_if_empty finished ()
                        else (
-                         anchoring := false;
-                         following := was_following;
-                         update_button ();
-                         Async_kernel.Ivar.fill_if_empty finished ())))
+                         Option.iter anchor ~f:restore_anchor;
+                         if frames > 1 then settle (frames - 1)
+                         else (
+                           anchoring := false;
+                           following := was_following;
+                           update_button ();
+                           Async_kernel.Ivar.fill_if_empty finished ()))))
               in
               settle 4;
               Async_kernel.Ivar.read finished)))

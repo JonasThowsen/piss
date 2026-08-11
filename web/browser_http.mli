@@ -25,6 +25,12 @@ val get :
   ?query:(string * string) list -> string -> string Or_error.t Deferred.t
 (** Performs a browser GET against an encoded absolute same-origin path. *)
 
+val get_cancelable :
+  ?query:(string * string) list ->
+  string ->
+  string Or_error.t Deferred.t * (unit -> unit)
+(** Performs a browser GET and returns a function that aborts it. *)
+
 val post_json_typed :
   ?query:(string * string) list ->
   string ->

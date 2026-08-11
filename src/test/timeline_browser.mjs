@@ -121,6 +121,8 @@ const configure = async (context, mode) => {
   };
   const summary = { ...selected, ...runtime, status: runtime.status };
   const requests = [];
+  let releaseRecovery;
+  const recoveryGate = new Promise((resolve) => { releaseRecovery = resolve; });
 
   await context.route("**/api/v2/sessions*", async (route) => {
     const requestUrl = new URL(route.request().url());
@@ -147,6 +149,7 @@ const configure = async (context, mode) => {
       if (mode === "history" && before === 202) {
         events = Array.from({ length: 200 }, (_, index) => command(index + 2));
       } else if (requiresAction && before === 202) {
+        if (mode === "permission") await recoveryGate;
         events = Array.from({ length: 200 }, (_, index) => command(index + 2));
       } else if (mode === "permission" && before === 2) {
         events = [permission(1, selected.id)];
@@ -156,7 +159,7 @@ const configure = async (context, mode) => {
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(events) });
   });
-  return { selected, requests };
+  return { selected, requests, releaseRecovery: () => releaseRecovery?.() };
 };
 
 try {
@@ -304,6 +307,14 @@ try {
   const permissionPage = await permissionContext.newPage();
   permissionPage.on("pageerror", (error) => errors.push(`permission page: ${error.message}`));
   await permissionPage.goto(url, { waitUntil: "domcontentloaded" });
+  await permissionPage.getByText("history-701", { exact: true }).waitFor();
+  if (await permissionPage.getByText("Loading recent events", { exact: false }).count()) {
+    throw new Error("recent chat content waited for older recovery history");
+  }
+  if (await permissionPage.getByText("Recover retained permission", { exact: true }).count()) {
+    throw new Error("delayed recovery fixture released before the assertion");
+  }
+  recovery.releaseRecovery();
   await permissionPage.getByText("Recover retained permission", { exact: true }).waitFor();
   const recoveryBefore = recovery.requests
     .filter((request) => request.searchParams.has("before"))

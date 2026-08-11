@@ -1,5 +1,7 @@
 open! Bonsai_web.Cont
 
+val is_recovering : string -> bool
+
 val load_initial :
   inject_history:(App_state.history_action -> unit Effect.t) ->
   inject_deciding:(App_state.deciding_action -> unit Effect.t) ->

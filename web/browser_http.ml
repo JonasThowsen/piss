@@ -42,6 +42,73 @@ let present value =
           (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "Boolean")
           [| value |]))
 
+let get_cancelable ?(query = []) path =
+  match target path query with
+  | Error error -> (Deferred.return (Error error), fun () -> ())
+  | Ok url ->
+      let result = Ivar.create () in
+      let finish value = Ivar.fill_if_empty result value in
+      let controller =
+        Js.Unsafe.new_obj
+          (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "AbortController")
+          [||]
+      in
+      let cancel () =
+        try ignore (Js.Unsafe.meth_call controller "abort" [||]) with _ -> ()
+      in
+      let rejected =
+        Js.wrap_callback (fun error ->
+            let message =
+              try
+                let value = Js.Unsafe.get error "message" in
+                if present value then Js.to_string (Js.Unsafe.coerce value)
+                else "HTTP request failed"
+              with _ -> "HTTP request failed"
+            in
+            finish (Error (Error.of_string message)))
+      in
+      (try
+         let options =
+           Js.Unsafe.obj
+             [|
+               ("method", Js.Unsafe.inject (Js.string "GET"));
+               ("signal", Js.Unsafe.get controller "signal");
+             |]
+         in
+         let received =
+           Js.wrap_callback (fun response ->
+               let response = Js.Unsafe.inject response in
+               let ok : bool Js.t = Js.Unsafe.get response "ok" in
+               let status : int = Js.Unsafe.get response "status" in
+               let body_promise = Js.Unsafe.meth_call response "text" [||] in
+               let decoded =
+                 Js.wrap_callback (fun body ->
+                     let body = Js.to_string (Js.Unsafe.coerce body) in
+                     if Js.to_bool ok then finish (Ok body)
+                     else
+                       finish
+                         (Error
+                            (Error.of_string
+                               (if String.is_empty body then
+                                  Printf.sprintf "HTTP %d" status
+                                else body))))
+               in
+               ignore
+                 (Js.Unsafe.meth_call body_promise "then"
+                    [| Js.Unsafe.inject decoded; Js.Unsafe.inject rejected |]))
+         in
+         let promise =
+           Js.Unsafe.meth_call
+             (Js.Unsafe.inject Dom_html.window)
+             "fetch"
+             [| Js.Unsafe.inject (Js.string url); Js.Unsafe.inject options |]
+         in
+         ignore
+           (Js.Unsafe.meth_call promise "then"
+              [| Js.Unsafe.inject received; Js.Unsafe.inject rejected |])
+       with exn -> finish (Error (Error.of_exn exn)));
+      (Ivar.read result, cancel)
+
 let kind_of_string = function
   | "Not_found" -> Not_found
   | "Forbidden" -> Forbidden

@@ -542,6 +542,56 @@ try {
     throw new Error(`unexpected create request: ${createRequest.postData()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor({ timeout: 15_000 });
+  await page.waitForFunction(() =>
+    !document.getElementById("timeline")?.textContent?.includes("Loading recent events"));
+  const recentHistoryCount = () => eventPageRequests.filter((request) =>
+    new URL(request).searchParams.has("recent")).length;
+  const recentBeforeWarmSwitch = recentHistoryCount();
+  const warmGapPrompt = `Warm cache gap ${Date.now()}`;
+  await page.evaluate(async (text) => {
+    const runtimeResponse = await fetch("/api/v2/session?session=s-mention-browser");
+    if (!runtimeResponse.ok) throw new Error(await runtimeResponse.text());
+    const runtime = await runtimeResponse.json();
+    const commandId = `browser-warm-gap-${Date.now()}`;
+    const response = await fetch("/api/v2/commands?session=s-mention-browser", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commandId,
+        requestId: commandId,
+        action: "prompt",
+        text,
+        images: [],
+        resources: [],
+        target: {
+          sessionId: runtime.sessionId,
+          workerId: runtime.workerId,
+          runtimeGeneration: runtime.runtimeGeneration,
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  }, warmGapPrompt);
+  await page.locator("button.session-row").filter({ hasText: "Pi / deployed" }).click();
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+  await page.locator(".timeline-agent").filter({ hasText: response }).last().waitFor();
+  await page.getByText(warmGapPrompt, { exact: true }).waitFor({ timeout: 10_000 });
+  await page.waitForFunction(async () => {
+    const response = await fetch("/api/v2/session?session=s-mention-browser");
+    return response.ok && (await response.json()).status === "idle";
+  });
+  await page.locator("button.session-row").filter({ hasText: "Pi / deployed" })
+    .getByText(/idle \/ opencode$/).waitFor();
+  if (recentHistoryCount() !== recentBeforeWarmSwitch) {
+    throw new Error(`revisiting a warm chat refetched history: ${JSON.stringify(eventPageRequests)}`);
+  }
+  await page.locator("button.session-row").filter({ hasText: "Lifecycle proof" }).click();
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor();
+  await page.waitForFunction(() =>
+    !document.getElementById("timeline")?.textContent?.includes("Loading recent events"));
+  if (recentHistoryCount() !== recentBeforeWarmSwitch) {
+    throw new Error(`switching between warm chats refetched history: ${JSON.stringify(eventPageRequests)}`);
+  }
 
   await page.getByRole("button", { name: "Session settings for Lifecycle proof" }).click();
   await page.getByRole("menu", { name: "Lifecycle proof session settings" }).getByRole("menuitem", { name: "Rename session" }).click();

@@ -144,7 +144,10 @@ let component graph =
           Event_buffer.entries buffer
           |> Event_history.pending_permissions |> List.is_empty
         in
-        if requires_action && no_pending then
+        if
+          requires_action && no_pending
+          && not (History_loader.is_recovering session.id)
+        then
           Option.bind snapshot ~f:(fun snapshot ->
               if
                 Event_buffer.can_page_before buffer
