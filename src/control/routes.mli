@@ -19,6 +19,7 @@ type route =
   | Get_workspace_directories of { query : string }
   | Post_workspaces
   | Get_sessions of { archived : bool }
+  | Get_session_audit of string
   | Post_sessions
   | Post_archived_sessions_delete
   | Post_session_action of session_action

@@ -45,7 +45,7 @@ let with_worker workers session_id operation =
   | Ok socket -> operation socket
   | Error error -> Error error
 
-let handler ~net ~clock ~env _socket request body =
+let handler ~net ~clock ~process_mgr ~env _socket request body =
   let workers = env.Config.workers in
   let public_dir = env.public_dir in
   let app_js = env.app_js in
@@ -84,8 +84,8 @@ let handler ~net ~clock ~env _socket request body =
       let managed_response =
         match (workers : Config.workers) with
         | Managed manager ->
-            Managed_routes.handle ~net ~clock ~manager ~allowed_origins
-              ~dev_bypass ~calling_session ~request
+            Managed_routes.handle ~net ~clock ~process_mgr ~manager
+              ~allowed_origins ~dev_bypass ~calling_session ~request
               ~read_body:(fun () -> read_body body)
               route
         | Fixed _ -> None
@@ -384,9 +384,9 @@ let handler ~net ~clock ~env _socket request body =
           | Routes.Post_broker_collect | Routes.Get_workspaces
           | Routes.Get_session_creation | Routes.Post_workspace_delete _
           | Routes.Get_workspace_directories _ | Routes.Post_workspaces
-          | Routes.Get_sessions _ | Routes.Post_sessions
-          | Routes.Post_archived_sessions_delete | Routes.Post_session_action _
-            ->
+          | Routes.Get_sessions _ | Routes.Get_session_audit _
+          | Routes.Post_sessions | Routes.Post_archived_sessions_delete
+          | Routes.Post_session_action _ ->
               assert false)
   with
   | Eio.Io _ as exn -> Headers.error_json (upstream (Printexc.to_string exn))

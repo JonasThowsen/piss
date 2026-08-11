@@ -3,6 +3,7 @@
 val handle :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->
+  process_mgr:_ Eio_unix.Process.mgr ->
   manager:Config.managed_workers ->
   allowed_origins:string list ->
   dev_bypass:bool ->

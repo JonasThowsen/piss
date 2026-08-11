@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import { unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const [url, workspace] = process.argv.slice(2);
 if (!url || !workspace) throw new Error("browser test URL and workspace are required");
@@ -41,19 +43,29 @@ async function assertPaintedSvg(icon, label) {
   }
 }
 
-const browser = await chromium.launch({ executablePath, headless: true });
+const auditProofFiles = [
+  { relative: `src/audit_browser_permission_${process.pid}.ml`, contents: "let audit_browser_boundary = 731\n" },
+  { relative: `web/audit_browser_interface_${process.pid}.ml`, contents: "let audit_browser_interface = 732\n" },
+  { relative: `src/audit_browser_proof_${process.pid}_test.ml`, contents: "let audit_browser_proof = 733\n" },
+];
+
+let browser;
 const errors = [];
 let intentionalNetworkFailures = 0;
 try {
+  for (const file of auditProofFiles) await writeFile(join(workspace, file.relative), file.contents, "utf8");
+  browser = await chromium.launch({ executablePath, headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
   const page = await context.newPage();
   const eventPageRequests = [];
   const eventStreamRequests = [];
+  const auditRequests = [];
   page.on("request", (request) => {
     const requestUrl = new URL(request.url());
     if (requestUrl.pathname === "/api/v2/events") eventPageRequests.push(request.url());
     if (requestUrl.pathname === "/api/v2/event-stream") eventStreamRequests.push(request.url());
+    if (/^\/api\/v2\/sessions\/[^/]+\/audit$/.test(requestUrl.pathname)) auditRequests.push(request.url());
   });
   page.on("console", (message) => {
     if (message.type() !== "error" || message.text().includes("409 (Conflict)")) return;
@@ -73,6 +85,34 @@ try {
   }
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
   await page.locator(".app-header").getByText(/PISS rewrite \/ \/home/).waitFor();
+  const realAuditResponse = await context.request.get(`${url}/api/v2/sessions/s-mention-browser/audit`);
+  if (!realAuditResponse.ok()) {
+    throw new Error(`session-bound Audit endpoint failed: ${realAuditResponse.status()} ${await realAuditResponse.text()}`);
+  }
+  const realAudit = (await realAuditResponse.json()).audit;
+  if (
+    !Number.isInteger(realAudit?.totalFiles)
+    || realAudit.totalFiles < 0
+    || !Array.isArray(realAudit.files)
+    || realAudit.accountedFiles !== realAudit.files.length
+    || realAudit.highlightedFiles !== realAudit.files.filter((file) => file.journeyIndex !== null).length
+  ) {
+    throw new Error(`real Audit endpoint violated its typed coverage contract: ${JSON.stringify(realAudit)}`);
+  }
+  for (const proof of auditProofFiles) {
+    if (!realAudit.files.some((file) => file.path === proof.relative)) {
+      throw new Error(`real Audit endpoint omitted changed proof file ${proof.relative}`);
+    }
+  }
+  const proofPath = auditProofFiles[2].relative;
+  const proofFile = realAudit.files.find((file) => file.path === proofPath);
+  if (proofFile?.journeyIndex === null || !proofFile?.patch.includes("audit_browser_proof = 733")) {
+    throw new Error(`real Audit endpoint did not carry the proof patch into its journey: ${JSON.stringify(proofFile)}`);
+  }
+  const wrongSessionAudit = await context.request.get(`${url}/api/v2/sessions/session-does-not-exist/audit`);
+  if (wrongSessionAudit.status() !== 404) {
+    throw new Error(`Audit did not resolve through the session registry: ${wrongSessionAudit.status()}`);
+  }
   if (await page.getByText("session / s-mention-browser", { exact: true }).count() !== 0) {
     throw new Error("duplicate selected-session header remained below the app header");
   }
@@ -105,21 +145,73 @@ try {
   }
   const tabs = page.getByRole("tablist", { name: "Session views" }).getByRole("tab");
   const tabLabels = await tabs.allTextContents();
-  if (JSON.stringify(tabLabels) !== JSON.stringify(["Agent", "Changes", "Details"])) {
+  if (JSON.stringify(tabLabels) !== JSON.stringify(["Agent", "Audit", "Details"])) {
     throw new Error(`unexpected session tabs: ${JSON.stringify(tabLabels)}`);
-  }
-  if (!(await page.getByRole("tab", { name: "Changes" }).isDisabled())) {
-    throw new Error("Changes tab was enabled before its product slice exists");
   }
   if (await page.locator("#session-panel-working, #session-tab-working").count() !== 0) {
     throw new Error("removed Working page remained in the DOM");
   }
   const agentTab = page.getByRole("tab", { name: "Agent" });
+  const auditTab = page.getByRole("tab", { name: "Audit" });
   const detailsTab = page.getByRole("tab", { name: "Details" });
   await agentTab.focus();
+  const pageAuditResponsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/v2/sessions/s-mention-browser/audit") && response.request().resourceType() === "fetch",
+  );
   await agentTab.press("ArrowRight");
+  const pageAuditResponse = await pageAuditResponsePromise;
+  if (!pageAuditResponse.ok()) throw new Error(`page Audit request failed: ${pageAuditResponse.status()}`);
+  const pageAudit = (await pageAuditResponse.json()).audit;
+  await page.waitForFunction(() => document.getElementById("session-tab-audit")?.getAttribute("aria-selected") === "true");
+  await page.getByRole("region", { name: "Feature Audit" }).getByRole("heading", { name: "Read the design end to end" }).waitFor();
+  if (auditRequests.length !== 1 || !auditRequests[0].endsWith("/api/v2/sessions/s-mention-browser/audit")) {
+    throw new Error(`Audit was not bound to the selected durable session: ${JSON.stringify(auditRequests)}`);
+  }
+  const journey = page.getByRole("region", { name: "Review journey" });
+  const stops = journey.locator("details.audit-stop");
+  if (await stops.count() !== pageAudit.highlightedFiles || pageAudit.highlightedFiles < 3) {
+    throw new Error(`Audit did not render the real representative journey: ${await stops.count()} / ${pageAudit.highlightedFiles}`);
+  }
+  const proofStop = stops.filter({ hasText: proofPath });
+  await proofStop.waitFor();
+  if ((await proofStop.getAttribute("open")) === null) await proofStop.locator("summary").click();
+  await proofStop.getByText("audit_browser_proof = 733", { exact: false }).waitFor();
+  const secondStop = stops.nth(1);
+  if ((await secondStop.getAttribute("open")) === null) await secondStop.locator("summary").click();
+  if ((await secondStop.getAttribute("open")) === null) throw new Error("non-first Audit disclosure did not open");
+  if (await secondStop.locator(".audit-stop-toggle").count() !== 1) {
+    throw new Error("Audit disclosure lacked a visible affordance");
+  }
+  const ledger = page.getByRole("region", { name: "Change coverage ledger" });
+  if (await ledger.locator("li").count() !== pageAudit.files.length) {
+    throw new Error("Audit coverage ledger did not account for every API file");
+  }
+  for (const file of pageAudit.files) await ledger.getByText(file.path, { exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileAudit = await page.locator(".audit-view").evaluate((node) => ({
+    scrollWidth: node.scrollWidth,
+    clientWidth: node.clientWidth,
+    ledgerPosition: getComputedStyle(node.querySelector(".audit-ledger")).position,
+  }));
+  if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.ledgerPosition !== "static") {
+    throw new Error(`Audit mobile layout overflowed or kept a sticky ledger: ${JSON.stringify(mobileAudit)}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const refreshResponsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/v2/sessions/s-mention-browser/audit") && response.request().resourceType() === "fetch",
+  );
+  await page.getByRole("button", { name: "Refresh Audit" }).click();
+  const refreshResponse = await refreshResponsePromise;
+  if (!refreshResponse.ok()) throw new Error(`Audit refresh failed: ${refreshResponse.status()}`);
+  await page.waitForFunction((expected) => document.querySelectorAll(".audit-stop").length === expected, pageAudit.highlightedFiles);
+  if (auditRequests.length !== 2) {
+    throw new Error(`Audit refresh did not re-read the session snapshot: ${JSON.stringify(auditRequests)}`);
+  }
+  await auditTab.press("ArrowRight");
   await page.waitForFunction(() => document.getElementById("session-tab-details")?.getAttribute("aria-selected") === "true");
   await detailsTab.press("ArrowLeft");
+  await page.waitForFunction(() => document.getElementById("session-tab-audit")?.getAttribute("aria-selected") === "true");
+  await auditTab.press("ArrowLeft");
   await page.waitForFunction(() => document.getElementById("session-tab-agent")?.getAttribute("aria-selected") === "true");
   const modelButton = page.getByRole("button", { name: "Model: Mock Fast" });
   await modelButton.click();
@@ -910,7 +1002,12 @@ try {
     throw new Error(`expected one discarded command response, observed ${intentionalNetworkFailures}`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, tabs, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, Agent/Audit/Details keyboard tabs, session-bound real-file Audit journey and returned-file ledger at desktop/mobile widths, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
-  await browser.close();
+  if (browser) await browser.close();
+  await Promise.all(auditProofFiles.map(async (file) => {
+    try { await unlink(join(workspace, file.relative)); } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }));
 }

@@ -254,23 +254,10 @@ let render_tabs selected ~on_select =
         Vdom.Attr.create "role" "tablist";
         Vdom.Attr.create "aria-label" "Session views";
       ]
-    [
-      button Agent;
-      Vdom.Node.button
-        ~attrs:
-          [
-            Vdom.Attr.create "type" "button";
-            Vdom.Attr.create "role" "tab";
-            Vdom.Attr.create "aria-selected" "false";
-            Vdom.Attr.create "aria-disabled" "true";
-            Vdom.Attr.create "disabled" "";
-          ]
-        [ text "Changes" ];
-      button Details;
-    ]
+    [ button Agent; button Audit; button Details ]
 
 let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
-    ~on_tab ~timeline ~outbox ~composer =
+    ~on_tab ~timeline ~audit ~outbox ~composer =
   let agent_panel =
     Vdom.Node.div
       ~attrs:
@@ -305,6 +292,18 @@ let render ~session ~workspace ~runtime ~runtime_loading ~runtime_error ~tab
     | Some session ->
         [
           agent_panel;
+          Vdom.Node.div
+            ~attrs:
+              ([
+                 Vdom.Attr.id "session-panel-audit";
+                 class_ "audit-panel";
+                 Vdom.Attr.create "role" "tabpanel";
+                 Vdom.Attr.create "aria-labelledby" "session-tab-audit";
+               ]
+              @
+              if phys_equal tab Audit then []
+              else [ Vdom.Attr.create "hidden" "" ])
+            [ audit ];
           Vdom.Node.div
             ~attrs:
               ([

@@ -74,6 +74,11 @@
                 ./web/app_state.mli
                 ./web/artifact_view.ml
                 ./web/artifact_view.mli
+                ./web/audit_domain.ml
+                ./web/audit_domain.mli
+                ./web/audit_domain_test.ml
+                ./web/audit_view.ml
+                ./web/audit_view.mli
                 ./web/browser_http.ml
                 ./web/browser_http.mli
                 ./web/clipboard.ml
@@ -200,11 +205,17 @@
             pname = "piss";
             version = "0.1.0";
             src = source;
+            nativeBuildInputs = [
+              pkgs.git
+              pkgs.landrun
+              pkgs.makeWrapper
+            ];
             buildInputs = dependencies;
             postInstall = ''
               mkdir -p "$out/share/piss"
               cp -r web/public "$out/share/piss/public"
               cp ${pissWeb}/share/piss-web/app.js "$out/share/piss/public/app.js"
+              wrapProgram "$out/bin/pissd" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.landrun ]}
             '';
             doCheck = true;
             meta = {

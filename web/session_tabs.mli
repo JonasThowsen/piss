@@ -1,4 +1,4 @@
-type t = Agent | Details
+type t = Agent | Audit | Details
 
 val all : t list
 val label : t -> string

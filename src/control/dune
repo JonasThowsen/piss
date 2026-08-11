@@ -1,3 +1,18 @@
+(library
+ (name control_audit)
+ (wrapped false)
+ (modules audit routes lifecycle)
+ (libraries
+  piss.core
+  eio_main
+  eio.unix
+  cohttp-eio
+  cstruct
+  uri
+  yojson
+  unix
+  str))
+
 (executable
  (name main)
  (public_name pissd)
@@ -6,14 +21,27 @@
   config
   http
   managed_routes
-  routes
   workers
   workspaces
-  lifecycle
   broker
   worker_client
   authentication
   event_stream
   headers
   assets)
- (libraries piss.core eio_main cohttp-eio cstruct uri yojson unix str))
+ (libraries
+  control_audit
+  piss.core
+  eio_main
+  eio.unix
+  cohttp-eio
+  cstruct
+  uri
+  yojson
+  unix
+  str))
+
+(test
+ (name audit_test)
+ (modules audit_test)
+ (libraries control_audit alcotest eio_main eio.unix uri unix))

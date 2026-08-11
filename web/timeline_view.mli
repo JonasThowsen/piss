@@ -32,6 +32,7 @@ val render :
   tab:Session_tabs.t ->
   on_tab:(Session_tabs.t -> unit Effect.t) ->
   timeline:Vdom.Node.t ->
+  audit:Vdom.Node.t ->
   outbox:Vdom.Node.t ->
   composer:Vdom.Node.t option ->
   Vdom.Node.t

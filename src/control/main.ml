@@ -18,7 +18,9 @@ let () =
         ~process_mgr:(Eio.Stdenv.process_mgr stdenv)
         manager
   | Fixed _ -> ());
-  let callback = Http.handler ~net ~clock ~env in
+  let callback =
+    Http.handler ~net ~clock ~process_mgr:(Eio.Stdenv.process_mgr stdenv) ~env
+  in
   let server = Cohttp_eio.Server.make ~callback () in
   (match env.Config.workers with
   | Managed manager ->

@@ -10,9 +10,9 @@ let upstream message = Error.Upstream_unavailable { message }
 let authentication_error status reason =
   match status with `Forbidden -> forbidden reason | _ -> validation reason
 
-let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
-    ~dev_bypass ~(calling_session : Registry.session option) ~request ~read_body
-    route =
+let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
+    ~allowed_origins ~dev_bypass ~(calling_session : Registry.session option)
+    ~request ~read_body route =
   match route with
   | Routes.Get_broker_sessions ->
       Some
@@ -279,6 +279,39 @@ let handle ~net ~clock ~(manager : Config.managed_workers) ~allowed_origins
           |> List.map (Workers.summary ~net manager)
       in
       Some (Headers.respond_json (`List sessions))
+  | Routes.Get_session_audit session_id ->
+      Some
+        (match calling_session with
+        | Some _ ->
+            Headers.error_json ~status:`Forbidden
+              (forbidden "session broker tokens cannot read workspace audits")
+        | None -> (
+            match Registry.find_active manager.registry session_id with
+            | None ->
+                Headers.error_json
+                  (Error.Not_found
+                     { resource = "active session"; id = session_id })
+            | Some session -> (
+                match
+                  Registry.find_workspace manager.registry session.workspace_id
+                with
+                | None ->
+                    Headers.error_json
+                      (Error.Not_found
+                         {
+                           resource = "session workspace";
+                           id = session.workspace_id;
+                         })
+                | Some workspace -> (
+                    match
+                      Audit.collect ~process_mgr ~clock ~root:workspace.root
+                    with
+                    | Error message -> Headers.error_json (upstream message)
+                    | Ok snapshot ->
+                        Headers.respond_json
+                          (`Assoc
+                             [ ("audit", Audit.snapshot_to_yojson snapshot) ])))
+            ))
   | Routes.Post_sessions ->
       Some
         (match

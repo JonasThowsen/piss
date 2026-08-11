@@ -19,6 +19,7 @@ type route =
   | Get_workspace_directories of { query : string }
   | Post_workspaces
   | Get_sessions of { archived : bool }
+  | Get_session_audit of string
   | Post_sessions
   | Post_archived_sessions_delete
   | Post_session_action of session_action
@@ -53,6 +54,13 @@ let session_action path =
 let workspace_delete path =
   match String.split_on_char '/' path with
   | [ ""; "api"; "v2"; "workspaces"; id; "delete" ]
+    when Lifecycle.valid_session_id id ->
+      Some id
+  | _ -> None
+
+let session_audit path =
+  match String.split_on_char '/' path with
+  | [ ""; "api"; "v2"; "sessions"; id; "audit" ]
     when Lifecycle.valid_session_id id ->
       Some id
   | _ -> None
@@ -119,24 +127,31 @@ let rec parse ~managed ~method_ ~uri ~last_event_id =
   let session_id = Uri.get_query_param uri "session" in
   let query name = Uri.get_query_param uri name |> Option.value ~default:"" in
   if managed then
-    match (method_, path, workspace_delete path, session_action path) with
-    | `GET, "/api/v2/broker/sessions", _, _ -> Ok Get_broker_sessions
-    | `POST, "/api/v2/broker/send", _, _ -> Ok Post_broker_send
-    | `POST, "/api/v2/broker/subscribe", _, _ -> Ok Post_broker_subscribe
-    | `POST, "/api/v2/broker/ask", _, _ -> Ok Post_broker_ask
-    | `POST, "/api/v2/broker/collect", _, _ -> Ok Post_broker_collect
-    | `GET, "/api/v2/workspaces", _, _ -> Ok Get_workspaces
-    | `GET, "/api/v2/session-creation", _, _ -> Ok Get_session_creation
-    | `POST, _, Some id, _ -> Ok (Post_workspace_delete id)
-    | `GET, "/api/v2/workspace-directories", _, _ ->
+    match
+      ( method_,
+        path,
+        workspace_delete path,
+        session_action path,
+        session_audit path )
+    with
+    | `GET, "/api/v2/broker/sessions", _, _, _ -> Ok Get_broker_sessions
+    | `POST, "/api/v2/broker/send", _, _, _ -> Ok Post_broker_send
+    | `POST, "/api/v2/broker/subscribe", _, _, _ -> Ok Post_broker_subscribe
+    | `POST, "/api/v2/broker/ask", _, _, _ -> Ok Post_broker_ask
+    | `POST, "/api/v2/broker/collect", _, _, _ -> Ok Post_broker_collect
+    | `GET, "/api/v2/workspaces", _, _, _ -> Ok Get_workspaces
+    | `GET, "/api/v2/session-creation", _, _, _ -> Ok Get_session_creation
+    | `POST, _, Some id, _, _ -> Ok (Post_workspace_delete id)
+    | `GET, "/api/v2/workspace-directories", _, _, _ ->
         Ok (Get_workspace_directories { query = query "query" })
-    | `POST, "/api/v2/workspaces", _, _ -> Ok Post_workspaces
-    | `GET, "/api/v2/sessions", _, _ ->
+    | `POST, "/api/v2/workspaces", _, _, _ -> Ok Post_workspaces
+    | `GET, "/api/v2/sessions", _, _, _ ->
         Ok (Get_sessions { archived = query "archived" = "true" })
-    | `POST, "/api/v2/sessions", _, _ -> Ok Post_sessions
-    | `POST, "/api/v2/sessions/delete-archived", _, _ ->
+    | `GET, _, _, _, Some id -> Ok (Get_session_audit id)
+    | `POST, "/api/v2/sessions", _, _, _ -> Ok Post_sessions
+    | `POST, "/api/v2/sessions/delete-archived", _, _, _ ->
         Ok Post_archived_sessions_delete
-    | `POST, _, _, Some action -> Ok (Post_session_action action)
+    | `POST, _, _, Some action, _ -> Ok (Post_session_action action)
     | _ -> parse_generic ~method_ ~uri ~last_event_id ~path ~session_id
   else parse_generic ~method_ ~uri ~last_event_id ~path ~session_id
 

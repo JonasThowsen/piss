@@ -1,9 +1,14 @@
 open! Core
 
-type t = Agent | Details
+type t = Agent | Audit | Details
 
-let all = [ Agent; Details ]
-let label = function Agent -> "Agent" | Details -> "Details"
+let all = [ Agent; Audit; Details ]
+
+let label = function
+  | Agent -> "Agent"
+  | Audit -> "Audit"
+  | Details -> "Details"
+
 let id tab = String.lowercase (label tab)
 
 let navigate ~current ~key =

@@ -3,6 +3,7 @@
  (wrapped false)
  (modules
   acp_content
+  audit_domain
   control_plane
   event_buffer
   event_decode
@@ -29,6 +30,7 @@
   app_header
   app_state
   artifact_view
+  audit_view
   browser_http
   clipboard
   command_id
@@ -61,6 +63,13 @@
 (test
  (name acp_content_test)
  (modules acp_content_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name audit_domain_test)
+ (modules audit_domain_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

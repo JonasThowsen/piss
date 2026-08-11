@@ -99,6 +99,13 @@ let component graph =
       ~sexp_of_action:(fun _ -> Sexp.Atom "shell-action")
       graph
   in
+  let audit_active =
+    let%arr shell = shell in
+    phys_equal shell.tab Session_tabs.Audit
+  in
+  let audit =
+    Audit_view.component ~session_id:selected_id ~active:audit_active graph
+  in
   let history, inject_history =
     Bonsai.state_machine0 ~default_model:Timeline_view.Sessions_loading
       ~apply_action:apply_history
@@ -447,6 +454,7 @@ let component graph =
   and shell = shell
   and runtime = runtime
   and timeline_content = timeline_content
+  and audit = audit
   and composer = composer
   and lifecycle = lifecycle
   and workspace_dialogs = workspace_dialogs
@@ -517,7 +525,7 @@ let component graph =
               Timeline_view.render ~session ~workspace ~runtime
                 ~runtime_loading:shell.runtime.loading
                 ~runtime_error:shell.runtime.error ~tab:shell.tab
-                ~on_tab:select_tab ~timeline ~outbox
+                ~on_tab:select_tab ~timeline ~audit:audit.view ~outbox
                 ~composer:(Some composer.view);
             ];
         ];
