@@ -9,6 +9,7 @@
   event_decode
   event_history
   global_search
+  http_error
   image_attachment
   image_batch
   markdown_syntax
@@ -91,6 +92,13 @@
 (test
  (name event_buffer_test)
  (modules event_buffer_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name http_error_test)
+ (modules http_error_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

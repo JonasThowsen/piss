@@ -110,6 +110,9 @@
                 ./web/global_search.mli
                 ./web/history_loader.ml
                 ./web/history_loader.mli
+                ./web/http_error.ml
+                ./web/http_error.mli
+                ./web/http_error_test.ml
                 ./web/event_stream.ml
                 ./web/event_stream.mli
                 ./web/image_attachment.ml

@@ -88,10 +88,7 @@ let get_cancelable ?(query = []) path =
                      else
                        finish
                          (Error
-                            (Error.of_string
-                               (if String.is_empty body then
-                                  Printf.sprintf "HTTP %d" status
-                                else body))))
+                            (Error.of_string (Http_error.message ~status body))))
                in
                ignore
                  (Js.Unsafe.meth_call body_promise "then"
@@ -119,9 +116,7 @@ let kind_of_string = function
   | value -> Unknown value
 
 let decode_http_error ~status body =
-  let fallback =
-    if String.is_empty body then Printf.sprintf "HTTP %d" status else body
-  in
+  let fallback = Http_error.message ~status body in
   match Result.try_with (fun () -> Yojson.Safe.from_string body) with
   | Ok (`Assoc fields) ->
       let message =

@@ -52,6 +52,7 @@ const auditProofFiles = [
 let browser;
 const errors = [];
 let intentionalNetworkFailures = 0;
+let intentionalAuditFailures = 0;
 try {
   for (const file of auditProofFiles) await writeFile(join(workspace, file.relative), file.contents, "utf8");
   browser = await chromium.launch({ executablePath, headless: true });
@@ -69,6 +70,10 @@ try {
   });
   page.on("console", (message) => {
     if (message.type() !== "error" || message.text().includes("409 (Conflict)")) return;
+    if (message.text().includes("400 (Bad Request)") && intentionalAuditFailures < 1) {
+      intentionalAuditFailures += 1;
+      return;
+    }
     if (message.text().includes("net::ERR_FAILED") && intentionalNetworkFailures < 1) {
       intentionalNetworkFailures += 1;
       return;
@@ -84,7 +89,8 @@ try {
     throw new Error(`${error.message}\n${errors.join("\n")}\nbody: ${await page.locator("body").innerText()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
-  await page.locator(".app-header").getByText(/PISS rewrite \/ \/home/).waitFor();
+  const expectedWorkspaceLabel = `PISS rewrite / ${workspace}`;
+  await page.locator(".app-header").getByText(expectedWorkspaceLabel, { exact: true }).waitFor();
   const realAuditResponse = await context.request.get(`${url}/api/v2/sessions/s-mention-browser/audit`);
   if (!realAuditResponse.ok()) {
     throw new Error(`session-bound Audit endpoint failed: ${realAuditResponse.status()} ${await realAuditResponse.text()}`);
@@ -196,17 +202,40 @@ try {
   if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.ledgerPosition !== "static") {
     throw new Error(`Audit mobile layout overflowed or kept a sticky ledger: ${JSON.stringify(mobileAudit)}`);
   }
-  await page.setViewportSize({ width: 1280, height: 800 });
-  const refreshResponsePromise = page.waitForResponse(
+  const auditUrlPattern = "**/api/v2/sessions/s-mention-browser/audit";
+  let failNextAuditRefresh = true;
+  const readableAuditError = "This workspace is not inside an approved Git repository";
+  await page.route(auditUrlPattern, async (route) => {
+    if (!failNextAuditRefresh) return route.continue();
+    failNextAuditRefresh = false;
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: readableAuditError,
+        errorDetails: { kind: "Validation", field: "workspace", reason: "internal detail must stay hidden" },
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Refresh Audit" }).click();
+  const auditAlert = page.getByRole("alert");
+  await auditAlert.getByText(readableAuditError, { exact: true }).waitFor();
+  const auditAlertText = await auditAlert.innerText();
+  if (auditAlertText.includes("errorDetails") || auditAlertText.includes("internal detail") || auditAlertText.includes("{\"error\"")) {
+    throw new Error(`Audit exposed raw JSON or internal details on mobile: ${auditAlertText}`);
+  }
+  const recoveryResponsePromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/v2/sessions/s-mention-browser/audit") && response.request().resourceType() === "fetch",
   );
-  await page.getByRole("button", { name: "Refresh Audit" }).click();
-  const refreshResponse = await refreshResponsePromise;
-  if (!refreshResponse.ok()) throw new Error(`Audit refresh failed: ${refreshResponse.status()}`);
+  await auditAlert.getByRole("button", { name: "Try again" }).click();
+  const recoveryResponse = await recoveryResponsePromise;
+  if (!recoveryResponse.ok()) throw new Error(`Audit recovery failed: ${recoveryResponse.status()}`);
   await page.waitForFunction((expected) => document.querySelectorAll(".audit-stop").length === expected, pageAudit.highlightedFiles);
-  if (auditRequests.length !== 2) {
-    throw new Error(`Audit refresh did not re-read the session snapshot: ${JSON.stringify(auditRequests)}`);
+  await page.unroute(auditUrlPattern);
+  if (auditRequests.length !== 3) {
+    throw new Error(`Audit error and recovery did not issue two refreshes: ${JSON.stringify(auditRequests)}`);
   }
+  await page.setViewportSize({ width: 1280, height: 800 });
   await auditTab.press("ArrowRight");
   await page.waitForFunction(() => document.getElementById("session-tab-details")?.getAttribute("aria-selected") === "true");
   await detailsTab.press("ArrowLeft");
@@ -1000,6 +1029,9 @@ try {
   }
   if (intentionalNetworkFailures !== 1) {
     throw new Error(`expected one discarded command response, observed ${intentionalNetworkFailures}`);
+  }
+  if (intentionalAuditFailures !== 1) {
+    throw new Error(`expected one readable Audit failure, observed ${intentionalAuditFailures}`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, Agent/Audit/Details keyboard tabs, session-bound real-file Audit journey and returned-file ledger at desktop/mobile widths, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");

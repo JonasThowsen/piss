@@ -6,7 +6,7 @@ agent_exe=$(realpath "${2:?mock agent executable is required}")
 control_exe=$(realpath "${3:?control executable is required}")
 public_dir=$(realpath "${4:?public directory is required}")
 app_js=$(realpath "${5:?browser bundle is required}")
-workspace=$(realpath "${6:?workspace is required}")
+source_workspace=$(realpath "${6:?workspace is required}")
 browser_tests=("${@:7}")
 [[ ${#browser_tests[@]} -gt 0 ]] || { echo "browser test is required" >&2; exit 64; }
 port=${PISS_TEST_PORT:-$(python3 - <<'PY'
@@ -20,6 +20,16 @@ root=$(mktemp -d /tmp/piss-mention-browser.XXXXXX)
 state="$root/state"
 runtime="$root/runtime"
 mkdir -p "$state/sessions" "$runtime" "$root/pids"
+repository="$root/repository"
+workspace="$repository/nested-workspace"
+mkdir -p "$workspace"
+git -C "$root" init -q repository
+git -C "$repository" config user.name PISS
+git -C "$repository" config user.email piss@example.test
+cp -a "$source_workspace"/. "$workspace"/
+rm -rf "$workspace/.git" "$workspace/_build" "$workspace/web/_build"
+git -C "$repository" add .
+git -C "$repository" commit -qm "browser fixture"
 control_pid=
 
 cleanup() {
@@ -69,7 +79,7 @@ chmod +x "$root/launch" "$root/stop"
   --available-harness pi --available-harness opencode --available-harness mock \
   --default-harness opencode \
   --workspace-spec "test-workspace|PISS rewrite|$workspace" \
-  --workspace-discovery-root "$workspace" \
+  --workspace-discovery-root "$repository" \
   --bootstrap-session s-mention-browser --public "$public_dir" --app-js "$app_js" \
   --generation mention-browser --dev-bypass-auth >"$root/control.log" 2>&1 &
 control_pid=$!

@@ -34,6 +34,22 @@ type snapshot = {
   truncated : bool;
 }
 
+type error =
+  | Validation_error of string
+  | Upstream_error of string
+  | Internal_error
+
+let error_message = function
+  | Validation_error message | Upstream_error message -> message
+  | Internal_error -> "Audit failed unexpectedly"
+
+let to_control_error = function
+  | Validation_error reason ->
+      Piss_core.Error.Validation { field = "workspace"; reason }
+  | Upstream_error message -> Piss_core.Error.Upstream_unavailable { message }
+  | Internal_error ->
+      Piss_core.Error.Internal { message = "Audit failed unexpectedly" }
+
 type git_result = {
   status : Eio.Process.exit_status;
   stdout : string;
@@ -43,10 +59,21 @@ type git_result = {
 
 type metadata_paths = { git_directory : string; common_directory : string }
 
+type repository = {
+  root : string;
+  workspace_prefix : string;
+  metadata : metadata_paths;
+}
+
 type checkout = {
+  repository_fd : Unix.file_descr;
   workspace_fd : Unix.file_descr;
   git_fd : Unix.file_descr;
   common_git_fd : Unix.file_descr;
+  repository_identity : Unix.stats;
+  workspace_identity : Unix.stats;
+  git_identity : Unix.stats;
+  common_git_identity : Unix.stats;
 }
 
 type git_view = Repository | Sanitized of Unix.file_descr
@@ -378,6 +405,7 @@ let sandbox_environment view =
       "GIT_ATTR_NOSYSTEM=1";
       "GIT_NO_REPLACE_OBJECTS=1";
       "GIT_NO_LAZY_FETCH=1";
+      "GIT_LITERAL_PATHSPECS=1";
       "GIT_OPTIONAL_LOCKS=0";
       "GIT_TERMINAL_PROMPT=0";
       "GIT_PAGER=cat";
@@ -409,8 +437,8 @@ let run_git ~process_mgr ~(checkout : checkout) ~view ~maximum_stdout args =
     Unix.openfile "/dev/null" [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0
   in
   let null_fd = Eio_unix.Fd.of_unix ~sw ~close_unix:true null_unix in
-  let workspace_fd =
-    Eio_unix.Fd.of_unix ~sw ~close_unix:false checkout.workspace_fd
+  let repository_fd =
+    Eio_unix.Fd.of_unix ~sw ~close_unix:false checkout.repository_fd
   in
   let git_fd = Eio_unix.Fd.of_unix ~sw ~close_unix:false checkout.git_fd in
   let common_git_fd =
@@ -472,7 +500,7 @@ let run_git ~process_mgr ~(checkout : checkout) ~view ~maximum_stdout args =
            (0, null_fd, `Blocking);
            (1, fd_of stdout_sink, `Blocking);
            (2, fd_of stderr_sink, `Blocking);
-           (3, workspace_fd, `Preserve_blocking);
+           (3, repository_fd, `Preserve_blocking);
            (4, git_fd, `Preserve_blocking);
            (5, common_git_fd, `Preserve_blocking);
          ]
@@ -524,7 +552,8 @@ let too_large root (entry : status_entry) =
     stat.st_kind = Unix.S_REG && stat.st_size > max_reviewable_file_bytes
   with Unix.Unix_error _ -> false
 
-let collect_file ~process_mgr ~checkout ~view ~root (entry : status_entry) =
+let collect_file ~process_mgr ~checkout ~view ~root ~workspace_prefix
+    (entry : status_entry) =
   let role, reason = role_and_reason entry.path in
   if too_large root entry then
     Ok
@@ -541,48 +570,60 @@ let collect_file ~process_mgr ~checkout ~view ~root (entry : status_entry) =
         journey_index = None;
       }
   else
+    let repository_path path =
+      if workspace_prefix = "" then path else workspace_prefix ^ "/" ^ path
+    in
+    let pathspecs =
+      match entry.previous_path with
+      | None -> [ repository_path entry.path ]
+      | Some previous ->
+          [ repository_path previous; repository_path entry.path ]
+    in
+    let relative_option =
+      if workspace_prefix = "" then [] else [ "--relative=" ^ workspace_prefix ]
+    in
     let run expected label args =
       let result =
         run_git ~process_mgr ~checkout ~view ~maximum_stdout:max_patch_bytes
           args
       in
       if exited result expected then Ok result
-      else Error (command_error label result)
+      else Error (Upstream_error (command_error label result))
     in
     let result =
       if entry.index_status = '?' && entry.worktree_status = '?' then
         Result.map
           (fun patch -> (patch.stdout, patch.truncated))
           (run [ 0; 1 ] "Could not read an untracked patch"
-             [
-               "diff";
-               "--no-index";
-               "--no-ext-diff";
-               "--no-textconv";
-               "--no-color";
-               "--unified=3";
-               "--ignore-submodules=all";
-               "--";
-               "/dev/null";
-               entry.path;
-             ])
+             ((if workspace_prefix = "" then [] else [ "-C"; workspace_prefix ])
+             @ [
+                 "diff";
+                 "--no-index";
+                 "--no-ext-diff";
+                 "--no-textconv";
+                 "--no-color";
+                 "--unified=3";
+                 "--ignore-submodules=all";
+                 "--";
+                 "/dev/null";
+                 entry.path;
+               ]))
       else
         let staged =
           if entry.index_status <> ' ' && entry.index_status <> '?' then
             Result.map
               (fun patch -> ("# STAGED\n\n" ^ patch.stdout, patch.truncated))
               (run [ 0 ] "Could not read a staged patch"
-                 [
-                   "diff";
-                   "--cached";
-                   "--no-ext-diff";
-                   "--no-textconv";
-                   "--no-color";
-                   "--unified=3";
-                   "--ignore-submodules=all";
-                   "--";
-                   entry.path;
-                 ])
+                 ([ "diff"; "--cached" ] @ relative_option
+                 @ [
+                     "--no-ext-diff";
+                     "--no-textconv";
+                     "--no-color";
+                     "--unified=3";
+                     "--ignore-submodules=all";
+                     "--";
+                   ]
+                 @ pathspecs))
           else Ok ("", false)
         in
         Result.bind staged (fun (staged, staged_truncated) ->
@@ -592,16 +633,16 @@ let collect_file ~process_mgr ~checkout ~view ~root (entry : status_entry) =
                   ( staged ^ "# UNSTAGED\n\n" ^ patch.stdout,
                     staged_truncated || patch.truncated ))
                 (run [ 0 ] "Could not read an unstaged patch"
-                   [
-                     "diff";
-                     "--no-ext-diff";
-                     "--no-textconv";
-                     "--no-color";
-                     "--unified=3";
-                     "--ignore-submodules=all";
-                     "--";
-                     entry.path;
-                   ])
+                   ([ "diff" ] @ relative_option
+                   @ [
+                       "--no-ext-diff";
+                       "--no-textconv";
+                       "--no-color";
+                       "--unified=3";
+                       "--ignore-submodules=all";
+                       "--";
+                     ]
+                   @ pathspecs))
             else Ok (staged, staged_truncated))
     in
     Result.map
@@ -700,8 +741,7 @@ let validate_git_metadata root =
     try Some (Unix.lstat git) with Unix.Unix_error (Unix.ENOENT, _, _) -> None
   in
   match metadata with
-  | None ->
-      Error "Audit currently requires the workspace to be a Git repository root"
+  | None -> Error "No Git repository metadata was found"
   | Some { Unix.st_kind = Unix.S_DIR; _ } ->
       let* () =
         validate_metadata_directory git
@@ -769,21 +809,126 @@ let open_verified_directory path =
     Unix.close descriptor;
     failwith "Audit descriptor identity changed while it was opened")
 
-let with_checkout ~root metadata operation =
-  let workspace_fd = open_verified_directory root in
+let with_checkout ~workspace_root (repository : repository) operation =
+  let repository_fd = open_verified_directory repository.root in
   Fun.protect
-    ~finally:(fun () -> Unix.close workspace_fd)
+    ~finally:(fun () -> Unix.close repository_fd)
     (fun () ->
-      let git_fd = open_verified_directory metadata.git_directory in
+      let workspace_fd = open_verified_directory workspace_root in
       Fun.protect
-        ~finally:(fun () -> Unix.close git_fd)
+        ~finally:(fun () -> Unix.close workspace_fd)
         (fun () ->
-          let common_git_fd =
-            open_verified_directory metadata.common_directory
+          let git_fd =
+            open_verified_directory repository.metadata.git_directory
           in
           Fun.protect
-            ~finally:(fun () -> Unix.close common_git_fd)
-            (fun () -> operation { workspace_fd; git_fd; common_git_fd })))
+            ~finally:(fun () -> Unix.close git_fd)
+            (fun () ->
+              let common_git_fd =
+                open_verified_directory repository.metadata.common_directory
+              in
+              Fun.protect
+                ~finally:(fun () -> Unix.close common_git_fd)
+                (fun () ->
+                  operation
+                    {
+                      repository_fd;
+                      workspace_fd;
+                      git_fd;
+                      common_git_fd;
+                      repository_identity = Unix.fstat repository_fd;
+                      workspace_identity = Unix.fstat workspace_fd;
+                      git_identity = Unix.fstat git_fd;
+                      common_git_identity = Unix.fstat common_git_fd;
+                    }))))
+
+let canonical_approved_roots approved_roots =
+  approved_roots
+  |> List.filter_map (fun root ->
+      try
+        let canonical = Unix.realpath root in
+        if (Unix.stat canonical).st_kind = Unix.S_DIR then Some canonical
+        else None
+      with Unix.Unix_error _ -> None)
+
+let path_within ~root path =
+  String.equal root path
+  ||
+  let prefix = if String.ends_with ~suffix:"/" root then root else root ^ "/" in
+  String.starts_with ~prefix path
+
+let relative_from ~root path =
+  if String.equal root path then Some ""
+  else
+    let prefix =
+      if String.ends_with ~suffix:"/" root then root else root ^ "/"
+    in
+    if String.starts_with ~prefix path then
+      Some
+        (String.sub path (String.length prefix)
+           (String.length path - String.length prefix))
+    else None
+
+let locate_repository ~workspace_root ~approved_roots =
+  let approved_roots = canonical_approved_roots approved_roots in
+  if
+    not
+      (List.exists
+         (fun approved -> path_within ~root:approved workspace_root)
+         approved_roots)
+  then Error "This workspace is outside the approved repository roots"
+  else
+    let candidate_allowed candidate =
+      List.exists
+        (fun approved -> path_within ~root:approved candidate)
+        approved_roots
+    in
+    let rec walk depth candidate =
+      if depth > 8 || not (candidate_allowed candidate) then
+        Error "No approved Git repository contains this workspace"
+      else
+        match validate_git_metadata candidate with
+        | Ok metadata -> (
+            match relative_from ~root:candidate workspace_root with
+            | Some workspace_prefix ->
+                Ok { root = candidate; workspace_prefix; metadata }
+            | None -> Error "Workspace is not contained by its Git repository")
+        | Error "No Git repository metadata was found" ->
+            let parent = Filename.dirname candidate in
+            if String.equal parent candidate then
+              Error "No approved Git repository contains this workspace"
+            else walk (depth + 1) parent
+        | Error _ as error -> error
+    in
+    walk 0 workspace_root
+
+let strip_workspace_prefix prefix path =
+  if prefix = "" then if safe_path path then Some path else None
+  else
+    let expected = prefix ^ "/" in
+    if String.starts_with ~prefix:expected path then
+      let relative =
+        String.sub path (String.length expected)
+          (String.length path - String.length expected)
+      in
+      if safe_path relative then Some relative else None
+    else None
+
+let scope_entry prefix (entry : status_entry) =
+  match strip_workspace_prefix prefix entry.path with
+  | None -> None
+  | Some path ->
+      let previous_path =
+        match entry.previous_path with
+        | None -> Some None
+        | Some previous -> (
+            match strip_workspace_prefix prefix previous with
+            | None -> None
+            | Some value -> Some (Some value))
+      in
+      Option.map
+        (fun previous_path -> { entry with path; previous_path })
+        previous_path
 
 let write_all descriptor value =
   let rec write offset =
@@ -853,21 +998,24 @@ let repository_identity ~process_mgr ~checkout =
     in
     if exited result [ 0 ] && not result.truncated then
       Ok (String.trim (sanitize_utf8 result.stdout))
-    else Error (command_error label result)
+    else Error (Upstream_error (command_error label result))
   in
   let* format =
     run "Could not resolve the repository object format"
       [ "rev-parse"; "--show-object-format" ]
   in
   if format <> "sha1" && format <> "sha256" then
-    Error "Repository uses an unsupported Git object format"
+    Error (Validation_error "Repository uses an unsupported Git object format")
   else
     let* head =
       run "Audit requires a valid HEAD commit"
         [ "rev-parse"; "--verify"; "--end-of-options"; "HEAD^{commit}" ]
     in
     if valid_object_id ~format head then Ok (format, head)
-    else Error "Repository HEAD did not resolve to a valid object identity"
+    else
+      Error
+        (Validation_error
+           "Repository HEAD did not resolve to a valid object identity")
 
 let with_sanitized_view ~format ~head operation =
   let directory = make_private_directory 8 in
@@ -886,17 +1034,24 @@ let with_sanitized_view ~format ~head operation =
         ~finally:(fun () -> Unix.close descriptor)
         (fun () -> operation (Sanitized descriptor)))
 
-let collect_unbounded ~process_mgr ~root ~before_sanitized =
+let collect_unbounded ~process_mgr ~root ~approved_roots ~before_sanitized =
   let configured = Unix.lstat root in
-  if configured.st_kind <> Unix.S_DIR then Error "Workspace is not a directory"
+  if configured.st_kind <> Unix.S_DIR then
+    Error (Validation_error "Workspace is not a directory")
   else
     let canonical = Unix.realpath root in
     let canonical_stat = Unix.stat canonical in
     if not (same_identity configured canonical_stat) then
-      Error "Workspace identity changed while resolving its canonical path"
+      Error
+        (Validation_error
+           "Workspace identity changed while resolving its canonical path")
     else
-      Result.bind (validate_git_metadata canonical) (fun metadata ->
-          with_checkout ~root:canonical metadata (fun checkout ->
+      Result.bind
+        (locate_repository ~workspace_root:canonical ~approved_roots
+        |> Result.map_error (fun message -> Validation_error message))
+        (fun repository ->
+          let repository_stat = Unix.stat repository.root in
+          with_checkout ~workspace_root:canonical repository (fun checkout ->
               let filters =
                 run_git ~process_mgr ~checkout ~view:Repository
                   ~maximum_stdout:(64 * 1024)
@@ -910,11 +1065,14 @@ let collect_unbounded ~process_mgr ~root ~before_sanitized =
               in
               if not (exited filters [ 0; 1 ]) then
                 Error
-                  (command_error "Could not validate Git configuration" filters)
+                  (Upstream_error
+                     (command_error "Could not validate Git configuration"
+                        filters))
               else if filters.truncated || filters.stdout <> "" then
                 Error
-                  "Repositories with executable Git filters or config includes \
-                   cannot be audited safely"
+                  (Validation_error
+                     "Repositories with executable Git filters or config \
+                      includes cannot be audited safely")
               else
                 match repository_identity ~process_mgr ~checkout with
                 | Error _ as error -> error
@@ -931,21 +1089,28 @@ let collect_unbounded ~process_mgr ~root ~before_sanitized =
                               "--untracked-files=all";
                               "--ignore-submodules=all";
                               "--";
-                              ".";
+                              (if repository.workspace_prefix = "" then "."
+                               else repository.workspace_prefix);
                             ]
                         in
                         if not (exited status [ 0 ]) then
                           Error
-                            (command_error
-                               "This workspace is not an accessible Git \
-                                repository"
-                               status)
+                            (Upstream_error
+                               (command_error
+                                  "This workspace is not an accessible Git \
+                                   repository"
+                                  status))
                         else if status.truncated then
                           Error
-                            "This repository has too many changed paths to \
-                             audit safely"
+                            (Validation_error
+                               "This repository has too many changed paths to \
+                                audit safely")
                         else
-                          let entries = parse_porcelain status.stdout in
+                          let entries =
+                            parse_porcelain status.stdout
+                            |> List.filter_map
+                                 (scope_entry repository.workspace_prefix)
+                          in
                           let rec take count values =
                             match (count, values) with
                             | 0, _ | _, [] -> []
@@ -961,7 +1126,9 @@ let collect_unbounded ~process_mgr ~root ~before_sanitized =
                             | entry :: rest -> (
                                 match
                                   collect_file ~process_mgr ~checkout ~view
-                                    ~root:canonical entry
+                                    ~root:canonical
+                                    ~workspace_prefix:
+                                      repository.workspace_prefix entry
                                 with
                                 | Error _ as error -> error
                                 | Ok file ->
@@ -1010,26 +1177,56 @@ let collect_unbounded ~process_mgr ~root ~before_sanitized =
                                       }))
                                   files
                               in
-                              let final_stat =
-                                Unix.fstat checkout.workspace_fd
+                              let check_identity label expected fd path =
+                                if
+                                  not
+                                    (same_identity expected (Unix.fstat fd)
+                                    && same_identity expected (Unix.stat path))
+                                then
+                                  failwith
+                                    (label
+                                   ^ " identity changed while the Audit was \
+                                      being collected")
                               in
-                              if not (same_identity canonical_stat final_stat)
+                              check_identity "Workspace"
+                                checkout.workspace_identity
+                                checkout.workspace_fd canonical;
+                              check_identity "Repository"
+                                checkout.repository_identity
+                                checkout.repository_fd repository.root;
+                              check_identity "Git metadata"
+                                checkout.git_identity checkout.git_fd
+                                repository.metadata.git_directory;
+                              check_identity "Common Git metadata"
+                                checkout.common_git_identity
+                                checkout.common_git_fd
+                                repository.metadata.common_directory;
+                              if
+                                not
+                                  (same_identity canonical_stat
+                                     checkout.workspace_identity
+                                  && same_identity repository_stat
+                                       checkout.repository_identity)
                               then
                                 failwith
-                                  "Workspace identity changed while the Audit \
-                                   was being collected";
-                              (match validate_git_metadata canonical with
+                                  "Audit checkout identities changed before \
+                                   collection";
+                              (match validate_git_metadata repository.root with
                               | Ok final_metadata
                                 when final_metadata.git_directory
-                                     = metadata.git_directory
+                                     = repository.metadata.git_directory
                                      && final_metadata.common_directory
-                                        = metadata.common_directory ->
+                                        = repository.metadata.common_directory
+                                ->
                                   ()
                               | Ok _ ->
                                   failwith
                                     "Git metadata location changed while the \
                                      Audit was being collected"
-                              | Error message -> failwith message);
+                              | Error _ ->
+                                  failwith
+                                    "Git metadata validation failed after \
+                                     collection");
                               {
                                 generated_at =
                                   Int64.of_float (Unix.gettimeofday () *. 1000.);
@@ -1039,24 +1236,34 @@ let collect_unbounded ~process_mgr ~root ~before_sanitized =
                               })
                             (collect_files [] selected))))
 
-let collect_with_hook ~process_mgr ~clock ~root ~before_sanitized =
+let collect_with_hook ~process_mgr ~clock ~root ~approved_roots
+    ~before_sanitized =
   try
     Eio.Time.with_timeout_exn clock timeout_seconds (fun () ->
         Eio.Semaphore.acquire collection_slots;
         Fun.protect
           ~finally:(fun () -> Eio.Semaphore.release collection_slots)
-          (fun () -> collect_unbounded ~process_mgr ~root ~before_sanitized))
+          (fun () ->
+            collect_unbounded ~process_mgr ~root ~approved_roots
+              ~before_sanitized))
   with
-  | Eio.Time.Timeout -> Error "Git Audit timed out after 10 seconds"
-  | Unix.Unix_error (_, _, _) -> Error "Workspace could not be read safely"
-  | Failure message -> Error (sanitize_utf8 message)
-  | exn -> Error (sanitize_utf8 (Printexc.to_string exn))
+  | Eio.Time.Timeout ->
+      Error (Upstream_error "Git Audit timed out after 10 seconds")
+  | Unix.Unix_error
+      ((Unix.EACCES | Unix.EPERM | Unix.ENOENT | Unix.ENOTDIR), _, _) ->
+      Error (Validation_error "Workspace could not be read safely")
+  | Unix.Unix_error _ ->
+      Error (Upstream_error "Workspace could not be read safely")
+  | Failure _ | Invalid_argument _ -> Error Internal_error
+  | _ -> Error Internal_error
 
-let collect ~process_mgr ~clock ~root =
-  collect_with_hook ~process_mgr ~clock ~root ~before_sanitized:(fun () -> ())
+let collect ~process_mgr ~clock ~approved_roots ~root =
+  collect_with_hook ~process_mgr ~clock ~root ~approved_roots
+    ~before_sanitized:(fun () -> ())
 
-let collect_for_test ~process_mgr ~clock ~root ~before_sanitized =
-  collect_with_hook ~process_mgr ~clock ~root ~before_sanitized
+let collect_for_test ~process_mgr ~clock ~approved_roots ~root ~before_sanitized
+    =
+  collect_with_hook ~process_mgr ~clock ~root ~approved_roots ~before_sanitized
 
 (* The production entry point above never exposes the deterministic race
    seam. *)

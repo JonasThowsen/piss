@@ -305,8 +305,11 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                 | Some workspace -> (
                     match
                       Audit.collect ~process_mgr ~clock ~root:workspace.root
+                        ~approved_roots:
+                          (workspace.root :: manager.workspace_discovery_roots)
                     with
-                    | Error message -> Headers.error_json (upstream message)
+                    | Error error ->
+                        Headers.error_json (Audit.to_control_error error)
                     | Ok snapshot ->
                         Headers.respond_json
                           (`Assoc

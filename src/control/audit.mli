@@ -28,6 +28,13 @@ type snapshot = {
   truncated : bool;
 }
 
+type error =
+  | Validation_error of string
+  | Upstream_error of string
+  | Internal_error
+
+val error_message : error -> string
+val to_control_error : error -> Piss_core.Error.t
 val parse_porcelain : string -> status_entry list
 val role_and_reason : string -> string * string
 val select_journey : status_entry list -> string list
@@ -36,17 +43,20 @@ val snapshot_to_yojson : snapshot -> Yojson.Safe.t
 val collect :
   process_mgr:_ Eio_unix.Process.mgr ->
   clock:_ Eio.Time.clock ->
+  approved_roots:string list ->
   root:string ->
-  (snapshot, string) result
-(** [collect] identity-checks [root] and its Git metadata, then runs fixed-argv
-    Git commands against a sanitized Git view in a read-only, networkless
-    Landlock sandbox. *)
+  (snapshot, error) result
+(** [collect] identity-checks [root], locates at most eight Git ancestors within
+    [approved_roots], and runs fixed-argv Git commands scoped to the workspace
+    against a sanitized Git view in a read-only, networkless Landlock sandbox.
+*)
 
 val collect_for_test :
   process_mgr:_ Eio_unix.Process.mgr ->
   clock:_ Eio.Time.clock ->
+  approved_roots:string list ->
   root:string ->
   before_sanitized:(unit -> unit) ->
-  (snapshot, string) result
+  (snapshot, error) result
 (** Deterministic race seam for collector regression tests. Production HTTP
     routes use only [collect]. *)

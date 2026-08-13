@@ -79,6 +79,25 @@ let diversity_case () =
   if List.hd (List.rev roles) <> "Proof" then
     Alcotest.fail "proof did not end the feature flow"
 
+let error_category_case () =
+  let open Piss_core.Error in
+  let check expected actual =
+    Alcotest.(check string) "typed control error" expected (to_string actual)
+  in
+  (match Audit.to_control_error (Audit.Validation_error "invalid layout") with
+  | Validation { field = "workspace"; reason } ->
+      Alcotest.(check string) "validation reason" "invalid layout" reason
+  | _ -> Alcotest.fail "validation error lost its HTTP category");
+  (match Audit.to_control_error (Audit.Upstream_error "Git timed out") with
+  | Upstream_unavailable { message } ->
+      check "Git timed out" (Upstream_unavailable { message })
+  | _ -> Alcotest.fail "upstream error lost its HTTP category");
+  match Audit.to_control_error Audit.Internal_error with
+  | Internal { message } ->
+      Alcotest.(check string)
+        "generic internal message" "Audit failed unexpectedly" message
+  | _ -> Alcotest.fail "internal error lost its HTTP category"
+
 let route_case () =
   let parse managed method_ path =
     Routes.parse ~managed ~method_ ~uri:(Uri.of_string path) ~last_event_id:None
@@ -145,23 +164,51 @@ let contains value needle =
     true
   with Not_found -> false
 
+let assert_workspace_relative_patches ~ancestor_prefix snapshot =
+  List.iter
+    (fun (file : Audit.file) ->
+      if contains file.patch ancestor_prefix then
+        Alcotest.failf "repository prefix leaked into %s patch:\n%s" file.path
+          file.patch)
+    snapshot.Audit.files
+
+let direct_root_authority_case () =
+  with_temporary_directory "piss-audit-direct-root-" @@ fun root ->
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr root;
+  write (Filename.concat root "feature.ml") "let value = 2\n";
+  match Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root with
+  | Ok snapshot when Option.is_some (find_file "feature.ml" snapshot) -> ()
+  | Ok _ -> Alcotest.fail "direct configured Git root omitted its change"
+  | Error error ->
+      Alcotest.failf "direct configured Git root was rejected: %s"
+        (Audit.error_message error)
+
 let collector_case () =
   with_temporary_directory "piss-audit-" @@ fun temporary ->
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   initialize process_mgr temporary;
-  (match Audit.collect ~process_mgr ~clock ~root:temporary with
+  (match
+     Audit.collect ~process_mgr ~clock ~approved_roots:[ temporary ]
+       ~root:temporary
+   with
   | Ok { total_files = 0; files = []; _ } -> ()
   | Ok snapshot ->
       Alcotest.failf "clean Audit returned %d changed files"
         snapshot.total_files
-  | Error message -> Alcotest.fail message);
+  | Error message -> Alcotest.fail (Audit.error_message message));
   write (Filename.concat temporary "feature.ml") "let value = 2\n";
   git process_mgr temporary [ "add"; "feature.ml" ];
   write (Filename.concat temporary "odd\nproof.ml") "let proof = true\n";
-  match Audit.collect ~process_mgr ~clock ~root:temporary with
-  | Error message -> Alcotest.fail message
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ temporary ]
+      ~root:temporary
+  with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot -> (
       Alcotest.(check int) "changed total" 2 snapshot.total_files;
       Alcotest.(check int) "all files accounted" 2 (List.length snapshot.files);
@@ -176,6 +223,123 @@ let collector_case () =
       | Some file when contains file.patch "# STAGED" -> ()
       | _ -> Alcotest.fail "sanitized view did not return the staged patch")
 
+let nested_workspace_case () =
+  with_temporary_directory "piss-audit-nested-" @@ fun repository ->
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr repository;
+  let workspace = Filename.concat repository "apps/erp" in
+  Lifecycle.mkdir_p workspace;
+  write (Filename.concat workspace "rename-old.ml") "let renamed = 1\n";
+  write (Filename.concat workspace "staged.ml") "let staged = 1\n";
+  write (Filename.concat workspace "unstaged.ml") "let unstaged = 1\n";
+  write (Filename.concat repository "sibling.ml") "let sibling = 1\n";
+  git process_mgr repository [ "add"; "." ];
+  git process_mgr repository [ "commit"; "-qm"; "nested fixture" ];
+  git process_mgr repository
+    [ "mv"; "apps/erp/rename-old.ml"; "apps/erp/rename-new.ml" ];
+  write (Filename.concat workspace "staged.ml") "let staged = 2\n";
+  git process_mgr repository [ "add"; "apps/erp/staged.ml" ];
+  write (Filename.concat workspace "unstaged.ml") "let unstaged = 2\n";
+  write (Filename.concat workspace "untracked.ml") "let untracked = true\n";
+  write (Filename.concat repository "sibling.ml") "let sibling = 2\n";
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ repository ]
+      ~root:workspace
+  with
+  | Error message -> Alcotest.fail (Audit.error_message message)
+  | Ok snapshot ->
+      Alcotest.(check int) "nested changes only" 4 snapshot.total_files;
+      let paths =
+        List.map (fun (file : Audit.file) -> file.path) snapshot.files
+      in
+      Alcotest.(check (list string))
+        "workspace-relative paths"
+        [ "rename-new.ml"; "staged.ml"; "unstaged.ml"; "untracked.ml" ]
+        (List.sort String.compare paths);
+      if List.exists (fun path -> path = "sibling.ml") paths then
+        Alcotest.fail "sibling repository change escaped workspace scope";
+      assert_workspace_relative_patches ~ancestor_prefix:"apps/erp/" snapshot;
+      (match find_file "rename-new.ml" snapshot with
+      | Some { previous_path = Some "rename-old.ml"; patch; _ }
+        when contains patch "rename from rename-old.ml"
+             && contains patch "rename to rename-new.ml" ->
+          ()
+      | _ -> Alcotest.fail "nested rename provenance or patch path was wrong");
+      List.iter
+        (fun (path, content) ->
+          match find_file path snapshot with
+          | Some file when contains file.patch content -> ()
+          | _ -> Alcotest.failf "%s patch was absent" path)
+        [
+          ("staged.ml", "staged = 2");
+          ("unstaged.ml", "unstaged = 2");
+          ("untracked.ml", "untracked = true");
+        ]
+
+let literal_pathspec_case () =
+  with_temporary_directory "piss-audit-pathspec-" @@ fun repository ->
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr repository;
+  let workspace = Filename.concat repository ":(glob)*" in
+  Lifecycle.mkdir_p workspace;
+  let hostile = ":(glob)*.ml" in
+  write (Filename.concat workspace hostile) "let scoped = 1\n";
+  write (Filename.concat repository "sibling-secret.ml") "let sibling = 1\n";
+  git process_mgr repository [ "add"; "." ];
+  git process_mgr repository [ "commit"; "-qm"; "literal pathspec fixture" ];
+  write (Filename.concat workspace hostile) "let scoped = 2\n";
+  write (Filename.concat repository "sibling-secret.ml") "let sibling = 999\n";
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ repository ]
+      ~root:workspace
+  with
+  | Error error -> Alcotest.fail (Audit.error_message error)
+  | Ok snapshot -> (
+      Alcotest.(check int) "one literal scoped change" 1 snapshot.total_files;
+      match find_file hostile snapshot with
+      | Some file
+        when contains file.patch "scoped = 2"
+             && not (contains file.patch "sibling = 999") ->
+          ()
+      | _ ->
+          Alcotest.fail
+            "pathspec magic leaked a sibling into status or the selected patch")
+
+let nested_workspace_authority_case () =
+  with_temporary_directory "piss-audit-authority-" @@ fun repository ->
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr repository;
+  let workspace = Filename.concat repository "apps/erp" in
+  Lifecycle.mkdir_p workspace;
+  write (Filename.concat workspace "inside.ml") "let inside = 1\n";
+  (match
+     Audit.collect ~process_mgr ~clock ~approved_roots:[ workspace ]
+       ~root:workspace
+   with
+  | Error
+      (Audit.Validation_error
+         "No approved Git repository contains this workspace") ->
+      ()
+  | Error message ->
+      Alcotest.failf "unexpected authority error: %s"
+        (Audit.error_message message)
+  | Ok _ -> Alcotest.fail "repository ancestor outside approved roots was used");
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ repository ]
+      ~root:workspace
+  with
+  | Ok snapshot when Option.is_some (find_file "inside.ml" snapshot) -> ()
+  | Ok _ -> Alcotest.fail "approved parent omitted nested workspace changes"
+  | Error error ->
+      Alcotest.failf "approved parent was rejected: %s"
+        (Audit.error_message error)
+
 let core_worktree_case () =
   with_temporary_directory "piss-audit-root-" @@ fun root ->
   with_temporary_directory "piss-audit-escape-" @@ fun outside ->
@@ -186,8 +350,8 @@ let core_worktree_case () =
   write (Filename.concat root "feature.ml") "let value = 2 (* registered *)\n";
   write (Filename.concat outside "feature.ml") "let value = 999 (* escape *)\n";
   git process_mgr root [ "config"; "core.worktree"; outside ];
-  match Audit.collect ~process_mgr ~clock ~root with
-  | Error message -> Alcotest.fail message
+  match Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot -> (
       match find_file "feature.ml" snapshot with
       | None -> Alcotest.fail "registered worktree change was not collected"
@@ -217,12 +381,15 @@ let filter_case () =
     ];
   write (Filename.concat root ".gitattributes") "feature.ml filter=audit-test\n";
   write (Filename.concat root "feature.ml") "let value = 2\n";
-  (match Audit.collect ~process_mgr ~clock ~root with
+  (match Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root with
   | Error
-      "Repositories with executable Git filters or config includes cannot be \
-       audited safely" ->
+      (Audit.Validation_error
+         "Repositories with executable Git filters or config includes cannot \
+          be audited safely") ->
       ()
-  | Error message -> Alcotest.failf "unexpected filter rejection: %s" message
+  | Error message ->
+      Alcotest.failf "unexpected filter rejection: %s"
+        (Audit.error_message message)
   | Ok _ -> Alcotest.fail "worktree-scoped executable Git filter was accepted");
   if Sys.file_exists marker then (
     Unix.unlink marker;
@@ -291,7 +458,9 @@ let promisor_lazy_fetch_case () =
           (Filename.concat (String.sub head 0 2)
              (String.sub head 2 (String.length head - 2)))));
   let started = Unix.gettimeofday () in
-  let result = Audit.collect ~process_mgr ~clock ~root in
+  let result =
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root
+  in
   let elapsed = Unix.gettimeofday () -. started in
   Eio.Time.sleep clock 0.05;
   let descendants = processes_with_token token in
@@ -301,8 +470,12 @@ let promisor_lazy_fetch_case () =
   let marker_written = Sys.file_exists marker in
   if marker_written then Unix.unlink marker;
   (match result with
-  | Error message when not (contains message "HELPER_EXECUTED") -> ()
-  | Error message -> Alcotest.failf "promisor helper executed: %s" message
+  | Error message
+    when not (contains (Audit.error_message message) "HELPER_EXECUTED") ->
+      ()
+  | Error message ->
+      Alcotest.failf "promisor helper executed: %s"
+        (Audit.error_message message)
   | Ok _ -> Alcotest.fail "collection accepted a missing promised HEAD object");
   if elapsed > 5. then
     Alcotest.failf "promisor collection unexpectedly waited %.2fs" elapsed;
@@ -343,7 +516,8 @@ let sanitized_filter_race_case () =
   in
   let started = Unix.gettimeofday () in
   let result =
-    Audit.collect_for_test ~process_mgr ~clock ~root ~before_sanitized:hook
+    Audit.collect_for_test ~process_mgr ~clock ~approved_roots:[ root ] ~root
+      ~before_sanitized:hook
   in
   let elapsed = Unix.gettimeofday () -. started in
   Eio.Time.sleep clock 0.05;
@@ -354,7 +528,7 @@ let sanitized_filter_race_case () =
   let marker_written = Sys.file_exists marker in
   if marker_written then Unix.unlink marker;
   (match result with
-  | Error message -> Alcotest.fail message
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot -> (
       match find_file "feature.ml" snapshot with
       | None -> Alcotest.fail "raced filter file was not collected"
@@ -370,6 +544,32 @@ let sanitized_filter_race_case () =
   if descendants <> [] then
     Alcotest.fail "raced repository command left a sleep descendant"
 
+let metadata_identity_replacement_case () =
+  with_temporary_directory "piss-audit-metadata-race-" @@ fun root ->
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr root;
+  write (Filename.concat root "feature.ml") "let value = 2\n";
+  let original = Filename.concat root ".git" in
+  let displaced = Filename.concat root ".git-displaced" in
+  let hook () =
+    Unix.rename original displaced;
+    Unix.mkdir original 0o700
+  in
+  let result =
+    Audit.collect_for_test ~process_mgr ~clock ~approved_roots:[ root ] ~root
+      ~before_sanitized:hook
+  in
+  (try Lifecycle.remove_tree original with _ -> ());
+  Unix.rename displaced original;
+  match result with
+  | Error Audit.Internal_error -> ()
+  | Error error ->
+      Alcotest.failf "metadata replacement had wrong category: %s"
+        (Audit.error_message error)
+  | Ok _ -> Alcotest.fail "replaced Git metadata identity was accepted"
+
 let linked_worktree_case () =
   with_temporary_directory "piss-audit-common-" @@ fun common ->
   with_temporary_directory "piss-audit-worktree-parent-" @@ fun parent ->
@@ -381,11 +581,48 @@ let linked_worktree_case () =
   git process_mgr common
     [ "worktree"; "add"; "-q"; "-b"; "audit-worktree"; worktree ];
   write (Filename.concat worktree "feature.ml") "let value = 3\n";
-  match Audit.collect ~process_mgr ~clock ~root:worktree with
-  | Error message -> Alcotest.fail message
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ worktree ]
+      ~root:worktree
+  with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot ->
       if Option.is_none (find_file "feature.ml" snapshot) then
         Alcotest.fail "registered linked worktree change was not collected"
+
+let nested_linked_worktree_case () =
+  with_temporary_directory "piss-audit-nested-common-" @@ fun common ->
+  with_temporary_directory "piss-audit-nested-worktree-parent-" @@ fun parent ->
+  let worktree = Filename.concat parent "checkout" in
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  initialize process_mgr common;
+  git process_mgr common
+    [ "worktree"; "add"; "-q"; "-b"; "audit-nested-worktree"; worktree ];
+  let workspace = Filename.concat worktree "apps/erp" in
+  Lifecycle.mkdir_p workspace;
+  write (Filename.concat workspace "old.ml") "let nested = 1\n";
+  write (Filename.concat worktree "sibling.ml") "let sibling = 1\n";
+  git process_mgr worktree [ "add"; "." ];
+  git process_mgr worktree [ "commit"; "-qm"; "nested linked fixture" ];
+  git process_mgr worktree [ "mv"; "apps/erp/old.ml"; "apps/erp/new.ml" ];
+  write (Filename.concat worktree "sibling.ml") "let sibling = 999\n";
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ worktree ]
+      ~root:workspace
+  with
+  | Error error -> Alcotest.fail (Audit.error_message error)
+  | Ok snapshot -> (
+      Alcotest.(check int) "linked nested changes only" 1 snapshot.total_files;
+      assert_workspace_relative_patches ~ancestor_prefix:"apps/erp/" snapshot;
+      match find_file "new.ml" snapshot with
+      | Some { previous_path = Some "old.ml"; patch; _ }
+        when not (contains patch "sibling = 999") ->
+          ()
+      | _ ->
+          Alcotest.fail
+            "nested linked rename provenance or sibling exclusion failed")
 
 let sha256_case () =
   with_temporary_directory "piss-audit-sha256-" @@ fun root ->
@@ -394,8 +631,8 @@ let sha256_case () =
   let clock = Eio.Stdenv.clock env in
   initialize ~object_format:"sha256" process_mgr root;
   write (Filename.concat root "feature.ml") "let value = 256\n";
-  match Audit.collect ~process_mgr ~clock ~root with
-  | Error message -> Alcotest.fail message
+  match Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot -> (
       match find_file "feature.ml" snapshot with
       | Some file when contains file.patch "value = 256" -> ()
@@ -412,8 +649,11 @@ let linked_sha256_case () =
   git process_mgr common
     [ "worktree"; "add"; "-q"; "-b"; "audit-sha256"; worktree ];
   write (Filename.concat worktree "feature.ml") "let value = 512\n";
-  match Audit.collect ~process_mgr ~clock ~root:worktree with
-  | Error message -> Alcotest.fail message
+  match
+    Audit.collect ~process_mgr ~clock ~approved_roots:[ worktree ]
+      ~root:worktree
+  with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot -> (
       match find_file "feature.ml" snapshot with
       | Some file when contains file.patch "value = 512" -> ()
@@ -431,8 +671,8 @@ let invalid_utf8_case () =
   write
     (Filename.concat root invalid_path)
     ("let value = \"" ^ String.make 1 (Char.chr 0xff) ^ "\"\n");
-  match Audit.collect ~process_mgr ~clock ~root with
-  | Error message -> Alcotest.fail message
+  match Audit.collect ~process_mgr ~clock ~approved_roots:[ root ] ~root with
+  | Error message -> Alcotest.fail (Audit.error_message message)
   | Ok snapshot ->
       let json = Audit.snapshot_to_yojson snapshot |> Yojson.Safe.to_string in
       let replacement = "\xef\xbf\xbd" in
@@ -448,12 +688,21 @@ let () =
           Alcotest.test_case "porcelain rename provenance" `Quick porcelain_case;
           Alcotest.test_case "journey classification" `Quick journey_case;
           Alcotest.test_case "journey diversity" `Quick diversity_case;
+          Alcotest.test_case "typed error categories" `Quick error_category_case;
           Alcotest.test_case "managed route" `Quick route_case;
         ] );
       ( "integration",
         [
+          Alcotest.test_case "configured repository root authority" `Quick
+            direct_root_authority_case;
           Alcotest.test_case "clean and changed repository" `Quick
             collector_case;
+          Alcotest.test_case "nested workspace scope and rename" `Quick
+            nested_workspace_case;
+          Alcotest.test_case "literal pathspec containment" `Quick
+            literal_pathspec_case;
+          Alcotest.test_case "nested workspace ancestor authority" `Quick
+            nested_workspace_authority_case;
           Alcotest.test_case "core.worktree containment" `Quick
             core_worktree_case;
           Alcotest.test_case "worktree filter rejection" `Quick filter_case;
@@ -461,8 +710,12 @@ let () =
             promisor_lazy_fetch_case;
           Alcotest.test_case "post-check filter race containment" `Quick
             sanitized_filter_race_case;
+          Alcotest.test_case "metadata identity replacement" `Quick
+            metadata_identity_replacement_case;
           Alcotest.test_case "registered linked worktree" `Quick
             linked_worktree_case;
+          Alcotest.test_case "nested linked worktree" `Quick
+            nested_linked_worktree_case;
           Alcotest.test_case "SHA-256 repository" `Quick sha256_case;
           Alcotest.test_case "linked SHA-256 worktree" `Quick linked_sha256_case;
           Alcotest.test_case "invalid UTF-8" `Quick invalid_utf8_case;
