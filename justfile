@@ -29,7 +29,7 @@ default:
 # Build every OCaml artifact: native binaries, tests, and the Bonsai bundle.
 build:
     dune build @all
-    nix develop .#web -c dune build --root web main.bc.js
+    nix develop .#web -c dune build --root web --profile release main.bc.js
 
 # Build only the native OCaml components.
 build-native:
@@ -37,7 +37,7 @@ build-native:
 
 # Build only the Bonsai browser bundle under web/_build/default/main.bc.js.
 build-web:
-    nix develop .#web -c dune build --root web main.bc.js
+    nix develop .#web -c dune build --root web --profile release main.bc.js
 
 # Watch the source tree and rebuild on change. Polls the filesystem so it
 # works on macOS where inotify is not available.

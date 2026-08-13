@@ -42,6 +42,7 @@
   event_stream
   history_loader
   image_attachments
+  last_opened_session
   mention_request
   main
   markdown_view

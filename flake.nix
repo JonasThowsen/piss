@@ -121,6 +121,7 @@
                 ./web/image_batch.mli
                 ./web/image_attachments.ml
                 ./web/image_attachments.mli
+                ./web/last_opened_session.ml
                 ./web/main.ml
                 ./web/markdown_syntax.ml
                 ./web/markdown_syntax.mli
@@ -188,13 +189,14 @@
             ];
             buildPhase = ''
               runHook preBuild
-              dune build main.bc.js
+              dune build --profile release main.bc.js
               runHook postBuild
             '';
             installPhase = ''
               runHook preInstall
               mkdir -p "$out/share/piss-web"
               cp _build/default/main.bc.js "$out/share/piss-web/app.js"
+              test "$(stat -c %s "$out/share/piss-web/app.js")" -lt 5242880
               runHook postInstall
             '';
             doCheck = true;

@@ -316,13 +316,17 @@ let component graph =
                     ~f:(fun (session : Control_plane.Session.t) ->
                       String.equal session.id selected))
             in
+            let previous_id =
+              Option.first_some selected_id (Last_opened_session.read ())
+            in
             let next_id =
               if composer.has_pending () && selected_still_active then
                 selected_id
               else
-                Workspace_catalog.reconcile_selection ~previous:selected_id
+                Workspace_catalog.reconcile_selection ~previous:previous_id
                   next_sessions
             in
+            Last_opened_session.write next_id;
             let catalog_refresh =
               refresh_catalog ~set_workspaces ~set_sessions ~set_archived
                 ~set_creation_options
@@ -370,12 +374,14 @@ let component graph =
     and set_creation_options = set_creation_options
     and composer = composer in
     fun id ->
-      if Option.exists selected_id ~f:(String.equal id) then
-        Effect.Many [ set_mobile_open false; set_menu_open None ]
+      if Option.exists selected_id ~f:(String.equal id) then (
+        Last_opened_session.write (Some id);
+        Effect.Many [ set_mobile_open false; set_menu_open None ])
       else if composer.has_pending () then
         composer.set_notice
           "Retry or abandon the uncertain command before switching sessions."
-      else
+      else (
+        Last_opened_session.write (Some id);
         let catalog_refresh =
           refresh_catalog ~set_workspaces ~set_sessions ~set_archived
             ~set_creation_options
@@ -395,7 +401,7 @@ let component graph =
                       ~refresh_catalog_effect:catalog_refresh
                       ~refresh_snapshot_effect:snapshot_refresh
                       ~set_stream_notice id;
-                  ]))
+                  ])))
   in
   let active_sessions =
     let%arr sessions = sessions in

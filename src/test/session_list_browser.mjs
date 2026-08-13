@@ -82,6 +82,12 @@ try {
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   await page.goto(url, { waitUntil: "domcontentloaded" });
+  const appResponse = await context.request.get(`${url}/app.js`);
+  if (!appResponse.ok()) throw new Error(`browser bundle request failed: ${appResponse.status()}`);
+  const appBytes = (await appResponse.body()).byteLength;
+  if (appBytes >= 5 * 1024 * 1024) {
+    throw new Error(`production browser bundle is unexpectedly large: ${appBytes} bytes`);
+  }
   const session = page.getByRole("button", { name: /^Pi \/ deployed idle \/ opencode$/ });
   try {
     await session.waitFor();
@@ -863,6 +869,13 @@ try {
   await page.unroute("**/api/v2/commands?*");
   await page.unroute("**/api/v2/session?*");
 
+  const rememberedSession = await page.evaluate(() => localStorage.getItem("piss:last-opened-session"));
+  if (rememberedSession !== restoredSession.id) {
+    throw new Error(`selected session was not persisted: ${rememberedSession}`);
+  }
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".app-header").getByRole("heading", { name: "Lifecycle renamed" }).waitFor();
+
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const mobile = await mobileContext.newPage();
   mobile.on("console", (message) => {
@@ -1034,7 +1047,7 @@ try {
     throw new Error(`expected one readable Audit failure, observed ${intentionalAuditFailures}`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai session browser proof passed: catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, Agent/Audit/Details keyboard tabs, session-bound real-file Audit journey and returned-file ledger at desktop/mobile widths, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
+  console.log("Bonsai session browser proof passed: release-sized bundle, remembered session reload, catalog, lifecycle create/rename/archive/restore/selective-delete/bulk-delete, workspace conflict/add/remove, global search, Agent/Audit/Details keyboard tabs, session-bound real-file Audit journey and returned-file ledger at desktop/mobile widths, config, images, response-loss/stale-runtime same-ID retry, steer/follow-up, cancel, runtime details, accessible mobile modal/drawer, viewport sync, aggregation, sticky follow, permissions, and streaming");
 } finally {
   if (browser) await browser.close();
   await Promise.all(auditProofFiles.map(async (file) => {
