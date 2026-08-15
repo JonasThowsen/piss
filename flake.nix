@@ -70,6 +70,7 @@
                 ./web/acp_content_test.ml
                 ./web/dune
                 ./web/dune-project
+                ./web/dune-workspace
                 ./web/app_header.ml
                 ./web/app_header.mli
                 ./web/app_state.ml
@@ -388,6 +389,25 @@
               wait "$dune_pid" 2>/dev/null || true
             }
             trap cleanup EXIT INT TERM
+
+            rpc_registry="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dune/rpc"
+            for _ in $(seq 1 100); do
+              [[ -f "$rpc_registry/$dune_pid.csexp" ]] && break
+              kill -0 "$dune_pid" 2>/dev/null || break
+              sleep 0.05
+            done
+            if [[ ! -f "$rpc_registry/$dune_pid.csexp" ]]; then
+              printf 'Dune RPC did not start for %s. Watcher output:\n' \
+                "$project_root" >&2
+              tail -n 40 "$watch_log" >&2 || true
+              exit 1
+            fi
+
+            for _ in $(seq 1 2400); do
+              grep -q 'waiting for filesystem changes' "$watch_log" && break
+              kill -0 "$dune_pid" 2>/dev/null || break
+              sleep 0.05
+            done
 
             # OCaml-LSP 1.21 discovers Merlin configurations through Dune RPC.
             # Keep one watcher beside the LSP process so Neovim gets project
