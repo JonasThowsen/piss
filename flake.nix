@@ -363,7 +363,36 @@
           bonsaiWeb = import ./nix/bonsai-web.nix { inherit pkgs; };
           ocamlLspPackages = nixpkgs-ocaml-lsp.legacyPackages.${system}.ocaml-ng.ocamlPackages_5_2;
           ocamlLsp = pkgs.writeShellScriptBin "ocamllsp" ''
-            exec ${ocamlLspPackages.ocaml-lsp}/bin/ocamllsp "$@"
+            set -euo pipefail
+
+            if [[ "''${1:-}" == "--version" ]]; then
+              exec ${ocamlLspPackages.ocaml-lsp}/bin/ocamllsp "$@"
+            fi
+
+            project_root=$PWD
+            if [[ ! -f "$project_root/dune-project" ]]; then
+              exec ${ocamlLspPackages.ocaml-lsp}/bin/ocamllsp "$@"
+            fi
+
+            state_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/piss/ocamllsp"
+            mkdir -p "$state_dir"
+            project_key=$(printf '%s' "$project_root" | sha256sum | cut -c1-16)
+            watch_log="$state_dir/dune-$project_key.log"
+
+            ${ocamlPackages.dune_3}/bin/dune build --root "$project_root" \
+              --watch --display=quiet >"$watch_log" 2>&1 &
+            dune_pid=$!
+
+            cleanup() {
+              kill "$dune_pid" 2>/dev/null || true
+              wait "$dune_pid" 2>/dev/null || true
+            }
+            trap cleanup EXIT INT TERM
+
+            # OCaml-LSP 1.21 discovers Merlin configurations through Dune RPC.
+            # Keep one watcher beside the LSP process so Neovim gets project
+            # types without requiring a separate `dune build --watch` command.
+            ${ocamlLspPackages.ocaml-lsp}/bin/ocamllsp "$@"
           '';
         in
         {
