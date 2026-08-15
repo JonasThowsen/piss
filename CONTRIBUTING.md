@@ -1,6 +1,6 @@
 # Contributing
 
-PISS is security-sensitive. Keep changes narrow, typed, and covered by tests where practical.
+Piss is security-sensitive. Keep changes narrow, typed, and covered by tests where practical.
 
 ## Development
 

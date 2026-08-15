@@ -1,4 +1,4 @@
-(* PISS wire protocol. The control plane and every session worker exchange
+(* Piss wire protocol. The control plane and every session worker exchange
    JSON-RPC-like messages over a Unix-domain socket. The shapes are designed so
    that every field has a bounded length (no arbitrary blobs) and every variant
    has a clear `op` discriminator.

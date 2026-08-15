@@ -1,19 +1,19 @@
-# PISS
+# Piss
 
 [![CI](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml)
 
-**PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
+**Piss** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
 
 The repository contains the production OCaml implementation.
 
-PISS is designed to run on **NixOS + Tailscale**. The flake packages the application; the host configuration owns the service and network policy:
+Piss is designed to run on **NixOS + Tailscale**. The flake packages the application; the host configuration owns the service and network policy:
 
 ```text
 https://piss.<tailnet>.ts.net
 ```
 
 > [!WARNING]
-> Remote agent control is equivalent to remote access to your user account. Never expose PISS with Tailscale Funnel or an unauthenticated public proxy.
+> Remote agent control is equivalent to remote access to your user account. Never expose Piss with Tailscale Funnel or an unauthenticated public proxy.
 
 ## Source layout
 
@@ -56,7 +56,7 @@ flake.nix           Unified OCaml 5.2 native/web shells and packages
 
 The package contains `pissd`, `piss-session-worker`, `piss-session-mcp`, and `piss-mock-agent`. Browser assets are under `share/piss/public`; a host service can use `${piss}/share/piss/public` for `--public` and `${piss}/share/piss/public/app.js` for `--app-js`.
 
-Pi, OpenCode, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building PISS rather than becoming a second NixOS configuration framework.
+Pi, OpenCode, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building Piss rather than becoming a second NixOS configuration framework.
 
 ## Updating
 
@@ -66,7 +66,7 @@ nix flake update piss
 sudo nixos-rebuild switch --flake .#your-host
 ```
 
-The host configuration decides when to restart the control plane and how to replace idle workers. PISS keeps worker state durable so replacing the control plane does not duplicate commands.
+The host configuration decides when to restart the control plane and how to replace idle workers. Piss keeps worker state durable so replacing the control plane does not duplicate commands.
 
 The browser is installable as a PWA. The fixed shell assets are served with `Cache-Control: no-store`, and the service worker does not cache frontend files. A normal reload therefore uses the deployed generation; the cutover worker also removes shell caches created by releases predating the OCaml implementation.
 

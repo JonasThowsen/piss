@@ -228,7 +228,7 @@ let
         continue
       }
       [[ "$(printf '%s' "$prepared" | $jq -r '.ready // false')" == true ]] || continue
-      echo "upgrading idle PISS worker $id from $current to $target"
+      echo "upgrading idle Piss worker $id from $current to $target"
       $systemctl --user restart "$unit"
       ready=false
       for _ in $(seq 1 300); do
@@ -274,7 +274,7 @@ let
     ${
       if cfg.tailscale.authKeyFile == null then
         ''
-          echo "PISS has not joined the tailnet (backend state: $state); run piss-tailscale-login." >&2
+          echo "Piss has not joined the tailnet (backend state: $state); run piss-tailscale-login." >&2
           exit 1
         ''
       else
@@ -296,7 +296,7 @@ let
       [[ "$state" == "Running" ]] && break
       sleep 1
     done
-    [[ "$state" == "Running" ]] || { echo "The PISS Tailscale node is not authenticated." >&2; exit 1; }
+    [[ "$state" == "Running" ]] || { echo "The Piss Tailscale node is not authenticated." >&2; exit 1; }
     exec ${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" serve --bg --yes \
       http://127.0.0.1:${toString cfg.port}
   '';
@@ -312,12 +312,12 @@ let
 in
 {
   options.services.piss = {
-    enable = lib.mkEnableOption "the PISS coding-agent control plane";
+    enable = lib.mkEnableOption "the Piss coding-agent control plane";
     package = lib.mkOption {
       type = lib.types.package;
       default = package;
       defaultText = lib.literalExpression "inputs.piss.packages.\${system}.piss";
-      description = "PISS native server, worker, mock agent, MCP server, and browser package.";
+      description = "Piss native server, worker, mock agent, MCP server, and browser package.";
     };
     adapterPackage = lib.mkOption {
       type = lib.types.package;
@@ -367,7 +367,7 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 4318;
-      description = "Loopback port for the PISS control plane.";
+      description = "Loopback port for the Piss control plane.";
     };
     maxActiveSessions = lib.mkOption {
       type = lib.types.ints.between 1 256;
@@ -404,16 +404,16 @@ in
     allowedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Tailscale user logins authorized to use PISS.";
+      description = "Tailscale user logins authorized to use Piss.";
     };
     tailscale = {
-      enable = lib.mkEnableOption "an independent userspace Tailscale node for PISS" // {
+      enable = lib.mkEnableOption "an independent userspace Tailscale node for Piss" // {
         default = true;
       };
       hostname = lib.mkOption {
         type = lib.types.str;
         default = "piss";
-        description = "Tailnet hostname for PISS.";
+        description = "Tailnet hostname for Piss.";
       };
       allowedOrigins = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -513,7 +513,7 @@ in
     environment.systemPackages = [ cfg.package ] ++ lib.optional cfg.tailscale.enable loginTool;
 
     systemd.user.services."piss-ocaml-worker@" = {
-      description = "PISS independently supervised worker for session %i";
+      description = "Piss independently supervised worker for session %i";
       restartIfChanged = false;
       stopIfChanged = false;
       after = [ "network-online.target" ];
@@ -561,7 +561,7 @@ in
     };
 
     systemd.user.services.piss-ocaml = {
-      description = "PISS coding-agent control plane";
+      description = "Piss coding-agent control plane";
       wantedBy = [ "default.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -635,7 +635,7 @@ in
     };
 
     systemd.user.services.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
-      description = "Upgrade idle PISS workers to the current immutable generation";
+      description = "Upgrade idle Piss workers to the current immutable generation";
       wantedBy = [ "default.target" ];
       after = [ "piss-ocaml.service" ];
       path = [ pkgs.coreutils ];
@@ -655,7 +655,7 @@ in
       };
     };
     systemd.user.timers.piss-ocaml-worker-upgrade = lib.mkIf cfg.autoUpgradeIdleWorkers {
-      description = "Periodically upgrade idle PISS workers";
+      description = "Periodically upgrade idle Piss workers";
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "30s";
@@ -666,7 +666,7 @@ in
     };
 
     systemd.user.services.piss-ocaml-tailscaled = lib.mkIf cfg.tailscale.enable {
-      description = "Independent userspace Tailscale node for PISS";
+      description = "Independent userspace Tailscale node for Piss";
       wantedBy = [ "default.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -698,7 +698,7 @@ in
       };
     };
     systemd.user.services.piss-ocaml-tailscale-up = lib.mkIf cfg.tailscale.enable {
-      description = "Authenticate the independent PISS Tailscale node";
+      description = "Authenticate the independent Piss Tailscale node";
       wantedBy = [ "default.target" ];
       after = [ "piss-ocaml-tailscaled.service" ];
       requires = [ "piss-ocaml-tailscaled.service" ];
@@ -709,7 +709,7 @@ in
       };
     };
     systemd.user.services.piss-ocaml-tailscale-serve = lib.mkIf cfg.tailscale.enable {
-      description = "Serve PISS through Tailscale";
+      description = "Serve Piss through Tailscale";
       wantedBy = [ "default.target" ];
       after = [
         "piss-ocaml.service"

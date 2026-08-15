@@ -126,7 +126,7 @@ let peer_input_schema =
               `Assoc
                 [
                   ("type", `String "string");
-                  ("description", `String "Target PISS session ID");
+                  ("description", `String "Target Piss session ID");
                 ] );
             ( "prompt",
               `Assoc
@@ -147,7 +147,7 @@ let tools =
           ("name", `String "piss_list_sessions");
           ( "description",
             `String
-              "List active PISS sessions available for agent-to-agent \
+              "List active Piss sessions available for agent-to-agent \
                collaboration." );
           ( "inputSchema",
             `Assoc
@@ -162,7 +162,7 @@ let tools =
           ("name", `String "piss_ask_session");
           ( "description",
             `String
-              "Ask another active PISS session to perform one durable turn and \
+              "Ask another active Piss session to perform one durable turn and \
                return its response. Use piss_list_sessions first to choose the \
                target." );
           ("inputSchema", peer_input_schema);
@@ -172,7 +172,7 @@ let tools =
           ("name", `String "piss_send_session");
           ( "description",
             `String
-              "Send work to another PISS session without waiting. Returns a \
+              "Send work to another Piss session without waiting. Returns a \
                durable request ID for later collection, enabling parallel \
                fan-out." );
           ("inputSchema", peer_input_schema);
@@ -183,7 +183,7 @@ let tools =
           ( "description",
             `String
               "Durably subscribe this orchestrator to asynchronous request \
-               completion, then end the current turn. PISS will wait while the \
+               completion, then end the current turn. Piss will wait while the \
                session is dormant and automatically start exactly one new turn \
                with the captured responses when any or all requests are \
                finished." );

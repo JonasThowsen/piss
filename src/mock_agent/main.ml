@@ -410,7 +410,7 @@ let () =
                       `Assoc
                         [
                           ("name", `String "piss-mock-agent");
-                          ("title", `String "PISS replaceability tracer");
+                          ("title", `String "Piss replaceability tracer");
                           ("version", `String "0.1.0");
                         ] );
                     ("authMethods", `List []);

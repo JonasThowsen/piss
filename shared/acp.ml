@@ -92,7 +92,7 @@ let initialize_request =
            `Assoc
              [
                ("name", `String "piss");
-               ("title", `String "PISS session worker");
+               ("title", `String "Piss session worker");
                ("version", `String "0.1.0-tracer");
              ] );
        ])

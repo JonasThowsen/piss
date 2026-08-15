@@ -124,7 +124,7 @@ let git process_mgr root args =
     ([
        "git";
        "-c";
-       "user.name=PISS";
+       "user.name=Piss";
        "-c";
        "user.email=piss@example.test";
        "-C";

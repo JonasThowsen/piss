@@ -1,6 +1,6 @@
-/* PISS uses the network as the source of truth for every frontend asset.
+/* Piss uses the network as the source of truth for every frontend asset.
    This worker exists for installed-app lifecycle and to retire caches left by
-   the former frontend at the stable PISS origin. */
+   the former frontend at the stable Piss origin. */
 const LEGACY_CACHE_PREFIX = "piss-shell-";
 
 self.addEventListener("install", (event) => {
@@ -16,7 +16,7 @@ self.addEventListener("activate", (event) => {
 
     // The retired worker served its cached shell before it could discover this
     // replacement. Reload those controlled windows once after cache removal so
-    // the stable PISS address cuts over without a hard refresh or cache purge.
+    // the stable Piss address cuts over without a hard refresh or cache purge.
     if (legacyKeys.length > 0) {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of windows) {

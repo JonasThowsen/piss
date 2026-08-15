@@ -1,4 +1,4 @@
-(* Pure domain types for the PISS control plane, worker, and browser shell. See
+(* Pure domain types for the Piss control plane, worker, and browser shell. See
    [domain.mli] for the design notes. *)
 
 type session_id = Session_id of string

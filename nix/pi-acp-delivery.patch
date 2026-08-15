@@ -29,7 +29,7 @@ index 93d1c01..900cb3e 100644
  
      const { message, images } = promptToPiMessage(params.prompt)
  
-+    // PISS uses ACP metadata rather than Pi-specific control-plane logic. Pi's
++    // Piss uses ACP metadata rather than Pi-specific control-plane logic. Pi's
 +    // adapter translates the harness-neutral delivery intent to Pi RPC.
 +    const delivery = (params as PromptRequest & {
 +      _meta?: { piss?: { delivery?: string } }

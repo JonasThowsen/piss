@@ -1,4 +1,4 @@
-# PISS development recipes.
+# Piss development recipes.
 #
 # `just` is a small command runner: https://github.com/casey/just
 # Run `just` with no arguments to list every recipe.

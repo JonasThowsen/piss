@@ -1,4 +1,4 @@
-; Pure type and protocol definitions for the PISS native services.
+; Pure type and protocol definitions for the Piss native services.
 ;
 ; Anything that depends on IO (filesystem access, SQLite stores,
 ; network requests) belongs in src/lib/ as part of `piss.core`,

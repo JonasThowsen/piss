@@ -111,8 +111,8 @@ try {
   }
   const manifest = await shellResponses.get("/manifest.webmanifest").json();
   if (
-    manifest.name !== "PISS"
-    || manifest.short_name !== "PISS"
+    manifest.name !== "Piss"
+    || manifest.short_name !== "Piss"
     || manifest.id !== "/"
     || manifest.start_url !== "/"
     || manifest.scope !== "/"
@@ -163,7 +163,7 @@ try {
     throw new Error(`${error.message}\n${errors.join("\n")}\nbody: ${await page.locator("body").innerText()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
-  const expectedWorkspaceLabel = `PISS / ${workspace}`;
+  const expectedWorkspaceLabel = `Piss / ${workspace}`;
   await page.locator(".app-header").getByText(expectedWorkspaceLabel, { exact: true }).waitFor();
   const realAuditResponse = await context.request.get(`${url}/api/v2/sessions/s-mention-browser/audit`);
   if (!realAuditResponse.ok()) {
@@ -698,9 +698,9 @@ try {
   }
   await waitForIdle();
 
-  const workspaceSettings = page.getByRole("button", { name: "Workspace settings for PISS" });
+  const workspaceSettings = page.getByRole("button", { name: "Workspace settings for Piss" });
   await workspaceSettings.click();
-  await page.getByRole("menu", { name: "PISS workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
+  await page.getByRole("menu", { name: "Piss workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
   const blockedRemoval = page.getByRole("alertdialog", { name: "Remove workspace?" });
   await blockedRemoval.getByText("This does not delete the directory or any files.", { exact: false }).waitFor();
   await blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
@@ -722,7 +722,7 @@ try {
   await removeWeb.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
   await page.getByRole("button", { name: "Workspace settings for web" }).waitFor({ state: "detached" });
 
-  await page.getByRole("button", { name: "New session in PISS" }).click();
+  await page.getByRole("button", { name: "New session in Piss" }).click();
   const creator = page.getByRole("dialog", { name: "New session" });
   await creator.getByLabel("Session title").fill("Lifecycle proof");
   if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "opencode") {

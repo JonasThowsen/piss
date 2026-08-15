@@ -1,4 +1,4 @@
-# PISS OCaml architecture and cutover record
+# Piss OCaml architecture and cutover record
 
 Status: **implemented and promoted to production**
 
@@ -6,23 +6,23 @@ Branch: `main`
 
 ## 1. Objective
 
-Rebuild PISS as a harness-agnostic, local-first agent control plane whose own deployment, restart, or failure does not interrupt active agent processes.
+Rebuild Piss as a harness-agnostic, local-first agent control plane whose own deployment, restart, or failure does not interrupt active agent processes.
 
 The defining guarantee is **control-plane replaceability**:
 
-> While an agent is executing a tool, the PISS API/control-plane process can be killed and replaced. The agent and tool processes keep their PIDs, output is durably buffered, the replacement control plane reconstructs the session, and no accepted command is executed twice.
+> While an agent is executing a tool, the Piss API/control-plane process can be killed and replaced. The agent and tool processes keep their PIDs, output is durably buffered, the replacement control plane reconstructs the session, and no accepted command is executed twice.
 
 The backend and browser application are written in OCaml 5.2 and Dune. The browser uses Bonsai and js_of_ocaml in a separate Nix shell with the same compiler version. The first harness integration uses ACP; Pi may be reached through an ACP adapter while remaining replaceable.
 
 ## 2. Product boundary
 
-PISS is a secure control plane and user interface for coding agents. It is not itself required to own the model/tool reasoning loop.
+Piss is a secure control plane and user interface for coding agents. It is not itself required to own the model/tool reasoning loop.
 
-PISS owns:
+Piss owns:
 
 - authenticated remote browser access;
 - trusted workspace registration and path policy;
-- durable PISS session identity;
+- durable Piss session identity;
 - creation and independent supervision of session workers;
 - accepted-command deduplication;
 - bounded durable event projection;
@@ -30,7 +30,7 @@ PISS owns:
 - user approvals and interactive requests;
 - engineering-workflow authority, progress, and operation receipts;
 - notifications, review, and managed browser capabilities;
-- mapping PISS sessions to harness-owned sessions;
+- mapping Piss sessions to harness-owned sessions;
 - durable, capability-authenticated request/reply between active sessions so any session can act as an orchestrator.
 
 A harness owns:
@@ -50,7 +50,7 @@ ACP owns the interoperable vocabulary between them:
 - permission and elicitation requests;
 - configurable models, modes, and reasoning levels.
 
-PISS-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. The primary collaboration path is a PISS-provided MCP server with session discovery, synchronous request/reply, asynchronous fan-out, durable response collection, and durable wake subscriptions. An orchestrator can send work to many independently supervised sessions, subscribe to any or all completions, end its current turn, and be started in exactly one new turn containing the captured results once it is idle. Subscription and deterministic wake-command identities survive control replacement; PISS schedules the turn but does not own its reasoning loop. ACP wire messages are not the PISS persistence schema.
+Piss-specific capabilities remain server-owned and may be exposed to harnesses through MCP or negotiated ACP extensions. The primary collaboration path is a Piss-provided MCP server with session discovery, synchronous request/reply, asynchronous fan-out, durable response collection, and durable wake subscriptions. An orchestrator can send work to many independently supervised sessions, subscribe to any or all completions, end its current turn, and be started in exactly one new turn containing the captured results once it is idle. Subscription and deterministic wake-command identities survive control replacement; Piss schedules the turn but does not own its reasoning loop. ACP wire messages are not the Piss persistence schema.
 
 ## 3. Non-negotiable invariants
 
@@ -68,14 +68,14 @@ PISS-specific capabilities remain server-owned and may be exposed to harnesses t
 
 These identities are distinct and never substituted for one another:
 
-- `PissSessionId`: durable, allocated by PISS;
+- `PissSessionId`: durable, allocated by Piss;
 - `WorkerId`: one independently supervised worker incarnation;
 - `RuntimeGeneration`: monotonically increasing writable runtime generation;
 - `HarnessSessionId`: opaque identifier allocated by the harness;
 - `CommandId`: client-generated idempotency identity;
 - `EventSequence`: worker-allocated monotonic event position;
 - `ToolCallId`: harness-owned identity scoped to a harness session;
-- `OperationId` and `OperationReceiptId`: PISS workflow authority identities.
+- `OperationId` and `OperationReceiptId`: Piss workflow authority identities.
 
 Every runtime-targeted mutation binds to `PissSessionId`, `WorkerId`, and `RuntimeGeneration`. Stale generations fail closed.
 
@@ -111,7 +111,7 @@ received -> rejected
 - Losing the browser or control plane never converts a pending interaction into approval.
 - Pending permission and elicitation requests remain pending across reconnect.
 - An approval is released only after the authority decision is durable.
-- Generic ACP `allow_always` is not equivalent to a PISS engineering-workflow authority envelope.
+- Generic ACP `allow_always` is not equivalent to a Piss engineering-workflow authority envelope.
 - Workspace paths supplied by a harness are untrusted and revalidated against the worker's immutable authorized roots.
 
 ### 3.6 Resource bounds
@@ -164,7 +164,7 @@ Production workers run as independently managed user-systemd units or equivalent
 
 The worker unit records:
 
-- PISS session ID;
+- Piss session ID;
 - workspace device/inode identity and canonical path;
 - worker generation and binary generation;
 - harness adapter and fixed executable;
@@ -189,7 +189,7 @@ The local protocol provides:
 - quiesce/stop request;
 - health and bounded diagnostic state.
 
-It is not ACP. ACP is the worker-to-harness protocol; the worker protocol includes PISS durability and reconciliation semantics absent from ACP.
+It is not ACP. ACP is the worker-to-harness protocol; the worker protocol includes Piss durability and reconciliation semantics absent from ACP.
 
 ## 5. Persistence model
 
@@ -198,7 +198,7 @@ SQLite in WAL mode is the default local system of record. Foreign keys are enabl
 `pissd` owns a global database containing:
 
 - trusted workspaces;
-- PISS sessions and worker registrations;
+- Piss sessions and worker registrations;
 - browser-visible names and metadata;
 - engineering workflows and authority decisions;
 - notification subscriptions;
@@ -259,17 +259,17 @@ ACP v2 remains feature-gated until stable. The internal domain must not assume t
 
 ### 7.2 Capability policy
 
-PISS renders three layers:
+Piss renders three layers:
 
 1. baseline interoperable ACP features;
 2. negotiated optional capabilities;
-3. namespaced harness/PISS extensions.
+3. namespaced harness/Piss extensions.
 
-Unsupported controls are absent or explicitly unavailable. PISS never fabricates support. Raw unknown extensions may be retained in bounded diagnostic events but do not affect authority.
+Unsupported controls are absent or explicitly unavailable. Piss never fabricates support. Raw unknown extensions may be retained in bounded diagnostic events but do not affect authority.
 
 ### 7.3 Mapping policy
 
-PISS keeps its own canonical values for attention, delivery, and workflow state. ACP updates are reduced into those values through total functions. Harness-specific adapters may enrich but never weaken security validation.
+Piss keeps its own canonical values for attention, delivery, and workflow state. ACP updates are reduced into those values through total functions. Harness-specific adapters may enrich but never weaken security validation.
 
 ## 8. HTTP/browser boundary
 
@@ -429,7 +429,7 @@ record of the incremental migration.
 - **Browser language:** OCaml with Bonsai, compiled by js_of_ocaml through Dune in the OCaml 5.2 web shell.
 - **Concurrency:** structured concurrency within a process; OS supervision between lifecycle domains.
 - **Persistence:** SQLite WAL with one explicit owning process per database.
-- **Harness boundary:** ACP baseline plus negotiated capabilities; MCP/PISS extensions for specialized features.
+- **Harness boundary:** ACP baseline plus negotiated capabilities; MCP/Piss extensions for specialized features.
 - **Deployment:** immutable Nix generations; API and workers upgraded independently.
 - **Migration:** tracer-bullet replacement, not horizontal big-bang parity work.
 

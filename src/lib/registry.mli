@@ -32,7 +32,7 @@ type session = {
   broker_token : string;
   workspace_id : string;
 }
-(** A durable PISS-owned session. The token is opaque and is the shared secret
+(** A durable Piss-owned session. The token is opaque and is the shared secret
     the worker carries to authenticate with the control plane over the broker.
 *)
 

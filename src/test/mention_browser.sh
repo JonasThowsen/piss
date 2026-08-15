@@ -24,7 +24,7 @@ repository="$root/repository"
 workspace="$repository/nested-workspace"
 mkdir -p "$workspace"
 git -C "$root" init -q repository
-git -C "$repository" config user.name PISS
+git -C "$repository" config user.name Piss
 git -C "$repository" config user.email piss@example.test
 cp -a "$source_workspace"/. "$workspace"/
 rm -rf "$workspace/.git" "$workspace/_build" "$workspace/web/_build"
@@ -78,7 +78,7 @@ chmod +x "$root/launch" "$root/stop"
   --session-launcher "$root/launch" --session-stopper "$root/stop" \
   --available-harness pi --available-harness opencode --available-harness mock \
   --default-harness opencode \
-  --workspace-spec "test-workspace|PISS|$workspace" \
+  --workspace-spec "test-workspace|Piss|$workspace" \
   --workspace-discovery-root "$repository" \
   --bootstrap-session s-mention-browser --public "$public_dir" --app-js "$app_js" \
   --generation mention-browser --dev-bypass-auth >"$root/control.log" 2>&1 &

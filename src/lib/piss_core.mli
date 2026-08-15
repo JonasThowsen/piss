@@ -1,4 +1,4 @@
-(* Piss_core is the backend umbrella for the PISS libraries. *)
+(* Piss_core is the backend umbrella for the Piss libraries. *)
 
 module Domain : module type of Piss_shared.Domain
 module Error : module type of Piss_shared.Error

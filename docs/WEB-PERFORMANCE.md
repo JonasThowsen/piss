@@ -1,6 +1,6 @@
 # Web performance guidelines
 
-PISS treats interaction responsiveness as an architectural property, not a final polish pass. Bonsai's incremental graph only helps when state dependencies match the visible ownership boundaries in the UI.
+Piss treats interaction responsiveness as an architectural property, not a final polish pass. Bonsai's incremental graph only helps when state dependencies match the visible ownership boundaries in the UI.
 
 ## Core invariant
 

@@ -1,5 +1,5 @@
 {
-  description = "PISS - Pi sin sidecar";
+  description = "Piss - Pi sin sidecar";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -288,7 +288,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.piss}/bin/pissd";
-          meta.description = "Run the PISS control plane";
+          meta.description = "Run the Piss control plane";
         };
       });
 
@@ -307,7 +307,7 @@
                   harness = "mock";
                   piCommand = nixpkgs.lib.getExe pkgs.pi-coding-agent;
                   workspaces.default = {
-                    name = "PISS";
+                    name = "Piss";
                     path = "/var/empty";
                   };
                 };

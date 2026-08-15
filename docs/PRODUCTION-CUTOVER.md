@@ -18,7 +18,7 @@ stable `main` branch and `piss.<tailnet>.ts.net` origin.
 The retired service stored the stable identity in
 `~/.local/state/piss/tailscale`. Before deploying the new module:
 
-1. Verify the `piss` peer is offline and `piss-ocaml` is the only active PISS
+1. Verify the `piss` peer is offline and `piss-ocaml` is the only active Piss
    node.
 2. Back up `~/.local/state/piss/tailscale` and
    `~/.local/state/piss-ocaml-tailscale/tailscale` with modes preserved.

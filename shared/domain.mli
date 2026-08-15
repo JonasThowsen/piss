@@ -1,4 +1,4 @@
-(* Pure domain types for the PISS control plane and worker. These values define
+(* Pure domain types for the Piss control plane and worker. These values define
    the wire contract projected to the separately compiled browser application;
    this module must not perform IO.
 
@@ -15,7 +15,7 @@
    identity first when it appears in a signature. *)
 
 type session_id
-(** A PISS-owned session identity, allocated by the control plane and durable
+(** A Piss-owned session identity, allocated by the control plane and durable
     for the lifetime of the registry. The wrapping record signals that callers
     should never reach inside. *)
 

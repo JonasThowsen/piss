@@ -25,10 +25,10 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(caches.open(CACHE_NAME).then((cache) => cache.match("/")));
 });
 `;
-const legacyPage = `<!doctype html><meta charset="utf-8"><title>Legacy PISS</title>
+const legacyPage = `<!doctype html><meta charset="utf-8"><title>Legacy Piss</title>
 <div id="version">legacy frontend</div>
 <script>navigator.serviceWorker.register("/service-worker.js", { scope: "/", updateViaCache: "none" });</script>`;
-const currentPage = `<!doctype html><meta charset="utf-8"><title>Current PISS</title>
+const currentPage = `<!doctype html><meta charset="utf-8"><title>Current Piss</title>
 <div id="version">current frontend</div>`;
 
 let current = false;

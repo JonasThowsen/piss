@@ -1,4 +1,4 @@
-(* Inter-session request broker used by the PISS-provided MCP tools. *)
+(* Inter-session request broker used by the Piss-provided MCP tools. *)
 
 open Piss_core
 
@@ -410,7 +410,7 @@ let peer_wake_prompt (subscription : Registry.peer_subscription) requests =
   in
   let full =
     Printf.sprintf
-      "PISS durable collaboration wake-up.\n\n\
+      "Piss durable collaboration wake-up.\n\n\
        Subscription %s is ready (waitFor=%s). Your previous turn ended while \
        these sessions continued independently. Review the captured results \
        below and continue the orchestration. Do not redispatch completed \
@@ -429,7 +429,7 @@ let peer_wake_prompt (subscription : Registry.peer_subscription) requests =
   in
   let limit = (60 * 1024) - 32 in
   if String.length full <= limit then full
-  else String.sub full 0 limit ^ "\n[responses truncated by PISS]\n"
+  else String.sub full 0 limit ^ "\n[responses truncated by Piss]\n"
 
 let accept_peer_subscription (manager : Config.managed_workers)
     ~(source : Registry.session) json =

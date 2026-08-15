@@ -538,7 +538,7 @@ let truncate_utf8 value maximum already_truncated =
   let value = sanitize_utf8 value in
   if String.length value <= maximum && not already_truncated then (value, false)
   else
-    let suffix = "\n\n[patch truncated by PISS]\n" in
+    let suffix = "\n\n[patch truncated by Piss]\n" in
     let keep = max 0 (maximum - String.length suffix) in
     (utf8_prefix value keep ^ suffix, true)
 

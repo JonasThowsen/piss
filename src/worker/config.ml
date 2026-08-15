@@ -48,7 +48,7 @@ let parse () =
     [
       ("--socket", Arg.Set_string socket_path, "Worker Unix socket path");
       ("--database", Arg.Set_string database_path, "Worker SQLite database path");
-      ("--session", Arg.Set_string session_id, "PISS session ID");
+      ("--session", Arg.Set_string session_id, "Piss session ID");
       ("--worker", Arg.Set_string worker_id, "Worker ID");
       ("--generation", Arg.Set_string generation, "Immutable worker generation");
       ("--workspace", Arg.Set_string workspace, "Authorized workspace");
@@ -58,7 +58,7 @@ let parse () =
       ( "--harness-arg",
         Arg.String (fun value -> harness_args := value :: !harness_args),
         "Fixed ACP harness argument (repeatable)" );
-      ("--session-mcp", Arg.Set_string session_mcp, "PISS session MCP server");
+      ("--session-mcp", Arg.Set_string session_mcp, "Piss session MCP server");
       ("--broker-url", Arg.Set_string broker_url, "Loopback session broker URL");
       ("--broker-token", Arg.Set_string broker_token, "Session broker token");
       ("--curl-command", Arg.Set_string curl_command, "Fixed curl executable");

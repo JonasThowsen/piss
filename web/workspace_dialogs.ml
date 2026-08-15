@@ -343,7 +343,7 @@ let component ~on_reload graph =
                   [
                     Vdom.Node.strong [ text workspace.name ];
                     text
-                      " will be removed from PISS. This does not delete the \
+                      " will be removed from Piss. This does not delete the \
                        directory or any files.";
                   ];
                 Vdom.Node.code

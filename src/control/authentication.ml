@@ -33,7 +33,7 @@ let valid_json_mutation ~dev_bypass ~allowed_origins request =
            directly, the Host the proxy in front of us advertised
            (X-Forwarded-Host), or any pattern in --allowed-origin. The pattern
            syntax is glob-style ('*' matches any run of characters), so the
-           NixOS module can pass the configured PISS hostname pattern and accept
+           NixOS module can pass the configured Piss hostname pattern and accept
            its Tailscale Serve URL without knowing the tailnet up front. *)
         let accepted_patterns =
           let direct =

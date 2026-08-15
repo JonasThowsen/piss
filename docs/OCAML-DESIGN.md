@@ -1,4 +1,4 @@
-# PISS OCaml design notes
+# Piss OCaml design notes
 
 Status: **historical design record; the rewrite has advanced beyond this proposal.**
 Scope: a superseded proposal for OCaml 5.5 native services and the OCaml 5.2
@@ -37,7 +37,7 @@ constructed at the call site. This rules out the usual first-class
 module ergonomic problems (boxed allocations, no inlining) while
 preserving the "give me your dictionary" expressivity.
 
-This is the right tool for PISS in two places:
+This is the right tool for Piss in two places:
 
 - *A generic JSON encoder for an opaque event ledger*. The current
   `Domain.event_to_yojson` is a hand-written conversion per event kind.
@@ -49,7 +49,7 @@ This is the right tool for PISS in two places:
   rather than parsing SQL on every call.
 
 OCaml 5.5.0 supports `(module M : S) -> t[M]` syntax. This proposal assumed
-PISS would target OCaml ≥ 5.5, but the implementation instead remains on 5.2
+Piss would target OCaml ≥ 5.5, but the implementation instead remains on 5.2
 for compatibility with the Bonsai toolchain.
 
 ### 1.2 Polymorphic functions as function arguments
@@ -69,7 +69,7 @@ let apply_map (map: 'a 'b. ('a -> 'b) -> 'a list -> 'b list) =
   map string_of_int [1;2;3]
 ```
 
-For PISS the immediate use case is `Wire.request_of_yojson` and
+For Piss the immediate use case is `Wire.request_of_yojson` and
 `Wire.response_to_yojson`. They are already polymorphic over `'a` and
 `'b` and are routinely passed as continuations; the new syntax removes
 the record wrapper that the current code does not have, but should
@@ -104,7 +104,7 @@ were considered unique. Any code that relied on the rule (e.g. for
 GADT type-level labels using abstract types) needs to switch to
 external types.
 
-The PISS code base does not use any abstract types as GADT labels.
+The Piss code base does not use any abstract types as GADT labels.
 The harness adapter and session IDs are plain strings; ACP envelope
 IDs are JSON values. So this breaking change does not affect us, but
 the rule of thumb going forward is: *if you need a type that is
@@ -133,7 +133,7 @@ type is everywhere in the OCaml ecosystem. It means a reader of any
 call site can guess where the types and operations come from without
 grep.
 
-For PISS this means:
+For Piss this means:
 
 - `Domain.session_id`, `Domain.worker_id`, `Domain.runtime_generation`
   are already wrapped correctly (each is an abstract type with a
@@ -154,7 +154,7 @@ Things that should *become* modules:
 
 ### 2.2 `mli` files are the public API
 
-No PISS module currently has an `.mli`. That is the single largest
+No Piss module currently has an `.mli`. That is the single largest
 correctness and discoverability problem in the rewrite: every module
 exposes every value, every type leaks its representation, and there
 is no documentation that `odoc` can consume.
@@ -184,7 +184,7 @@ does it maintain?*
 ### 2.3 Abstract by default, concrete only when pattern-matching wins
 
 Real World OCaml's "Design with Modules" chapter is unambiguous: *most
-types should be abstract.* The reasons are exactly the ones PISS
+types should be abstract.* The reasons are exactly the ones Piss
 needs:
 
 - An abstract type lets us change the implementation without breaking
@@ -209,7 +209,7 @@ Exceptions to the abstract-by-default rule:
 ### 2.4 Design for the call site
 
 Real World OCaml again: *the interface should make the call obvious*.
-For PISS that means:
+For Piss that means:
 
 - `Registry.open_ ~path` (not `Registry.create path`).
 - `Workers.create_managed_session ~harness ~workspace_id ~title`
@@ -222,8 +222,8 @@ For PISS that means:
 
 Base/Core maintain the convention that *every* container module exposes
 `length`, `is_empty`, `to_list`, `iter`, `fold`, `map`, etc. We are
-not aiming for that depth (PISS is not a container library), but
-within the PISS-specific clusters the same discipline applies:
+not aiming for that depth (Piss is not a container library), but
+within the Piss-specific clusters the same discipline applies:
 
 - Every store module (`Store`, `Registry`) exposes
   `open_ ~path`, `close`, and is closed over `Eio.Switch.t` for
@@ -253,7 +253,7 @@ table.
 
 OCaml's module system is *the* way to bundle related values and types.
 Using a plain record for that purpose is a known anti-pattern
-sometimes called the "module-as-record" smell. PISS has it in two
+sometimes called the "module-as-record" smell. Piss has it in two
 places:
 
 - `Control.managed_workers` (record with `state_root`,
@@ -275,7 +275,7 @@ to add the command to the hashtable while updating the running count.
 Eio's `Stdenv` pattern (network, clock, filesystem, process manager
 passed as arguments; each function takes only the ones it needs) is
 the canonical way to make concurrent OCaml testable and auditable.
-PISS already uses this at the top level (`Eio_main.run @@ fun env -> run ~env args`),
+Piss already uses this at the top level (`Eio_main.run @@ fun env -> run ~env args`),
 but the rest of the code closes over the network, the clock, and
 the directory from the env without declaring them. Concretely:
 

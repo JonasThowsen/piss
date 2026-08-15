@@ -26,7 +26,7 @@ let render sessions workspaces selected_id (runtime : Runtime_domain.t option)
     | Session_rail.Loaded _, None, _ -> ("idle", "idle")
   in
   let title =
-    Option.value_map selected ~default:"PISS" ~f:(fun session -> session.title)
+    Option.value_map selected ~default:"Piss" ~f:(fun session -> session.title)
   in
   let context =
     Option.value_map workspace ~default:"Durable agent workbench"

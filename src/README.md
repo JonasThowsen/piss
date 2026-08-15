@@ -1,6 +1,6 @@
-# PISS — OCaml implementation
+# Piss — OCaml implementation
 
-This directory contains the native OCaml 5.2 services for PISS. The boundaries
+This directory contains the native OCaml 5.2 services for Piss. The boundaries
 are real:
 
 ```text
@@ -18,9 +18,9 @@ piss-session-worker@<session> (independent systemd unit + SQLite WAL)
         v
 pi-acp + Pi  OR  opencode acp (selected per session)
         |
-        | PISS-provided MCP tools + capability-authenticated broker
+        | Piss-provided MCP tools + capability-authenticated broker
         v
-other independently supervised PISS sessions
+other independently supervised Piss sessions
 ```
 
 The mock ACP agent remains only as a deterministic integration-test fixture.
@@ -32,7 +32,7 @@ shared/                shared library (Piss_shared) — pure types and
 │                       protocol definitions that both the backend
 │                       and the browser shell consume. No IO.
 │   ├── domain.ml      session, worker, command, event, snapshot types
-│   ├── wire.ml        PISS wire protocol request/response variants
+│   ├── wire.ml        Piss wire protocol request/response variants
 │   ├── acp.ml         ACP envelope helpers
 │   └── workspace_files.ml  mention + resource types, validators,
 │                            file:// uri builder, MIME table
@@ -142,7 +142,7 @@ Production Nix package:
 nix build .#piss
 ```
 
-The single output contains every PISS executable and the browser assets under
+The single output contains every Piss executable and the browser assets under
 `share/piss/public`. Agent adapters and service orchestration belong to the
 host NixOS configuration.
 

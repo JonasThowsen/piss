@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "PISS",
-  "short_name": "PISS",
+  "name": "Piss",
+  "short_name": "Piss",
   "description": "Private control plane for coding-agent sessions",
   "start_url": "/",
   "scope": "/",
