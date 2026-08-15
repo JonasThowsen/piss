@@ -144,10 +144,16 @@ let group_timeline entries =
   in
   loop None None [] entries
 
+type agent_group =
+  | Explicit_message of string
+  | Command_message of string
+  | Leading_idless of int64
+
 type projection = {
   order : string list;
   entries : entry String.Map.t;
   current_command : string option;
+  current_agent_group : agent_group option;
 }
 
 let add_or_replace state key entry =
@@ -155,6 +161,8 @@ let add_or_replace state key entry =
     if Map.mem state.entries key then state.order else key :: state.order
   in
   { state with order; entries = Map.set state.entries ~key ~data:entry }
+
+let interrupt_agent state = { state with current_agent_group = None }
 
 let append_unique current incoming =
   List.fold incoming ~init:current ~f:(fun values value ->
@@ -166,40 +174,72 @@ let append_output current = function
       if String.is_empty current then chunk else current ^ "\n" ^ chunk
   | None | Some _ -> current
 
+let equal_agent_group left right =
+  match (left, right) with
+  | Explicit_message left, Explicit_message right
+  | Command_message left, Command_message right ->
+      String.equal left right
+  | Leading_idless left, Leading_idless right -> Int64.equal left right
+  | Explicit_message _, (Command_message _ | Leading_idless _)
+  | Command_message _, (Explicit_message _ | Leading_idless _)
+  | Leading_idless _, (Explicit_message _ | Command_message _) ->
+      false
+
 let project updates =
   let projected =
     List.fold updates
-      ~init:{ order = []; entries = String.Map.empty; current_command = None }
-      ~f:(fun state update ->
+      ~init:
+        {
+          order = [];
+          entries = String.Map.empty;
+          current_command = None;
+          current_agent_group = None;
+        } ~f:(fun state update ->
         match update with
         | User_update { sequence; command_id; text } ->
             add_or_replace
-              { state with current_command = Some command_id }
+              {
+                state with
+                current_command = Some command_id;
+                current_agent_group = None;
+              }
               ("event:user:" ^ Int64.to_string sequence)
               (User { sequence; command_id; text })
         | Agent_chunk { sequence; message_id; text } ->
-            let message_id =
-              if not (String.is_empty message_id) then message_id
+            let group, message_id =
+              if not (String.is_empty message_id) then
+                (Explicit_message message_id, message_id)
               else
-                Option.value_map state.current_command
-                  ~default:("event-" ^ Int64.to_string sequence)
-                  ~f:(fun command_id -> "command-" ^ command_id)
+                match state.current_command with
+                | Some command_id ->
+                    (Command_message command_id, "command-" ^ command_id)
+                | None -> (
+                    match state.current_agent_group with
+                    | Some (Leading_idless first_sequence as group) ->
+                        (group, "event-" ^ Int64.to_string first_sequence)
+                    | Some (Explicit_message _ | Command_message _) | None ->
+                        ( Leading_idless sequence,
+                          "event-" ^ Int64.to_string sequence ))
+            in
+            let same_group =
+              Option.exists state.current_agent_group ~f:(fun previous ->
+                  equal_agent_group previous group)
             in
             let key, entry =
               match state.order with
-              | key :: _ -> (
+              | key :: _ when same_group -> (
                   match Map.find state.entries key with
-                  | Some (Agent previous)
-                    when String.equal previous.message_id message_id ->
+                  | Some (Agent previous) ->
                       (key, Agent { previous with text = previous.text ^ text })
                   | Some _ | None ->
                       ( "event:agent:" ^ Int64.to_string sequence,
                         Agent { sequence; message_id; text } ))
-              | [] ->
+              | _ ->
                   ( "event:agent:" ^ Int64.to_string sequence,
                     Agent { sequence; message_id; text } )
             in
-            add_or_replace state key entry
+            let state = add_or_replace state key entry in
+            { state with current_agent_group = Some group }
         | Tool_call { sequence; tool_call_id; title; input; status; artifacts }
           ->
             let key = "tool:" ^ tool_call_id in
@@ -226,7 +266,7 @@ let project updates =
                       artifacts;
                     }
             in
-            add_or_replace state key entry
+            add_or_replace (interrupt_agent state) key entry
         | Tool_call_update
             { sequence; tool_call_id; title; input; output; status; artifacts }
           ->
@@ -255,22 +295,22 @@ let project updates =
                       artifacts;
                     }
             in
-            add_or_replace state key entry
+            add_or_replace (interrupt_agent state) key entry
         | Command_state_update { sequence; command_id; state = command_state }
           ->
-            add_or_replace state
+            add_or_replace (interrupt_agent state)
               ("event:command:" ^ Int64.to_string sequence)
               (Command_state { sequence; command_id; state = command_state })
         | Permission_requested_update { sequence; request } ->
-            add_or_replace state
+            add_or_replace (interrupt_agent state)
               ("event:permission:" ^ Int64.to_string sequence)
               (Permission_requested { sequence; request })
         | Permission_resolved_update { sequence; request_id; option_id } ->
-            add_or_replace state
+            add_or_replace (interrupt_agent state)
               ("event:permission:" ^ Int64.to_string sequence)
               (Permission_resolved { sequence; request_id; option_id })
         | Permission_cancelled_update { sequence; request_id } ->
-            add_or_replace state
+            add_or_replace (interrupt_agent state)
               ("event:permission:" ^ Int64.to_string sequence)
               (Permission_cancelled { sequence; request_id }))
   in

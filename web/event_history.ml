@@ -136,21 +136,30 @@ let pending_permissions entries =
          Int64.compare left.sequence right.sequence)
 
 let has_conversation_boundary events =
-  let entries = project events in
-  let first_user =
-    List.find_map entries ~f:(function
-      | User { sequence; _ } -> Some sequence
-      | _ -> None)
+  let rec loop accepted completed = function
+    | [] -> false
+    | User { command_id; _ } :: rest ->
+        if completed then true
+        else loop (Set.add accepted command_id) completed rest
+    | Command_state { command_id; state; _ } :: rest ->
+        let completed =
+          completed
+          || Set.mem accepted command_id
+             &&
+             match state with
+             | Completed | Cancelled | Rejected -> true
+             | Received | Accepted | Dispatched | Acknowledged | Ambiguous ->
+                 false
+        in
+        loop accepted completed rest
+    | Agent _ :: rest
+    | Tool _ :: rest
+    | Permission_requested _ :: rest
+    | Permission_resolved _ :: rest
+    | Permission_cancelled _ :: rest ->
+        loop accepted completed rest
   in
-  Option.exists first_user ~f:(fun first_user ->
-      List.exists entries ~f:(function
-        | Command_state { sequence; state; _ }
-          when Int64.(sequence < first_user) -> (
-            match state with
-            | Completed | Cancelled | Rejected -> true
-            | Received | Accepted | Dispatched | Acknowledged | Ambiguous ->
-                false)
-        | _ -> false))
+  loop String.Set.empty false (project events)
 
 let has_unresolved_recoveries events =
   let accepted, recovered =

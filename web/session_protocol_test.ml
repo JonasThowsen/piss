@@ -145,7 +145,7 @@ let () =
   in
   if Event_history.has_conversation_boundary history_events then
     fail "history stopped paging without a prior completed conversation";
-  let boundary_events =
+  let orphaned_boundary_events =
     match
       Event_history.decode_events
         {|[
@@ -156,8 +156,22 @@ let () =
     | Ok events -> events
     | Error message -> fail message
   in
+  if Event_history.has_conversation_boundary orphaned_boundary_events then
+    fail "orphaned terminal state stopped paging before its prompt was loaded";
+  let boundary_events =
+    match
+      Event_history.decode_events
+        {|[
+          {"sequence":1,"kind":"command.accepted","payload":{"commandId":"previous","requestId":"previous","action":"prompt","text":"before","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":1},
+          {"sequence":2,"kind":"command.state","payload":{"commandId":"previous","state":"completed"},"createdAt":2},
+          {"sequence":3,"kind":"command.accepted","payload":{"commandId":"current","requestId":"current","action":"prompt","text":"next","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":3}
+        ]|}
+    with
+    | Ok events -> events
+    | Error message -> fail message
+  in
   if not (Event_history.has_conversation_boundary boundary_events) then
-    fail "completed conversation boundary did not stop initial paging";
+    fail "complete conversation boundary did not stop initial paging";
   let recovery_without_acceptance =
     match
       Event_history.decode_events
@@ -176,8 +190,8 @@ let () =
     match
       Event_history.decode_events
         {|[
-          {"sequence":1,"kind":"command.state","payload":{"commandId":"previous","state":"completed"},"createdAt":1},
-          {"sequence":2,"kind":"command.accepted","payload":{"commandId":"older-recovery","requestId":"older-recovery","action":"follow_up","text":"restored","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":2},
+          {"sequence":1,"kind":"command.accepted","payload":{"commandId":"older-recovery","requestId":"older-recovery","action":"follow_up","text":"restored","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":1},
+          {"sequence":2,"kind":"command.state","payload":{"commandId":"older-recovery","state":"completed"},"createdAt":2},
           {"sequence":3,"kind":"command.accepted","payload":{"commandId":"current","requestId":"current","action":"prompt","text":"next","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":3},
           {"sequence":4,"kind":"command.recovered","payload":{"commandId":"older-recovery","action":"follow_up","reason":"operator recovery"},"createdAt":4}
         ]|}
@@ -188,8 +202,9 @@ let () =
   if not (Event_history.initial_history_is_complete complete_recovery_history)
   then fail "history did not stop after recovered acceptance was loaded";
   (match Event_history.project complete_recovery_history with
-  | Command_state _
-    :: User { command_id = "older-recovery"; text = "restored"; _ }
+  | User { command_id = "older-recovery"; text = "restored"; _ }
+    :: Command_state _
+    :: User { command_id = "current"; _ }
     :: _ ->
       ()
   | _ -> fail "resolved recovery did not restore its durable prompt text");

@@ -18,6 +18,62 @@ let () =
   ] ->
       ()
   | _ -> fail "id-less ACP chunks were not grouped by command");
+  let leading_idless_entries =
+    project
+      [
+        Agent_chunk { sequence = 10L; message_id = ""; text = "checks" };
+        Agent_chunk { sequence = 11L; message_id = ""; text = " passed" };
+        Agent_chunk { sequence = 12L; message_id = ""; text = "; production" };
+      ]
+  in
+  (match leading_idless_entries with
+  | [ Agent { sequence = 10L; text = "checks passed; production"; _ } ] -> ()
+  | _ -> fail "leading id-less ACP chunks were rendered as separate messages");
+  let mixed_id_entries =
+    project
+      [
+        Agent_chunk { sequence = 20L; message_id = "explicit"; text = "A" };
+        Agent_chunk { sequence = 21L; message_id = ""; text = "B" };
+        Agent_chunk { sequence = 22L; message_id = ""; text = "C" };
+        Agent_chunk { sequence = 23L; message_id = "explicit"; text = "D" };
+        Agent_chunk { sequence = 24L; message_id = ""; text = "E" };
+      ]
+  in
+  (match mixed_id_entries with
+  | [
+   Agent { sequence = 20L; message_id = "explicit"; text = "A" };
+   Agent { sequence = 21L; text = "BC"; _ };
+   Agent { sequence = 23L; message_id = "explicit"; text = "D" };
+   Agent { sequence = 24L; text = "E"; _ };
+  ] ->
+      ()
+  | _ -> fail "explicit and leading id-less agent messages were combined");
+  let leading_tool_boundary =
+    project
+      [
+        Agent_chunk { sequence = 30L; message_id = ""; text = "before " };
+        Agent_chunk { sequence = 31L; message_id = ""; text = "tool" };
+        Tool_call
+          {
+            sequence = 32L;
+            tool_call_id = "leading-tool";
+            title = "Inspect";
+            input = "";
+            status = "completed";
+            artifacts = [];
+          };
+        Agent_chunk { sequence = 33L; message_id = ""; text = "after " };
+        Agent_chunk { sequence = 34L; message_id = ""; text = "tool" };
+      ]
+  in
+  (match leading_tool_boundary with
+  | [
+   Agent { sequence = 30L; text = "before tool"; _ };
+   Tool _;
+   Agent { sequence = 33L; text = "after tool"; _ };
+  ] ->
+      ()
+  | _ -> fail "tool boundary did not split leading id-less agent runs");
   let moved_idless_entries =
     project
       [
