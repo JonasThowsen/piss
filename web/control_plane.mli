@@ -20,6 +20,7 @@ module Session : sig
     workspace_id : string;
     created_at : float;
     archived_at : float option;
+    last_finished_at : float option;
     status : status;
     runtime : runtime option;
   }

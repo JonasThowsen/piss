@@ -76,6 +76,10 @@ val first_retained_sequence : t -> int64
     pass; the browser can use this to know whether pre-startup events were
     evicted. *)
 
+val last_finished_at : t -> float option
+(** The timestamp when the newest command finished, or [None] when the newest
+    command is absent or non-terminal. *)
+
 val get_metadata : t -> string -> string option
 (** Read a metadata key. Returns [None] when the key is absent. *)
 

@@ -99,12 +99,14 @@ type snapshot = {
   status : worker_status;
   first_sequence : int64;
   last_sequence : int64;
+  last_finished_at : float option;
   retention_pruned : bool;
 }
 (** The state the control plane reads from a worker at connection time.
     `first_sequence` and `last_sequence` describe the worker's bounded event
-    spool; `retention_pruned` signals whether the spool has been compacted at
-    least once since startup. *)
+    spool; `last_finished_at` records the newest terminal command transition;
+    `retention_pruned` signals whether the spool has been compacted at least
+    once since startup. *)
 
 val session_id : string -> session_id
 val worker_id : string -> worker_id

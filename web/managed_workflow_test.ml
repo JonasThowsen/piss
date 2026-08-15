@@ -5,8 +5,8 @@ let fail message = raise_s [%message message]
 let workspace id name root : Workspace_catalog.workspace =
   { id; name; root; created_at = 1. }
 
-let session ?(status = Control_plane.Session.Idle) ?archived_at id title harness
-    workspace_id : Control_plane.Session.t =
+let session ?(status = Control_plane.Session.Idle) ?archived_at
+    ?last_finished_at id title harness workspace_id : Control_plane.Session.t =
   {
     id;
     title;
@@ -14,6 +14,7 @@ let session ?(status = Control_plane.Session.Idle) ?archived_at id title harness
     workspace_id;
     created_at = 1.;
     archived_at;
+    last_finished_at;
     status;
     runtime = None;
   }
@@ -34,6 +35,8 @@ let () =
   let active =
     [
       session "s-z" "zebra" Mock "w-b";
+      session ~last_finished_at:20. "s-finished-new" "Newest result" Pi "w-b";
+      session ~last_finished_at:10. "s-finished-old" "Older result" Pi "w-a";
       session ~status:Running "s-run-b" "Live docs" Pi "w-b";
       session ~status:Failed "s-finish-a" "Compiler crash" Pi "w-a";
       session ~status:Requires_action "s-attention-b" "Needs input" Pi "w-b";
@@ -58,6 +61,8 @@ let () =
       (List.equal String.equal
          (List.map all ~f:(fun item -> item.Global_search.session.id))
          [
+           "s-finished-new";
+           "s-finished-old";
            "s-finish-a";
            "s-finish-b";
            "s-attention-b";
@@ -68,7 +73,10 @@ let () =
            "s-b";
            "s-z";
          ])
-  then fail "active search was not sorted by state, workspace, title, and id";
+  then fail "active search did not prioritize newly finished sessions";
+  let newest = List.hd_exn all in
+  if not (String.equal (Global_search.status_label newest.session) "finished")
+  then fail "completed idle session was not labeled finished";
   let by_workspace =
     Global_search.items ~scope:Active ~query:"compiler OPENCODE" ~workspaces
       ~active ~archived

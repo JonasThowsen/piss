@@ -153,6 +153,21 @@ let first_retained_sequence store =
   scalar_int64 store ~operation:"read first retained sequence"
     "SELECT COALESCE(MIN(sequence), 0) FROM events"
 
+let last_finished_at store =
+  with_statement store.db
+    "SELECT state, updated_at FROM commands ORDER BY updated_at DESC, \
+     created_at DESC, command_id DESC LIMIT 1" (fun statement ->
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW ->
+          let state = Sqlite3.column_text statement 0 in
+          if List.mem state [ "completed"; "cancelled"; "rejected" ] then
+            Some (Sqlite3.column_double statement 1)
+          else None
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "read last finished command timestamp" rc;
+          None)
+
 let get_metadata store key =
   with_statement store.db "SELECT value FROM metadata WHERE key = ?"
     (fun statement ->

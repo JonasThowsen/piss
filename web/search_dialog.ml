@@ -667,11 +667,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                                  [ text (workspace ^ " / " ^ item.session.id) ];
                              ];
                            Vdom.Node.em
-                             [
-                               text
-                                 (Control_plane.Session.status_to_string
-                                    item.session.status);
-                             ];
+                             [ text (Global_search.status_label item.session) ];
                          ]
                        in
                        if phys_equal scope Active then

@@ -453,9 +453,22 @@ let component graph =
     and set_menu_open = set_menu_open in
     Effect.Many [ set_mobile_open false; set_menu_open None ]
   in
+  let open_search =
+    let%arr close_navigation = close_navigation
+    and set_workspaces = set_workspaces
+    and set_sessions = set_sessions
+    and set_archived = set_archived
+    and set_creation_options = set_creation_options in
+    Effect.Many
+      [
+        close_navigation;
+        refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+          ~set_creation_options;
+      ]
+  in
   let search =
     Search_dialog.component ~workspaces ~active:active_sessions ~archived
-      ~on_open:close_navigation ~on_reload:load ~on_select:select_session graph
+      ~on_open:open_search ~on_reload:load ~on_select:select_session graph
   in
   let close_stream =
     let%arr () = Bonsai.return () in

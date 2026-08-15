@@ -22,6 +22,7 @@ module Session = struct
     workspace_id : string;
     created_at : float;
     archived_at : float option;
+    last_finished_at : float option;
     status : status;
     runtime : runtime option;
   }
@@ -70,6 +71,14 @@ let nullable decode path = function
   | `Null -> Ok None
   | value -> Result.map (decode path value) ~f:Option.some
 
+let bind_optional_field fields path name decode f =
+  match List.Assoc.find fields ~equal:String.equal name with
+  | None | Some `Null -> f None
+  | Some value ->
+      Result.bind
+        (decode (path ^ "." ^ name) value)
+        ~f:(fun value -> f (Some value))
+
 let harness path value =
   match value with
   | `String "pi" -> Ok Session.Pi
@@ -111,35 +120,38 @@ let decode_session index = function
                         (fun created_at ->
                           bind_field fields path "archivedAt" (nullable number)
                             (fun archived_at ->
-                              bind_field fields path "status" status
-                                (fun runtime_status ->
-                                  let finish runtime =
-                                    Ok
-                                      {
-                                        Session.id;
-                                        title;
-                                        harness;
-                                        workspace_id;
-                                        created_at;
-                                        archived_at;
-                                        status = runtime_status;
-                                        runtime;
-                                      }
-                                  in
-                                  match runtime_status with
-                                  | Session.Offline | Session.Archived ->
-                                      finish None
-                                  | _ ->
-                                      Result.bind
-                                        (decode_runtime fields path id)
-                                        ~f:(fun runtime ->
-                                          if
-                                            phys_equal runtime.status
-                                              runtime_status
-                                          then finish (Some runtime)
-                                          else
-                                            error (path ^ ".status")
-                                              "must match runtime status"))))))))
+                              bind_optional_field fields path "lastFinishedAt"
+                                number (fun last_finished_at ->
+                                  bind_field fields path "status" status
+                                    (fun runtime_status ->
+                                      let finish runtime =
+                                        Ok
+                                          {
+                                            Session.id;
+                                            title;
+                                            harness;
+                                            workspace_id;
+                                            created_at;
+                                            archived_at;
+                                            last_finished_at;
+                                            status = runtime_status;
+                                            runtime;
+                                          }
+                                      in
+                                      match runtime_status with
+                                      | Session.Offline | Session.Archived ->
+                                          finish None
+                                      | _ ->
+                                          Result.bind
+                                            (decode_runtime fields path id)
+                                            ~f:(fun runtime ->
+                                              if
+                                                phys_equal runtime.status
+                                                  runtime_status
+                                              then finish (Some runtime)
+                                              else
+                                                error (path ^ ".status")
+                                                  "must match runtime status")))))))))
   | _ -> error (Printf.sprintf "sessions[%d]" index) "must be an object"
 
 let decode_sessions body =

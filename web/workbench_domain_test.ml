@@ -64,6 +64,7 @@ let session id workspace_id : Control_plane.Session.t =
     workspace_id;
     created_at = 1.;
     archived_at = None;
+    last_finished_at = None;
     status = Idle;
     runtime = None;
   }

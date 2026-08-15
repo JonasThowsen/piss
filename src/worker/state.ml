@@ -76,6 +76,7 @@ let set_status t status = t.status := status
 let snapshot t =
   let first_sequence = Store.first_retained_sequence t.store in
   let last_sequence = Store.last_sequence t.store in
+  let last_finished_at = Store.last_finished_at t.store in
   let retention_pruned =
     (last_sequence > 0L && first_sequence > 1L)
     ||
@@ -95,6 +96,7 @@ let snapshot t =
       status = !(t.status);
       first_sequence;
       last_sequence;
+      last_finished_at;
       retention_pruned;
     }
 

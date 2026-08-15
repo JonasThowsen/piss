@@ -29,6 +29,7 @@ let live_session =
       "status": "running",
       "firstSequence": 12,
       "lastSequence": 48,
+      "lastFinishedAt": 1723123499.25,
       "retentionPruned": false
     }
   |}
@@ -67,6 +68,10 @@ let () =
       if not (phys_equal live.status Control_plane.Session.Running) then
         fail "wrong live status";
       if Option.is_none live.runtime then fail "live runtime was not decoded";
+      if
+        not
+          (Option.equal Float.equal live.last_finished_at (Some 1723123499.25))
+      then fail "last finished timestamp was not decoded";
       if not (phys_equal offline.status Control_plane.Session.Offline) then
         fail "wrong offline status";
       if Option.is_some offline.runtime then

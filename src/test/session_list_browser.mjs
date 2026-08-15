@@ -844,6 +844,11 @@ try {
   if (await activeResults.getByRole("option").count() < 2) {
     throw new Error("search scroll proof requires at least two active sessions");
   }
+  const newestFinished = activeResults.getByRole("option").first();
+  await newestFinished.getByText("Pi / deployed", { exact: true }).waitFor();
+  if ((await newestFinished.locator("em").innerText()).trim().toLowerCase() !== "finished") {
+    throw new Error(`newly idle session was not first with finished status: ${await newestFinished.innerText()}`);
+  }
   await activeResults.evaluate((element) => {
     element.style.flex = "none";
     element.style.minHeight = "0";

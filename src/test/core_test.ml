@@ -625,8 +625,19 @@ let test_dispatched_commands_lists_open_records () =
   accept "open-1" "first";
   Store.set_command_state store ~command_id:"open-1" Domain.Dispatched;
   accept "done-1" "second";
+  Alcotest.(check bool)
+    "no command has finished yet" true
+    (Option.is_none (Store.last_finished_at store));
   Store.set_command_state store ~command_id:"done-1" Domain.Completed;
+  Alcotest.(check bool)
+    "terminal transition records finish time" true
+    (match Store.last_finished_at store with
+    | Some value -> value > 0.
+    | None -> false);
   accept "open-2" "third";
+  Alcotest.(check bool)
+    "newer open command is not finished" true
+    (Option.is_none (Store.last_finished_at store));
   let open_rows = Store.dispatched_commands store in
   let ids = List.map fst open_rows |> List.sort String.compare in
   Alcotest.(check (list string))

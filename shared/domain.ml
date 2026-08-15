@@ -62,6 +62,7 @@ type snapshot = {
   status : worker_status;
   first_sequence : int64;
   last_sequence : int64;
+  last_finished_at : float option;
   retention_pruned : bool;
 }
 
@@ -163,6 +164,10 @@ let snapshot_to_yojson snapshot =
       ("status", `String (worker_status_to_string snapshot.status));
       ("firstSequence", `Intlit (Int64.to_string snapshot.first_sequence));
       ("lastSequence", `Intlit (Int64.to_string snapshot.last_sequence));
+      ( "lastFinishedAt",
+        match snapshot.last_finished_at with
+        | Some finished_at -> `Float finished_at
+        | None -> `Null );
       ("retentionPruned", `Bool snapshot.retention_pruned);
     ]
 
@@ -210,23 +215,37 @@ let snapshot_of_yojson json =
                                            (member "lastSequence" json))
                                         (fun last_sequence ->
                                           bind
-                                            (bool_of_json_exn "retentionPruned"
-                                               (member "retentionPruned" json))
-                                            (fun retention_pruned ->
-                                              Ok
-                                                {
-                                                  session_id =
-                                                    Session_id session_id_str;
-                                                  worker_id =
-                                                    Worker_id worker_id_str;
-                                                  runtime_generation =
-                                                    Runtime_generation
-                                                      runtime_generation_int;
-                                                  worker_pid;
-                                                  harness_pid;
-                                                  agent_name;
-                                                  status;
-                                                  first_sequence;
-                                                  last_sequence;
-                                                  retention_pruned;
-                                                })))))))))))
+                                            (match
+                                               member "lastFinishedAt" json
+                                             with
+                                            | `Null -> Ok None
+                                            | value ->
+                                                float_of_json_exn
+                                                  "lastFinishedAt" value
+                                                |> map Option.some)
+                                            (fun last_finished_at ->
+                                              bind
+                                                (bool_of_json_exn
+                                                   "retentionPruned"
+                                                   (member "retentionPruned"
+                                                      json))
+                                                (fun retention_pruned ->
+                                                  Ok
+                                                    {
+                                                      session_id =
+                                                        Session_id
+                                                          session_id_str;
+                                                      worker_id =
+                                                        Worker_id worker_id_str;
+                                                      runtime_generation =
+                                                        Runtime_generation
+                                                          runtime_generation_int;
+                                                      worker_pid;
+                                                      harness_pid;
+                                                      agent_name;
+                                                      status;
+                                                      first_sequence;
+                                                      last_sequence;
+                                                      last_finished_at;
+                                                      retention_pruned;
+                                                    }))))))))))))

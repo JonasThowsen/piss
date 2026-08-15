@@ -5,6 +5,8 @@ type item = {
   workspace : Workspace_catalog.workspace option;
 }
 
+val status_label : Control_plane.Session.t -> string
+
 val items :
   scope:scope ->
   query:string ->
