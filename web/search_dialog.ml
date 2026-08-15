@@ -180,6 +180,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
   and set_selected_sessions = set_selected_sessions
   and set_confirm_delete = set_confirm_delete
   and set_delete_all = set_delete_all in
+  let selected =
+    if selected >= 0 && selected < List.length values then selected else 0
+  in
   let close () =
     if busy then Effect.Ignore
     else
@@ -452,63 +455,62 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
         ~labelled_by:title_id ~class_name:"global-search-dialog"
         ~dismissible:(not busy) ~on_close:close
         [
-          Vdom.Node.header
-            ~attrs:[ class_ "modal-surface-header" ]
-            [
-              Vdom.Node.div
-                [
-                  Vdom.Node.span
-                    ~attrs:[ class_ "modal-surface-label" ]
-                    [ text "ALL WORKSPACES" ];
-                  Vdom.Node.h2
-                    ~attrs:
-                      [ Vdom.Attr.id title_id; class_ "modal-surface-title" ]
-                    [ text "Search sessions" ];
-                ];
-              Vdom.Node.button
-                ~attrs:
-                  ([
-                     class_ "modal-surface-close";
-                     Vdom.Attr.create "type" "button";
-                     Vdom.Attr.create "aria-label" "Close session search";
-                     Vdom.Attr.on_click (fun _ -> close ());
-                   ]
-                  @ if busy then [ Vdom.Attr.disabled ] else [])
-                [ text "x" ];
-            ];
           Vdom.Node.div
             ~attrs:[ class_ "modal-surface-body" ]
             [
+              Vdom.Node.h2
+                ~attrs:[ Vdom.Attr.id title_id; class_ "visually-hidden" ]
+                [ text "Search sessions" ];
               Vdom.Node.div
-                ~attrs:[ class_ "global-search-scope" ]
+                ~attrs:[ class_ "global-search-toolbar" ]
                 [
-                  Vdom.Node.button
-                    ~attrs:
-                      [
-                        class_
-                          (if phys_equal scope Active then "active" else "");
-                        Vdom.Attr.create "type" "button";
-                        Vdom.Attr.create "aria-pressed"
-                          (Bool.to_string (phys_equal scope Active));
-                        Vdom.Attr.on_click (fun _ ->
-                            Effect.Many [ set_scope Active; set_selected 0 ]);
-                      ]
-                    [ text (Printf.sprintf "Active (%d)" (List.length active)) ];
-                  Vdom.Node.button
-                    ~attrs:
-                      [
-                        class_
-                          (if phys_equal scope Archived then "active" else "");
-                        Vdom.Attr.create "type" "button";
-                        Vdom.Attr.create "aria-pressed"
-                          (Bool.to_string (phys_equal scope Archived));
-                        Vdom.Attr.on_click (fun _ ->
-                            Effect.Many [ set_scope Archived; set_selected 0 ]);
-                      ]
+                  Vdom.Node.div
+                    ~attrs:[ class_ "global-search-scope" ]
                     [
-                      text
-                        (Printf.sprintf "Archived (%d)" (List.length archived));
+                      Vdom.Node.button
+                        ~attrs:
+                          [
+                            class_
+                              (if phys_equal scope Active then "active" else "");
+                            Vdom.Attr.create "type" "button";
+                            Vdom.Attr.create "aria-pressed"
+                              (Bool.to_string (phys_equal scope Active));
+                            Vdom.Attr.on_click (fun _ ->
+                                Effect.Many [ set_scope Active; set_selected 0 ]);
+                          ]
+                        [
+                          text
+                            (Printf.sprintf "Active (%d)" (List.length active));
+                        ];
+                      Vdom.Node.button
+                        ~attrs:
+                          [
+                            class_
+                              (if phys_equal scope Archived then "active"
+                               else "");
+                            Vdom.Attr.create "type" "button";
+                            Vdom.Attr.create "aria-pressed"
+                              (Bool.to_string (phys_equal scope Archived));
+                            Vdom.Attr.on_click (fun _ ->
+                                Effect.Many
+                                  [ set_scope Archived; set_selected 0 ]);
+                          ]
+                        [
+                          text
+                            (Printf.sprintf "Archived (%d)"
+                               (List.length archived));
+                        ];
                     ];
+                  Vdom.Node.button
+                    ~attrs:
+                      ([
+                         class_ "global-search-close";
+                         Vdom.Attr.create "type" "button";
+                         Vdom.Attr.create "aria-label" "Close session search";
+                         Vdom.Attr.on_click (fun _ -> close ());
+                       ]
+                      @ if busy then [ Vdom.Attr.disabled ] else [])
+                    [ text "×" ];
                 ];
               (if phys_equal scope Archived && not (List.is_empty archived) then
                  Vdom.Node.div
@@ -606,7 +608,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                        let workspace =
                          Option.value_map item.workspace
                            ~default:"Unknown workspace" ~f:(fun value ->
-                             value.name ^ " / " ^ value.root)
+                             value.name)
                        in
                        let details =
                          [
@@ -614,7 +616,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                              [
                                Vdom.Node.b [ text item.session.title ];
                                Vdom.Node.small
-                                 [ text (item.session.id ^ " / " ^ workspace) ];
+                                 [ text (workspace ^ " / " ^ item.session.id) ];
                              ];
                            Vdom.Node.em
                              [
@@ -629,6 +631,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                            ~attrs:
                              [
                                Vdom.Attr.id (option_id index);
+                               class_
+                                 "global-search-option \
+                                  global-search-active-option";
                                Vdom.Attr.create "type" "button";
                                Vdom.Attr.create "role" "option";
                                Vdom.Attr.create "aria-selected"
@@ -639,14 +644,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                                    Vdom.Effect.Prevent_default);
                                Vdom.Attr.on_click (fun _ -> choose item);
                              ]
-                           (Vdom.Node.create "i"
-                              ~attrs:
-                                [
-                                  class_ "global-search-glyph";
-                                  Vdom.Attr.create "aria-hidden" "true";
-                                ]
-                              [ text ">" ]
-                           :: details)
+                           details
                        else
                          let marked =
                            Set.mem selected_sessions item.session.id

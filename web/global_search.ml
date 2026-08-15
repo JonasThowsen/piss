@@ -29,6 +29,17 @@ let searchable session workspace =
     ]
   |> String.lowercase
 
+let status_rank (status : Control_plane.Session.status) =
+  match status with
+  | Requires_action | Stopped | Failed -> 0
+  | Starting | Running -> 1
+  | Idle | Offline -> 2
+  | Archived -> 3
+
+let workspace_name = function
+  | Some (workspace : Workspace_catalog.workspace) -> workspace.name
+  | None -> "Unknown workspace"
+
 let items ~scope ~query ~workspaces ~active ~archived =
   let requested = match scope with Active -> active | Archived -> archived in
   let terms = terms query in
@@ -44,11 +55,30 @@ let items ~scope ~query ~workspaces ~active ~archived =
       then Some { session; workspace }
       else None)
   |> List.sort ~compare:(fun left right ->
-      let by_title =
-        String.Caseless.compare left.session.title right.session.title
+      let by_status =
+        Int.compare
+          (status_rank left.session.status)
+          (status_rank right.session.status)
       in
-      if by_title <> 0 then by_title
-      else String.compare left.session.id right.session.id)
+      if by_status <> 0 then by_status
+      else
+        let by_workspace =
+          String.Caseless.compare
+            (workspace_name left.workspace)
+            (workspace_name right.workspace)
+        in
+        if by_workspace <> 0 then by_workspace
+        else
+          let by_workspace_id =
+            String.compare left.session.workspace_id right.session.workspace_id
+          in
+          if by_workspace_id <> 0 then by_workspace_id
+          else
+            let by_title =
+              String.Caseless.compare left.session.title right.session.title
+            in
+            if by_title <> 0 then by_title
+            else String.compare left.session.id right.session.id)
 
 let move ~count ~current ~delta =
   if count <= 0 then 0 else (current + delta + count) mod count

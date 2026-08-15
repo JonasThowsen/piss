@@ -34,11 +34,19 @@ let () =
   let active =
     [
       session "s-z" "zebra" Mock "w-b";
+      session ~status:Running "s-run-b" "Live docs" Pi "w-b";
+      session ~status:Failed "s-finish-a" "Compiler crash" Pi "w-a";
+      session ~status:Requires_action "s-attention-b" "Needs input" Pi "w-b";
       session "s-a" "Alpha" Opencode "w-a";
+      session ~status:Offline "s-offline-a" "Alpha" Mock "w-a";
+      session ~status:Starting "s-run-a" "Boot compiler" Pi "w-a";
+      session ~status:Stopped "s-finish-b" "Docs complete" Pi "w-b";
       session "s-b" "alpha" Pi "w-b";
     ]
   and archived =
     [
+      session ~status:Archived ~archived_at:2. "s-archived-b" "Alpha archive" Pi
+        "w-b";
       session ~status:Archived ~archived_at:2. "s-old" "Retired proof" Pi "w-a";
     ]
   in
@@ -49,8 +57,18 @@ let () =
     not
       (List.equal String.equal
          (List.map all ~f:(fun item -> item.Global_search.session.id))
-         [ "s-a"; "s-b"; "s-z" ])
-  then fail "active search was not sorted by title and id";
+         [
+           "s-finish-a";
+           "s-finish-b";
+           "s-attention-b";
+           "s-run-a";
+           "s-run-b";
+           "s-a";
+           "s-offline-a";
+           "s-b";
+           "s-z";
+         ])
+  then fail "active search was not sorted by state, workspace, title, and id";
   let by_workspace =
     Global_search.items ~scope:Active ~query:"compiler OPENCODE" ~workspaces
       ~active ~archived
@@ -64,6 +82,15 @@ let () =
   in
   if List.length archived_result <> 1 then
     fail "archived scope was not searched";
+  let all_archived =
+    Global_search.items ~scope:Archived ~query:"" ~workspaces ~active ~archived
+  in
+  if
+    not
+      (List.equal String.equal
+         (List.map all_archived ~f:(fun item -> item.Global_search.session.id))
+         [ "s-old"; "s-archived-b" ])
+  then fail "archived search was not grouped by workspace";
   if Global_search.move ~count:3 ~current:0 ~delta:(-1) <> 2 then
     fail "keyboard selection did not wrap backward";
   (match

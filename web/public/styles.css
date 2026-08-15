@@ -29,6 +29,7 @@
 }
 
 * { box-sizing: border-box; min-width: 0; }
+.visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 html, body, #app, .app-shell { width: 100%; height: var(--app-height, 100dvh); margin: 0; overflow: hidden; }
 body { min-width: 320px; background: var(--canvas); }
 button, textarea, input, select { font: inherit; color: inherit; }
@@ -588,16 +589,6 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .global-search-field input { width: 100%; height: 44px; padding: 0 14px 0 44px; border: 1px solid var(--line-strong); border-radius: 6px; outline: 0; background: #f8faf6; font-size: 16px; }
 .global-search-field input:focus { border-color: #8da495; box-shadow: 0 0 0 3px var(--accent-soft); }
 .global-search-results { min-height: 80px; overflow-y: auto; }
-.global-search-results > button { width: 100%; min-height: 54px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 11px; border: 0; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; }
-.global-search-glyph { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--accent); font-style: normal; }
-.global-search-glyph svg { width: 13px; height: 13px; }
-.global-search-results > button + button { border-top: 1px solid var(--line); border-radius: 0; }
-.global-search-results > button:hover, .global-search-results > button[aria-selected="true"] { background: var(--accent-soft); }
-.global-search-results > button span { display: grid; gap: 4px; overflow: hidden; }
-.global-search-results > button b, .global-search-results > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.global-search-results > button b { font-size: 13px; }
-.global-search-results > button small { color: var(--muted); font: 9px/1.2 "IBM Plex Mono", monospace; }
-.global-search-results > button em { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 9px; font-style: normal; font-weight: 600; }
 .global-search-result { min-height: 60px; display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 4px; padding: 3px 0 3px 7px; }
 .global-search-result + .global-search-result { border-top: 1px solid var(--line); }
 .global-search-select { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
@@ -832,21 +823,38 @@ button:active { scale: 1 !important; transform: none !important; }
 .directory-options button { border-bottom: 1px solid var(--line); }
 .directory-options button:hover, .directory-options button.selected { background: var(--line-strong); color: var(--panel); }
 .directory-options button:hover small, .directory-options button.selected small { color: #c5c8c2; }
-.global-search-scope { gap: 0; padding: 0; border-color: var(--line-strong); background: var(--surface); }
-.global-search-scope button { border-right: 1px solid var(--line-strong); }
-.global-search-scope button:last-child { border-right: 0; }
-.global-search-scope button.active { background: var(--line-strong); color: var(--panel); }
-.global-search-field input { border: 1px solid var(--line-strong); background: var(--panel); }
-.global-search-field input:focus { border-color: var(--focus); }
-.global-search-results > button, .global-search-option { border-bottom: 1px solid var(--line); }
-.global-search-results > button:hover, .global-search-results > button[aria-selected="true"],
-.global-search-option:hover, .global-search-option[aria-selected="true"] { background: var(--line-strong); color: var(--panel); }
-.global-search-results > button:hover small, .global-search-results > button[aria-selected="true"] small,
-.global-search-option:hover small, .global-search-option[aria-selected="true"] small { color: #c5c8c2; }
-.global-search-results > button:hover em, .global-search-results > button[aria-selected="true"] em,
-.global-search-option:hover em, .global-search-option[aria-selected="true"] em { border-color: #c5c8c2; color: #e3e4df; }
-.global-search-checkmark { border-color: var(--line-strong); }
+.global-search-dialog { width: min(620px, 100%); max-height: min(720px, calc(var(--app-height, 100dvh) - 36px)); grid-template-rows: minmax(0, 1fr); }
+.global-search-dialog > .modal-surface-body { display: flex; flex-direction: column; gap: 8px; overflow: hidden; padding: 10px; }
+.global-search-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: stretch; gap: 6px; }
+.global-search-toolbar .global-search-scope { min-width: 0; gap: 0; padding: 0; border: 0; border-bottom: 1px solid var(--line-strong); background: transparent; }
+.global-search-scope button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); transition: background-color 80ms ease-out, border-color 80ms ease-out, color 80ms ease-out; }
+.global-search-scope button:hover { background: var(--hover); color: var(--text); }
+.global-search-scope button.active { border-bottom-color: var(--accent); background: var(--soft); color: var(--text); box-shadow: none; }
+.global-search-close { width: 44px; min-width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); font: 400 21px/1 var(--sans); cursor: pointer; transition: background-color 80ms ease-out, color 80ms ease-out, scale 80ms ease-out; }
+.global-search-close:hover:not(:disabled) { background: var(--soft); color: var(--text); }
+.global-search-close:active:not(:disabled) { scale: .94; }
+.global-search-close:disabled { opacity: .45; cursor: not-allowed; }
+.global-search-field input { height: 42px; padding-inline: 10px; border: 0; border-bottom: 1px solid var(--line-strong); background: var(--panel); font: 13px/1 var(--mono); }
+.global-search-field input:focus { border-bottom: 2px solid var(--focus); box-shadow: none; }
+.global-search-results { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.global-search-result { min-height: 56px; grid-template-columns: 40px minmax(0, 1fr); gap: 2px; padding: 0; border-bottom: 1px solid var(--line); }
+.global-search-result + .global-search-result { border-top: 0; }
+.global-search-select { width: 40px; height: 40px; }
+.global-search-checkmark { width: 24px; height: 24px; border-color: var(--line-strong); border-radius: 0; font-size: 14px; transition: background-color 80ms ease-out, border-color 80ms ease-out; }
 .global-search-select[aria-pressed="true"] .global-search-checkmark { background: var(--line-strong); }
+.global-search-option { min-height: 56px; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; transition: background-color 80ms ease-out, box-shadow 80ms ease-out; }
+.global-search-active-option { padding-left: 10px; }
+.global-search-option:hover { background: var(--hover); color: var(--text); }
+.global-search-option[aria-selected="true"] { background: var(--soft); color: var(--text); box-shadow: inset 2px 0 var(--accent); }
+.global-search-option:hover small, .global-search-option[aria-selected="true"] small { color: var(--muted); }
+.global-search-option:hover em, .global-search-option[aria-selected="true"] em { border-color: var(--line-strong); color: var(--text); }
+.global-search-option:active { background: var(--line); }
+.global-search-option b { font-size: 12px; }
+.global-search-option small { font: 9px/1.25 var(--mono); }
+.global-search-option em { border: 0; background: var(--surface); font: 600 8px/1 var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.global-search-empty { flex: 1; }
+.global-search-delete-actions { gap: 6px; }
+.global-search-delete-archived { min-height: 40px; border-radius: 0; }
 
 .session-details > header { border-bottom-color: var(--line-strong); }
 .session-details > header h2 { font: 600 22px/1.2 var(--mono); text-transform: uppercase; }
@@ -895,4 +903,6 @@ button:active { scale: 1 !important; transform: none !important; }
   .composer-footer { min-height: 42px; }
   .send-action, .cancel-action { width: 40px; min-width: 40px; min-height: 40px; height: 40px; }
   .modal-surface-backdrop { padding: 0; }
+  .global-search-dialog { height: 100%; max-height: 100%; }
+  .global-search-dialog > .modal-surface-body { padding: 8px 6px max(8px, env(safe-area-inset-bottom)); }
 }

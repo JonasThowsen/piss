@@ -746,7 +746,7 @@ try {
   if (!descendant || await page.locator(`#${descendant}[role=option][aria-selected=true]`).count() !== 1) {
     throw new Error(`invalid global search active descendant: ${descendant}`);
   }
-  await activeSearch.getByRole("button", { name: "Close session search" }).focus();
+  await activeSearch.getByRole("button", { name: /Active \(\d+\)/ }).focus();
   await page.keyboard.press("Shift+Tab");
   if (await page.locator("[role=option]:focus").count() !== 1) {
     const focused = await page.evaluate(() => document.activeElement?.outerHTML ?? "none");
