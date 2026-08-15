@@ -10,6 +10,7 @@
    Piss_core`. *)
 
 include Piss_shared
+module Origin_pattern = Piss_core__Origin_pattern
 module Registry = Piss_core__Registry
 module Store = Piss_core__Store
 module Workspace_io = Piss_core__Workspace_io

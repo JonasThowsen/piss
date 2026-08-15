@@ -1026,6 +1026,22 @@ let test_acp_error_response () =
         message
   | Ok _ -> Alcotest.fail "ACP error response was accepted as success"
 
+let test_origin_patterns () =
+  let check label expected pattern origin =
+    Alcotest.(check bool) label expected (Origin_pattern.matches pattern origin)
+  in
+  check "exact stable origin" true "https://piss.tailb61fd1.ts.net"
+    "https://piss.tailb61fd1.ts.net";
+  check "exact mismatch" false "https://piss.tailb61fd1.ts.net"
+    "https://piss-ocaml.tailb61fd1.ts.net";
+  check "tailnet wildcard" true "https://piss.*.ts.net"
+    "https://piss.tailb61fd1.ts.net";
+  check "wildcard spans an empty run" true "https://piss*" "https://piss";
+  check "match remains anchored" false "https://piss.*.ts.net"
+    "prefix-https://piss.tailb61fd1.ts.net";
+  check "wildcard cannot omit literals" false "https://piss.*.ts.net"
+    "https://piss.tailb61fd1.example.net"
+
 let test_stable_state_decoding () =
   List.iter
     (fun state ->
@@ -1079,6 +1095,8 @@ let () =
         ] );
       ( "domain",
         [
+          Alcotest.test_case "origin patterns are anchored" `Quick
+            test_origin_patterns;
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
           Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;

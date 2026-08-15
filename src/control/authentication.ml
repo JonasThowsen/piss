@@ -1,6 +1,7 @@
 (* Tailscale identity and same-origin mutation policy. *)
 
 open Cohttp
+open Piss_core
 
 let request_header request name = Header.get (Request.headers request) name
 
@@ -17,31 +18,6 @@ let valid_json_content request =
     when String.starts_with ~prefix:"application/json" content_type ->
       Ok ()
   | _ -> Error (`Unsupported_media_type, "content-type must be application/json")
-
-(* Glob-style pattern match where '*' matches any run of characters. We
-   translate the pattern to a regular expression (escape every non-asterisk
-   character, then turn '*' into '.*') and run it through Str.regexp. The
-   hand-rolled recursive matcher I tried first was buggy in the non-empty
-   consume branch and would loop forever or fail to find a valid match. *)
-let origin_matches pattern origin =
-  let regex_pattern =
-    let buf = Buffer.create (String.length pattern + 4) in
-    Buffer.add_string buf "^";
-    String.iter
-      (function
-        | '*' -> Buffer.add_string buf ".*"
-        | c ->
-            Buffer.add_char buf '\\';
-            Buffer.add_char buf c)
-      pattern;
-    Buffer.add_string buf "$";
-    Buffer.contents buf
-  in
-  let re = Str.regexp regex_pattern in
-  try
-    ignore (Str.search_forward re origin 0);
-    true
-  with Not_found -> false
 
 let valid_json_mutation ~dev_bypass ~allowed_origins request =
   if dev_bypass then Ok ()
@@ -71,7 +47,7 @@ let valid_json_mutation ~dev_bypass ~allowed_origins request =
         match origin with
         | Some o
           when List.exists
-                 (fun pattern -> origin_matches pattern o)
+                 (fun pattern -> Origin_pattern.matches pattern o)
                  accepted_patterns ->
             Ok ()
         | _ -> Error (`Forbidden, "same-origin mutation required"))
