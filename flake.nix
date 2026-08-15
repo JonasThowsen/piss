@@ -396,8 +396,14 @@
               kill -0 "$dune_pid" 2>/dev/null || break
               sleep 0.05
             done
-            if [[ ! -f "$rpc_registry/$dune_pid.csexp" ]] \
-              && ! compgen -G "$rpc_registry/*.csexp" >/dev/null; then
+            rpc_available=false
+            for rpc_file in "$rpc_registry"/*.csexp; do
+              if [[ -f "$rpc_file" ]]; then
+                rpc_available=true
+                break
+              fi
+            done
+            if [[ ! -f "$rpc_registry/$dune_pid.csexp" ]] && ! $rpc_available; then
               printf 'Dune RPC did not start for %s. Watcher output:\n' \
                 "$project_root" >&2
               tail -n 40 "$watch_log" >&2 || true
