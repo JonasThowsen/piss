@@ -4,7 +4,7 @@ open! Bonsai_web.Cont
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
-let copy_button ~key ~code ~copy_feedback ~on_copy =
+let copy_button ~key ~kind ~value ~copy_feedback ~on_copy =
   let status =
     match copy_feedback with
     | Some (candidate, status) when String.equal candidate key -> Some status
@@ -21,36 +21,49 @@ let copy_button ~key ~code ~copy_feedback ~on_copy =
       [
         class_ ("markdown-copy" ^ class_name);
         Vdom.Attr.create "type" "button";
-        Vdom.Attr.create "aria-label" (label ^ " code block");
-        Vdom.Attr.on_click (fun _ -> on_copy ~key ~text:code);
+        Vdom.Attr.create "aria-label" (label ^ " " ^ kind);
+        Vdom.Attr.on_click (fun _ -> on_copy ~key ~text:value);
       ]
     [ Vdom.Node.b [ text (String.uppercase label) ] ]
 
-let render_inline = function
+let render_inline ~key ~copy_feedback ~on_copy index = function
   | Markdown_syntax.Text value -> text value
   | Code value -> Vdom.Node.code [ text value ]
   | Bold value -> Vdom.Node.strong [ text value ]
   | Link (label, target) ->
-      Vdom.Node.a
-        ~attrs:
-          [
-            Vdom.Attr.href target;
-            Vdom.Attr.create "target" "_blank";
-            Vdom.Attr.create "rel" "noopener noreferrer";
-          ]
-        [ text label ]
+      let copy_key = Printf.sprintf "%s-link-%d" key index in
+      Vdom.Node.span
+        ~attrs:[ class_ "markdown-link-with-copy" ]
+        [
+          Vdom.Node.a
+            ~attrs:
+              [
+                Vdom.Attr.href target;
+                Vdom.Attr.create "target" "_blank";
+                Vdom.Attr.create "rel" "noopener noreferrer";
+              ]
+            [ text label ];
+          copy_button ~key:copy_key ~kind:"link" ~value:target ~copy_feedback
+            ~on_copy;
+        ]
 
-let render_inlines values = List.map values ~f:render_inline
+let render_inlines ~key ~copy_feedback ~on_copy values =
+  List.mapi values ~f:(render_inline ~key ~copy_feedback ~on_copy)
 
-let with_breaks lines =
+let with_breaks ~key ~copy_feedback ~on_copy lines =
   List.concat_mapi lines ~f:(fun index line ->
       (if index = 0 then [] else [ Vdom.Node.create "br" [] ])
-      @ render_inlines line)
+      @ render_inlines
+          ~key:(Printf.sprintf "%s-line-%d" key index)
+          ~copy_feedback ~on_copy line)
 
-let list tag items =
+let list ~key ~copy_feedback ~on_copy tag items =
   Vdom.Node.create tag
     (List.mapi items ~f:(fun index item ->
-         Vdom.Node.li ~key:(Int.to_string index) (render_inlines item)))
+         Vdom.Node.li ~key:(Int.to_string index)
+           (render_inlines
+              ~key:(Printf.sprintf "%s-item-%d" key index)
+              ~copy_feedback ~on_copy item)))
 
 let render_block ~item_key ~copy_feedback ~on_copy index block =
   let key = Printf.sprintf "%s-block-%d" item_key index in
@@ -58,25 +71,30 @@ let render_block ~item_key ~copy_feedback ~on_copy index block =
   | Markdown_syntax.Paragraph lines ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-text-block" ]
-        [ Vdom.Node.p (with_breaks lines) ]
+        [ Vdom.Node.p (with_breaks ~key ~copy_feedback ~on_copy lines) ]
   | Unordered_list items ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-text-block" ]
-        [ list "ul" items ]
+        [ list ~key ~copy_feedback ~on_copy "ul" items ]
   | Ordered_list items ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-text-block" ]
-        [ list "ol" items ]
+        [ list ~key ~copy_feedback ~on_copy "ol" items ]
   | Heading (level, contents) ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-text-block" ]
         [
-          Vdom.Node.create ("h" ^ Int.to_string level) (render_inlines contents);
+          Vdom.Node.create
+            ("h" ^ Int.to_string level)
+            (render_inlines ~key ~copy_feedback ~on_copy contents);
         ]
   | Blockquote lines ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-text-block" ]
-        [ Vdom.Node.create "blockquote" (with_breaks lines) ]
+        [
+          Vdom.Node.create "blockquote"
+            (with_breaks ~key ~copy_feedback ~on_copy lines);
+        ]
   | Fenced_code { language; code } ->
       Vdom.Node.section ~key
         ~attrs:[ class_ "markdown-block markdown-code-block" ]
@@ -84,7 +102,8 @@ let render_block ~item_key ~copy_feedback ~on_copy index block =
           Vdom.Node.span
             ~attrs:[ class_ "markdown-code-language" ]
             [ text language ];
-          copy_button ~key ~code ~copy_feedback ~on_copy;
+          copy_button ~key ~kind:"code block" ~value:code ~copy_feedback
+            ~on_copy;
           Vdom.Node.pre [ Vdom.Node.code [ text code ] ];
         ]
 

@@ -270,6 +270,12 @@ try {
     await safeLink.getAttribute("target") !== "_blank"
     || await safeLink.getAttribute("rel") !== "noopener noreferrer"
   ) throw new Error("safe Markdown link omitted isolation attributes");
+  const linkCopy = page.getByRole("button", { name: "Copy link" });
+  await linkCopy.click();
+  if (await page.evaluate(() => navigator.clipboard.readText()) !== "https://example.test") {
+    throw new Error("Markdown link copy omitted or changed the target URL");
+  }
+  await page.getByRole("button", { name: "Copied link" }).waitFor();
   const codeCopy = page.getByRole("button", { name: "Copy code block" });
   await codeCopy.click();
   if (await page.evaluate(() => navigator.clipboard.readText()) !== "const proof = true;") {
@@ -348,7 +354,7 @@ try {
   }
   await missingContext.close();
   if (errors.length) throw new Error(errors.join("\n"));
-  console.log("Bonsai timeline browser proof passed: latest-first desktop/mobile load, exact history anchor, retention bound, safe code copy, and old permission reconstruction");
+  console.log("Bonsai timeline browser proof passed: latest-first desktop/mobile load, exact history anchor, retention bound, safe link/code copy, and old permission reconstruction");
 } finally {
   await browser.close();
 }

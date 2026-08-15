@@ -208,6 +208,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .markdown-body li + li { margin-top: 5px; }
 .markdown-body code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); font: 12px/1.5 var(--mono); }
 .markdown-body a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.markdown-link-with-copy { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; vertical-align: middle; }
+.markdown-link-with-copy > a { min-width: 0; overflow-wrap: anywhere; }
+.markdown-link-with-copy > .markdown-copy { flex: none; }
 .markdown-body blockquote { padding: 8px 12px; border-left: 2px solid var(--accent); background: var(--accent-soft); }
 .markdown-code-block { overflow: hidden; padding-top: 38px; border: 1px solid var(--line-strong); border-radius: 6px; background: #f7f8f5; }
 .markdown-code-language { position: absolute; top: 14px; left: 12px; color: var(--muted); font: 600 9px/1 var(--mono); }
