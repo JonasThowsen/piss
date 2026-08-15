@@ -957,14 +957,27 @@ button:active { scale: 1 !important; transform: none !important; }
   .timeline-copy, .markdown-copy { min-height: 34px; }
   .timeline-copy b, .markdown-copy b { font-size: 11px; }
 
-  .composer-wrap { padding: 8px 20px 14px; }
-  .composer { min-height: 94px; }
-  .composer textarea { padding: 12px 13px 4px; font-size: 15px; }
-  .composer-footer { min-height: 48px; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
-  .composer-insertions button, .send-action, .cancel-action { width: 44px; min-width: 44px; min-height: 44px; height: 44px; }
-  .composer-config { width: min(292px, 100%); }
-  .composer-config-trigger { min-height: 40px; }
-  .composer-config-trigger b { font-size: 12px; }
+  .composer-wrap { padding: 12px 24px 18px; }
+  .notice { margin-bottom: 10px; font-size: 11px; }
+  .outbox-tray { max-height: 164px; margin-bottom: 12px; }
+  .outbox-tray > header { min-height: 34px; height: 34px; padding-inline: 14px; font-size: 10px; }
+  .outbox-message { min-height: 56px; grid-template-columns: 10px minmax(0, 1fr); gap: 12px; padding: 10px 14px; }
+  .outbox-message > i { width: 8px; height: 8px; }
+  .outbox-message header { gap: 10px; margin-bottom: 5px; }
+  .outbox-message header b { font-size: 11px; }
+  .outbox-message header small { font-size: 10px; }
+  .outbox-message p { font-size: 12px; }
+  .composer { min-height: 156px; }
+  .composer textarea { min-height: 96px; max-height: 280px; padding: 16px 16px 7px; font-size: 17px; line-height: 1.5; }
+  .composer-footer { min-height: 60px; grid-template-columns: 52px minmax(0, 1fr) 52px; gap: 10px; padding-top: 4px; }
+  .composer-insertions button, .send-action, .cancel-action { width: 52px; min-width: 52px; min-height: 52px; height: 52px; }
+  .composer-insertions button { font-size: 22px; }
+  .composer-config { width: min(340px, 100%); }
+  .composer-config-trigger { min-height: 48px; padding-inline: 8px; }
+  .composer-config-trigger b { font-size: 13px; }
+  .composer-config-trigger > svg { width: 13px; height: 13px; }
+  .composer-run-actions, .composer-retry-actions { gap: 8px; padding: 8px 12px; }
+  .composer-run-actions button, .composer-retry-actions button { min-height: 44px; padding-inline: 16px; font-size: 12px; }
   .composer-config-menu.model-menu { width: min(430px, calc(100vw - 28px)); }
   .composer-config-menu.thinking-menu { width: min(240px, calc(100vw - 28px)); }
   .composer-config-menu > header { min-height: 40px; }
@@ -974,7 +987,7 @@ button:active { scale: 1 !important; transform: none !important; }
   .model-menu > button small { font-size: 10px; }
   .model-menu > button em { font-size: 9px; }
   .thinking-menu > button { min-height: 44px; font-size: 12px; }
-  .composer-run-actions button, .composer-retry-actions button, .delivery-toggle button, .abort-run { font-size: 11px; }
+  .composer-run-actions button, .composer-retry-actions button, .delivery-toggle button, .abort-run { font-size: 12px; }
 
   .workspace-dialog { width: min(680px, 100%); }
   .workspace-remove-dialog, .archive-dialog { width: min(520px, 100%); }
