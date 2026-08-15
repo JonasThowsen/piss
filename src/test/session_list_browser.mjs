@@ -735,11 +735,57 @@ try {
   await page.locator(".app-header").getByRole("heading", { name: "Lifecycle renamed" }).waitFor();
 
   const searchTrigger = page.getByRole("button", { name: "Search sessions" });
+  await page.mouse.move(0, 0);
   await searchTrigger.focus();
   await page.keyboard.press("Control+K");
   const activeSearch = page.getByRole("dialog", { name: "Search sessions" });
   const sessionQuery = activeSearch.getByRole("combobox", { name: "Search sessions" });
   await page.waitForFunction(() => document.activeElement?.id === "global-session-query");
+  const activeResults = activeSearch.locator("#global-session-results");
+  if (await activeResults.getByRole("option").count() < 2) {
+    throw new Error("search scroll proof requires at least two active sessions");
+  }
+  await activeResults.evaluate((element) => {
+    element.style.flex = "none";
+    element.style.minHeight = "0";
+    element.style.height = "56px";
+    element.style.maxHeight = "56px";
+  });
+  await sessionQuery.press("Control+n");
+  await page.waitForFunction(() => {
+    const results = document.getElementById("global-session-results");
+    const option = document.getElementById("global-session-option-1");
+    if (!results || option?.getAttribute("aria-selected") !== "true") return false;
+    const viewport = results.getBoundingClientRect();
+    const bounds = option.getBoundingClientRect();
+    return results.scrollTop > 0 && bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1;
+  });
+  const scrolledSelection = await activeResults.evaluate((element) => {
+    const selected = element.querySelector('[role="option"][aria-selected="true"]');
+    const viewport = element.getBoundingClientRect();
+    const option = selected?.getBoundingClientRect();
+    return {
+      scrollTop: element.scrollTop,
+      visible: !!option && option.top >= viewport.top - 1 && option.bottom <= viewport.bottom + 1,
+      inputFocused: document.activeElement?.id === "global-session-query",
+    };
+  });
+  if (!scrolledSelection.visible || !scrolledSelection.inputFocused || scrolledSelection.scrollTop <= 0) {
+    throw new Error(`keyboard search selection was not revealed: ${JSON.stringify(scrolledSelection)}`);
+  }
+  await sessionQuery.press("Control+p");
+  await page.waitForFunction(() => {
+    const results = document.getElementById("global-session-results");
+    return results?.scrollTop === 0
+      && document.getElementById("global-session-option-0")?.getAttribute("aria-selected") === "true";
+  });
+  const returnedSelection = await activeResults.evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    inputFocused: document.activeElement?.id === "global-session-query",
+  }));
+  if (returnedSelection.scrollTop !== 0 || !returnedSelection.inputFocused) {
+    throw new Error(`keyboard search selection did not return into view: ${JSON.stringify(returnedSelection)}`);
+  }
   await sessionQuery.fill("Lifecycle");
   await activeSearch.getByRole("option", { name: /Lifecycle renamed/ }).waitFor();
   const descendant = await sessionQuery.getAttribute("aria-activedescendant");

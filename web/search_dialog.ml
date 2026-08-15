@@ -52,6 +52,13 @@ let event_bool event name =
     Js.to_bool (Js.Unsafe.coerce (Js.Unsafe.get (Js.Unsafe.inject event) name))
   with _ -> false
 
+let present value =
+  Js.to_bool
+    (Js.Unsafe.coerce
+       (Js.Unsafe.fun_call
+          (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "Boolean")
+          [| value |]))
+
 let remove_shortcut () =
   Option.iter !shortcut_listener ~f:(fun listener ->
       ignore
@@ -88,6 +95,35 @@ let cleanup () =
       Async_kernel.Deferred.return ())
 
 let option_id index = Printf.sprintf "global-session-option-%d" index
+
+let reveal_option index =
+  Effect.of_deferred_thunk (fun () ->
+      let callback =
+        Js.wrap_callback (fun () ->
+            let element =
+              Js.Unsafe.meth_call
+                (Js.Unsafe.inject Dom_html.document)
+                "getElementById"
+                [| Js.Unsafe.inject (Js.string (option_id index)) |]
+            in
+            if present element then
+              let options =
+                Js.Unsafe.obj
+                  [|
+                    ("block", Js.Unsafe.inject (Js.string "nearest"));
+                    ("inline", Js.Unsafe.inject (Js.string "nearest"));
+                  |]
+              in
+              ignore
+                (Js.Unsafe.meth_call element "scrollIntoView"
+                   [| Js.Unsafe.inject options |]))
+      in
+      ignore
+        (Js.Unsafe.meth_call
+           (Js.Unsafe.inject Dom_html.window)
+           "requestAnimationFrame"
+           [| Js.Unsafe.inject callback |]);
+      Async_kernel.Deferred.return ())
 
 let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
     =
@@ -312,11 +348,9 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
     in
     match delta with
     | Some delta ->
+        let next = Global_search.move ~count ~current:selected ~delta in
         Effect.Many
-          [
-            Vdom.Effect.Prevent_default;
-            set_selected (Global_search.move ~count ~current:selected ~delta);
-          ]
+          [ Vdom.Effect.Prevent_default; set_selected next; reveal_option next ]
     | None when String.equal key "Enter" -> (
         match List.nth values selected with
         | None -> Effect.Ignore
@@ -476,7 +510,12 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                             Vdom.Attr.create "aria-pressed"
                               (Bool.to_string (phys_equal scope Active));
                             Vdom.Attr.on_click (fun _ ->
-                                Effect.Many [ set_scope Active; set_selected 0 ]);
+                                Effect.Many
+                                  [
+                                    set_scope Active;
+                                    set_selected 0;
+                                    reveal_option 0;
+                                  ]);
                           ]
                         [
                           text
@@ -493,7 +532,11 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                               (Bool.to_string (phys_equal scope Archived));
                             Vdom.Attr.on_click (fun _ ->
                                 Effect.Many
-                                  [ set_scope Archived; set_selected 0 ]);
+                                  [
+                                    set_scope Archived;
+                                    set_selected 0;
+                                    reveal_option 0;
+                                  ]);
                           ]
                         [
                           text
@@ -568,7 +611,12 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                            "Title, ID, harness, status, or workspace";
                          Vdom.Attr.value query;
                          Vdom.Attr.on_input (fun _ value ->
-                             Effect.Many [ set_query value; set_selected 0 ]);
+                             Effect.Many
+                               [
+                                 set_query value;
+                                 set_selected 0;
+                                 reveal_option 0;
+                               ]);
                          Vdom.Attr.on_keydown navigate;
                        ]
                       @ active_descendant)

@@ -29,10 +29,10 @@ const command = (sequence, label = `history-${sequence}`) => ({
   createdAt: 1_723_123_456 + sequence,
 });
 
-const completedCommand = (sequence) => ({
+const completedCommand = (sequence, commandSequence) => ({
   sequence,
   kind: "command.state",
-  payload: { commandId: `completed-${sequence}`, state: "completed" },
+  payload: { commandId: `command-${commandSequence}`, state: "completed" },
   createdAt: 1_723_123_456 + sequence,
 });
 
@@ -139,7 +139,7 @@ const configure = async (context, mode) => {
     if (requestUrl.searchParams.has("recent")) {
       events = Array.from({ length: 500 }, (_, index) => command(index + 202));
       if (mode === "history") {
-        events[0] = completedCommand(202);
+        events[0] = completedCommand(202, 2);
         events[497] = agent(699, selected.id, "Before the tool call.");
         events[498] = tool(700, selected.id);
         events[499] = agent(701, selected.id);
@@ -259,7 +259,7 @@ try {
   if (
     JSON.stringify(beforeSequences) !== JSON.stringify(["202"])
     || beforeRequests.some((request) =>
-      request.searchParams.get("limit") !== "200"
+      request.searchParams.get("limit") !== "500"
       || request.searchParams.get("session") !== history.selected.id)
   ) throw new Error(`unexpected history pages: ${beforeRequests.join(",")}`);
   if (await page.locator('a[href^="javascript:"]').count()) {
