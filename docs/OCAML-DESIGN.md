@@ -1,8 +1,9 @@
 # PISS OCaml design notes
 
 Status: **historical design record; the rewrite has advanced beyond this proposal.**
-Scope: the native OCaml 5.5 services under `src/` and the OCaml 5.2
-Bonsai/js_of_ocaml application under `web/`.
+Scope: a superseded proposal for OCaml 5.5 native services and the OCaml 5.2
+Bonsai/js_of_ocaml application. The implemented native and browser projects now
+both target OCaml 5.2; none of the 5.5-only syntax proposed below was adopted.
 Companion to `OCAML-REWRITE.md` (which describes *what* to build) and
 `ARCHITECTURE.md` (which describes the system *boundaries*); this
 document focuses on *how to write the OCaml*.
@@ -47,9 +48,9 @@ This is the right tool for PISS in two places:
   explicit lets the worker compile the queries once per session
   rather than parsing SQL on every call.
 
-OCaml 5.5.0 supports `(module M : S) -> t[M]` syntax; PISS targets
-OCaml ≥ 5.5 going forward (currently pinned at ≥ 5.4 in
-`dune-project`, which we should bump).
+OCaml 5.5.0 supports `(module M : S) -> t[M]` syntax. This proposal assumed
+PISS would target OCaml ≥ 5.5, but the implementation instead remains on 5.2
+for compatibility with the Bonsai toolchain.
 
 ### 1.2 Polymorphic functions as function arguments
 

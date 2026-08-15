@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-ocaml-lsp.url = "github:NixOS/nixpkgs/ac62194c3917d5f474c1a844b6fd6da2db95077d";
     pi-acp-src = {
       url = "github:svkozak/pi-acp/d1cffc047ab37a096ee70ca39cfc1de463db8d12";
       flake = false;
@@ -17,6 +18,7 @@
     {
       self,
       nixpkgs,
+      nixpkgs-ocaml-lsp,
       pi-acp-src,
       opencode-src,
     }:
@@ -32,7 +34,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_5;
+          ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_2;
           bonsaiWeb = import ./nix/bonsai-web.nix { inherit pkgs; };
           dependencies = with ocamlPackages; [
             alcotest
@@ -357,8 +359,12 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_5;
+          ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_2;
           bonsaiWeb = import ./nix/bonsai-web.nix { inherit pkgs; };
+          ocamlLspPackages = nixpkgs-ocaml-lsp.legacyPackages.${system}.ocaml-ng.ocamlPackages_5_2;
+          ocamlLsp = pkgs.writeShellScriptBin "ocamllsp" ''
+            exec ${ocamlLspPackages.ocaml-lsp}/bin/ocamllsp "$@"
+          '';
         in
         {
           default = pkgs.mkShell {
@@ -366,7 +372,7 @@
             packages = [
               ocamlPackages.ocaml
               ocamlPackages.dune_3
-              ocamlPackages.ocaml-lsp
+              ocamlLsp
               ocamlPackages.ocamlformat
               ocamlPackages.utop
               pkgs.chromium
@@ -383,6 +389,7 @@
             packages = [
               bonsaiWeb.ocamlPackages.ocaml
               bonsaiWeb.ocamlPackages.dune_3
+              ocamlLsp
               bonsaiWeb.ocamlPackages.ocamlformat
             ];
           };

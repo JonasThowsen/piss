@@ -9,7 +9,7 @@
  (name piss)
  (synopsis "A durable, harness-agnostic control plane for coding agents")
  (depends
-  (ocaml (= 5.5.0))
+  (ocaml (= 5.2.1))
   dune
   eio_main
   cohttp-eio

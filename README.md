@@ -27,7 +27,7 @@ src/                OCaml native services
   test/             unit + shell-driven integration tests
 web/                OCaml/Bonsai/js_of_ocaml browser application
 justfile            canonical development recipes
-flake.nix           OCaml 5.5 native shell, OCaml 5.2 web shell, and packages
+flake.nix           Unified OCaml 5.2 native/web shells and packages
 ```
 
 ## Install on NixOS
@@ -75,15 +75,15 @@ The browser is installable as a PWA. The fixed shell assets are served with `Cac
 ```bash
 git clone https://github.com/JonasThowsen/piss
 cd piss
-nix develop                # OCaml 5.5 server shell
-just build                 # native OCaml 5.5 and Bonsai OCaml 5.2 builds
+nix develop                # OCaml 5.2 development shell
+just build                 # native and Bonsai OCaml 5.2 builds
 just serve                 # run the control plane locally with sensible defaults
 just worker                # run a single session worker pointed at the mock agent
 ```
 
 `just serve` binds the control plane to loopback and enables the local identity bypass (`--dev-bypass-auth`). Production refuses that bypass.
 
-The default shell also provides Nix-pinned Playwright and Chromium for browser integration tests. Browser compilation runs in the separate `.#web` shell because the current Bonsai package set uses OCaml 5.2.
+The default shell also provides Nix-pinned Playwright and Chromium for browser integration tests. Browser compilation retains a separate `.#web` shell for its Bonsai dependencies, but both shells use OCaml 5.2 and the same compiler-compatible language server.
 
 Common recipes:
 

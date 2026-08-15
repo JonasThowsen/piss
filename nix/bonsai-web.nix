@@ -3,7 +3,7 @@
 let
   ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_2;
 
-  # Keep the released Bonsai fixes isolated from the OCaml 5.5 server package set.
+  # Keep the released Bonsai compatibility fixes local to the browser package set.
   replace =
     pname: replacement: inputs:
     map (input: if (input.pname or null) == pname then replacement else input) inputs;

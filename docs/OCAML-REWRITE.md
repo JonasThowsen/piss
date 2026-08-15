@@ -12,7 +12,7 @@ The defining guarantee is **control-plane replaceability**:
 
 > While an agent is executing a tool, the PISS API/control-plane process can be killed and replaced. The agent and tool processes keep their PIDs, output is durably buffered, the replacement control plane reconstructs the session, and no accepted command is executed twice.
 
-The backend and browser application are written in OCaml. Native services compile with OCaml 5.5 and Dune. The browser uses Bonsai and js_of_ocaml in a separate Nix-pinned OCaml 5.2 shell. The first harness integration uses ACP; Pi may be reached through an ACP adapter while remaining replaceable.
+The backend and browser application are written in OCaml 5.2 and Dune. The browser uses Bonsai and js_of_ocaml in a separate Nix shell with the same compiler version. The first harness integration uses ACP; Pi may be reached through an ACP adapter while remaining replaceable.
 
 ## 2. Product boundary
 

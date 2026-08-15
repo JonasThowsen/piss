@@ -1,6 +1,6 @@
 # PISS — OCaml implementation
 
-This directory contains the native OCaml 5.5 services for PISS. The boundaries
+This directory contains the native OCaml 5.2 services for PISS. The boundaries
 are real:
 
 ```text
@@ -122,12 +122,12 @@ to reattach to its harness session and replay conversation history.
 
 ## Build and test
 
-The default Nix development shell provides OCaml 5.5, the native project
+The default Nix development shell provides OCaml 5.2, the native project
 dependencies, Playwright, and Chromium. Browser builds use the separate OCaml
 5.2 `.#web` shell:
 
 ```bash
-just build          # native OCaml 5.5 and Bonsai OCaml 5.2 builds
+just build          # native and Bonsai OCaml 5.2 builds
 just test           # Alcotest unit suite
 just test-integration  # shell-driven interaction/isolation/mention/replaceability
 just format         # auto-format every compiled OCaml source

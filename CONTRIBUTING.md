@@ -11,7 +11,7 @@ nix flake check
 nix build .#piss
 ```
 
-The default development shell provides OCaml 5.5, Dune, native libraries, and
+The default development shell provides OCaml 5.2, Dune, native libraries, and
 Nix-pinned Playwright with Chromium. `just build` enters the separate OCaml 5.2
 shell used for the Bonsai/js_of_ocaml browser bundle.
 

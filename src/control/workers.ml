@@ -102,9 +102,9 @@ let delete_archived_sessions ?ids (manager : Config.managed_workers) =
           archived
   in
   if
-    Option.exists
-      (fun requested -> List.length requested <> List.length selected)
-      ids
+    match ids with
+    | Some requested -> List.length requested <> List.length selected
+    | None -> false
   then Error "one or more selected sessions are not archived"
   else
     match
