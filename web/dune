@@ -36,6 +36,7 @@
   clipboard
   command_id
   composer
+  composer_draft
   composer_ui
   config_controls
   details_view

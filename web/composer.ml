@@ -5,7 +5,7 @@ open Composer_ui
 
 type output = {
   view : Vdom.Node.t;
-  reset : unit -> unit Effect.t;
+  restore : string option -> unit Effect.t;
   set_notice : string -> unit Effect.t;
   has_pending : unit -> bool;
 }
@@ -19,7 +19,23 @@ let component session runtime connecting stream_notice notice config_controls
     ~set_notice ~on_busy ~refresh_runtime graph =
   let submission_locked = ref false in
   let request_in_flight = ref false in
-  let prompt, set_prompt = Bonsai.state "" graph in
+  let prompt_state, set_prompt_state = Bonsai.state (None, "") graph in
+  let session_id =
+    let%arr session = session in
+    Option.map session ~f:(fun (session : Control_plane.Session.t) ->
+        session.id)
+  in
+  let prompt =
+    let%arr session_id = session_id
+    and prompt_session_id, prompt = prompt_state in
+    if Option.equal String.equal prompt_session_id session_id then prompt
+    else
+      Option.bind session_id ~f:Composer_draft.read |> Option.value ~default:""
+  in
+  let set_prompt =
+    let%arr session_id = session_id and set_prompt_state = set_prompt_state in
+    fun prompt -> set_prompt_state (session_id, prompt)
+  in
   let resources, set_resources = Bonsai.state [] graph in
   let picker, set_picker = Bonsai.state Mention_picker.Closed graph in
   let submission, set_submission =
@@ -58,6 +74,24 @@ let component session runtime connecting stream_notice notice config_controls
     Image_attachments.component ~available:attachment_available
       ~on_notice:set_notice ~on_processing:on_busy graph
   in
+  let reset_session_state =
+    let%arr set_prompt_state = set_prompt_state
+    and set_resources = set_resources
+    and set_picker = set_picker
+    and attachments = attachments in
+    fun session_id ->
+      let prompt =
+        Option.bind session_id ~f:Composer_draft.read
+        |> Option.value ~default:""
+      in
+      Effect.Many
+        [
+          set_prompt_state (session_id, prompt);
+          set_resources [];
+          set_picker Mention_picker.Closed;
+          attachments.clear ();
+        ]
+  in
   let%arr session = session
   and runtime = runtime
   and connecting = connecting
@@ -77,6 +111,7 @@ let component session runtime connecting stream_notice notice config_controls
   and set_submission = set_submission
   and set_delivery = set_delivery
   and set_cancel_sequence = set_cancel_sequence
+  and reset_session_state = reset_session_state
   and on_busy = on_busy
   and refresh_runtime = refresh_runtime
   and set_notice = set_notice in
@@ -121,7 +156,12 @@ let component session runtime connecting stream_notice notice config_controls
         in
         set_picker (Mention_picker.loading active ~generation)
   in
+  let persist_prompt value =
+    Option.iter session ~f:(fun (session : Control_plane.Session.t) ->
+        Composer_draft.write session.id value)
+  in
   let update_prompt event value =
+    persist_prompt value;
     let cursor, _ = event_selection event (String.length value) in
     match Mention_picker.active_at_cursor ~text:value ~cursor with
     | None -> Effect.Many [ set_prompt value; close_picker () ]
@@ -139,6 +179,7 @@ let component session runtime connecting stream_notice notice config_controls
     | None -> close_picker ()
     | Some insertion ->
         Mention_request.cancel ();
+        persist_prompt insertion.text;
         apply_to_field insertion;
         Effect.Many
           [
@@ -196,6 +237,7 @@ let component session runtime connecting stream_notice notice config_controls
         | Ok _ ->
             request_in_flight := false;
             submission_locked := false;
+            Composer_draft.remove pending.session_id;
             Mention_request.cancel ();
             apply_to_field { text = ""; cursor = 0 };
             Effect.Many
@@ -413,6 +455,7 @@ let component session runtime connecting stream_notice notice config_controls
                    Vdom.Attr.create "aria-expanded" (Bool.to_string picker_open);
                    Vdom.Attr.placeholder (Composer_policy.placeholder policy);
                    Vdom.Attr.create "maxlength" "65536";
+                   Vdom.Attr.value_prop prompt;
                    Vdom.Attr.on_input update_prompt;
                    Vdom.Attr.on_keydown keydown;
                    attachments.paste_attr;
@@ -536,19 +579,15 @@ let component session runtime connecting stream_notice notice config_controls
   in
   {
     view;
-    reset =
-      (fun () ->
+    restore =
+      (fun session_id ->
         if Option.is_none pending then (
           submission_locked := false;
           request_in_flight := false);
         Mention_request.cancel ();
-        apply_to_field { text = ""; cursor = 0 };
         Effect.Many
           [
-            set_prompt "";
-            set_resources [];
-            set_picker Mention_picker.Closed;
-            attachments.clear ();
+            reset_session_state session_id;
             set_delivery Prompt_command.Prompt;
             set_cancel_sequence None;
             set_notice "";

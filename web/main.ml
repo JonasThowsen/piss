@@ -377,22 +377,23 @@ let component graph =
                    set_menu_open None;
                  ])
               ~f:(fun () ->
-                Option.value_map next_id
-                  ~default:
-                    (Effect.of_deferred_thunk (fun () ->
-                         Event_stream.close ();
-                         Async_kernel.Deferred.return ()))
-                  ~f:(fun id ->
-                    let snapshot_refresh = load_snapshot ~inject_shell id in
-                    Effect.Many
-                      [
-                        snapshot_refresh;
-                        History_loader.load_initial ~inject_history
-                          ~inject_deciding
-                          ~refresh_catalog_effect:catalog_refresh
-                          ~refresh_snapshot_effect:snapshot_refresh
-                          ~set_stream_notice id;
-                      ])))
+                Effect.bind (composer.restore next_id) ~f:(fun () ->
+                    Option.value_map next_id
+                      ~default:
+                        (Effect.of_deferred_thunk (fun () ->
+                             Event_stream.close ();
+                             Async_kernel.Deferred.return ()))
+                      ~f:(fun id ->
+                        let snapshot_refresh = load_snapshot ~inject_shell id in
+                        Effect.Many
+                          [
+                            snapshot_refresh;
+                            History_loader.load_initial ~inject_history
+                              ~inject_deciding
+                              ~refresh_catalog_effect:catalog_refresh
+                              ~refresh_snapshot_effect:snapshot_refresh
+                              ~set_stream_notice id;
+                          ]))))
   in
   let select_session =
     let%arr selected_id = selected_id
@@ -426,7 +427,7 @@ let component graph =
             Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
                 Effect.Many
                   [
-                    composer.reset ();
+                    composer.restore (Some id);
                     set_stream_notice "";
                     set_mobile_open false;
                     set_menu_open None;

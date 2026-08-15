@@ -90,6 +90,8 @@
                 ./web/command_id.mli
                 ./web/composer.ml
                 ./web/composer.mli
+                ./web/composer_draft.ml
+                ./web/composer_draft.mli
                 ./web/composer_ui.ml
                 ./web/composer_ui.mli
                 ./web/composer_domain_test.ml

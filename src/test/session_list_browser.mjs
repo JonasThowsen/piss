@@ -215,7 +215,7 @@ try {
   ) {
     throw new Error(`unexpected initial event requests: ${JSON.stringify(eventPageRequests)}`);
   }
-  const initialEventPageRequestCount = eventPageRequests.length;
+  let initialEventPageRequestCount = eventPageRequests.length;
   const streamUrl = new URL(eventStreamRequests.at(-1));
   if (
     streamUrl.searchParams.get("session") !== "s-mention-browser"
@@ -366,7 +366,32 @@ try {
     await page.locator(".connection-pill").getByText("idle", { exact: true }).waitFor();
   };
   const prompt = "Render the deterministic Bonsai response";
-  await page.getByRole("textbox", { name: "Message agent" }).fill(prompt);
+  const draftStorageKey = "piss:composer-draft:s-mention-browser";
+  const composerField = page.getByRole("textbox", { name: "Message agent" });
+  await composerField.fill(prompt);
+  await page.waitForFunction(
+    ({ key, value }) => localStorage.getItem(key) === value,
+    { key: draftStorageKey, value: prompt },
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+  await page.getByRole("textbox", { name: "Message agent" }).waitFor();
+  try {
+    await page.waitForFunction(
+      (value) => document.getElementById("prompt-input")?.value === value,
+      prompt,
+    );
+  } catch (error) {
+    const draftState = await page.evaluate((key) => ({
+      field: document.getElementById("prompt-input")?.value,
+      stored: localStorage.getItem(key),
+    }), draftStorageKey);
+    throw new Error(`${error.message}: ${JSON.stringify(draftState)}`);
+  }
+  await page.waitForFunction(() =>
+    !document.getElementById("timeline")?.textContent?.includes("Loading recent events"));
+  await waitForIdle();
+  initialEventPageRequestCount = eventPageRequests.length;
   let dropFirstCommandResponse = true;
   await page.route("**/api/v2/commands?*", async (route) => {
     if (!dropFirstCommandResponse) return route.continue();
@@ -381,6 +406,9 @@ try {
   const request = await requestPromise;
   const body = request.postDataJSON();
   await page.getByRole("button", { name: "Retry same command" }).waitFor({ timeout: 15000 });
+  if (await page.evaluate((key) => localStorage.getItem(key), draftStorageKey) !== prompt) {
+    throw new Error("uncertain command delivery discarded the saved composer draft");
+  }
   const retryPromise = page.waitForRequest(
     (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST" && candidate !== request,
   );
@@ -398,6 +426,9 @@ try {
     throw new Error(`uncertain retry changed command identity: ${JSON.stringify({ body, retryBody })}`);
   }
   await page.getByRole("button", { name: "Retry same command" }).waitFor({ state: "detached" });
+  if (await page.evaluate((key) => localStorage.getItem(key), draftStorageKey) !== null) {
+    throw new Error("accepted command left a stale composer draft in localStorage");
+  }
   await page.unroute("**/api/v2/commands?*");
   if (
     !body.commandId?.startsWith("web-")

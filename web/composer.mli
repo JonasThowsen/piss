@@ -2,7 +2,7 @@ open! Bonsai_web.Cont
 
 type output = {
   view : Vdom.Node.t;
-  reset : unit -> unit Effect.t;
+  restore : string option -> unit Effect.t;
   set_notice : string -> unit Effect.t;
   has_pending : unit -> bool;
 }
