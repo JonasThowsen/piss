@@ -232,6 +232,56 @@ let () =
   | [ User _; Agent { text = "Proof complete"; _ }; Tool _; Command_state _ ] ->
       ()
   | _ -> fail "agent message without an ACP messageId was not retained");
+  let load_replay =
+    {|
+    [
+      {"sequence":1,"kind":"command.accepted","payload":{"commandId":"old-command","requestId":"old-command","action":"prompt","text":"Original prompt","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":1},
+      {"sequence":2,"kind":"acp.agent_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Original answer"}}}},"createdAt":2},
+      {"sequence":3,"kind":"acp.initialize","payload":{},"createdAt":3},
+      {"sequence":4,"kind":"acp.agent_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Original answer"}}}},"createdAt":4},
+      {"sequence":5,"kind":"acp.user_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Original prompt"}}}},"createdAt":5},
+      {"sequence":6,"kind":"acp.agent_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Another old answer"}}}},"createdAt":6},
+      {"sequence":7,"kind":"acp.session.loaded","payload":{},"createdAt":7},
+      {"sequence":8,"kind":"command.accepted","payload":{"commandId":"new-command","requestId":"new-command","action":"prompt","text":"New prompt","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":8},
+      {"sequence":9,"kind":"acp.agent_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New answer"}}}},"createdAt":9}
+    ]
+    |}
+  in
+  (match decode load_replay with
+  | [
+   User { text = "Original prompt"; _ };
+   Agent { text = "Original answer"; _ };
+   User { text = "New prompt"; _ };
+   Agent { text = "New answer"; _ };
+  ] ->
+      ()
+  | _ -> fail "session/load replay was rendered as fresh conversation output");
+  let failed_load_replay =
+    String.substr_replace_first load_replay ~pattern:"acp.session.loaded"
+      ~with_:"acp.session.load_failed"
+  in
+  (match decode failed_load_replay with
+  | [
+   User { text = "Original prompt"; _ };
+   Agent { text = "Original answer"; _ };
+   User { text = "New prompt"; _ };
+   Agent { text = "New answer"; _ };
+  ] ->
+      ()
+  | _ -> fail "failed session/load replay was rendered as fresh output");
+  let replay_page_prefix =
+    load_replay
+    |> String.substr_replace_first
+         ~pattern:
+           {|{"sequence":1,"kind":"command.accepted","payload":{"commandId":"old-command","requestId":"old-command","action":"prompt","text":"Original prompt","imageCount":0,"images":[],"resourceCount":0,"resources":[]},"createdAt":1},
+      {"sequence":2,"kind":"acp.agent_message_chunk","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Original answer"}}}},"createdAt":2},
+      {"sequence":3,"kind":"acp.initialize","payload":{},"createdAt":3},
+      |}
+         ~with_:""
+  in
+  (match decode replay_page_prefix with
+  | [ User { text = "New prompt"; _ }; Agent { text = "New answer"; _ } ] -> ()
+  | _ -> fail "recent page beginning inside session/load replay was not cleaned");
   let out_of_order =
     String.substr_replace_first history ~pattern:"\"sequence\": 4"
       ~with_:"\"sequence\": 2"

@@ -43,6 +43,7 @@ let run ~env (args : Config.args) =
         Eio.Stream.take outgoing |> write_json harness.Harness.stdin
       done);
   let pending_responses = Hashtbl.create 16 in
+  let session_load_in_progress = ref false in
   let fail_pending message =
     Hashtbl.iter
       (fun _ resolver ->
@@ -83,11 +84,27 @@ let run ~env (args : Config.args) =
       try
         while true do
           let json = read_json harness_reader in
-          let durable_json = Acp.redact_user_image_data json in
-          ignore
-            (Store.append_event store ~kind:(Harness.event_kind json)
-               ~payload:durable_json);
-          match Acp.envelope_of_yojson json with
+          let envelope = Acp.envelope_of_yojson json in
+          (* session/load emits the saved transcript before its response. The
+             ledger already owns that history, so process the replay for live
+             state reconstruction without storing it as new activity. *)
+          let replayed_session_update =
+            !session_load_in_progress
+            &&
+            match envelope with
+            | Ok (Acp.Notification { method_ = "session/update"; _ }) -> true
+            | Ok _ | Error _ -> false
+          in
+          (if not replayed_session_update then
+             let durable_json = Acp.redact_user_image_data json in
+             ignore
+               (Store.append_event store ~kind:(Harness.event_kind json)
+                  ~payload:durable_json));
+          (match envelope with
+          | Ok (Acp.Response { id = "session-load"; _ }) ->
+              session_load_in_progress := false
+          | Ok _ | Error _ -> ());
+          match envelope with
           | Ok (Acp.Response { id; error; _ }) -> (
               match Hashtbl.find_opt pending_responses id with
               | Some resolver ->
@@ -199,6 +216,7 @@ let run ~env (args : Config.args) =
   let session_id_from_agent =
     match (Store.get_metadata store "acp_session_id", supports_load) with
     | Some existing, true -> (
+        session_load_in_progress := true;
         match
           rpc_request ~id:"session-load"
             (Acp.load_session_request ~session_id:existing ~cwd:workspace
@@ -227,6 +245,7 @@ let run ~env (args : Config.args) =
                           ]));
                 State.create_harness_session state)
         | Error message ->
+            session_load_in_progress := false;
             ignore
               (Store.append_event store ~kind:"acp.session.load_failed"
                  ~payload:

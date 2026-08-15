@@ -74,8 +74,29 @@ let command_state_to_string = function
 let decode_events = Event_decode.decode_events
 let decode_event = Event_decode.decode_event
 
+(* ACP session/load replays the complete harness transcript before returning its
+   response. Older workers persisted those notifications as fresh events. Drop
+   every finished load attempt at read time so already-durable replay does not
+   reappear as new agent output after a worker restart. Scanning backwards also
+   handles a bounded recent page that begins in the middle of a long replay. *)
+let without_session_load_replays events =
+  let rec loop dropping kept = function
+    | [] -> kept
+    | event :: rest ->
+        let kind = Event_decode.kind event in
+        if
+          String.equal kind "acp.session.loaded"
+          || String.equal kind "acp.session.load_failed"
+        then loop true (event :: kept) rest
+        else if dropping && String.equal kind "acp.initialize" then
+          loop false (event :: kept) rest
+        else if dropping then loop true kept rest
+        else loop false (event :: kept) rest
+  in
+  loop false [] (List.rev events)
+
 let project events =
-  events
+  events |> without_session_load_replays
   |> List.filter_map ~f:Event_decode.update
   |> Timeline_projection.project
 

@@ -86,7 +86,9 @@ let agent_chunk_text event =
 
 let command_terminal_state command_id event =
   let open Yojson.Safe.Util in
-  if member "kind" event <> `String "command.state" then None
+  let kind = member "kind" event in
+  if kind <> `String "command.state" && kind <> `String "command.reconciled"
+  then None
   else
     let payload = member "payload" event in
     match (member "commandId" payload, member "state" payload) with
@@ -121,16 +123,22 @@ let inspect_peer_response ~net ~socket (request : Registry.peer_request) =
             (fun latest event -> Int64.max latest (event_sequence event))
             cursor events
         in
-        let command_seen, chunks =
-          List.fold_left
-            (fun (seen, collected) event ->
+        let rec collect_until_terminal seen collected = function
+          | [] -> (seen, collected, None)
+          | event :: rest -> (
               let seen = seen || is_command_accepted request.command_id event in
-              let text = if seen then agent_chunk_text event else "" in
-              (seen, if text = "" then collected else text :: collected))
-            (command_seen, chunks) events
+              match command_terminal_state request.command_id event with
+              | Some state -> (seen, collected, Some state)
+              | None ->
+                  let text = if seen then agent_chunk_text event else "" in
+                  let collected =
+                    if String.equal text "" then collected
+                    else text :: collected
+                  in
+                  collect_until_terminal seen collected rest)
         in
-        let terminal =
-          List.find_map (command_terminal_state request.command_id) events
+        let command_seen, chunks, terminal =
+          collect_until_terminal command_seen chunks events
         in
         match terminal with
         | Some "completed" ->
