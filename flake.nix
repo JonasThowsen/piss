@@ -396,7 +396,8 @@
               kill -0 "$dune_pid" 2>/dev/null || break
               sleep 0.05
             done
-            if [[ ! -f "$rpc_registry/$dune_pid.csexp" ]]; then
+            if [[ ! -f "$rpc_registry/$dune_pid.csexp" ]] \
+              && ! compgen -G "$rpc_registry/*.csexp" >/dev/null; then
               printf 'Dune RPC did not start for %s. Watcher output:\n' \
                 "$project_root" >&2
               tail -n 40 "$watch_log" >&2 || true
@@ -404,7 +405,7 @@
             fi
 
             for _ in $(seq 1 2400); do
-              grep -q 'waiting for filesystem changes' "$watch_log" && break
+              grep -Eq 'Success|waiting for filesystem changes' "$watch_log" && break
               kill -0 "$dune_pid" 2>/dev/null || break
               sleep 0.05
             done
