@@ -171,6 +171,3 @@ retrying consequential work.
 - Pi and OpenCode are selectable per session; the bootstrap default is Pi.
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one
   browser connection.
-- Existing TypeScript PISS workflow metadata is not migrated.
-- Managed browser capability, workflow authority, reviews, notifications,
-  and the rest of the TypeScript product remain outside this slice.

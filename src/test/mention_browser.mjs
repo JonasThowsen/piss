@@ -123,7 +123,8 @@ try {
   const agentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("manual scroll should stay put");
   await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, agentCount);
-  if (await timeline.evaluate((value) => value.scrollTop) > 4) throw new Error("stream overrode the user's manual scroll position");
+  const manualScrollTop = await timeline.evaluate((value) => value.scrollTop);
+  if (manualScrollTop > 4) throw new Error(`stream overrode the user's manual scroll position: ${manualScrollTop}px`);
 
   await desktop.getByRole("button", { name: "Jump to latest message" }).click();
   await desktop.waitForFunction(() => {

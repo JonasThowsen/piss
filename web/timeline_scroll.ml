@@ -136,7 +136,8 @@ let on_scroll event =
       else if resized && not explicit then ()
       else if top < !previous_top - 1 && ((not !pinning) || explicit) then
         following := false
-      else if (not !pinning) && distance value <= 80 then following := true;
+      else if (not !pinning) && top > !previous_top + 1 && distance value <= 80
+      then following := true;
       previous_top := top;
       update_button ()
 
@@ -419,7 +420,8 @@ let track () =
         timeline := Some value;
         let top : int = Js.Unsafe.get value "scrollTop" in
         if top < !previous_top - 1 then following := false
-        else if distance value <= 80 then following := true;
+        else if top > !previous_top + 1 && distance value <= 80 then
+          following := true;
         previous_top := top;
         update_button ()))
 

@@ -65,4 +65,4 @@ These require usage evidence before architecture work:
 - complete projection of historical non-message transcript events;
 - bounded metric-driven hypothesis experiments in managed worktrees, with immutable evaluation contracts and separate merge authority.
 
-Introduce new Effect services only when a real capability or test boundary requires them.
+Introduce new capability services only when a real capability or test boundary requires them.

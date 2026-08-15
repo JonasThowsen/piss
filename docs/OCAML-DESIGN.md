@@ -647,6 +647,5 @@ The `.mli` files come first because they let reviewers catch the
   (§2.8, §4).
 - [Base/Core library conventions](https://opensource.janestreet.com/core_patterns.html) — module-per-type, `t` first, uniform
   interfaces (§2.1, §2.5).
-- `docs/OCAML-REWRITE.md` — the slice plan this design enables.
-- `docs/ARCHITECTURE.md` — the historical TypeScript architecture that
-  preceded this design.
+- `docs/OCAML-REWRITE.md` — the architecture specification and completed
+  cutover record this design enabled.

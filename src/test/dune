@@ -82,6 +82,7 @@
  (alias session-browser-test)
  (deps
   mention_browser.sh
+  pwa_browser.mjs
   run_integration.sh
   session_list_browser.mjs
   timeline_browser.mjs
@@ -97,4 +98,5 @@
    %{dep:../mock_agent/main.exe}
    %{dep:../control/main.exe}
    %{dep:session_list_browser.mjs}
-   %{dep:timeline_browser.mjs})))
+   %{dep:timeline_browser.mjs}
+   %{dep:pwa_browser.mjs})))

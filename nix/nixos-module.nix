@@ -261,13 +261,21 @@ let
   '';
   tailscaleUp = pkgs.writeShellScript "piss-tailscale-up" ''
     set -euo pipefail
-    state="$(${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
-    [[ "$state" == "Running" ]] && exit 0
+    state=""
+    for _ in $(seq 1 60); do
+      state="$(${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" status --json 2>/dev/null | ${lib.getExe pkgs.jq} -r '.BackendState // ""' || true)"
+      if [[ "$state" == "Running" ]]; then
+        exec ${lib.getExe pkgs.tailscale} --socket="${tailscaleSocket}" set \
+          --accept-dns=false \
+          --hostname=${lib.escapeShellArg cfg.tailscale.hostname}
+      fi
+      sleep .5
+    done
     ${
       if cfg.tailscale.authKeyFile == null then
         ''
-          echo "PISS has not joined the tailnet; run piss-tailscale-login." >&2
-          exit 0
+          echo "PISS has not joined the tailnet (backend state: $state); run piss-tailscale-login." >&2
+          exit 1
         ''
       else
         ''
@@ -404,7 +412,7 @@ in
       };
       hostname = lib.mkOption {
         type = lib.types.str;
-        default = "piss-ocaml";
+        default = "piss";
         description = "Tailnet hostname for PISS.";
       };
       allowedOrigins = lib.mkOption {
@@ -414,7 +422,7 @@ in
       };
       stateName = lib.mkOption {
         type = lib.types.strMatching "[a-zA-Z0-9_-]+";
-        default = "piss-ocaml-tailscale";
+        default = "piss-tailscale";
         description = "Tailscale state and runtime directory name.";
       };
       authKeyFile = lib.mkOption {
@@ -711,6 +719,7 @@ in
       requires = [
         "piss-ocaml.service"
         "piss-ocaml-tailscaled.service"
+        "piss-ocaml-tailscale-up.service"
       ];
       serviceConfig = {
         Type = "oneshot";

@@ -4,7 +4,7 @@
 
 **PISS** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
 
-The repository is the OCaml implementation. The previous TypeScript/Effect implementation is preserved under `legacy/` for historical reference only; it is not built or deployed.
+The repository contains the production OCaml implementation.
 
 PISS is designed to run on **NixOS + Tailscale**. The flake packages the application; the host configuration owns the service and network policy:
 
@@ -26,7 +26,6 @@ src/                OCaml native services
   mock_agent/       piss-mock-agent (deterministic ACP fixture)
   test/             unit + shell-driven integration tests
 web/                OCaml/Bonsai/js_of_ocaml browser application
-legacy/             previous TypeScript implementation (not built)
 justfile            canonical development recipes
 flake.nix           OCaml 5.5 native shell, OCaml 5.2 web shell, and packages
 ```
@@ -68,6 +67,8 @@ sudo nixos-rebuild switch --flake .#your-host
 ```
 
 The host configuration decides when to restart the control plane and how to replace idle workers. PISS keeps worker state durable so replacing the control plane does not duplicate commands.
+
+The browser is installable as a PWA. The fixed shell assets are served with `Cache-Control: no-store`, and the service worker does not cache frontend files. A normal reload therefore uses the deployed generation; the cutover worker also removes shell caches created by releases predating the OCaml implementation.
 
 ## Development
 

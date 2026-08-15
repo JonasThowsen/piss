@@ -82,12 +82,80 @@ try {
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const appResponse = await context.request.get(`${url}/app.js`);
-  if (!appResponse.ok()) throw new Error(`browser bundle request failed: ${appResponse.status()}`);
-  const appBytes = (await appResponse.body()).byteLength;
+  const shellAssets = [
+    ["/", "text/html"],
+    ["/app.js", "text/javascript"],
+    ["/styles.css", "text/css"],
+    ["/manifest.webmanifest", "application/manifest+json"],
+    ["/service-worker.js", "text/javascript"],
+    ["/icon.svg", "image/svg+xml"],
+    ["/icon-192.png", "image/png"],
+    ["/icon-512.png", "image/png"],
+  ];
+  const shellResponses = new Map();
+  for (const [path, contentType] of shellAssets) {
+    const response = await context.request.get(`${url}${path}`);
+    if (!response.ok()) throw new Error(`browser asset request failed for ${path}: ${response.status()}`);
+    const headers = response.headers();
+    if (!headers["content-type"]?.startsWith(contentType)) {
+      throw new Error(`browser asset ${path} used unexpected content type: ${headers["content-type"]}`);
+    }
+    if (!headers["cache-control"]?.split(",").map((value) => value.trim()).includes("no-store")) {
+      throw new Error(`browser asset ${path} may be cached across deployments: ${headers["cache-control"]}`);
+    }
+    shellResponses.set(path, response);
+  }
+  const appBytes = (await shellResponses.get("/app.js").body()).byteLength;
   if (appBytes >= 5 * 1024 * 1024) {
     throw new Error(`production browser bundle is unexpectedly large: ${appBytes} bytes`);
   }
+  const manifest = await shellResponses.get("/manifest.webmanifest").json();
+  if (
+    manifest.name !== "PISS"
+    || manifest.short_name !== "PISS"
+    || manifest.id !== "/"
+    || manifest.start_url !== "/"
+    || manifest.scope !== "/"
+    || manifest.display !== "standalone"
+    || !Array.isArray(manifest.icons)
+    || !manifest.icons.some((icon) => icon.src === "/icon-192.png" && icon.sizes === "192x192")
+    || !manifest.icons.some((icon) => icon.src === "/icon-512.png" && icon.sizes === "512x512")
+  ) {
+    throw new Error(`browser manifest is not installable: ${JSON.stringify(manifest)}`);
+  }
+  for (const size of [192, 512]) {
+    const icon = await shellResponses.get(`/icon-${size}.png`).body();
+    const width = icon.readUInt32BE(16);
+    const height = icon.readUInt32BE(20);
+    if (width !== size || height !== size) {
+      throw new Error(`PWA icon declared ${size}x${size} but is ${width}x${height}`);
+    }
+  }
+  const serviceWorker = await shellResponses.get("/service-worker.js").text();
+  if (!serviceWorker.includes('LEGACY_CACHE_PREFIX = "piss-shell-"') || serviceWorker.includes("respondWith")) {
+    throw new Error("service worker did not preserve the network-only deployment contract");
+  }
+  await page.waitForFunction(async () => {
+    const registration = await navigator.serviceWorker?.getRegistration("/");
+    return registration?.active?.scriptURL.endsWith("/service-worker.js")
+      && navigator.serviceWorker.controller?.scriptURL.endsWith("/service-worker.js");
+  });
+  const applicationCaches = await page.evaluate(() => caches.keys());
+  if (applicationCaches.some((key) => key.startsWith("piss-shell-"))) {
+    throw new Error(`retired frontend caches survived activation: ${JSON.stringify(applicationCaches)}`);
+  }
+  const devtools = await context.newCDPSession(page);
+  const appManifest = await devtools.send("Page.getAppManifest");
+  if (appManifest.errors?.length) {
+    throw new Error(`Chromium rejected the PWA manifest: ${JSON.stringify(appManifest.errors)}`);
+  }
+  const installability = await devtools.send("Page.getInstallabilityErrors");
+  const installabilityErrors = (installability.installabilityErrors ?? [])
+    .filter((error) => error.errorId !== "in-incognito");
+  if (installabilityErrors.length) {
+    throw new Error(`Chromium found PWA installability errors: ${JSON.stringify(installabilityErrors)}`);
+  }
+  await devtools.detach();
   const session = page.getByRole("button", { name: /^Pi \/ deployed idle \/ opencode$/ });
   try {
     await session.waitFor();
@@ -95,7 +163,7 @@ try {
     throw new Error(`${error.message}\n${errors.join("\n")}\nbody: ${await page.locator("body").innerText()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
-  const expectedWorkspaceLabel = `PISS rewrite / ${workspace}`;
+  const expectedWorkspaceLabel = `PISS / ${workspace}`;
   await page.locator(".app-header").getByText(expectedWorkspaceLabel, { exact: true }).waitFor();
   const realAuditResponse = await context.request.get(`${url}/api/v2/sessions/s-mention-browser/audit`);
   if (!realAuditResponse.ok()) {
@@ -630,9 +698,9 @@ try {
   }
   await waitForIdle();
 
-  const workspaceSettings = page.getByRole("button", { name: "Workspace settings for PISS rewrite" });
+  const workspaceSettings = page.getByRole("button", { name: "Workspace settings for PISS" });
   await workspaceSettings.click();
-  await page.getByRole("menu", { name: "PISS rewrite workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
+  await page.getByRole("menu", { name: "PISS workspace settings" }).getByRole("menuitem", { name: "Remove workspace" }).click();
   const blockedRemoval = page.getByRole("alertdialog", { name: "Remove workspace?" });
   await blockedRemoval.getByText("This does not delete the directory or any files.", { exact: false }).waitFor();
   await blockedRemoval.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
@@ -654,7 +722,7 @@ try {
   await removeWeb.getByRole("button", { name: "REMOVE WORKSPACE" }).click();
   await page.getByRole("button", { name: "Workspace settings for web" }).waitFor({ state: "detached" });
 
-  await page.getByRole("button", { name: "New session in PISS rewrite" }).click();
+  await page.getByRole("button", { name: "New session in PISS" }).click();
   const creator = page.getByRole("dialog", { name: "New session" });
   await creator.getByLabel("Session title").fill("Lifecycle proof");
   if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "opencode") {

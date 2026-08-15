@@ -7,6 +7,17 @@ let safe_asset_path root resource =
   | "/" -> Some (Filename.concat root "index.html", "text/html; charset=utf-8")
   | "/styles.css" ->
       Some (Filename.concat root "styles.css", "text/css; charset=utf-8")
+  | "/manifest.webmanifest" ->
+      Some
+        ( Filename.concat root "manifest.webmanifest",
+          "application/manifest+json; charset=utf-8" )
+  | "/service-worker.js" ->
+      Some
+        ( Filename.concat root "service-worker.js",
+          "text/javascript; charset=utf-8" )
+  | "/icon.svg" -> Some (Filename.concat root "icon.svg", "image/svg+xml")
+  | "/icon-192.png" -> Some (Filename.concat root "icon-192.png", "image/png")
+  | "/icon-512.png" -> Some (Filename.concat root "icon-512.png", "image/png")
   | resource when String.starts_with ~prefix:"/fonts/" resource ->
       let name = Filename.basename resource in
       if

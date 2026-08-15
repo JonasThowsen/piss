@@ -220,7 +220,12 @@
               mkdir -p "$out/share/piss"
               cp -r web/public "$out/share/piss/public"
               cp ${pissWeb}/share/piss-web/app.js "$out/share/piss/public/app.js"
-              wrapProgram "$out/bin/pissd" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.landrun ]}
+              wrapProgram "$out/bin/pissd" --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.git
+                  pkgs.landrun
+                ]
+              }
             '';
             doCheck = true;
             meta = {
@@ -311,6 +316,10 @@
           inherit (self.packages.${system}) piss piss-web pi-acp;
           nixos-module =
             assert moduleEvaluation.config.services.piss.port == 4318;
+            assert moduleEvaluation.config.services.piss.tailscale.hostname == "piss";
+            assert moduleEvaluation.config.services.piss.tailscale.stateName == "piss-tailscale";
+            assert builtins.elem "piss-ocaml-tailscale-up.service"
+              moduleEvaluation.config.systemd.user.services.piss-ocaml-tailscale-serve.requires;
             assert
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
               == "on-failure";
@@ -328,6 +337,8 @@
               );
               upgradeRunner =
                 moduleEvaluation.config.systemd.user.services.piss-ocaml-worker-upgrade.serviceConfig.ExecStart;
+              tailscaleUpRunner =
+                moduleEvaluation.config.systemd.user.services.piss-ocaml-tailscale-up.serviceConfig.ExecStart;
             in
             pkgs.runCommand "piss-nixos-module-check" { } ''
               grep -F -- 'STATE_DIRECTORY' ${workerRunner}
@@ -335,6 +346,8 @@
               grep -F -- '--harness-arg acp' ${workerRunner}
               grep -F -- 'prepare_upgrade' ${upgradeRunner}
               grep -F -- 'systemctl --user restart' ${upgradeRunner}
+              grep -F -- ' set ' ${tailscaleUpRunner}
+              grep -F -- '--hostname=piss' ${tailscaleUpRunner}
               touch $out
             '';
         }

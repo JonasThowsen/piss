@@ -2,8 +2,43 @@ open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
 open App_state
+open Js_of_ocaml
 
 let class_ name = [ Vdom.Attr.class_ name ]
+
+let present value =
+  Js.to_bool
+    (Js.Unsafe.coerce
+       (Js.Unsafe.fun_call
+          (Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "Boolean")
+          [| value |]))
+
+let register_service_worker () =
+  try
+    let navigator =
+      Js.Unsafe.get (Js.Unsafe.inject Dom_html.window) "navigator"
+    in
+    let service_worker = Js.Unsafe.get navigator "serviceWorker" in
+    if present service_worker then
+      let options =
+        Js.Unsafe.obj
+          [|
+            ("scope", Js.Unsafe.inject (Js.string "/"));
+            ("updateViaCache", Js.Unsafe.inject (Js.string "none"));
+          |]
+      in
+      let registration =
+        Js.Unsafe.meth_call service_worker "register"
+          [|
+            Js.Unsafe.inject (Js.string "/service-worker.js");
+            Js.Unsafe.inject options;
+          |]
+      in
+      let ignore_failure = Js.wrap_callback (fun _ -> ()) in
+      ignore
+        (Js.Unsafe.meth_call registration "catch"
+           [| Js.Unsafe.inject ignore_failure |])
+  with _ -> ()
 
 let catalog_request () =
   Async_kernel.Deferred.all
@@ -540,4 +575,6 @@ let component graph =
       workspace_dialogs.view;
     ]
 
-let () = Bonsai_web.Start.start component
+let () =
+  register_service_worker ();
+  Bonsai_web.Start.start component

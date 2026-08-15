@@ -78,7 +78,7 @@ chmod +x "$root/launch" "$root/stop"
   --session-launcher "$root/launch" --session-stopper "$root/stop" \
   --available-harness pi --available-harness opencode --available-harness mock \
   --default-harness opencode \
-  --workspace-spec "test-workspace|PISS rewrite|$workspace" \
+  --workspace-spec "test-workspace|PISS|$workspace" \
   --workspace-discovery-root "$repository" \
   --bootstrap-session s-mention-browser --public "$public_dir" --app-js "$app_js" \
   --generation mention-browser --dev-bypass-auth >"$root/control.log" 2>&1 &

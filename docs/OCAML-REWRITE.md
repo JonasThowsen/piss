@@ -1,7 +1,8 @@
-# PISS OCaml rewrite specification
+# PISS OCaml architecture and cutover record
 
-Status: **accepted direction; tracer implementation in progress**  
-Branch: `rewrite/ocaml`
+Status: **implemented and promoted to production**
+
+Branch: `main`
 
 ## 1. Objective
 
@@ -406,75 +407,23 @@ The canonical replaceability test records PIDs, starts a 60-second tool, force-k
 - no pending permission was auto-resolved;
 - all retained state stays within configured bounds.
 
-## 13. Historical delivery slices
+## 13. Production cutover
 
-This section records the original tracer-bullet migration plan. It is historical context, not current build guidance.
+The tracer slices reached production parity and the OCaml implementation became
+the sole implementation on `main`. The retired source tree was removed rather
+than kept as a second architecture to maintain.
 
-### Slice 0 — repository and reproducible toolchain
+The production cutover preserves the independently supervised worker state,
+reuses the stable `piss` Tailscale identity, and serves an installable PWA from
+the same origin. Fixed frontend asset names are always delivered with
+`Cache-Control: no-store`; the service worker owns no shell cache and removes
+caches left by the retired frontend before reloading those clients once.
 
-- Native OCaml, Dune, formatters, tests, and required libraries were pinned by Nix.
-- Browser dependencies were isolated in a separate Nix shell.
-- During this historical migration checkpoint, the previous TypeScript implementation remained buildable.
+The build, replaceability, browser, PWA migration, Nix module, and deployed
+health checks are the executable readiness gates. Git history remains the
+record of the incremental migration.
 
-### Slice 1 — replaceability tracer
-
-Observable behavior: one mock ACP session continues a long-running tool while `pissd` is killed and replaced; the OCaml browser reconnects and shows buffered completion.
-
-This slice includes real native binaries, SQLite, local transport, HTTP/event stream, and process tests. It may use a fixed mock harness and one fixed workspace.
-
-### Slice 2 — real ACP harness
-
-Replace the mock with one real ACP harness, initially Pi through `pi-acp` or OpenCode. Negotiate capabilities and render native messages/tools/permissions.
-
-### Slice 3 — trusted workspace and session lifecycle
-
-Port workspace registration, session creation/list/load/resume/stop, identity validation, and bounded worker launcher integration.
-
-### Slice 4 — complete conversational controls
-
-Port model/thinking configuration, usage, commands, image prompts, queue/steer behavior where supported, and interactive elicitation.
-
-### Slice 5 — review, files, notifications, and PWA
-
-Port file mentions, sandboxed review, notifications, offline shell, drafts, navigation, and update UX.
-
-### Slice 6 — engineering workflows and managed browser
-
-Port the durable workflow state machine, exact authority, receipts, supervisor recovery, browser tools, and evidence artifacts without weakening current invariants.
-
-### Slice 7 — migration and cutover
-
-Import existing trusted workspaces and PISS metadata. Pi transcript files remain owned by Pi. Run both implementations against separate ports/state roots, execute compatibility and recovery tests, then switch the NixOS module deliberately.
-
-## 14. Explicit exclusions from the first tracer
-
-- complete migration of the existing 3,700-line React workbench;
-- public internet exposure;
-- multi-user collaboration;
-- exact process survival across machine reboot;
-- ACP v2 enabled by default;
-- arbitrary harness executable or argument submission from the browser;
-- engineering-workflow authority before command/event durability is proven;
-- browser-managed worktrees;
-- automatic migration of production state.
-
-These exclusions keep the first slice small without faking its central reliability claim.
-
-## 15. Readiness gates
-
-The rewrite cannot replace the current implementation until all are true:
-
-- replaceability acceptance passes under graceful restart and `SIGKILL`;
-- at least two harnesses pass the shared ACP contract suite;
-- every current security invariant is preserved or explicitly strengthened;
-- production Nix builds are reproducible on supported architectures;
-- migration is backup-first, resumable, and rollback-tested;
-- browser primary workflows meet mobile accessibility checks;
-- resource soak demonstrates bounded memory, descriptors, storage, and queues;
-- current guided-workflow receipts and authority tests have equivalent coverage;
-- operational documentation includes recovery from incompatible workers and corrupt local state.
-
-## 16. Decision record
+## 14. Decision record
 
 - **Language:** OCaml for native services and shared domain logic.
 - **Browser language:** OCaml with Bonsai, compiled by js_of_ocaml through Dune in the OCaml 5.2 web shell.

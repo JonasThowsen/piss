@@ -51,6 +51,13 @@ CSS-hidden or collapsed content can still consume memory and VDOM diff time. For
 
 ## Regression coverage
 
+Run the production browser fixture through the Nix shells:
+
+```sh
+nix develop . -c just build
+nix develop . -c dune build --force @session-browser-test
+```
+
 Prefer deterministic invalidation assertions over tight timing thresholds.
 
 `src/test/timeline_browser.mjs` loads a large history and verifies that:
@@ -87,5 +94,3 @@ For an interaction that feels slow:
 4. Inspect which Bonsai dependencies changed for the interaction.
 5. Fix the invalidation boundary before applying CSS or micro-optimizations.
 6. Add a deterministic regression assertion for the corrected boundary.
-
-Historical TypeScript windowing measurements live in [`timeline-performance.md`](./timeline-performance.md); they are observations, not budgets for the current OCaml/Bonsai application.
