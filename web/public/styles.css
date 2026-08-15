@@ -906,3 +906,93 @@ button:active { scale: 1 !important; transform: none !important; }
   .global-search-dialog { height: 100%; max-height: 100%; }
   .global-search-dialog > .modal-surface-body { padding: 8px 6px max(8px, env(safe-area-inset-bottom)); }
 }
+
+@media (min-width: 2100px) and (min-height: 1100px) {
+  .control-room { grid-template: 56px minmax(0, 1fr) / 304px minmax(0, 1fr); }
+  .app-header { gap: 14px; padding-inline: 14px; }
+  .brand-lockup { gap: 10px; }
+  .brand-mark { width: 34px; height: 34px; font-size: 18px; }
+  .brand-lockup h1 { font-size: 14px; }
+  .eyebrow { font-size: 10px; }
+  .search-trigger { min-width: 236px; height: 38px; }
+  .search-trigger > span { font-size: 12px; }
+  .search-trigger kbd { font-size: 10px; }
+  .connection-pill { font-size: 10px; }
+
+  .runtime-rail { padding: 16px 14px; }
+  .rail-heading { padding-bottom: 12px; }
+  .rail-heading h2 { font-size: 15px; }
+  .rail-heading p { font-size: 10px; }
+  .workspace-group { padding-block: 10px; }
+  .workspace-group + .workspace-group { margin-top: 8px; padding-top: 8px; }
+  .workspace-heading { grid-template-columns: minmax(0, 1fr) 44px 44px; padding-bottom: 6px; }
+  .workspace-toggle { min-height: 50px !important; grid-template-columns: 20px minmax(0, 1fr); gap: 9px; }
+  .workspace-heading strong { font-size: 13px; }
+  .workspace-heading small { font-size: 10px; }
+  .workspace-heading .workspace-more, .session-more { width: 44px; min-height: 44px; }
+  .session-list { gap: 3px; margin-left: 10px; padding-left: 10px; }
+  .session-row-wrap { grid-template-columns: minmax(0, 1fr) 44px; }
+  .session-row { min-height: 50px; gap: 10px; padding: 9px 10px; }
+  .session-row strong { font-size: 12px; }
+  .session-row small { font-size: 10px; }
+  .session-dot { width: 9px; height: 9px; }
+  .session-menu button, .workspace-menu button { min-height: 44px; font-size: 12px; }
+
+  .capability-tabs { min-height: 50px; padding-inline: 20px; }
+  .capability-tabs button { min-width: 122px; font-size: 11px; }
+  .timeline { padding: 20px clamp(18px, 3vw, 44px) 32px; }
+  .timeline-stream { width: min(1180px, 100%); }
+  .timeline-item { width: min(1080px, 100%); margin-bottom: 11px; padding: 14px 16px; }
+  .timeline-user { width: min(900px, 90%); }
+  .timeline-tool, .timeline-activity { width: min(1040px, calc(100% - 20px)); margin-left: 20px; }
+  .timeline-activity > summary { min-height: 56px; }
+  .tool-disclosure > summary { min-height: 52px; }
+  .activity-title { font-size: 13px; }
+  .activity-meta, .activity-live-badge { font-size: 11px; }
+  .message-role { font-size: 10px; }
+  .message-status, .artifact-kind { font-size: 11px; }
+  .message-body { font-size: 13px; line-height: 1.62; }
+  .markdown-body { font: 14px/1.62 var(--mono); }
+  .markdown-body code, .markdown-code-block pre code { font-size: 13px; }
+  .timeline-copy, .markdown-copy { min-height: 34px; }
+  .timeline-copy b, .markdown-copy b { font-size: 11px; }
+
+  .composer-wrap { padding: 8px 20px 14px; }
+  .composer { min-height: 94px; }
+  .composer textarea { padding: 12px 13px 4px; font-size: 15px; }
+  .composer-footer { min-height: 48px; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
+  .composer-insertions button, .send-action, .cancel-action { width: 44px; min-width: 44px; min-height: 44px; height: 44px; }
+  .composer-config { width: min(292px, 100%); }
+  .composer-config-trigger { min-height: 40px; }
+  .composer-config-trigger b { font-size: 12px; }
+  .composer-config-menu.model-menu { width: min(430px, calc(100vw - 28px)); }
+  .composer-config-menu.thinking-menu { width: min(240px, calc(100vw - 28px)); }
+  .composer-config-menu > header { min-height: 40px; }
+  .composer-config-menu > header span, .composer-config-menu > header small { font-size: 11px; }
+  .model-menu > button { min-height: 56px; }
+  .model-menu > button b { font-size: 12px; }
+  .model-menu > button small { font-size: 10px; }
+  .model-menu > button em { font-size: 9px; }
+  .thinking-menu > button { min-height: 44px; font-size: 12px; }
+  .composer-run-actions button, .composer-retry-actions button, .delivery-toggle button, .abort-run { font-size: 11px; }
+
+  .workspace-dialog { width: min(680px, 100%); }
+  .workspace-remove-dialog, .archive-dialog { width: min(520px, 100%); }
+  .modal-surface-title { font-size: 21px; }
+  .modal-surface-label { font-size: 10px; }
+  .modal-surface-body { gap: 12px; padding: 20px; }
+  .global-search-dialog { width: min(720px, 100%); max-height: min(820px, calc(var(--app-height, 100dvh) - 48px)); }
+  .global-search-dialog > .modal-surface-body { gap: 10px; padding: 14px; }
+  .global-search-toolbar { grid-template-columns: minmax(0, 1fr) 48px; gap: 8px; }
+  .global-search-scope button, .global-search-close { min-height: 48px; height: 48px; font-size: 13px; }
+  .global-search-close { width: 48px; min-width: 48px; font-size: 23px; }
+  .global-search-field input { height: 48px; font-size: 15px; }
+  .global-search-result, .global-search-option { min-height: 64px; }
+  .global-search-option b { font-size: 14px; }
+  .global-search-option small { font-size: 11px; }
+  .global-search-option em { font-size: 10px; }
+
+  .session-details > header h2 { font-size: 26px; }
+  .audit-overview h1 { font-size: 32px; }
+  .audit-patch { font-size: 11px; }
+}
