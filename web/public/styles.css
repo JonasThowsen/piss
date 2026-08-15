@@ -414,8 +414,8 @@ button svg { width: 21px; height: 21px; display: block; flex: 0 0 auto; pointer-
 .workspace-menu button svg { width: 16px; height: 16px; }
 .workspace-toggle { width: 100% !important; min-height: 44px !important; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 7px; padding: 0 !important; color: var(--text) !important; text-align: left; }
 .workspace-toggle > span:last-child { overflow: hidden; }
-.workspace-chevron { width: 17px; height: 17px; display: grid; place-items: center; transform: rotate(90deg); transform-origin: center; transition: transform 120ms ease-out; }
-.workspace-chevron.collapsed { transform: rotate(0deg); }
+.workspace-chevron { width: 17px; height: 17px; display: grid; place-items: center; color: var(--accent); line-height: 1; rotate: 90deg; transform-origin: center; backface-visibility: hidden; will-change: rotate; transition: rotate 100ms cubic-bezier(.2, .8, .2, 1), color 100ms ease-out; }
+.workspace-chevron.collapsed { color: var(--muted); rotate: 0deg; }
 .workspace-chevron svg { width: 17px; height: 17px; transform: none; transition: none; }
 .session-menu-wrap { position: relative; align-self: stretch; display: grid; place-items: center; }
 .session-more { display: grid; place-items: center; }
