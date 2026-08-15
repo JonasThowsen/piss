@@ -10,6 +10,7 @@ val component :
   workspaces:Workspace_catalog.workspace list Bonsai.t ->
   active:Control_plane.Session.t list Bonsai.t ->
   archived:Control_plane.Session.t list Bonsai.t ->
+  seen_finished_at:float Core.String.Map.t Bonsai.t ->
   on_open:unit Effect.t Bonsai.t ->
   on_reload:unit Effect.t Bonsai.t ->
   on_select:(string -> unit Effect.t) Bonsai.t ->

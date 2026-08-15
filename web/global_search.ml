@@ -12,14 +12,18 @@ let terms query =
   |> String.split ~on:' '
   |> List.filter ~f:(Fn.non String.is_empty)
 
-let finished_at (session : Control_plane.Session.t) =
-  if phys_equal session.status Idle then session.last_finished_at else None
+let finished_at ~seen_finished_at (session : Control_plane.Session.t) =
+  if not (phys_equal session.status Idle) then None
+  else
+    Option.filter session.last_finished_at ~f:(fun finished_at ->
+        Option.value_map (Map.find seen_finished_at session.id) ~default:true
+          ~f:(fun seen_at -> Float.(seen_at < finished_at)))
 
-let status_label (session : Control_plane.Session.t) =
-  if Option.is_some (finished_at session) then "finished"
+let status_label ~seen_finished_at (session : Control_plane.Session.t) =
+  if Option.is_some (finished_at ~seen_finished_at session) then "finished"
   else Control_plane.Session.status_to_string session.status
 
-let searchable session workspace =
+let searchable ~seen_finished_at session workspace =
   let workspace_name, workspace_root =
     Option.value_map workspace ~default:("", "")
       ~f:(fun (workspace : Workspace_catalog.workspace) ->
@@ -30,14 +34,14 @@ let searchable session workspace =
       session.Control_plane.Session.title;
       session.id;
       Control_plane.Session.harness_to_string session.harness;
-      status_label session;
+      status_label ~seen_finished_at session;
       workspace_name;
       workspace_root;
     ]
   |> String.lowercase
 
-let status_rank (session : Control_plane.Session.t) =
-  match (session.status, finished_at session) with
+let status_rank ~seen_finished_at (session : Control_plane.Session.t) =
+  match (session.status, finished_at ~seen_finished_at session) with
   | Idle, Some _ | (Requires_action | Stopped | Failed), _ -> 0
   | (Starting | Running), _ -> 1
   | (Idle | Offline), _ -> 2
@@ -47,7 +51,7 @@ let workspace_name = function
   | Some (workspace : Workspace_catalog.workspace) -> workspace.name
   | None -> "Unknown workspace"
 
-let items ~scope ~query ~workspaces ~active ~archived =
+let items ~scope ~query ~seen_finished_at ~workspaces ~active ~archived =
   let requested = match scope with Active -> active | Archived -> archived in
   let terms = terms query in
   requested
@@ -55,7 +59,7 @@ let items ~scope ~query ~workspaces ~active ~archived =
       let workspace =
         Workspace_catalog.find_workspace workspaces session.workspace_id
       in
-      let value = searchable session workspace in
+      let value = searchable ~seen_finished_at session workspace in
       if
         List.for_all terms ~f:(fun term ->
             String.is_substring value ~substring:term)
@@ -63,12 +67,17 @@ let items ~scope ~query ~workspaces ~active ~archived =
       else None)
   |> List.sort ~compare:(fun left right ->
       let by_status =
-        Int.compare (status_rank left.session) (status_rank right.session)
+        Int.compare
+          (status_rank ~seen_finished_at left.session)
+          (status_rank ~seen_finished_at right.session)
       in
       if by_status <> 0 then by_status
       else
         let by_finished =
-          match (finished_at left.session, finished_at right.session) with
+          match
+            ( finished_at ~seen_finished_at left.session,
+              finished_at ~seen_finished_at right.session )
+          with
           | Some left, Some right -> Float.compare right left
           | Some _, None -> -1
           | None, Some _ -> 1

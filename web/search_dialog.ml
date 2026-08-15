@@ -125,8 +125,8 @@ let reveal_option index =
            [| Js.Unsafe.inject callback |]);
       Async_kernel.Deferred.return ())
 
-let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
-    =
+let component ~workspaces ~active ~archived ~seen_finished_at ~on_open
+    ~on_reload ~on_select graph =
   let open_state, set_open = Bonsai.state false graph in
   let scope, set_scope = Bonsai.state Global_search.Active graph in
   let query, set_query = Bonsai.state "" graph in
@@ -143,8 +143,10 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
     and query = query
     and workspaces = workspaces
     and active = active
-    and archived = archived in
-    Global_search.items ~scope ~query ~workspaces ~active ~archived
+    and archived = archived
+    and seen_finished_at = seen_finished_at in
+    Global_search.items ~scope ~query ~seen_finished_at ~workspaces ~active
+      ~archived
   in
   let shortcut_open =
     let%arr open_state = open_state
@@ -194,6 +196,7 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
     graph;
   let%arr active = active
   and archived = archived
+  and seen_finished_at = seen_finished_at
   and on_reload = on_reload
   and on_select = on_select
   and open_state = open_state
@@ -667,7 +670,11 @@ let component ~workspaces ~active ~archived ~on_open ~on_reload ~on_select graph
                                  [ text (workspace ^ " / " ^ item.session.id) ];
                              ];
                            Vdom.Node.em
-                             [ text (Global_search.status_label item.session) ];
+                             [
+                               text
+                                 (Global_search.status_label ~seen_finished_at
+                                    item.session);
+                             ];
                          ]
                        in
                        if phys_equal scope Active then

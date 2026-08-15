@@ -774,10 +774,17 @@ try {
     new URL(request).searchParams.has("recent")).length;
   const recentBeforeWarmSwitch = recentHistoryCount();
   const warmGapPrompt = `Warm cache gap ${Date.now()}`;
-  await page.evaluate(async (text) => {
+  const warmCommandId = await page.evaluate(async (text) => {
     const runtimeResponse = await fetch("/api/v2/session?session=s-mention-browser");
     if (!runtimeResponse.ok) throw new Error(await runtimeResponse.text());
     const runtime = await runtimeResponse.json();
+    const sessionsResponse = await fetch("/api/v2/sessions");
+    if (!sessionsResponse.ok) throw new Error(await sessionsResponse.text());
+    const catalogFinishedAt = (await sessionsResponse.json())
+      .find((session) => session.id === runtime.sessionId)?.lastFinishedAt ?? 0;
+    const seenFinishedAt = JSON.parse(localStorage.getItem("piss:finished-seen") ?? "{}")
+      [runtime.sessionId] ?? 0;
+    const before = Math.max(catalogFinishedAt, seenFinishedAt);
     const commandId = `browser-warm-gap-${Date.now()}`;
     const response = await fetch("/api/v2/commands?session=s-mention-browser", {
       method: "POST",
@@ -797,17 +804,75 @@ try {
       }),
     });
     if (!response.ok) throw new Error(await response.text());
+    return { commandId, before };
   }, warmGapPrompt);
-  await page.locator("button.session-row").filter({ hasText: "Pi / deployed" }).click();
+  await page.waitForFunction(async ({ commandId }) => {
+    const eventsResponse = await fetch("/api/v2/events?session=s-mention-browser&after=0");
+    if (!eventsResponse.ok) return false;
+    const events = await eventsResponse.json();
+    return events.some((event) => event.kind === "command.state"
+      && event.payload?.commandId === commandId
+      && event.payload?.state === "completed");
+  }, warmCommandId);
+  const completedSessions = await page.evaluate(async ({ before }) => {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const response = await fetch(`/api/v2/sessions?proof=${crypto.randomUUID()}`);
+      if (response.ok) {
+        const sessions = await response.json();
+        const session = sessions.find((candidate) => candidate.id === "s-mention-browser");
+        if (session?.status === "idle" && session.lastFinishedAt > before) return sessions;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("session catalog did not observe the completed background command");
+  }, warmCommandId);
+  const completedPi = completedSessions.find((session) => session.id === "s-mention-browser");
+  if (completedPi?.status !== "idle" || completedPi.lastFinishedAt <= warmCommandId.before) {
+    throw new Error(`finished-status proof captured stale sessions: ${JSON.stringify(completedSessions)}`);
+  }
+  const lifecycleSession = completedSessions.find((session) => session.title === "Lifecycle proof");
+  if (!lifecycleSession) throw new Error("finished-status proof lost the lifecycle session");
+  const statusContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const statusPage = await statusContext.newPage();
+  statusPage.on("pageerror", (error) => errors.push(`status page: ${error.message}`));
+  await statusPage.addInitScript((selectedId) => {
+    localStorage.setItem("piss:last-opened-session", selectedId);
+  }, lifecycleSession.id);
+  await statusPage.route("**/api/v2/sessions*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.get("archived") === "true") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(completedSessions),
+    });
+  });
+  await statusPage.goto(url, { waitUntil: "domcontentloaded" });
+  await statusPage.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor();
+  const statusDeployedRow = statusPage.locator("button.session-row").filter({ hasText: "Pi / deployed" });
+  await statusDeployedRow.getByText(/finished \/ opencode$/).waitFor();
+  await statusPage.getByRole("button", { name: "Search sessions" }).click();
+  const finishedSearch = statusPage.getByRole("dialog", { name: "Search sessions" });
+  const newestFinished = finishedSearch.getByRole("option").first();
+  await newestFinished.getByText("Pi / deployed", { exact: true }).waitFor();
+  if ((await newestFinished.locator("em").innerText()).trim().toLowerCase() !== "finished") {
+    throw new Error(`unseen completed session was not first with finished status: ${await newestFinished.innerText()}`);
+  }
+  await finishedSearch.getByRole("button", { name: "Close session search" }).click();
+  await statusPage.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  await statusDeployedRow.click();
+  await statusPage.waitForFunction(() =>
+    [...document.querySelectorAll("button.session-row")]
+      .some((row) => row.textContent?.includes("Pi / deployed")
+        && row.textContent.includes("idle / opencode")));
+  await statusContext.close();
+  const deployedRow = page.locator("button.session-row").filter({ hasText: "Pi / deployed" });
+  await deployedRow.click();
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
   await page.locator(".timeline-agent").filter({ hasText: response }).last().waitFor();
   await page.getByText(warmGapPrompt, { exact: true }).waitFor({ timeout: 10_000 });
-  await page.waitForFunction(async () => {
-    const response = await fetch("/api/v2/session?session=s-mention-browser");
-    return response.ok && (await response.json()).status === "idle";
-  });
-  await page.locator("button.session-row").filter({ hasText: "Pi / deployed" })
-    .getByText(/idle \/ opencode$/).waitFor();
+  await deployedRow.getByText(/idle \/ opencode$/).waitFor();
   if (recentHistoryCount() !== recentBeforeWarmSwitch) {
     throw new Error(`revisiting a warm chat refetched history: ${JSON.stringify(eventPageRequests)}`);
   }
@@ -843,11 +908,6 @@ try {
   const activeResults = activeSearch.locator("#global-session-results");
   if (await activeResults.getByRole("option").count() < 2) {
     throw new Error("search scroll proof requires at least two active sessions");
-  }
-  const newestFinished = activeResults.getByRole("option").first();
-  await newestFinished.getByText("Pi / deployed", { exact: true }).waitFor();
-  if ((await newestFinished.locator("em").innerText()).trim().toLowerCase() !== "finished") {
-    throw new Error(`newly idle session was not first with finished status: ${await newestFinished.innerText()}`);
   }
   await activeResults.evaluate((element) => {
     element.style.flex = "none";

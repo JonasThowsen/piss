@@ -120,6 +120,8 @@
                 ./web/http_error_test.ml
                 ./web/event_stream.ml
                 ./web/event_stream.mli
+                ./web/finished_status.ml
+                ./web/finished_status.mli
                 ./web/image_attachment.ml
                 ./web/image_attachment.mli
                 ./web/image_batch.ml

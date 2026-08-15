@@ -41,6 +41,7 @@
   config_controls
   details_view
   event_stream
+  finished_status
   history_loader
   image_attachments
   last_opened_session

@@ -85,6 +85,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .session-row small { margin-top: 4px; color: var(--muted); font: 9px/1 var(--mono); }
 .session-dot { width: 7px; height: 7px; border: 1px solid var(--accent); border-radius: 50%; }
 .session-dot.status-idle { background: var(--accent); }
+.session-dot.status-finished { border-color: var(--blue); background: var(--blue); }
 .session-dot.status-running, .session-dot.status-working { border-color: var(--working); background: var(--working); }
 .session-dot.status-requires_action { border-color: var(--working); }
 .session-dot.status-failed, .session-dot.status-offline { border-color: var(--danger); background: var(--danger); }

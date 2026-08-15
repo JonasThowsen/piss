@@ -53,8 +53,10 @@ let () =
       session ~status:Archived ~archived_at:2. "s-old" "Retired proof" Pi "w-a";
     ]
   in
+  let seen_finished_at = String.Map.empty in
   let all =
-    Global_search.items ~scope:Active ~query:"" ~workspaces ~active ~archived
+    Global_search.items ~scope:Active ~query:"" ~seen_finished_at ~workspaces
+      ~active ~archived
   in
   if
     not
@@ -75,23 +77,37 @@ let () =
          ])
   then fail "active search did not prioritize newly finished sessions";
   let newest = List.hd_exn all in
-  if not (String.equal (Global_search.status_label newest.session) "finished")
-  then fail "completed idle session was not labeled finished";
+  if
+    not
+      (String.equal
+         (Global_search.status_label ~seen_finished_at newest.session)
+         "finished")
+  then fail "unseen completed session was not labeled finished";
+  let seen_finished_at =
+    Map.set seen_finished_at ~key:newest.session.id ~data:20.
+  in
+  if
+    not
+      (String.equal
+         (Global_search.status_label ~seen_finished_at newest.session)
+         "idle")
+  then fail "viewed completed session did not become idle";
   let by_workspace =
-    Global_search.items ~scope:Active ~query:"compiler OPENCODE" ~workspaces
-      ~active ~archived
+    Global_search.items ~scope:Active ~query:"compiler OPENCODE"
+      ~seen_finished_at ~workspaces ~active ~archived
   in
   (match by_workspace with
   | [ item ] when String.equal item.session.id "s-a" -> ()
   | _ -> fail "search did not span workspace and harness fields");
   let archived_result =
-    Global_search.items ~scope:Archived ~query:"archived s-old" ~workspaces
-      ~active ~archived
+    Global_search.items ~scope:Archived ~query:"archived s-old"
+      ~seen_finished_at ~workspaces ~active ~archived
   in
   if List.length archived_result <> 1 then
     fail "archived scope was not searched";
   let all_archived =
-    Global_search.items ~scope:Archived ~query:"" ~workspaces ~active ~archived
+    Global_search.items ~scope:Archived ~query:"" ~seen_finished_at ~workspaces
+      ~active ~archived
   in
   if
     not

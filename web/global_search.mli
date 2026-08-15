@@ -5,11 +5,13 @@ type item = {
   workspace : Workspace_catalog.workspace option;
 }
 
-val status_label : Control_plane.Session.t -> string
+val status_label :
+  seen_finished_at:float Core.String.Map.t -> Control_plane.Session.t -> string
 
 val items :
   scope:scope ->
   query:string ->
+  seen_finished_at:float Core.String.Map.t ->
   workspaces:Workspace_catalog.workspace list ->
   active:Control_plane.Session.t list ->
   archived:Control_plane.Session.t list ->

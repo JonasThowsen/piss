@@ -10,6 +10,7 @@ val selected : state -> string option -> Control_plane.Session.t option
 val render :
   state ->
   workspaces:Workspace_catalog.workspace list ->
+  seen_finished_at:float Core.String.Map.t ->
   selected_id:string option ->
   collapsed:Core.String.Set.t ->
   menu_open:string option ->

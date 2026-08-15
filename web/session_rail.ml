@@ -16,9 +16,9 @@ let selected state selected_id =
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
-let render_session_row ~selected_id ~menu_open ~on_menu ~on_select ~on_rename
-    ~on_archive (session : Control_plane.Session.t) =
-  let status = Control_plane.Session.status_to_string session.status in
+let render_session_row ~seen_finished_at ~selected_id ~menu_open ~on_menu
+    ~on_select ~on_rename ~on_archive (session : Control_plane.Session.t) =
+  let status = Global_search.status_label ~seen_finished_at session in
   let selected =
     Option.value_map selected_id ~default:false ~f:(String.equal session.id)
   in
@@ -101,8 +101,8 @@ let render_session_row ~selected_id ~menu_open ~on_menu ~on_select ~on_rename
         ];
     ]
 
-let render_group ~selected_id ~collapsed ~menu_open ~on_toggle ~on_menu
-    ~on_select ~on_remove_workspace ~on_create ~on_rename ~on_archive
+let render_group ~seen_finished_at ~selected_id ~collapsed ~menu_open ~on_toggle
+    ~on_menu ~on_select ~on_remove_workspace ~on_create ~on_rename ~on_archive
     (group : Workspace_catalog.group) =
   let workspace = group.workspace in
   let is_collapsed = Set.mem collapsed workspace.id in
@@ -206,13 +206,13 @@ let render_group ~selected_id ~collapsed ~menu_open ~on_toggle ~on_menu
            | sessions ->
                List.map sessions
                  ~f:
-                   (render_session_row ~selected_id ~menu_open ~on_menu
-                      ~on_select ~on_rename ~on_archive)));
+                   (render_session_row ~seen_finished_at ~selected_id ~menu_open
+                      ~on_menu ~on_select ~on_rename ~on_archive)));
     ]
 
-let render state ~workspaces ~selected_id ~collapsed ~menu_open ~mobile_open
-    ~on_toggle ~on_menu ~on_select ~on_add_workspace ~on_remove_workspace
-    ~on_create ~on_rename ~on_archive =
+let render state ~workspaces ~seen_finished_at ~selected_id ~collapsed
+    ~menu_open ~mobile_open ~on_toggle ~on_menu ~on_select ~on_add_workspace
+    ~on_remove_workspace ~on_create ~on_rename ~on_archive =
   let contents =
     match state with
     | Loading ->
@@ -235,9 +235,9 @@ let render state ~workspaces ~selected_id ~collapsed ~menu_open ~mobile_open
         Workspace_catalog.group workspaces sessions
         |> List.map
              ~f:
-               (render_group ~selected_id ~collapsed ~menu_open ~on_toggle
-                  ~on_menu ~on_select ~on_remove_workspace ~on_create ~on_rename
-                  ~on_archive)
+               (render_group ~seen_finished_at ~selected_id ~collapsed
+                  ~menu_open ~on_toggle ~on_menu ~on_select ~on_remove_workspace
+                  ~on_create ~on_rename ~on_archive)
   in
   Vdom.Node.create "aside"
     ~attrs:
