@@ -37,6 +37,18 @@ type peer_subscription = {
   state : string;
 }
 
+type session_creation = {
+  id : string;
+  source_id : string;
+  workspace_id : string;
+  title : string;
+  harness : string;
+  session_id : string;
+  state : string;
+  error : string option;
+  updated_at : float;
+}
+
 type t = { db : Sqlite3.db }
 
 let fail_rc operation rc =
@@ -157,7 +169,40 @@ let initialize db =
      peer_subscriptions(state,created_at)";
   exec db
     "CREATE INDEX IF NOT EXISTS peer_subscriptions_source_state_idx ON \
-     peer_subscriptions(source_id,state)"
+     peer_subscriptions(source_id,state)";
+  exec db
+    "CREATE TABLE IF NOT EXISTS broker_workspace_requests (id TEXT PRIMARY \
+     KEY,source_id TEXT NOT NULL,canonical_root TEXT NOT NULL,workspace_id \
+     TEXT NOT NULL,created_at REAL NOT NULL)";
+  exec db
+    "CREATE TABLE IF NOT EXISTS broker_session_requests (id TEXT PRIMARY \
+     KEY,source_id TEXT NOT NULL,workspace_id TEXT NOT NULL,title TEXT NOT \
+     NULL,harness TEXT NOT NULL,session_id TEXT NOT NULL UNIQUE,state TEXT NOT \
+     NULL CHECK(state IN \
+     ('pending','launching','cleanup','active','failed')),error \
+     TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL)";
+  exec db
+    "CREATE INDEX IF NOT EXISTS broker_session_requests_state_idx ON \
+     broker_session_requests(state,updated_at)";
+  exec db
+    "CREATE TABLE IF NOT EXISTS catalog_state (singleton INTEGER PRIMARY KEY \
+     CHECK(singleton = 1),revision INTEGER NOT NULL)";
+  exec db "INSERT OR IGNORE INTO catalog_state(singleton,revision) VALUES (1,0)";
+  List.iter
+    (fun (name, table, operation) ->
+      exec db
+        (Printf.sprintf
+           "CREATE TRIGGER IF NOT EXISTS %s AFTER %s ON %s BEGIN UPDATE \
+            catalog_state SET revision = revision + 1 WHERE singleton = 1; END"
+           name operation table))
+    [
+      ("workspaces_catalog_insert", "workspaces", "INSERT");
+      ("workspaces_catalog_update", "workspaces", "UPDATE");
+      ("workspaces_catalog_delete", "workspaces", "DELETE");
+      ("sessions_catalog_insert", "sessions", "INSERT");
+      ("sessions_catalog_update", "sessions", "UPDATE");
+      ("sessions_catalog_delete", "sessions", "DELETE");
+    ]
 
 let session_of_statement statement =
   {
@@ -209,6 +254,22 @@ let peer_subscription_of_statement statement =
     wait_for = Sqlite3.column_text statement 3;
     command_id = Sqlite3.column_text statement 4;
     state = Sqlite3.column_text statement 5;
+  }
+
+let session_creation_of_statement statement =
+  {
+    id = Sqlite3.column_text statement 0;
+    source_id = Sqlite3.column_text statement 1;
+    workspace_id = Sqlite3.column_text statement 2;
+    title = Sqlite3.column_text statement 3;
+    harness = Sqlite3.column_text statement 4;
+    session_id = Sqlite3.column_text statement 5;
+    state = Sqlite3.column_text statement 6;
+    error =
+      (match Sqlite3.column statement 7 with
+      | Sqlite3.Data.NULL -> None
+      | _ -> Some (Sqlite3.column_text statement 7));
+    updated_at = Sqlite3.column_double statement 8;
   }
 
 let session_to_yojson (session : session) =

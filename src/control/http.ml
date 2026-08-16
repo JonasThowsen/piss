@@ -78,10 +78,14 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
   try
     let calling_session = broker_source workers request in
     let is_broker_path = String.starts_with ~prefix:"/api/v2/broker/" path in
+    let user_authorized =
+      Authentication.authorized ~allowed_users ~dev_bypass request
+    in
     if
       (not (String.equal path "/health"))
-      && Option.is_none calling_session
-      && not (Authentication.authorized ~allowed_users ~dev_bypass request)
+      && not
+           (Routes.credential_authorized ~path ~user_authorized
+              ~has_broker_session:(Option.is_some calling_session))
     then
       Headers.error_json ~status:`Unauthorized
         (forbidden
@@ -393,9 +397,11 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
               Headers.error_json ~status:`Method_not_allowed
                 (validation ~field:"method"
                    (method_name ^ " not allowed for " ^ path))
-          | Routes.Get_broker_sessions | Routes.Post_broker_send
-          | Routes.Post_broker_subscribe | Routes.Post_broker_ask
-          | Routes.Post_broker_collect | Routes.Get_workspaces
+          | Routes.Get_broker_sessions | Routes.Get_broker_workspaces
+          | Routes.Post_broker_workspaces | Routes.Post_broker_sessions
+          | Routes.Post_broker_send | Routes.Post_broker_subscribe
+          | Routes.Post_broker_ask | Routes.Post_broker_collect
+          | Routes.Get_workspaces | Routes.Get_catalog_revision
           | Routes.Get_session_creation | Routes.Post_workspace_delete _
           | Routes.Get_workspace_directories _ | Routes.Post_workspaces
           | Routes.Get_sessions _ | Routes.Get_session_audit _

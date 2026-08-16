@@ -115,6 +115,81 @@ let tool_result ?(is_error = false) text =
       ("isError", `Bool is_error);
     ]
 
+let request_id_property =
+  `Assoc
+    [
+      ("type", `String "string");
+      ( "description",
+        `String
+          "Stable unique request ID (3-64 lowercase letters, digits, or \
+           hyphens). Reuse the exact same ID only when retrying the same \
+           operation." );
+      ("minLength", `Int 3);
+      ("maxLength", `Int 64);
+      ("pattern", `String "^[a-z0-9-]+$");
+    ]
+
+let workspace_input_schema =
+  `Assoc
+    [
+      ("type", `String "object");
+      ( "properties",
+        `Assoc
+          [
+            ("requestId", request_id_property);
+            ( "path",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ( "description",
+                    `String
+                      "Existing absolute local directory to register with \
+                       Piss. This does not create a directory, clone a \
+                       repository, or create a Git worktree." );
+                ] );
+          ] );
+      ("required", `List [ `String "requestId"; `String "path" ]);
+      ("additionalProperties", `Bool false);
+    ]
+
+let session_input_schema =
+  `Assoc
+    [
+      ("type", `String "object");
+      ( "properties",
+        `Assoc
+          [
+            ("requestId", request_id_property);
+            ( "workspaceId",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("description", `String "Registered Piss workspace ID");
+                ] );
+            ( "title",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("minLength", `Int 1);
+                  ("maxLength", `Int 120);
+                  ("description", `String "Visible managed-session title");
+                ] );
+            ( "harness",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("enum", `List [ `String "pi"; `String "opencode" ]);
+                  ( "description",
+                    `String
+                      "Optional managed harness. Omit to use the configured \
+                       default." );
+                ] );
+          ] );
+      ( "required",
+        `List [ `String "requestId"; `String "workspaceId"; `String "title" ] );
+      ("additionalProperties", `Bool false);
+    ]
+
 let peer_input_schema =
   `Assoc
     [
@@ -142,6 +217,42 @@ let peer_input_schema =
 let tools =
   `List
     [
+      `Assoc
+        [
+          ("name", `String "piss_list_workspaces");
+          ( "description",
+            `String
+              "List durable Piss workspaces, including canonical roots and \
+               whether each contains the calling session." );
+          ( "inputSchema",
+            `Assoc
+              [
+                ("type", `String "object");
+                ("properties", `Assoc []);
+                ("additionalProperties", `Bool false);
+              ] );
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_create_workspace");
+          ( "description",
+            `String
+              "Register an existing approved local directory as a durable Piss \
+               workspace, or return the workspace already registered for that \
+               canonical root. Create directories, clones, and Git worktrees \
+               first with normal shell tools." );
+          ("inputSchema", workspace_input_schema);
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_create_session");
+          ( "description",
+            `String
+              "Create a visible, durable, normally managed Piss agent session \
+               in a registered workspace. After it returns active, use \
+               piss_send_session for the initial assignment." );
+          ("inputSchema", session_input_schema);
+        ];
       `Assoc
         [
           ("name", `String "piss_list_sessions");
@@ -284,6 +395,15 @@ let call_tool params =
   let name = member "name" params in
   let arguments = member "arguments" params in
   match name with
+  | `String "piss_list_workspaces" ->
+      curl "/api/v2/broker/workspaces"
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_create_workspace" ->
+      retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/workspaces")
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_create_session" ->
+      retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/sessions")
+      |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_list_sessions" ->
       curl "/api/v2/broker/sessions"
       |> Yojson.Safe.pretty_to_string |> tool_result

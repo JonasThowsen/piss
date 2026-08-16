@@ -10,6 +10,28 @@ let upstream message = Error.Upstream_unavailable { message }
 let authentication_error status reason =
   match status with `Forbidden -> forbidden reason | _ -> validation reason
 
+let workspace_fields (workspace : Registry.workspace) =
+  [
+    ("workspaceId", `String workspace.id);
+    ("workspaceName", `String workspace.name);
+    ("workspaceRoot", `String workspace.root);
+  ]
+
+let session_with_workspace (manager : Config.managed_workers)
+    (session : Registry.session) =
+  let workspace =
+    Registry.find_workspace manager.registry session.workspace_id
+  in
+  match Registry.session_to_yojson session with
+  | `Assoc fields ->
+      `Assoc
+        (fields
+        @
+        match workspace with
+        | None -> []
+        | Some workspace -> workspace_fields workspace)
+  | _ -> assert false
+
 let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
     ~allowed_origins ~dev_bypass ~(calling_session : Registry.session option)
     ~request ~read_body route =
@@ -23,14 +45,180 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
         | Some caller ->
             Registry.list manager.registry ~include_archived:false
             |> List.map (fun (session : Registry.session) ->
-                `Assoc
-                  [
-                    ("id", `String session.Registry.id);
-                    ("title", `String session.title);
-                    ("harness", `String session.harness);
-                    ("self", `Bool (String.equal caller.id session.id));
-                  ])
+                match session_with_workspace manager session with
+                | `Assoc fields ->
+                    `Assoc
+                      (("self", `Bool (String.equal caller.id session.id))
+                      :: fields)
+                | _ -> assert false)
             |> fun sessions -> Headers.respond_json (`List sessions))
+  | Routes.Get_broker_workspaces ->
+      Some
+        (match calling_session with
+        | None ->
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
+        | Some caller ->
+            let caller_root =
+              Registry.find_workspace manager.registry caller.workspace_id
+              |> Option.map (fun (workspace : Registry.workspace) ->
+                  workspace.root)
+            in
+            Registry.list_workspaces manager.registry
+            |> List.map (fun (workspace : Registry.workspace) ->
+                match Registry.workspace_to_yojson workspace with
+                | `Assoc fields ->
+                    let contains_caller =
+                      match caller_root with
+                      | None -> false
+                      | Some root ->
+                          Workspaces.path_within ~root:workspace.root root
+                    in
+                    `Assoc (("containsCaller", `Bool contains_caller) :: fields)
+                | _ -> assert false)
+            |> fun workspaces -> Headers.respond_json (`List workspaces))
+  | Routes.Post_broker_workspaces ->
+      Some
+        (match calling_session with
+        | None ->
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
+        | Some source -> (
+            match Authentication.valid_json_content request with
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
+            | Ok () -> (
+                let json = read_body () |> Yojson.Safe.from_string in
+                let open Yojson.Safe.Util in
+                let request_id =
+                  match member "requestId" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                let requested_path =
+                  match member "path" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                if not (Lifecycle.valid_session_id request_id) then
+                  Headers.error_json
+                    (validation ~field:"requestId"
+                       "requestId must contain 3 to 64 lowercase letters, \
+                        digits, or hyphens")
+                else
+                  match Workspaces.canonical_directory requested_path with
+                  | None ->
+                      Headers.error_json
+                        (validation ~field:"path"
+                           "Choose an existing local directory")
+                  | Some path
+                    when not
+                           (List.exists
+                              (fun root -> Workspaces.path_within ~root path)
+                              manager.workspace_discovery_roots) ->
+                      Headers.error_json
+                        (forbidden
+                           "Directory is outside the approved local roots")
+                  | Some path -> (
+                      match
+                        Registry.accept_broker_workspace manager.registry
+                          ~id:request_id ~source_id:source.id
+                          ~canonical_root:path
+                          ~workspace_id:(Workspaces.workspace_id_for_path path)
+                          ~name:(Workspaces.workspace_name path)
+                      with
+                      | Error message -> Headers.error_json (conflict message)
+                      | Ok (workspace, duplicate) ->
+                          Headers.respond_json
+                            ~status:(if duplicate then `OK else `Created)
+                            (`Assoc
+                               [
+                                 ("requestId", `String request_id);
+                                 ("duplicate", `Bool duplicate);
+                                 ( "workspace",
+                                   Registry.workspace_to_yojson workspace );
+                               ])))))
+  | Routes.Post_broker_sessions ->
+      Some
+        (match calling_session with
+        | None ->
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
+        | Some source -> (
+            match Authentication.valid_json_content request with
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
+            | Ok () -> (
+                let json = read_body () |> Yojson.Safe.from_string in
+                let open Yojson.Safe.Util in
+                let request_id =
+                  match member "requestId" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                let workspace_id =
+                  match member "workspaceId" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                let title =
+                  match member "title" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                let harness =
+                  match member "harness" json with
+                  | `String value -> value
+                  | _ -> manager.default_harness
+                in
+                let existed =
+                  Option.is_some
+                    (Registry.find_session_creation manager.registry request_id)
+                in
+                match
+                  Workers.create_broker_session ~clock manager
+                    ~source_id:source.id ~request_id ~harness ~workspace_id
+                    ~title
+                with
+                | Ok (session, duplicate) -> (
+                    match
+                      Registry.find_workspace manager.registry
+                        session.workspace_id
+                    with
+                    | None ->
+                        Headers.error_json
+                          (conflict "created session workspace is missing")
+                    | Some workspace ->
+                        Headers.respond_json
+                          ~status:(if duplicate then `OK else `Created)
+                          (`Assoc
+                             [
+                               ("requestId", `String request_id);
+                               ("state", `String "active");
+                               ("duplicate", `Bool duplicate);
+                               ("session", Registry.session_to_yojson session);
+                               ( "workspace",
+                                 Registry.workspace_to_yojson workspace );
+                             ]))
+                | Error message -> (
+                    match
+                      Registry.find_session_creation manager.registry request_id
+                    with
+                    | Some creation
+                      when String.equal creation.state "failed"
+                           && not
+                                (String.starts_with ~prefix:"requestId was"
+                                   message) ->
+                        Headers.respond_json ~status:`Conflict
+                          (`Assoc
+                             [
+                               ("requestId", `String request_id);
+                               ("sessionId", `String creation.session_id);
+                               ("state", `String "failed");
+                               ("duplicate", `Bool existed);
+                               ("error", `String message);
+                             ])
+                    | _ -> Headers.error_json (conflict message)))))
   | Routes.Post_broker_send ->
       Some
         (match calling_session with
@@ -165,6 +353,16 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
         ( Registry.list_workspaces manager.registry
         |> List.map Registry.workspace_to_yojson
         |> fun workspaces -> Headers.respond_json (`List workspaces) )
+  | Routes.Get_catalog_revision ->
+      Some
+        (Headers.respond_json
+           (`Assoc
+              [
+                ( "revision",
+                  `Intlit
+                    (Registry.catalog_revision manager.registry
+                    |> Int64.to_string) );
+              ]))
   | Routes.Get_session_creation ->
       Some
         (Headers.respond_json

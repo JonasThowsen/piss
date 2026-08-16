@@ -9,11 +9,15 @@ type event_page =
 
 type route =
   | Get_broker_sessions
+  | Get_broker_workspaces
+  | Post_broker_workspaces
+  | Post_broker_sessions
   | Post_broker_send
   | Post_broker_subscribe
   | Post_broker_ask
   | Post_broker_collect
   | Get_workspaces
+  | Get_catalog_revision
   | Get_session_creation
   | Post_workspace_delete of string
   | Get_workspace_directories of { query : string }
@@ -122,6 +126,10 @@ let event_page uri =
           | Ok cursor, Ok limit -> Ok (After { cursor; limit })
           | Error message, _ | _, Error message -> Error message))
 
+let credential_authorized ~path ~user_authorized ~has_broker_session =
+  user_authorized
+  || (String.starts_with ~prefix:"/api/v2/broker/" path && has_broker_session)
+
 let rec parse ~managed ~method_ ~uri ~last_event_id =
   let path = Uri.path uri in
   let session_id = Uri.get_query_param uri "session" in
@@ -135,11 +143,15 @@ let rec parse ~managed ~method_ ~uri ~last_event_id =
         session_audit path )
     with
     | `GET, "/api/v2/broker/sessions", _, _, _ -> Ok Get_broker_sessions
+    | `GET, "/api/v2/broker/workspaces", _, _, _ -> Ok Get_broker_workspaces
+    | `POST, "/api/v2/broker/workspaces", _, _, _ -> Ok Post_broker_workspaces
+    | `POST, "/api/v2/broker/sessions", _, _, _ -> Ok Post_broker_sessions
     | `POST, "/api/v2/broker/send", _, _, _ -> Ok Post_broker_send
     | `POST, "/api/v2/broker/subscribe", _, _, _ -> Ok Post_broker_subscribe
     | `POST, "/api/v2/broker/ask", _, _, _ -> Ok Post_broker_ask
     | `POST, "/api/v2/broker/collect", _, _, _ -> Ok Post_broker_collect
     | `GET, "/api/v2/workspaces", _, _, _ -> Ok Get_workspaces
+    | `GET, "/api/v2/catalog-revision", _, _, _ -> Ok Get_catalog_revision
     | `GET, "/api/v2/session-creation", _, _, _ -> Ok Get_session_creation
     | `POST, _, Some id, _, _ -> Ok (Post_workspace_delete id)
     | `GET, "/api/v2/workspace-directories", _, _, _ ->

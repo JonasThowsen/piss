@@ -9,11 +9,15 @@ type event_page =
 
 type route =
   | Get_broker_sessions
+  | Get_broker_workspaces
+  | Post_broker_workspaces
+  | Post_broker_sessions
   | Post_broker_send
   | Post_broker_subscribe
   | Post_broker_ask
   | Post_broker_collect
   | Get_workspaces
+  | Get_catalog_revision
   | Get_session_creation
   | Post_workspace_delete of string
   | Get_workspace_directories of { query : string }
@@ -37,6 +41,10 @@ type route =
   | Get_app_js
   | Get_asset of string
   | Method_not_allowed of { method_ : Cohttp.Code.meth; path : string }
+
+val credential_authorized :
+  path:string -> user_authorized:bool -> has_broker_session:bool -> bool
+(** Broker credentials authorize only the dedicated broker namespace. *)
 
 val parse :
   managed:bool ->

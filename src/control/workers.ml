@@ -2,15 +2,37 @@
 
 open Piss_core
 
+let canonical_session_workspace (manager : Config.managed_workers)
+    (session : Registry.session) =
+  match Registry.find_workspace manager.registry session.workspace_id with
+  | None -> Error "requested workspace is not registered"
+  | Some workspace -> (
+      match Workspaces.canonical_directory workspace.root with
+      | Some canonical when String.equal canonical workspace.root -> Ok ()
+      | None | Some _ ->
+          Error
+            "registered workspace path no longer resolves to its approved \
+             canonical directory")
+
 let start_registered ~process_mgr (manager : Config.managed_workers) =
+  let incomplete_sessions =
+    Registry.list_incomplete_session_creations manager.registry
+    |> List.map (fun (request : Registry.session_creation) ->
+        request.session_id)
+  in
   let start (session : Registry.session) =
-    try Eio.Process.run process_mgr [ manager.launcher; session.id ]
+    try
+      match canonical_session_workspace manager session with
+      | Ok () -> Eio.Process.run process_mgr [ manager.launcher; session.id ]
+      | Error message -> failwith message
     with exn ->
       Format.eprintf "could not start session %s: %s@." session.id
         (Printexc.to_string exn)
   in
   Eio.Switch.run (fun sw ->
       Registry.list manager.registry ~include_archived:false
+      |> List.filter (fun (session : Registry.session) ->
+          not (List.mem session.id incomplete_sessions))
       |> List.iter (fun session -> Eio.Fiber.fork ~sw (fun () -> start session)))
 
 let active_session (manager : Config.managed_workers) requested =
@@ -71,12 +93,138 @@ let summary ~net (manager : Config.managed_workers) (session : Registry.session)
   | `Assoc fields -> `Assoc (fields @ runtime)
   | _ -> assert false
 
+let fail_session_creation (manager : Config.managed_workers)
+    (request : Registry.session_creation) message =
+  ignore
+    (Registry.mark_session_creation_cleanup manager.registry request.id message);
+  match Lifecycle.run manager.stopper request.session_id with
+  | Error cleanup -> Error (message ^ "; worker cleanup pending: " ^ cleanup)
+  | Ok () ->
+      ignore (Registry.archive manager.registry request.session_id);
+      ignore
+        (Registry.mark_session_creation_failed manager.registry request.id
+           message);
+      Error message
+
+let launch_session_creation (manager : Config.managed_workers)
+    (request : Registry.session_creation) (session : Registry.session) =
+  try
+    (match canonical_session_workspace manager session with
+    | Ok () -> ()
+    | Error message -> raise (Failure message));
+    Lifecycle.write_session_spec manager.registry manager.state_root session;
+    match Lifecycle.run manager.launcher session.id with
+    | Error message -> fail_session_creation manager request message
+    | Ok () -> (
+        match Registry.find_active manager.registry session.id with
+        | None ->
+            fail_session_creation manager request
+              "session was archived while its worker was starting"
+        | Some active ->
+            ignore
+              (Registry.mark_session_creation_active manager.registry request.id);
+            Ok active)
+  with exn -> fail_session_creation manager request (Printexc.to_string exn)
+
+let rec wait_for_session_creation ~clock (manager : Config.managed_workers)
+    ~deadline ~duplicate request session =
+  match Registry.find_session_creation manager.registry request.Registry.id with
+  | None -> Error "session creation request disappeared"
+  | Some current when String.equal current.state "active" ->
+      Ok (session, duplicate)
+  | Some current when String.equal current.state "failed" ->
+      Error (Option.value current.error ~default:"session launcher failed")
+  | Some _ when Unix.gettimeofday () >= deadline ->
+      Error "session creation is still being reconciled"
+  | Some _ ->
+      Eio.Time.sleep clock 0.05;
+      wait_for_session_creation ~clock manager ~deadline ~duplicate request
+        session
+
+let create_broker_session ~clock (manager : Config.managed_workers) ~source_id
+    ~request_id ~harness ~workspace_id ~title =
+  let title = String.trim title in
+  if not (Lifecycle.valid_session_id request_id) then
+    Error "requestId must contain 3 to 64 lowercase letters, digits, or hyphens"
+  else if not (List.exists (String.equal harness) manager.available_harnesses)
+  then Error "requested harness is not available"
+  else if not (Lifecycle.valid_title title) then
+    Error "title must contain between 1 and 120 characters"
+  else if
+    match Registry.find_workspace manager.registry workspace_id with
+    | None -> true
+    | Some workspace -> (
+        match Workspaces.canonical_directory workspace.root with
+        | Some canonical -> not (String.equal canonical workspace.root)
+        | None -> true)
+  then Error "registered workspace path is no longer canonical"
+  else
+    let session_id = Lifecycle.random_session_id () in
+    match
+      Registry.accept_session_creation manager.registry ~id:request_id
+        ~source_id ~workspace_id ~title ~harness ~session_id
+        ~max_active_sessions:manager.max_active_sessions
+    with
+    | Error _ as error -> error
+    | Ok (request, session, duplicate) ->
+        if Registry.claim_session_creation manager.registry request.id then
+          Result.map
+            (fun active -> (active, duplicate))
+            (launch_session_creation manager request session)
+        else
+          wait_for_session_creation ~clock manager
+            ~deadline:(Unix.gettimeofday () +. 65.)
+            ~duplicate request session
+
+let reconcile_session_creations ?(recover_launching = true)
+    (manager : Config.managed_workers) =
+  Registry.list_incomplete_session_creations manager.registry
+  |> List.iter (fun (request : Registry.session_creation) ->
+      match
+        (request.state, Registry.find manager.registry request.session_id)
+      with
+      | "cleanup", Some _ -> (
+          match Lifecycle.run manager.stopper request.session_id with
+          | Error message ->
+              Format.eprintf "could not finish session cleanup %s: %s@."
+                request.session_id message
+          | Ok () ->
+              ignore (Registry.archive manager.registry request.session_id);
+              ignore
+                (Registry.mark_session_creation_failed manager.registry
+                   request.id
+                   (Option.value request.error
+                      ~default:"session launcher failed")))
+      | _, None ->
+          ignore
+            (Registry.mark_session_creation_failed manager.registry request.id
+               "reserved session metadata is missing")
+      | _, Some { archived_at = Some _; _ } ->
+          ignore
+            (Registry.mark_session_creation_failed manager.registry request.id
+               "reserved session was archived before launch completed")
+      | _, Some session ->
+          if
+            recover_launching
+            && Registry.claim_session_creation
+                 ~reclaim_before:(Unix.gettimeofday () +. 1.)
+                 manager.registry request.id
+          then ignore (launch_session_creation manager request session))
+
 let create_managed_session (manager : Config.managed_workers) ~harness
     ~workspace_id ~title =
   if not (List.exists (String.equal harness) manager.available_harnesses) then
     Error "requested harness is not available"
   else if Option.is_none (Registry.find_workspace manager.registry workspace_id)
   then Error "requested workspace is not registered"
+  else if
+    match Registry.find_workspace manager.registry workspace_id with
+    | None -> true
+    | Some workspace -> (
+        match Workspaces.canonical_directory workspace.root with
+        | Some canonical -> not (String.equal canonical workspace.root)
+        | None -> true)
+  then Error "registered workspace path is no longer canonical"
   else if not (Lifecycle.valid_title title) then
     Error "title must contain between 1 and 120 characters"
   else if Registry.active_count manager.registry >= manager.max_active_sessions
@@ -157,19 +305,24 @@ let restore_managed_session (manager : Config.managed_workers) id =
   | None -> Error "archived session not found"
   | Some { archived_at = None; _ } -> Error "session is already active"
   | Some session -> (
-      if Registry.active_count manager.registry >= manager.max_active_sessions
-      then Error "active session limit reached"
-      else if not (Registry.restore manager.registry id) then
-        Error "session could not be restored"
-      else
-        try
-          Lifecycle.write_session_spec manager.registry manager.state_root
-            { session with archived_at = None };
-          match Lifecycle.run manager.launcher id with
-          | Ok () -> Ok ()
-          | Error message ->
+      match canonical_session_workspace manager session with
+      | Error message -> Error message
+      | Ok () -> (
+          if
+            Registry.active_count manager.registry
+            >= manager.max_active_sessions
+          then Error "active session limit reached"
+          else if not (Registry.restore manager.registry id) then
+            Error "session could not be restored"
+          else
+            try
+              Lifecycle.write_session_spec manager.registry manager.state_root
+                { session with archived_at = None };
+              match Lifecycle.run manager.launcher id with
+              | Ok () -> Ok ()
+              | Error message ->
+                  ignore (Registry.archive manager.registry id);
+                  Error message
+            with exn ->
               ignore (Registry.archive manager.registry id);
-              Error message
-        with exn ->
-          ignore (Registry.archive manager.registry id);
-          Error (Printexc.to_string exn))
+              Error (Printexc.to_string exn)))

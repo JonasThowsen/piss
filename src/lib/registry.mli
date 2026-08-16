@@ -62,6 +62,20 @@ type peer_subscription = {
     requests to finish (either any one, or all of them) before the control plane
     wakes it with a fresh turn. *)
 
+type session_creation = {
+  id : string;
+  source_id : string;
+  workspace_id : string;
+  title : string;
+  harness : string;
+  session_id : string;
+  state : string;
+  error : string option;
+  updated_at : float;
+}
+(** Durable idempotency and launch state for one broker-created managed session.
+*)
+
 val open_ : path:string -> t
 (** Open or create the registry at [path]. Migrates any pre-existing schema
     forward; returns a registry whose [close] must be called before the process
@@ -101,6 +115,21 @@ val remove_workspace : t -> string -> bool
     caller is responsible for ensuring no sessions are bound to the workspace
     before calling. *)
 
+val accept_broker_workspace :
+  t ->
+  id:string ->
+  source_id:string ->
+  canonical_root:string ->
+  workspace_id:string ->
+  name:string ->
+  (workspace * bool, string) result
+(** Register a canonical root and durably bind [id] to the exact source/path
+    payload. The boolean reports an idempotent duplicate. *)
+
+val catalog_revision : t -> int64
+(** Monotonic revision changed by every workspace or session catalog mutation.
+*)
+
 val assign_unscoped_sessions : t -> string -> unit
 (** Assign every session that has no workspace yet to [workspace_id]. Used at
     service startup to migrate a stale database. *)
@@ -115,6 +144,26 @@ val insert :
 (** Insert a session row. [id] must be unique. Returns the freshly-created
     [session] so the caller can capture the [broker_token] without a follow-up
     [find] call. *)
+
+val accept_session_creation :
+  t ->
+  id:string ->
+  source_id:string ->
+  workspace_id:string ->
+  title:string ->
+  harness:string ->
+  session_id:string ->
+  max_active_sessions:int ->
+  (session_creation * session * bool, string) result
+(** Atomically reserve one session and one durable request identity. Payload
+    mismatch is rejected; retries return the original request and session. *)
+
+val find_session_creation : t -> string -> session_creation option
+val claim_session_creation : ?reclaim_before:float -> t -> string -> bool
+val mark_session_creation_active : t -> string -> bool
+val mark_session_creation_cleanup : t -> string -> string -> bool
+val mark_session_creation_failed : t -> string -> string -> bool
+val list_incomplete_session_creations : t -> session_creation list
 
 val list : t -> include_archived:bool -> session list
 (** [include_archived:true] returns every session (active and archived);

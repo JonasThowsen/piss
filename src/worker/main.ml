@@ -8,9 +8,27 @@ let write_json sink json =
 let read_json reader = Eio.Buf_read.line reader |> Yojson.Safe.from_string
 
 let run ~env (args : Config.args) =
-  let workspace = Unix.realpath args.workspace in
-  if (Unix.stat workspace).st_kind <> Unix.S_DIR then
-    failwith "authorized workspace is not a directory";
+  let authorized_workspace = Unix.realpath args.workspace in
+  if not (String.equal authorized_workspace args.workspace) then
+    failwith "authorized workspace path is no longer canonical";
+  let workspace_fd = Unix.openfile authorized_workspace [ Unix.O_RDONLY ] 0 in
+  Fun.protect ~finally:(fun () -> Unix.close workspace_fd) @@ fun () ->
+  let opened = Unix.fstat workspace_fd in
+  let current = Unix.lstat authorized_workspace in
+  if
+    opened.st_kind <> Unix.S_DIR
+    || current.st_kind <> Unix.S_DIR
+    || opened.st_dev <> current.st_dev
+    || opened.st_ino <> current.st_ino
+  then failwith "authorized workspace identity changed during startup";
+  let workspace_fd_number : int = Obj.magic workspace_fd in
+  Unix.chdir (Printf.sprintf "/proc/self/fd/%d" workspace_fd_number);
+  let bound = Unix.stat "." in
+  if bound.st_dev <> opened.st_dev || bound.st_ino <> opened.st_ino then
+    failwith "could not bind authorized workspace identity";
+  (* Bind all later file and ACP cwd operations to this opened directory inode.
+     A pathname replacement cannot redirect /proc/<worker>/cwd elsewhere. *)
+  let workspace = Printf.sprintf "/proc/%d/cwd" (Unix.getpid ()) in
   let store =
     Store.open_ ~path:args.database_path
       ~session_id:(Domain.session_id args.session_id)

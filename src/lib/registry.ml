@@ -37,6 +37,18 @@ type peer_subscription = Registry_support.peer_subscription = {
   state : string;
 }
 
+type session_creation = Registry_support.session_creation = {
+  id : string;
+  source_id : string;
+  workspace_id : string;
+  title : string;
+  harness : string;
+  session_id : string;
+  state : string;
+  error : string option;
+  updated_at : float;
+}
+
 type t = Registry_support.t = { db : Sqlite3.db }
 
 open Registry_support
@@ -173,6 +185,83 @@ let remove_workspace registry id =
           expect_done "remove workspace" statement);
       Sqlite3.changes registry.db > 0)
 
+let source_is_active registry source_id =
+  with_statement registry.db
+    "SELECT 1 FROM sessions WHERE id = ? AND archived_at IS NULL"
+    (fun statement ->
+      bind_text statement 1 source_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> true
+      | Sqlite3.Rc.DONE -> false
+      | rc ->
+          fail_rc "check active source session" rc;
+          false)
+
+let accept_broker_workspace registry ~id ~source_id ~canonical_root
+    ~workspace_id ~name =
+  transaction registry (fun () ->
+      let existing =
+        with_statement registry.db
+          "SELECT source_id,canonical_root,workspace_id FROM \
+           broker_workspace_requests WHERE id = ?" (fun statement ->
+            bind_text statement 1 id;
+            match Sqlite3.step statement with
+            | Sqlite3.Rc.ROW ->
+                Some
+                  ( Sqlite3.column_text statement 0,
+                    Sqlite3.column_text statement 1,
+                    Sqlite3.column_text statement 2 )
+            | Sqlite3.Rc.DONE -> None
+            | rc ->
+                fail_rc "find broker workspace request" rc;
+                None)
+      in
+      match existing with
+      | Some (stored_source, stored_root, stored_workspace)
+        when String.equal stored_source source_id
+             && String.equal stored_root canonical_root -> (
+          match find_workspace registry stored_workspace with
+          | Some workspace -> Ok (workspace, true)
+          | None -> Error "registered workspace no longer exists")
+      | Some _ -> Error "requestId was already used with different input"
+      | None when not (source_is_active registry source_id) ->
+          Error "source session is no longer active"
+      | None ->
+          let workspace =
+            match find_workspace_by_root registry canonical_root with
+            | Some workspace -> workspace
+            | None ->
+                with_statement registry.db
+                  "INSERT INTO workspaces(id,name,root,created_at) VALUES \
+                   (?,?,?,?)" (fun statement ->
+                    bind_text statement 1 workspace_id;
+                    bind_text statement 2 name;
+                    bind_text statement 3 canonical_root;
+                    bind_float statement 4 (Unix.gettimeofday ());
+                    expect_done "register broker workspace" statement);
+                Option.get (find_workspace registry workspace_id)
+          in
+          with_statement registry.db
+            "INSERT INTO \
+             broker_workspace_requests(id,source_id,canonical_root,workspace_id,created_at) \
+             VALUES (?,?,?,?,?)" (fun statement ->
+              bind_text statement 1 id;
+              bind_text statement 2 source_id;
+              bind_text statement 3 canonical_root;
+              bind_text statement 4 workspace.id;
+              bind_float statement 5 (Unix.gettimeofday ());
+              expect_done "accept broker workspace request" statement);
+          Ok (workspace, false))
+
+let catalog_revision registry =
+  with_statement registry.db
+    "SELECT revision FROM catalog_state WHERE singleton = 1" (fun statement ->
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Sqlite3.column_int64 statement 0
+      | rc ->
+          fail_rc "read catalog revision" rc;
+          0L)
+
 let assign_unscoped_sessions registry workspace_id =
   with_statement registry.db
     "UPDATE sessions SET workspace_id = ? WHERE workspace_id = ''"
@@ -204,6 +293,143 @@ let insert registry ~id ~title ~harness ~workspace_id =
     workspace_id;
   }
 
+let find_session registry id =
+  with_statement registry.db
+    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
+     FROM sessions WHERE id = ?" (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find session" rc;
+          None)
+
+let find_session_creation registry id =
+  with_statement registry.db
+    "SELECT \
+     id,source_id,workspace_id,title,harness,session_id,state,error,updated_at \
+     FROM broker_session_requests WHERE id = ?" (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (session_creation_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find broker session request" rc;
+          None)
+
+let active_count_sql registry =
+  with_statement registry.db
+    "SELECT COUNT(*) FROM sessions WHERE archived_at IS NULL" (fun statement ->
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Int64.to_int (Sqlite3.column_int64 statement 0)
+      | rc ->
+          fail_rc "count active sessions" rc;
+          0)
+
+let accept_session_creation registry ~id ~source_id ~workspace_id ~title
+    ~harness ~session_id ~max_active_sessions =
+  transaction registry (fun () ->
+      match find_session_creation registry id with
+      | Some request
+        when String.equal request.source_id source_id
+             && String.equal request.workspace_id workspace_id
+             && String.equal request.title title
+             && String.equal request.harness harness -> (
+          match find_session registry request.session_id with
+          | Some session -> Ok (request, session, true)
+          | None -> Error "created session metadata is missing")
+      | Some _ -> Error "requestId was already used with different input"
+      | None when not (source_is_active registry source_id) ->
+          Error "source session is no longer active"
+      | None when Option.is_none (find_workspace registry workspace_id) ->
+          Error "requested workspace is not registered"
+      | None when active_count_sql registry >= max_active_sessions ->
+          Error "active session limit reached"
+      | None ->
+          let now = Unix.gettimeofday () in
+          let session =
+            insert registry ~id:session_id ~title ~harness ~workspace_id
+          in
+          with_statement registry.db
+            "INSERT INTO \
+             broker_session_requests(id,source_id,workspace_id,title,harness,session_id,state,error,created_at,updated_at) \
+             VALUES (?,?,?,?,?,?,'pending',NULL,?,?)" (fun statement ->
+              bind_text statement 1 id;
+              bind_text statement 2 source_id;
+              bind_text statement 3 workspace_id;
+              bind_text statement 4 title;
+              bind_text statement 5 harness;
+              bind_text statement 6 session_id;
+              bind_float statement 7 now;
+              bind_float statement 8 now;
+              expect_done "accept broker session request" statement);
+          Ok (Option.get (find_session_creation registry id), session, false))
+
+let claim_session_creation ?reclaim_before registry id =
+  let condition =
+    match reclaim_before with
+    | None -> "state = 'pending'"
+    | Some _ -> "state = 'pending' OR (state = 'launching' AND updated_at <= ?)"
+  in
+  with_statement registry.db
+    ("UPDATE broker_session_requests SET state = 'launching',error = \
+      NULL,updated_at = ? WHERE id = ? AND (" ^ condition ^ ")")
+    (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      Option.iter (bind_float statement 3) reclaim_before;
+      expect_done "claim broker session launch" statement);
+  Sqlite3.changes registry.db > 0
+
+let mark_session_creation_active registry id =
+  with_statement registry.db
+    "UPDATE broker_session_requests SET state = 'active',error = \
+     NULL,updated_at = ? WHERE id = ? AND state = 'launching'" (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "complete broker session creation" statement);
+  Sqlite3.changes registry.db > 0
+
+let mark_session_creation_cleanup registry id message =
+  with_statement registry.db
+    "UPDATE broker_session_requests SET state = 'cleanup',error = ?,updated_at \
+     = ? WHERE id = ? AND state IN ('pending','launching')" (fun statement ->
+      bind_text statement 1 message;
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 id;
+      expect_done "record broker session cleanup" statement);
+  Sqlite3.changes registry.db > 0
+
+let mark_session_creation_failed registry id message =
+  with_statement registry.db
+    "UPDATE broker_session_requests SET state = 'failed',error = ?,updated_at \
+     = ? WHERE id = ? AND state IN ('pending','launching','cleanup')"
+    (fun statement ->
+      bind_text statement 1 message;
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 id;
+      expect_done "fail broker session creation" statement);
+  Sqlite3.changes registry.db > 0
+
+let list_incomplete_session_creations registry =
+  with_statement registry.db
+    "SELECT \
+     id,source_id,workspace_id,title,harness,session_id,state,error,updated_at \
+     FROM broker_session_requests WHERE state IN \
+     ('pending','launching','cleanup') ORDER BY created_at ASC"
+    (fun statement ->
+      let rec collect requests =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (session_creation_of_statement statement :: requests)
+        | Sqlite3.Rc.DONE -> List.rev requests
+        | rc ->
+            fail_rc "list incomplete broker session requests" rc;
+            List.rev requests
+      in
+      collect [])
+
 let list registry ~include_archived =
   let sql =
     if include_archived then
@@ -226,17 +452,7 @@ let list registry ~include_archived =
       in
       collect [])
 
-let find registry id =
-  with_statement registry.db
-    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
-     FROM sessions WHERE id = ?" (fun statement ->
-      bind_text statement 1 id;
-      match Sqlite3.step statement with
-      | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
-      | Sqlite3.Rc.DONE -> None
-      | rc ->
-          fail_rc "find session" rc;
-          None)
+let find = find_session
 
 let find_active registry id =
   match find registry id with
@@ -581,6 +797,6 @@ let delete_archived registry =
   |> List.map (fun (session : session) -> session.id)
   |> delete_archived_ids registry
 
-let active_count registry = List.length (list registry ~include_archived:false)
+let active_count registry = active_count_sql registry
 let session_to_yojson = Registry_support.session_to_yojson
 let workspace_to_yojson = Registry_support.workspace_to_yojson

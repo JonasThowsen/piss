@@ -90,5 +90,6 @@ for _ in $(seq 1 500); do
 done
 
 for browser_test in "${browser_tests[@]}"; do
-  node "$(realpath "$browser_test")" "http://127.0.0.1:$port" "$workspace"
+  PISS_TEST_BROKER_TOKEN="$(tr -d '\n' <"$state/sessions/s-mention-browser/broker-token")" \
+    node "$(realpath "$browser_test")" "http://127.0.0.1:$port" "$workspace"
 done

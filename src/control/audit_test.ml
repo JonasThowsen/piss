@@ -99,12 +99,32 @@ let error_category_case () =
   | _ -> Alcotest.fail "internal error lost its HTTP category"
 
 let route_case () =
+  Alcotest.(check bool)
+    "broker token authorizes broker route" true
+    (Routes.credential_authorized ~path:"/api/v2/broker/sessions"
+       ~user_authorized:false ~has_broker_session:true);
+  Alcotest.(check bool)
+    "broker token cannot authorize browser route" false
+    (Routes.credential_authorized ~path:"/api/v2/sessions"
+       ~user_authorized:false ~has_broker_session:true);
   let parse managed method_ path =
     Routes.parse ~managed ~method_ ~uri:(Uri.of_string path) ~last_event_id:None
   in
   (match parse true `GET "/api/v2/sessions/session-a/audit" with
   | Ok (Routes.Get_session_audit "session-a") -> ()
   | _ -> Alcotest.fail "managed Audit route was not parsed");
+  (match parse true `GET "/api/v2/broker/workspaces" with
+  | Ok Routes.Get_broker_workspaces -> ()
+  | _ -> Alcotest.fail "broker workspace list route was not parsed");
+  (match parse true `POST "/api/v2/broker/workspaces" with
+  | Ok Routes.Post_broker_workspaces -> ()
+  | _ -> Alcotest.fail "broker workspace creation route was not parsed");
+  (match parse true `POST "/api/v2/broker/sessions" with
+  | Ok Routes.Post_broker_sessions -> ()
+  | _ -> Alcotest.fail "broker session creation route was not parsed");
+  (match parse true `GET "/api/v2/catalog-revision" with
+  | Ok Routes.Get_catalog_revision -> ()
+  | _ -> Alcotest.fail "catalog revision route was not parsed");
   (match parse false `GET "/api/v2/sessions/session-a/audit" with
   | Ok (Routes.Get_asset _) -> ()
   | _ -> Alcotest.fail "fixed mode exposed the managed Audit route");

@@ -33,6 +33,7 @@
   artifact_view
   audit_view
   browser_http
+  catalog_polling
   clipboard
   command_id
   composer

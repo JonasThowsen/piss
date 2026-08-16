@@ -8,6 +8,9 @@ let class_ name = [ Vdom.Attr.class_ name ]
 let dispatch action = Vdom.Effect.Expert.handle_non_dom_event_exn action
 let focus_acknowledger = ref (fun () -> ())
 
+type navigation_catalog =
+  Workspace_catalog.workspace list * Control_plane.Session.t list
+
 let present value =
   Js.to_bool
     (Js.Unsafe.coerce
@@ -114,23 +117,22 @@ let refresh_catalog ~set_workspaces ~set_sessions ~set_archived
                 set_creation_options creation_options;
               ])
 
-let refresh_active_sessions ~set_sessions =
+let refresh_navigation_catalog ~set_catalog =
   Effect.bind
     (Effect.of_deferred_thunk (fun () ->
-         Int.incr catalog_generation;
-         let generation = !catalog_generation in
-         Async_kernel.Deferred.map
-           (Browser_http.get
-              ~query:[ ("refresh", Int.to_string generation) ]
-              "/api/v2/sessions")
-           ~f:(fun response -> (generation, response))))
-    ~f:(fun (_, response) ->
-      match response with
-      | Error _ -> Effect.Ignore
-      | Ok body -> (
-          match Control_plane.decode_sessions body with
-          | Error message -> set_sessions (Session_rail.Failed message)
-          | Ok sessions -> set_sessions (Session_rail.Loaded sessions)))
+         Async_kernel.Deferred.both
+           (Browser_http.get "/api/v2/workspaces")
+           (Browser_http.get "/api/v2/sessions")))
+    ~f:(function
+      | Ok workspace_body, Ok session_body -> (
+          match
+            ( Workspace_catalog.decode workspace_body,
+              Control_plane.decode_sessions session_body )
+          with
+          | Ok workspaces, Ok sessions ->
+              set_catalog (Some (workspaces, sessions))
+          | Error _, _ | _, Error _ -> Effect.Ignore)
+      | Error _, _ | _, Error _ -> Effect.Ignore)
 
 let load_snapshot ~inject_shell session_id =
   Effect.bind (inject_shell (Runtime_start session_id)) ~f:(fun () ->
@@ -155,6 +157,9 @@ let component graph =
   let archived, set_archived = Bonsai.state [] graph in
   let workspaces, set_workspaces = Bonsai.state [] graph in
   let creation_options, set_creation_options = Bonsai.state None graph in
+  let polled_catalog, set_polled_catalog =
+    Bonsai.state (None : navigation_catalog option) graph
+  in
   let selected_id, set_selected_id = Bonsai.state None graph in
   let seen_finished_at, set_seen_finished_at =
     Bonsai.state (Finished_status.read ()) graph
@@ -195,9 +200,24 @@ let component graph =
   let composer_notice, set_composer_notice = Bonsai.state "" graph in
   let copy_feedback, set_copy_feedback = Bonsai.state None graph in
   let composer_busy, set_composer_busy = Bonsai.state false graph in
+  let navigation_workspaces =
+    let%arr polled_catalog = polled_catalog and workspaces = workspaces in
+    Option.value_map polled_catalog ~default:workspaces ~f:fst
+  in
+  let navigation_sessions =
+    let%arr polled_catalog = polled_catalog and sessions = sessions in
+    Option.value_map polled_catalog ~default:sessions ~f:(fun (_, sessions) ->
+        Session_rail.Loaded sessions)
+  in
   let selected =
-    let%arr sessions = sessions and selected_id = selected_id in
-    Session_rail.selected sessions selected_id
+    Bonsai.cutoff
+      (let%arr sessions = sessions
+       and navigation_sessions = navigation_sessions
+       and selected_id = selected_id in
+       Option.first_some
+         (Session_rail.selected sessions selected_id)
+         (Session_rail.selected navigation_sessions selected_id))
+      ~equal:Poly.equal
   in
   let acknowledge_session =
     let%arr seen_finished_at = seen_finished_at
@@ -406,6 +426,7 @@ let component graph =
     and set_workspaces = set_workspaces
     and set_archived = set_archived
     and set_creation_options = set_creation_options
+    and set_polled_catalog = set_polled_catalog
     and set_menu_open = set_menu_open
     and selected_id = selected_id
     and set_selected_id = set_selected_id
@@ -415,82 +436,85 @@ let component graph =
     and set_stream_notice = set_stream_notice
     and acknowledge_session = acknowledge_session
     and composer = composer in
-    Effect.bind (Effect.of_deferred_thunk versioned_catalog_request)
-      ~f:(fun (generation, response) ->
-        if not (current_catalog_generation generation) then Effect.Ignore
-        else
-          match decode_catalog response with
-          | Error message -> set_sessions (Session_rail.Failed message)
-          | Ok
-              ( next_workspaces,
-                next_sessions,
-                next_archived,
-                next_creation_options ) ->
-              let selected_still_active =
-                Option.exists selected_id ~f:(fun selected ->
-                    List.exists next_sessions
-                      ~f:(fun (session : Control_plane.Session.t) ->
-                        String.equal session.id selected))
-              in
-              let previous_id =
-                Option.first_some selected_id (Last_opened_session.read ())
-              in
-              let next_id =
-                if composer.has_pending () && selected_still_active then
-                  selected_id
-                else
-                  Workspace_catalog.reconcile_selection ~previous:previous_id
-                    next_sessions
-              in
-              Last_opened_session.write next_id;
-              let acknowledge_next =
-                if not (Finished_status.is_focused ()) then Effect.Ignore
-                else
-                  Option.bind next_id ~f:(fun id ->
-                      List.find next_sessions
-                        ~f:(fun (session : Control_plane.Session.t) ->
-                          String.equal session.id id))
-                  |> Option.value_map ~default:Effect.Ignore
-                       ~f:acknowledge_session
-              in
-              let catalog_refresh =
-                refresh_catalog ~set_workspaces ~set_sessions ~set_archived
-                  ~set_creation_options
-              in
-              Effect.bind
-                (Effect.Many
-                   [
-                     set_workspaces next_workspaces;
-                     set_sessions (Session_rail.Loaded next_sessions);
-                     set_archived next_archived;
-                     set_creation_options next_creation_options;
-                     set_selected_id next_id;
-                     set_menu_open None;
-                     acknowledge_next;
-                   ])
-                ~f:(fun () ->
-                  Effect.bind (composer.restore next_id) ~f:(fun () ->
-                      Option.value_map next_id
-                        ~default:
-                          (Effect.of_deferred_thunk (fun () ->
-                               Event_stream.close ();
-                               Async_kernel.Deferred.return ()))
-                        ~f:(fun id ->
-                          let snapshot_refresh =
-                            load_snapshot ~inject_shell id
-                          in
-                          Effect.Many
-                            [
-                              snapshot_refresh;
-                              History_loader.load_initial ~inject_history
-                                ~inject_deciding
-                                ~refresh_catalog_effect:catalog_refresh
-                                ~refresh_snapshot_effect:snapshot_refresh
-                                ~set_stream_notice id;
-                            ]))))
+    Effect.bind (Effect.of_sync_fun Catalog_polling.invalidate ()) ~f:(fun () ->
+        Effect.bind (Effect.of_deferred_thunk versioned_catalog_request)
+          ~f:(fun (generation, response) ->
+            if not (current_catalog_generation generation) then Effect.Ignore
+            else
+              match decode_catalog response with
+              | Error message -> set_sessions (Session_rail.Failed message)
+              | Ok
+                  ( next_workspaces,
+                    next_sessions,
+                    next_archived,
+                    next_creation_options ) ->
+                  let selected_still_active =
+                    Option.exists selected_id ~f:(fun selected ->
+                        List.exists next_sessions
+                          ~f:(fun (session : Control_plane.Session.t) ->
+                            String.equal session.id selected))
+                  in
+                  let previous_id =
+                    Option.first_some selected_id (Last_opened_session.read ())
+                  in
+                  let next_id =
+                    if composer.has_pending () && selected_still_active then
+                      selected_id
+                    else
+                      Workspace_catalog.reconcile_selection
+                        ~previous:previous_id next_sessions
+                  in
+                  Last_opened_session.write next_id;
+                  let acknowledge_next =
+                    if not (Finished_status.is_focused ()) then Effect.Ignore
+                    else
+                      Option.bind next_id ~f:(fun id ->
+                          List.find next_sessions
+                            ~f:(fun (session : Control_plane.Session.t) ->
+                              String.equal session.id id))
+                      |> Option.value_map ~default:Effect.Ignore
+                           ~f:acknowledge_session
+                  in
+                  let catalog_refresh =
+                    refresh_catalog ~set_workspaces ~set_sessions ~set_archived
+                      ~set_creation_options
+                  in
+                  Effect.bind
+                    (Effect.Many
+                       [
+                         set_workspaces next_workspaces;
+                         set_sessions (Session_rail.Loaded next_sessions);
+                         set_archived next_archived;
+                         set_creation_options next_creation_options;
+                         Effect.of_sync_fun Catalog_polling.invalidate ();
+                         set_polled_catalog None;
+                         set_selected_id next_id;
+                         set_menu_open None;
+                         acknowledge_next;
+                       ])
+                    ~f:(fun () ->
+                      Effect.bind (composer.restore next_id) ~f:(fun () ->
+                          Option.value_map next_id
+                            ~default:
+                              (Effect.of_deferred_thunk (fun () ->
+                                   Event_stream.close ();
+                                   Async_kernel.Deferred.return ()))
+                            ~f:(fun id ->
+                              let snapshot_refresh =
+                                load_snapshot ~inject_shell id
+                              in
+                              Effect.Many
+                                [
+                                  snapshot_refresh;
+                                  History_loader.load_initial ~inject_history
+                                    ~inject_deciding
+                                    ~refresh_catalog_effect:catalog_refresh
+                                    ~refresh_snapshot_effect:snapshot_refresh
+                                    ~set_stream_notice id;
+                                ])))))
   in
   let select_session =
-    let%arr sessions = sessions
+    let%arr sessions = navigation_sessions
     and selected_id = selected_id
     and set_selected_id = set_selected_id
     and set_mobile_open = set_mobile_open
@@ -501,6 +525,7 @@ let component graph =
     and set_stream_notice = set_stream_notice
     and set_sessions = set_sessions
     and set_workspaces = set_workspaces
+    and set_polled_catalog = set_polled_catalog
     and set_archived = set_archived
     and set_creation_options = set_creation_options
     and acknowledge_session = acknowledge_session
@@ -523,25 +548,32 @@ let component graph =
             ~set_creation_options
         in
         let snapshot_refresh = load_snapshot ~inject_shell id in
+        let prepare_catalog =
+          if Option.is_some (Session_rail.selected sessions (Some id)) then
+            Effect.Ignore
+          else set_polled_catalog None
+        in
         Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
-            Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
-                Effect.Many
-                  [
-                    acknowledge;
-                    composer.restore (Some id);
-                    set_stream_notice "";
-                    set_mobile_open false;
-                    set_menu_open None;
-                    catalog_refresh;
-                    snapshot_refresh;
-                    History_loader.load_initial ~inject_history ~inject_deciding
-                      ~refresh_catalog_effect:catalog_refresh
-                      ~refresh_snapshot_effect:snapshot_refresh
-                      ~set_stream_notice id;
-                  ])))
+            Effect.bind prepare_catalog ~f:(fun () ->
+                Effect.bind (set_selected_id (Some id)) ~f:(fun () ->
+                    Effect.Many
+                      [
+                        acknowledge;
+                        composer.restore (Some id);
+                        set_stream_notice "";
+                        set_mobile_open false;
+                        set_menu_open None;
+                        catalog_refresh;
+                        snapshot_refresh;
+                        History_loader.load_initial ~inject_history
+                          ~inject_deciding
+                          ~refresh_catalog_effect:catalog_refresh
+                          ~refresh_snapshot_effect:snapshot_refresh
+                          ~set_stream_notice id;
+                      ]))))
   in
   let active_sessions =
-    let%arr sessions = sessions in
+    let%arr sessions = navigation_sessions in
     match sessions with Session_rail.Loaded values -> values | _ -> []
   in
   let lifecycle =
@@ -556,14 +588,14 @@ let component graph =
   in
   let open_search =
     let%arr close_navigation = close_navigation
-    and set_sessions = set_sessions in
+    and set_polled_catalog = set_polled_catalog in
     Effect.bind close_navigation ~f:(fun () ->
-        refresh_active_sessions ~set_sessions)
+        refresh_navigation_catalog ~set_catalog:set_polled_catalog)
   in
   let search =
-    Search_dialog.component ~workspaces ~active:active_sessions ~archived
-      ~seen_finished_at ~on_open:open_search ~on_reload:load
-      ~on_select:select_session graph
+    Search_dialog.component ~workspaces:navigation_workspaces
+      ~active:active_sessions ~archived ~seen_finished_at ~on_open:open_search
+      ~on_reload:load ~on_select:select_session graph
   in
   let close_stream =
     let%arr () = Bonsai.return () in
@@ -573,6 +605,7 @@ let component graph =
   in
   let activate =
     let%arr load = load
+    and set_polled_catalog = set_polled_catalog
     and set_mobile_open = set_mobile_open
     and set_menu_open = set_menu_open in
     Effect.bind
@@ -582,7 +615,14 @@ let component graph =
           (Mobile_shell.start ~on_escape:(fun () ->
                Effect.Many [ set_mobile_open false; set_menu_open None ]))
           ~f:(fun () ->
-            Effect.bind (Timeline_scroll.start ()) ~f:(fun () -> load)))
+            Effect.bind (Timeline_scroll.start ()) ~f:(fun () ->
+                Effect.Many
+                  [
+                    load;
+                    Catalog_polling.start ~apply:(fun ~workspaces ~sessions ->
+                        dispatch
+                          (set_polled_catalog (Some (workspaces, sessions))));
+                  ])))
   in
   let deactivate =
     let%arr close_stream = close_stream in
@@ -591,6 +631,7 @@ let component graph =
         close_stream;
         Timeline_scroll.cleanup ();
         Clipboard.cleanup ();
+        Catalog_polling.cleanup ();
         Modal.cleanup ();
         Search_dialog.cleanup ();
         Effect.of_deferred_thunk (fun () ->
@@ -602,7 +643,9 @@ let component graph =
   in
   Bonsai.Edge.lifecycle ~on_activate:activate ~on_deactivate:deactivate graph;
   let%arr sessions = sessions
+  and navigation_sessions = navigation_sessions
   and workspaces = workspaces
+  and navigation_workspaces = navigation_workspaces
   and seen_finished_at = seen_finished_at
   and selected_id = selected_id
   and session = selected
@@ -664,9 +707,10 @@ let component graph =
           Vdom.Node.section ~attrs:(class_ "workspace-grid")
             [
               Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile;
-              Session_rail.render sessions ~workspaces ~seen_finished_at
-                ~selected_id ~collapsed ~menu_open ~mobile_open
-                ~on_toggle:toggle_workspace ~on_menu:set_menu_open
+              Session_rail.render navigation_sessions
+                ~workspaces:navigation_workspaces ~seen_finished_at ~selected_id
+                ~collapsed ~menu_open ~mobile_open ~on_toggle:toggle_workspace
+                ~on_menu:set_menu_open
                 ~on_select:(fun id ->
                   Effect.Many [ set_menu_open None; select id ])
                 ~on_add_workspace:(fun () ->

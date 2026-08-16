@@ -84,6 +84,7 @@
                 ./web/audit_view.mli
                 ./web/browser_http.ml
                 ./web/browser_http.mli
+                ./web/catalog_polling.ml
                 ./web/clipboard.ml
                 ./web/clipboard.mli
                 ./web/command_id.ml

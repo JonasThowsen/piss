@@ -301,6 +301,150 @@ let test_session_registry () =
     "repeated archived deletion is empty" 0
     (Registry.delete_archived registry)
 
+let test_legacy_registry_migration () =
+  let path = Filename.temp_file "piss-registry-legacy-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let db = Sqlite3.db_open path in
+      List.iter
+        (fun sql ->
+          Alcotest.(check bool)
+            "legacy registry statement" true
+            (Sqlite3.Rc.is_success (Sqlite3.exec db sql)))
+        [
+          "CREATE TABLE workspaces (id TEXT PRIMARY KEY,name TEXT NOT \
+           NULL,root TEXT NOT NULL UNIQUE,created_at REAL NOT NULL)";
+          "CREATE TABLE sessions (id TEXT PRIMARY KEY,title TEXT NOT \
+           NULL,harness TEXT NOT NULL,created_at REAL NOT NULL,archived_at \
+           REAL)";
+          "INSERT INTO workspaces VALUES \
+           ('legacy-workspace','Legacy','/tmp/legacy',1.0)";
+          "INSERT INTO sessions VALUES ('legacy-session','Legacy \
+           agent','pi',1.0,NULL)";
+        ];
+      Alcotest.(check bool) "legacy registry closed" true (Sqlite3.db_close db);
+      let registry = Registry.open_ ~path in
+      Fun.protect ~finally:(fun () -> Registry.close registry) @@ fun () ->
+      Registry.assign_unscoped_sessions registry "legacy-workspace";
+      let session = Option.get (Registry.find registry "legacy-session") in
+      Alcotest.(check bool)
+        "broker token backfilled" true
+        (String.length session.broker_token > 0);
+      Alcotest.(check string)
+        "workspace column added" "legacy-workspace" session.workspace_id;
+      Alcotest.(check bool)
+        "catalog revision schema added" true
+        (Int64.compare (Registry.catalog_revision registry) 0L >= 0))
+
+let test_broker_creation_registry () =
+  with_registry @@ fun registry ->
+  Registry.upsert_workspace registry ~id:"workspace-source" ~name:"Source"
+    ~root:"/tmp/source";
+  let source =
+    Registry.insert registry ~id:"source-session" ~title:"Source agent"
+      ~harness:"pi" ~workspace_id:"workspace-source"
+  in
+  let workspace, duplicate =
+    match
+      Registry.accept_broker_workspace registry ~id:"workspace-request"
+        ~source_id:source.id ~canonical_root:"/tmp/agent-target"
+        ~workspace_id:"workspace-target" ~name:"agent-target"
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool) "first workspace request is new" false duplicate;
+  let repeated, duplicate =
+    match
+      Registry.accept_broker_workspace registry ~id:"workspace-request"
+        ~source_id:source.id ~canonical_root:"/tmp/agent-target"
+        ~workspace_id:"ignored-on-retry" ~name:"ignored"
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool) "workspace request retries durably" true duplicate;
+  Alcotest.(check string)
+    "workspace retry retains identity" workspace.id repeated.id;
+  let reused, duplicate =
+    match
+      Registry.accept_broker_workspace registry ~id:"workspace-request-two"
+        ~source_id:source.id ~canonical_root:"/tmp/agent-target"
+        ~workspace_id:"another-id" ~name:"another-name"
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool) "new request is not duplicate" false duplicate;
+  Alcotest.(check string) "canonical root is reused" workspace.id reused.id;
+  (match
+     Registry.accept_broker_workspace registry ~id:"workspace-request"
+       ~source_id:source.id ~canonical_root:"/tmp/different"
+       ~workspace_id:"different" ~name:"different"
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "workspace request ID accepted different payload");
+  let creation, session, duplicate =
+    match
+      Registry.accept_session_creation registry ~id:"session-request"
+        ~source_id:source.id ~workspace_id:workspace.id ~title:"Review agent"
+        ~harness:"opencode" ~session_id:"created-session" ~max_active_sessions:2
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool) "first session request is new" false duplicate;
+  Alcotest.(check string)
+    "reserved session is stable" "created-session" session.id;
+  let repeated_creation, repeated_session, duplicate =
+    match
+      Registry.accept_session_creation registry ~id:"session-request"
+        ~source_id:source.id ~workspace_id:workspace.id ~title:"Review agent"
+        ~harness:"opencode" ~session_id:"must-not-be-used"
+        ~max_active_sessions:2
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+  in
+  Alcotest.(check bool) "session request retries durably" true duplicate;
+  Alcotest.(check string)
+    "session retry retains identity" session.id repeated_session.id;
+  Alcotest.(check string)
+    "session request remains pending" creation.state repeated_creation.state;
+  Alcotest.(check bool)
+    "one launcher claims the request" true
+    (Registry.claim_session_creation registry creation.id);
+  Alcotest.(check bool)
+    "a concurrent launcher cannot claim" false
+    (Registry.claim_session_creation registry creation.id);
+  Alcotest.(check bool)
+    "launch completion is durable" true
+    (Registry.mark_session_creation_active registry creation.id);
+  Alcotest.(check string)
+    "completed request is active" "active"
+    (Option.get (Registry.find_session_creation registry creation.id)).state;
+  (match
+     Registry.accept_session_creation registry ~id:"session-request-two"
+       ~source_id:source.id ~workspace_id:workspace.id ~title:"Limit proof"
+       ~harness:"pi" ~session_id:"over-limit" ~max_active_sessions:2
+   with
+  | Error "active session limit reached" -> ()
+  | Error message -> Alcotest.failf "wrong active-limit error: %s" message
+  | Ok _ -> Alcotest.fail "active-session limit was bypassed");
+  match
+    Registry.accept_session_creation registry ~id:"session-request"
+      ~source_id:source.id ~workspace_id:workspace.id ~title:"Different title"
+      ~harness:"opencode" ~session_id:"different-session" ~max_active_sessions:3
+  with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "session request ID accepted different payload"
+
 let runtime_target ~session_id:session ~worker_id:worker
     ~runtime_generation:generation =
   Domain.
@@ -1224,6 +1368,10 @@ let () =
             test_restart_reconciliation;
           Alcotest.test_case "session registry archive" `Quick
             test_session_registry;
+          Alcotest.test_case "legacy registry migration" `Quick
+            test_legacy_registry_migration;
+          Alcotest.test_case "broker creation registry" `Quick
+            test_broker_creation_registry;
         ] );
       ( "domain",
         [

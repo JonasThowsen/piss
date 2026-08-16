@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 const [url, workspace] = process.argv.slice(2);
 if (!url || !workspace) throw new Error("browser test URL and workspace are required");
@@ -50,6 +50,7 @@ const auditProofFiles = [
 ];
 
 let browser;
+let agentWorkspaceRoot;
 const errors = [];
 let intentionalNetworkFailures = 0;
 let intentionalAuditFailures = 0;
@@ -165,6 +166,103 @@ try {
   await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
   const expectedWorkspaceLabel = `Piss / ${workspace}`;
   await page.locator(".app-header").getByText(expectedWorkspaceLabel, { exact: true }).waitFor();
+
+  const brokerToken = process.env.PISS_TEST_BROKER_TOKEN;
+  if (!brokerToken) throw new Error("PISS_TEST_BROKER_TOKEN is required");
+  agentWorkspaceRoot = join(dirname(workspace), `agent-created-browser-${process.pid}`);
+  await mkdir(agentWorkspaceRoot);
+  const catalogComposer = page.getByRole("textbox", { name: "Message agent" });
+  await catalogComposer.waitFor({ state: "visible" });
+  await page.waitForFunction(() => !document.getElementById("prompt-input")?.disabled);
+  const catalogDraft = "Catalog refresh must preserve this exact draft";
+  await catalogComposer.fill(catalogDraft);
+  await catalogComposer.focus();
+  const beforeCatalogRefresh = await page.evaluate(() => ({
+    selected: document.querySelector(".app-header h1")?.textContent,
+    connection: document.querySelector(".connection-pill")?.textContent,
+    timeline: document.getElementById("timeline")?.innerHTML,
+    renderCount: document.getElementById("timeline")?.getAttribute("data-timeline-render-count"),
+    scrollTop: document.getElementById("timeline")?.scrollTop,
+  }));
+  const headers = { "content-type": "application/json", "x-piss-session-token": brokerToken };
+  const workspaceResponse = await context.request.post(`${url}/api/v2/broker/workspaces`, {
+    headers,
+    data: { requestId: `browser-workspace-${process.pid}`, path: agentWorkspaceRoot },
+  });
+  if (!workspaceResponse.ok()) throw new Error(await workspaceResponse.text());
+  const externalWorkspace = (await workspaceResponse.json()).workspace;
+  const appearanceStarted = Date.now();
+  const sessionResponse = await context.request.post(`${url}/api/v2/broker/sessions`, {
+    headers,
+    data: {
+      requestId: `browser-session-${process.pid}`,
+      workspaceId: externalWorkspace.id,
+      title: "Agent-created browser",
+      harness: "pi",
+    },
+  });
+  if (!sessionResponse.ok()) throw new Error(await sessionResponse.text());
+  const externalSession = (await sessionResponse.json()).session;
+  const externalWorkspaceSettings = page.getByRole("button", {
+    name: `Workspace settings for agent-created-browser-${process.pid}`,
+  });
+  const externalSessionRow = page.locator("button.session-row").filter({ hasText: "Agent-created browser" });
+  await externalWorkspaceSettings.waitFor({ timeout: 5_000 });
+  await externalSessionRow.getByText(/idle \/ pi$/).waitFor({ timeout: 5_000 });
+  const appearanceElapsed = Date.now() - appearanceStarted;
+  if (appearanceElapsed > 5_000) throw new Error(`catalog appearance took ${appearanceElapsed}ms`);
+  const afterCatalogRefresh = await page.evaluate(() => ({
+    selected: document.querySelector(".app-header h1")?.textContent,
+    connection: document.querySelector(".connection-pill")?.textContent,
+    timeline: document.getElementById("timeline")?.innerHTML,
+    renderCount: document.getElementById("timeline")?.getAttribute("data-timeline-render-count"),
+    scrollTop: document.getElementById("timeline")?.scrollTop,
+    activeElement: document.activeElement?.id,
+    draft: document.getElementById("prompt-input")?.value,
+  }));
+  if (
+    afterCatalogRefresh.selected !== beforeCatalogRefresh.selected
+    || afterCatalogRefresh.connection !== beforeCatalogRefresh.connection
+    || afterCatalogRefresh.timeline !== beforeCatalogRefresh.timeline
+    || afterCatalogRefresh.renderCount !== beforeCatalogRefresh.renderCount
+    || afterCatalogRefresh.scrollTop !== beforeCatalogRefresh.scrollTop
+    || afterCatalogRefresh.activeElement !== "prompt-input"
+    || afterCatalogRefresh.draft !== catalogDraft
+  ) throw new Error(`catalog polling disturbed selected UI: ${JSON.stringify({ beforeCatalogRefresh, afterCatalogRefresh })}`);
+  await page.getByRole("button", { name: "Search sessions" }).click();
+  const catalogSearch = page.getByRole("dialog", { name: "Search sessions" });
+  await catalogSearch.getByText("Agent-created browser", { exact: true }).waitFor();
+  await catalogSearch.getByRole("combobox", { name: "Search sessions" }).fill(`agent-created-browser-${process.pid}`);
+  await catalogSearch.getByText("Agent-created browser", { exact: true }).waitFor();
+  await catalogSearch.getByRole("button", { name: "Close session search" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open workspaces and sessions" }).click();
+  if (!(await externalSessionRow.isVisible())) throw new Error("agent-created session missing at 390px");
+  if ((await page.locator(".app-header h1").innerText()).trim() !== "Pi / deployed") {
+    throw new Error("external creation stole mobile selection");
+  }
+  await page.locator("#mobile-menu-button").click();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await catalogComposer.fill("");
+  await externalSessionRow.click();
+  await page.locator(".app-header").getByRole("heading", { name: "Agent-created browser" }).waitFor();
+  await page.locator("button.session-row").filter({ hasText: "Pi / deployed" }).click();
+  await page.locator(".app-header").getByRole("heading", { name: "Pi / deployed" }).waitFor();
+  const archiveExternal = await context.request.post(`${url}/api/v2/sessions/${externalSession.id}/archive`, {
+    headers: { "content-type": "application/json" }, data: {},
+  });
+  if (!archiveExternal.ok()) throw new Error(await archiveExternal.text());
+  const deleteExternal = await context.request.post(`${url}/api/v2/sessions/delete-archived`, {
+    headers: { "content-type": "application/json" }, data: { ids: [externalSession.id] },
+  });
+  if (!deleteExternal.ok()) throw new Error(await deleteExternal.text());
+  const removeExternal = await context.request.post(`${url}/api/v2/workspaces/${externalWorkspace.id}/delete`, {
+    headers: { "content-type": "application/json" }, data: {},
+  });
+  if (!removeExternal.ok()) throw new Error(await removeExternal.text());
+  await externalSessionRow.waitFor({ state: "detached", timeout: 5_000 });
+  await externalWorkspaceSettings.waitFor({ state: "detached", timeout: 5_000 });
+
   const realAuditResponse = await context.request.get(`${url}/api/v2/sessions/s-mention-browser/audit`);
   if (!realAuditResponse.ok()) {
     throw new Error(`session-bound Audit endpoint failed: ${realAuditResponse.status()} ${await realAuditResponse.text()}`);
@@ -203,15 +301,13 @@ try {
   if (eventStreamRequests.length === 0) {
     await page.waitForRequest((request) => request.url().includes("/api/v2/event-stream"));
   }
+  const selectedEventPageRequests = eventPageRequests.filter((request) =>
+    new URL(request).searchParams.get("session") === "s-mention-browser");
   if (
-    eventPageRequests.length < 1
-    || !eventPageRequests[0].includes("recent=500")
-    || !eventPageRequests[0].includes("session=s-mention-browser")
-    || eventPageRequests.slice(1).some((request) => {
-      const requestUrl = new URL(request);
-      return !requestUrl.searchParams.has("before")
-        || requestUrl.searchParams.get("session") !== "s-mention-browser";
-    })
+    selectedEventPageRequests.length < 1
+    || !selectedEventPageRequests[0].includes("recent=500")
+    || selectedEventPageRequests.slice(1).some((request) =>
+      !new URL(request).searchParams.has("before"))
   ) {
     throw new Error(`unexpected initial event requests: ${JSON.stringify(eventPageRequests)}`);
   }
@@ -1271,4 +1367,5 @@ try {
       if (error?.code !== "ENOENT") throw error;
     }
   }));
+  if (agentWorkspaceRoot) await rm(agentWorkspaceRoot, { recursive: true, force: true });
 }

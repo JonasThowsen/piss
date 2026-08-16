@@ -63,6 +63,7 @@ cat >"$root/launch" <<EOF
 set -euo pipefail
 id=\${1:?}
 root='$root'
+echo "\$id" >>"\$root/launch-invocations"
 mkdir -p "\$root/supervisors" "\$root/runtime/\$id" "\$root/state/sessions/\$id"
 if [[ -f "\$root/launch-delay" ]]; then
   echo "start \$id" >>"\$root/launch-events"
@@ -87,6 +88,10 @@ cat >"$root/stop" <<EOF
 set -euo pipefail
 id=\${1:?}
 root='$root'
+if [[ -f "\$root/force-stop-failure" ]]; then
+  rm -f "\$root/force-stop-failure"
+  exit 1
+fi
 [[ ! -f "\$root/supervisors/\$id.pid" ]] || kill "\$(cat "\$root/supervisors/\$id.pid")" 2>/dev/null || true
 [[ ! -f "\$root/supervisors/\$id.child" ]] || kill "\$(cat "\$root/supervisors/\$id.child")" 2>/dev/null || true
 rm -f "\$root/supervisors/\$id.pid"
@@ -107,6 +112,7 @@ control_args=(
   --workspace-spec "configured-empty|Configured empty|$root/configured-empty"
   --workspace-discovery-root "$root"
   --bootstrap-session s-bootstrap
+  --max-active-sessions 4
   --public "$public_dir"
   --app-js "$app_js"
   --generation isolation-test
@@ -230,6 +236,136 @@ command_completed "$first" first-command
 command_completed "$second" second-command
 
 first_token=$(tr -d '\n' <"$state/sessions/$first/broker-token")
+
+# An active agent can register only an existing canonical directory under an
+# approved discovery root. Repeated request identities and canonical roots are
+# durable and do not create duplicate workspace rows.
+mkdir -p "$root/agent-project"
+ln -s /tmp "$root/agent-project-escape"
+agent_workspace_body=$(jq -nc --arg path "$root/agent-project" \
+  '{requestId:"agent-workspace-request",path:$path}')
+[[ $(curl -sS -o "$root/unauthorized-workspace.json" -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H 'x-piss-session-token: fake-token' \
+  --data "$agent_workspace_body" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces") == 401 ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data '{"requestId":"outside-workspace-request","path":"/tmp"}' \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces") == 403 ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg path "$root/agent-project-escape" \
+    '{requestId:"escape-workspace-request",path:$path}')" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces") == 403 ]]
+agent_workspace_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$agent_workspace_body" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces")
+agent_workspace=$(jq -r .workspace.id <<<"$agent_workspace_response")
+[[ $(jq -r .workspace.root <<<"$agent_workspace_response") == "$root/agent-project" ]]
+[[ $(jq -r .duplicate <<<"$agent_workspace_response") == false ]]
+agent_workspace_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$agent_workspace_body" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces")
+[[ $(jq -r .duplicate <<<"$agent_workspace_duplicate") == true ]]
+agent_workspace_reused=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg path "$root/agent-project" \
+    '{requestId:"agent-workspace-reuse",path:$path}')" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces")
+[[ $(jq -r .workspace.id <<<"$agent_workspace_reused") == "$agent_workspace" ]]
+mv "$root/agent-project" "$root/agent-project-real"
+ln -s /tmp "$root/agent-project"
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg workspace "$agent_workspace" \
+    '{requestId:"rebound-workspace-session",workspaceId:$workspace,title:"Escape",harness:"pi"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
+rm "$root/agent-project"
+mv "$root/agent-project-real" "$root/agent-project"
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data '{"requestId":"agent-workspace-request","path":"/tmp"}' \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces") == 403 ]]
+
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg workspace "$agent_workspace" \
+    '{requestId:"invalid-harness-request",workspaceId:$workspace,title:"Invalid",harness:"hidden"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg workspace "$agent_workspace" \
+    '{requestId:"invalid-title-request",workspaceId:$workspace,title:"",harness:"pi"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
+
+touch "$root/force-launch-failure" "$root/force-stop-failure"
+failed_agent_body=$(jq -nc --arg workspace "$agent_workspace" \
+  '{requestId:"failed-agent-request",workspaceId:$workspace,title:"Failed agent",harness:"pi"}')
+[[ $(curl -sS -o "$root/failed-agent.json" -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$failed_agent_body" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
+rm -f "$root/force-launch-failure"
+failed_agent_id=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | \
+  jq -r '.[] | select(.title=="Failed agent") | .id')
+[[ -n "$failed_agent_id" ]]
+for _ in $(seq 1 100); do
+  duplicate_status=$(curl -sS -o "$root/failed-agent-duplicate.json" -w '%{http_code}' -X POST \
+    -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+    --data "$failed_agent_body" \
+    "http://127.0.0.1:$port/api/v2/broker/sessions")
+  [[ $duplicate_status == 409 && $(jq -r .state "$root/failed-agent-duplicate.json") == failed ]] && break
+  sleep .05
+done
+[[ $(jq -r .state "$root/failed-agent-duplicate.json") == failed ]]
+[[ $(jq -r .duplicate "$root/failed-agent-duplicate.json") == true ]]
+[[ ! -e "$root/supervisors/$failed_agent_id.pid" ]]
+
+agent_session_body=$(jq -nc --arg workspace "$agent_workspace" \
+  '{requestId:"agent-session-request",workspaceId:$workspace,title:"Agent-created reviewer",harness:"opencode"}')
+curl -sS -o "$root/agent-session-one.json" -w '%{http_code}\n' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$agent_session_body" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions" \
+  >"$root/agent-session-one.status" &
+agent_one_pid=$!
+curl -sS -o "$root/agent-session-two.json" -w '%{http_code}\n' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$agent_session_body" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions" \
+  >"$root/agent-session-two.status" &
+agent_two_pid=$!
+wait "$agent_one_pid"
+wait "$agent_two_pid"
+agent_statuses=$(cat "$root/agent-session-one.status" "$root/agent-session-two.status" | sort | tr '\n' ' ')
+[[ "$agent_statuses" == "200 201 " ]]
+agent_created=$(jq -r '.session.id // empty' "$root/agent-session-one.json" "$root/agent-session-two.json" | head -1)
+[[ -n "$agent_created" ]]
+[[ $(jq -cs '[.[].duplicate] | sort' "$root/agent-session-one.json" "$root/agent-session-two.json") == '[false,true]' ]]
+wait_session_count 4
+[[ $(grep -c "^$agent_created$" "$root/launch-invocations") == 1 ]]
+[[ $(cat "$state/sessions/$agent_created/workspace") == "$root/agent-project" ]]
+[[ $(cat "$state/sessions/$agent_created/harness") == opencode ]]
+[[ $(curl -fsS -H "x-piss-session-token: $first_token" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces" | \
+  jq --arg id "$agent_workspace" 'any(.[]; .id==$id and .root=="'"$root/agent-project"'" and (.containsCaller|not))') == true ]]
+[[ $(curl -fsS -H "x-piss-session-token: $first_token" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions" | \
+  jq --arg id "$agent_created" --arg root "$root/agent-project" --arg workspace "$agent_workspace" \
+    'any(.[]; .id==$id and .workspaceId==$workspace and .workspaceName=="agent-project" and .workspaceRoot==$root)') == true ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg workspace "$agent_workspace" \
+    '{requestId:"over-limit-agent",workspaceId:$workspace,title:"Over limit",harness:"pi"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
+agent_peer_body=$(jq -nc --arg target "$agent_created" \
+  '{requestId:"agent-created-peer",targetSessionId:$target,prompt:"receive work in the agent-created workspace"}')
+agent_peer_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$agent_peer_body" \
+  "http://127.0.0.1:$port/api/v2/broker/ask")
+[[ $(jq -r .response <<<"$agent_peer_response") == \
+  "The worker retained ownership while the control plane was replaceable." ]]
+
 peer_body=$(jq -nc --arg target "$second" \
   '{requestId:"peer-isolation",targetSessionId:$target,prompt:"review the isolation proof"}')
 peer_response=$(curl -fsS -X POST -H 'content-type: application/json' \
@@ -271,7 +407,10 @@ mcp_output=$(printf '%s\n' "$mcp_input" | env \
   PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
   "$session_mcp_exe")
 [[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
-  "piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
+  "piss_list_workspaces,piss_create_workspace,piss_create_session,piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_workspace")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,path" ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,workspaceId,title" ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.description' <<<"$mcp_output") == *piss_send_session* ]]
 first_async=$(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 second_async=$(jq -r 'select(.id==4)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == waiting ]]
@@ -337,6 +476,7 @@ second_events=$(curl -fsS \
 first_worker=$(cat "$root/supervisors/$first.child")
 second_worker=$(cat "$root/supervisors/$second.child")
 third_worker=$(cat "$root/supervisors/$third.child")
+agent_worker=$(cat "$root/supervisors/$agent_created.child")
 kill -9 "$first_worker"
 for _ in $(seq 1 500); do
   replacement=$(cat "$root/supervisors/$first.child" 2>/dev/null || true)
@@ -388,13 +528,15 @@ printf '0.2\n' >"$root/launch-delay"
 start_control
 rm -f "$root/launch-delay"
 [[ "$control_pid" != "$old_control" ]]
-[[ $(head -3 "$root/launch-events" | grep -c '^start ') == 3 ]]
-[[ $(grep -c '^finish ' "$root/launch-events") == 3 ]]
+[[ $(head -4 "$root/launch-events" | grep -c '^start ') == 4 ]]
+[[ $(grep -c '^finish ' "$root/launch-events") == 4 ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
 second_replacement=$(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid)
 [[ "$second_replacement" != "$second_worker" ]]
 second_worker=$second_replacement
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$third" | jq -r .workerPid) == "$third_worker" ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$agent_created" | jq -r .workerPid) == "$agent_worker" ]]
+[[ $(grep -c "^$agent_created$" "$root/launch-invocations") == 2 ]]
 wake_command=$(python3 - <<'PY'
 import hashlib
 print("peer-wake-" + hashlib.md5(b"wake-control-restart").hexdigest())
@@ -426,9 +568,39 @@ third_events=$(curl -fsS \
 [[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-4e241a043f8b1499264cea36590a39d4")]|length' <<<"$second_events") == 1 ]]
 [[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-fd4ac6c02d97bb22f38918c9dc354468")]|length' <<<"$third_events") == 1 ]]
 
+# The externally-created session remained the same normal worker across the
+# control-plane replacement. Remove only this tracer data before continuing the
+# pre-existing archive/restore proof.
+curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/sessions/$agent_created/archive" >/dev/null
+wait_session_count 3
+mv "$root/agent-project" "$root/agent-project-real"
+ln -s /tmp "$root/agent-project"
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/sessions/$agent_created/restore") == 409 ]]
+rm "$root/agent-project"
+mv "$root/agent-project-real" "$root/agent-project"
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(jq -cn --arg failed "$failed_agent_id" --arg created "$agent_created" \
+    '{ids:[$failed,$created]}')" \
+  "http://127.0.0.1:$port/api/v2/sessions/delete-archived" >/dev/null
+curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
+  "http://127.0.0.1:$port/api/v2/workspaces/$agent_workspace/delete" >/dev/null
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | \
+  jq --arg id "$agent_workspace" 'any(.[]; .id==$id)') == false ]]
+
 curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
   "http://127.0.0.1:$port/api/v2/sessions/$first/archive" >/dev/null
 wait_session_count 2
+mkdir -p "$root/stale-source-project"
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg path "$root/stale-source-project" \
+    '{requestId:"stale-source-workspace",path:$path}')" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces") == 401 ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | \
+  jq --arg root "$root/stale-source-project" 'any(.[]; .root==$root)') == false ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq --arg id "$second" 'any(.[]; .id==$id)') == true ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq --arg id "$third" 'any(.[]; .id==$id)') == true ]]
 [[ -f "$state/sessions/$first/worker.sqlite3" ]]

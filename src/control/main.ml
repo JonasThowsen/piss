@@ -14,6 +14,7 @@ let () =
   let clock = Eio.Stdenv.clock stdenv in
   (match env.Config.workers with
   | Managed manager ->
+      Workers.reconcile_session_creations manager;
       Workers.start_registered
         ~process_mgr:(Eio.Stdenv.process_mgr stdenv)
         manager
@@ -24,7 +25,14 @@ let () =
   let server = Cohttp_eio.Server.make ~callback () in
   (match env.Config.workers with
   | Managed manager ->
-      Eio.Fiber.fork ~sw (fun () -> Broker.supervise ~net ~clock manager)
+      Eio.Fiber.fork ~sw (fun () -> Broker.supervise ~net ~clock manager);
+      Eio.Fiber.fork ~sw (fun () ->
+          let rec reconcile_cleanup () =
+            Workers.reconcile_session_creations ~recover_launching:false manager;
+            Eio.Time.sleep clock 2.;
+            reconcile_cleanup ()
+          in
+          reconcile_cleanup ())
   | Fixed _ -> ());
   Printf.printf
     "control_ready generation=%s pid=%d startup_ms=%.1f url=http://127.0.0.1:%d\n\

@@ -19,7 +19,8 @@ The current implementation proves these end-to-end paths:
 - browser-only Nix package updates do not restart runtime-owning server processes;
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
 - an authenticated user can conversationally refine a guided engineering workflow, choose a local/targeted/required disclosure boundary, receive a validated source-pinned read-only Research brief, grant revision-bound authority once through **Approve & Run**, and continue unattended through ordered Build → Verify → Review slices, bounded repairs, durable guidance/progress, exact structured authority checks, and independent read-only supervisor adjudication;
-- an owned Pi session can use a Piss-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools.
+- an owned Pi session can use a Piss-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools;
+- an active Pi/OpenCode session can register an existing directory under an approved discovery root, idempotently create a normal durable managed sibling session there, see it appear in the open web catalog, and address it through the existing durable peer broker.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
 
@@ -59,7 +60,6 @@ These require usage evidence before architecture work:
 
 - detached per-session workers that preserve in-flight tools across unexpected or forced control-plane restarts and eliminate even the short quiescent deployment handoff;
 - multiple remote hosts in one dashboard;
-- a Piss capability through which one Pi can inspect or launch sibling sessions;
 - shared tasks or scratchpads;
 - read-only identities and device-specific permissions;
 - complete projection of historical non-message transcript events;
