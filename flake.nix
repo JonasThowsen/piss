@@ -340,22 +340,35 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          testModule = {
+            services.piss = {
+              enable = true;
+              allowedUsers = [ "owner@example.com" ];
+              piCommand = nixpkgs.lib.getExe pkgs.pi-coding-agent;
+              workspaces.default = {
+                name = "Piss";
+                path = "/var/empty";
+              };
+            };
+          };
           moduleEvaluation = nixpkgs.lib.nixosSystem {
             inherit system;
             modules = [
               self.nixosModules.default
+              testModule
               {
                 services.piss = {
-                  enable = true;
-                  allowedUsers = [ "owner@example.com" ];
                   harness = "mock";
-                  piCommand = nixpkgs.lib.getExe pkgs.pi-coding-agent;
-                  workspaces.default = {
-                    name = "Piss";
-                    path = "/var/empty";
-                  };
+                  enableMockHarness = true;
                 };
               }
+            ];
+          };
+          productionModuleEvaluation = nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.default
+              testModule
             ];
           };
         in
@@ -444,6 +457,10 @@
               moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
             assert nixpkgs.lib.hasInfix "--available-harness codex"
               moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
+            assert nixpkgs.lib.hasInfix "--available-harness mock"
+              moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
+            assert
+              !(nixpkgs.lib.hasInfix "--available-harness mock" productionModuleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart);
             assert
               moduleEvaluation.config.systemd.user.timers.piss-ocaml-worker-upgrade.timerConfig.OnUnitActiveSec
               == "1min";

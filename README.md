@@ -58,7 +58,7 @@ The package contains `pissd`, `piss-session-worker`, `piss-session-mcp`, and `pi
 
 Pi, Codex/OpenCode authentication, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building Piss rather than becoming a second NixOS configuration framework.
 
-Codex sessions use the pinned `codex-acp` adapter and an isolated `CODEX_HOME` per Piss session. By default the worker copies an existing `~/.codex/auth.json` into that session; deployments may instead set `services.piss.codexAuthFile` to an absolute credential source or provide `CODEX_API_KEY`/`OPENAI_API_KEY` through `environmentFiles`.
+Codex sessions use the pinned `codex-acp` adapter and an isolated `CODEX_HOME` per Piss session. By default the worker copies an existing `~/.codex/auth.json` into that session; deployments may instead set `services.piss.codexAuthFile` to an absolute credential source or provide `CODEX_API_KEY`/`OPENAI_API_KEY` through `environmentFiles`. The deterministic mock harness is hidden in production unless `services.piss.enableMockHarness = true` is explicitly configured for testing.
 
 ## Updating
 

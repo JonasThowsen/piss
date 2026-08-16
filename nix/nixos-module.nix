@@ -392,6 +392,11 @@ in
       default = "pi";
       description = "Default ACP harness for new sessions.";
     };
+    enableMockHarness = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Expose the deterministic mock harness for development and integration testing.";
+    };
     piCommand = lib.mkOption {
       type = lib.types.str;
       example = lib.literalExpression "lib.getExe pkgs.pi-coding-agent";
@@ -537,6 +542,10 @@ in
         message = "services.piss.allowedUsers must contain at least one Tailscale login";
       }
       {
+        assertion = cfg.harness != "mock" || cfg.enableMockHarness;
+        message = "services.piss.enableMockHarness must be true when the mock harness is the default";
+      }
+      {
         assertion = cfg.harness != "pi" || lib.hasPrefix "/" cfg.piCommand;
         message = "services.piss.piCommand must be absolute for the Pi harness";
       }
@@ -639,8 +648,12 @@ in
             "codex"
             "--available-harness"
             "opencode"
+          ]
+          ++ lib.optionals cfg.enableMockHarness [
             "--available-harness"
             "mock"
+          ]
+          ++ [
             "--default-harness"
             cfg.harness
             "--bootstrap-session"
