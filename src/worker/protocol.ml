@@ -7,6 +7,9 @@ let validation field reason = Result.Error (Error.Validation { field; reason })
 let upstream message = Result.Error (Error.Upstream_unavailable { message })
 let internal message = Result.Error (Error.Internal { message })
 
+let event_page events =
+  events |> List.map Domain.event_to_yojson |> fun events -> Ok (`List events)
+
 let resolve_resources ~workspace resources =
   List.fold_left
     (fun resolved (resource : Domain.resource_input) ->
@@ -147,7 +150,7 @@ let handle state request =
                ])
       | Wire.Prepare_upgrade { generation = target } ->
           if
-            State.running_command_count state > 0
+            State.runtime_busy state
             || State.pending_permission_count state > 0
             || State.configuration_change_depth state > 0
             || State.status state <> Domain.Idle
@@ -167,17 +170,17 @@ let handle state request =
                    ("sequence", `Intlit (Int64.to_string event.sequence));
                  ])
       | Wire.Events { after; limit } ->
-          Store.list_events store ~after ~limit
-          |> List.map Domain.event_to_yojson
-          |> fun events -> Ok (`List events)
+          Store.list_events ~max_bytes:Config.max_event_page_bytes store ~after
+            ~limit
+          |> event_page
       | Wire.Events_before { before; limit } ->
-          Store.list_events_before store ~before ~limit
-          |> List.map Domain.event_to_yojson
-          |> fun events -> Ok (`List events)
+          Store.list_events_before ~max_bytes:Config.max_event_page_bytes store
+            ~before ~limit
+          |> event_page
       | Wire.Recent_events { limit } ->
-          Store.list_recent_events store ~limit
-          |> List.map Domain.event_to_yojson
-          |> fun events -> Ok (`List events)
+          Store.list_recent_events ~max_bytes:Config.max_event_page_bytes store
+            ~limit
+          |> event_page
       | Wire.File_search { query } ->
           Workspace_io.search ~root:(State.workspace state) ~query
           |> Result.map_error (fun message ->
@@ -189,8 +192,10 @@ let handle state request =
           upstream "worker is preparing for an immutable generation upgrade"
       | Wire.New_session ->
           if
-            State.running_command_count state > 0
+            State.runtime_busy state
             || State.pending_permission_count state > 0
+            || State.configuration_change_depth state > 0
+            || State.status state <> Domain.Idle
           then
             conflict "the active session must be idle before creating another"
           else if State.additional_session_limit_reached state then
@@ -244,8 +249,8 @@ let handle state request =
                        `String (Domain.command_state_to_string command_state) );
                      ("duplicate", `Bool true);
                    ])
-          | None when State.running_command_count state = 0 ->
-              conflict (action ^ " is only available during an active prompt")
+          | None when not (State.runtime_busy state) ->
+              conflict (action ^ " is only available during active agent work")
           | None ->
               dispatch_prompt state ~action ~target ~command_id ~text ~images
                 ~resources ())
@@ -253,8 +258,8 @@ let handle state request =
           { target; command_id; action; discard_cleared_attachments } -> (
           if action = "prompt" && State.running_command_count state > 0 then
             conflict "the session already has an active prompt"
-          else if action = "follow_up" && State.running_command_count state = 0
-          then conflict "follow_up recovery requires an active prompt"
+          else if action = "follow_up" && not (State.runtime_busy state) then
+            conflict "follow_up recovery requires active agent work"
           else
             match
               Store.recover_targeted_text_command ~discard_cleared_attachments
@@ -303,8 +308,10 @@ let handle state request =
           | Error reason -> conflict reason
           | Ok () ->
               if
-                State.running_command_count state > 0
+                State.runtime_busy state
                 || State.pending_permission_count state > 0
+                || State.configuration_change_depth state > 0
+                || State.status state <> Domain.Idle
               then conflict "session configuration can only change while idle"
               else
                 let _, response =
@@ -324,7 +331,7 @@ let handle state request =
           match Store.validate_runtime_target store target with
           | Error reason -> conflict reason
           | Ok () ->
-              if State.running_command_count state = 0 then
+              if not (State.runtime_busy state) then
                 conflict "the session has no active prompt"
               else (
                 ignore

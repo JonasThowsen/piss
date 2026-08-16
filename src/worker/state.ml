@@ -15,6 +15,7 @@ type t = {
   harness_session_id : string ref;
   config_options : Yojson.Safe.t ref;
   status : Domain.worker_status ref;
+  harness_running : bool ref;
   running_commands : (string, float) Hashtbl.t;
   pending_permissions : (string, Config.pending_permission) Hashtbl.t;
   configuration_changes : int ref;
@@ -41,6 +42,7 @@ let make ~args ~store ~workspace ~harness_pid ~runtime_worker_id
     harness_session_id = ref "";
     config_options = ref (`List []);
     status = ref Domain.Starting;
+    harness_running = ref false;
     running_commands = Hashtbl.create 4;
     pending_permissions = Hashtbl.create 8;
     configuration_changes = ref 0;
@@ -153,6 +155,9 @@ let record_additional_session t ~session_id =
   ignore
     (Store.append_event t.store ~kind:"timeline.reset"
        ~payload:(`Assoc [ ("acpSessionId", `String session_id) ]));
+  (* A newly selected ACP session starts idle. Late updates from the previous
+     session are filtered by session id in the worker reader. *)
+  t.harness_running := false;
   set_status t Domain.Idle
 
 let additional_session_limit_reached t = !(t.sessions_created_since_start) >= 4
@@ -188,8 +193,17 @@ let change_config_option t ~id ~config_id ~value =
 let recompute_status t =
   set_status t
     (if Hashtbl.length t.pending_permissions > 0 then Domain.Requires_action
-     else if Hashtbl.length t.running_commands > 0 then Domain.Running
+     else if !(t.harness_running) || Hashtbl.length t.running_commands > 0 then
+       Domain.Running
      else Domain.Idle)
+
+let set_harness_running t running =
+  t.harness_running := running;
+  recompute_status t
+
+let refresh_status t = recompute_status t
+let harness_running t = !(t.harness_running)
+let runtime_busy t = harness_running t || Hashtbl.length t.running_commands > 0
 
 let record_dispatched t ~command_id =
   set_status t Domain.Running;

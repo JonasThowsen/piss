@@ -30,6 +30,10 @@ val max_frame_bytes : int
     than this are rejected so a misbehaving harness cannot exhaust the worker's
     memory. *)
 
+val max_event_page_bytes : int
+(** Target encoded size for event-history pages. Large pages retain the edge
+    needed for cursor-based pagination rather than exceeding the wire frame. *)
+
 val permission_timeout_seconds : float
 (** Wall-clock budget for an unanswered permission request. When the user does
     not respond within this window the worker expires the permission and replies

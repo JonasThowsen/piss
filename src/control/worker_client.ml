@@ -33,7 +33,9 @@ let request_with_version ~net ~socket ~protocol_version request =
   try
     Eio.Switch.run @@ fun sw ->
     let flow = Eio.Net.connect ~sw net (`Unix socket) in
-    let reader = Eio.Buf_read.of_flow flow ~max_size:Config.max_frame_bytes in
+    let reader =
+      Eio.Buf_read.of_flow flow ~max_size:Config.max_worker_response_bytes
+    in
     let exchange request =
       Eio.Flow.copy_string (Yojson.Safe.to_string request ^ "\n") flow;
       Eio.Buf_read.line reader |> Yojson.Safe.from_string

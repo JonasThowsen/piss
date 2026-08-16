@@ -102,17 +102,29 @@ val append_event :
     [max_retained_events] entries; the row is always visible to subsequent reads
     regardless of retention. *)
 
-val list_events : t -> after:int64 -> limit:int -> Piss_shared.Domain.event list
+val list_events :
+  ?max_bytes:int ->
+  t ->
+  after:int64 ->
+  limit:int ->
+  Piss_shared.Domain.event list
 (** Read events after [after] (exclusive), at most [limit] rows, in sequence
-    order. *)
+    order. When [max_bytes] is set, stop before the encoded JSON page exceeds
+    that target, retaining the earliest edge and at least one event. *)
 
 val list_events_before :
-  t -> before:int64 -> limit:int -> Piss_shared.Domain.event list
-(** Read the [limit] events ending just before [before] (exclusive), in
-    descending-then-reversed sequence order. *)
+  ?max_bytes:int ->
+  t ->
+  before:int64 ->
+  limit:int ->
+  Piss_shared.Domain.event list
+(** Read events ending just before [before] (exclusive), in sequence order. When
+    [max_bytes] is set, retain the latest edge and at least one event. *)
 
-val list_recent_events : t -> limit:int -> Piss_shared.Domain.event list
-(** Read the [limit] most recent events in sequence order. *)
+val list_recent_events :
+  ?max_bytes:int -> t -> limit:int -> Piss_shared.Domain.event list
+(** Read the most recent events in sequence order. When [max_bytes] is set,
+    retain the latest edge and at least one event. *)
 
 val find_command : t -> string -> Piss_shared.Domain.command_state option
 (** Look up the current durable state of a command id, or [None] if the command

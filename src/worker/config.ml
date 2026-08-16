@@ -1,6 +1,7 @@
 (* Worker-side configuration: CLI parsing and shared constants. *)
 
 let max_frame_bytes = 16 * 1024 * 1024
+let max_event_page_bytes = 8 * 1024 * 1024
 
 (* Same idea, but for permission requests the harness never resolves. A stale
    permission keeps `status = Requires_action` even though no command is in

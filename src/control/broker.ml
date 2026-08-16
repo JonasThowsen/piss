@@ -118,6 +118,7 @@ let inspect_peer_response ~net ~socket (request : Registry.peer_request) =
     with
     | Error _ -> Peer_pending
     | Ok (`List events) -> (
+        let previous_cursor = cursor in
         let cursor =
           List.fold_left
             (fun latest event -> Int64.max latest (event_sequence event))
@@ -144,7 +145,11 @@ let inspect_peer_response ~net ~socket (request : Registry.peer_request) =
         | Some "completed" ->
             Peer_completed (String.concat "" (List.rev chunks))
         | Some state -> Peer_failed ("peer session ended as " ^ state)
-        | None when List.length events = 200 -> pages cursor chunks command_seen
+        | None when events <> [] && Int64.compare cursor previous_cursor > 0 ->
+            (* Event pages are byte-bounded and may contain fewer than the row
+               limit while more rows remain. Advance until an empty page proves
+               exhaustion rather than treating a short page as terminal. *)
+            pages cursor chunks command_seen
         | None -> Peer_pending)
     | Ok _ -> Peer_failed "peer worker returned an invalid event page"
   in

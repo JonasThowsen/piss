@@ -15,6 +15,16 @@ let session_update ~session_id update =
   Acp.notification ~method_:"session/update"
     (`Assoc [ ("sessionId", `String session_id); ("update", update) ])
 
+let write_running ~session_id running =
+  write
+    (session_update ~session_id
+       (`Assoc
+          [
+            ("sessionUpdate", `String "session_info_update");
+            ( "_meta",
+              `Assoc [ ("piAcp", `Assoc [ ("running", `Bool running) ]) ] );
+          ]))
+
 let duration () =
   match Sys.getenv_opt "PISS_MOCK_DURATION" with
   | Some value -> ( try max 1 (int_of_string value) with Failure _ -> 8)
@@ -332,7 +342,13 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
                               plane was replaceable.") );
                     ] );
               ]));
-      write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]))));
+      write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]));
+      if String.starts_with ~prefix:"background-status:" text then (
+        write_running ~session_id true;
+        Unix.sleepf 1.;
+        write_running ~session_id false)
+      else if String.starts_with ~prefix:"stale-background-status:" text then
+        write_running ~session_id:"stale-mock-acp-session" true));
   if not (Queue.is_empty pending_prompts) then
     let next_id, next_text, next_images, next_resources =
       Queue.take pending_prompts
@@ -380,7 +396,8 @@ let config_options ~model ~thinking =
     ]
 
 let () =
-  let session_id = "mock-acp-session" in
+  let session_id = ref "mock-acp-session-0" in
+  let session_count = ref 0 in
   let model = ref "mock/fast" in
   let thinking = ref "medium" in
   try
@@ -416,11 +433,13 @@ let () =
                     ("authMethods", `List []);
                   ]))
       | "session/new" ->
+          incr session_count;
+          session_id := "mock-acp-session-" ^ string_of_int !session_count;
           write
             (Acp.response ~id
                (`Assoc
                   [
-                    ("sessionId", `String session_id);
+                    ("sessionId", `String !session_id);
                     ( "configOptions",
                       config_options ~model:!model ~thinking:!thinking );
                   ]))
@@ -444,7 +463,7 @@ let () =
           let text = prompt_text params in
           let images = prompt_images params in
           let resources = prompt_resources params in
-          run_prompt ~id ~session_id ~text ~images ~resources
+          run_prompt ~id ~session_id:!session_id ~text ~images ~resources
       | "session/cancel" -> ()
       | _ ->
           write

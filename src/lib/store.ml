@@ -321,84 +321,82 @@ let append_event store ~kind ~(payload : Yojson.Safe.t) =
   let sequence = Sqlite3.last_insert_rowid store.db in
   { sequence; kind; payload; created_at }
 
-let list_events store ~after ~limit =
+let event_of_row statement =
+  {
+    sequence = Sqlite3.column_int64 statement 0;
+    kind = Sqlite3.column_text statement 1;
+    payload = Sqlite3.column_text statement 2 |> Yojson.Safe.from_string;
+    created_at = Sqlite3.column_double statement 3;
+  }
+
+let event_page_bytes event =
+  event_to_yojson event |> Yojson.Safe.to_string |> String.length
+
+let add_to_page ~max_bytes ~bytes ~count event =
+  let separator = if count = 0 then 0 else 1 in
+  let next_bytes = bytes + separator + event_page_bytes event in
+  match max_bytes with
+  | Some limit when count > 0 && next_bytes > limit -> None
+  | None | Some _ -> Some (next_bytes, count + 1)
+
+let list_events ?max_bytes store ~after ~limit =
   with_statement store.db
     "SELECT sequence, kind, payload, created_at FROM events WHERE sequence > ? \
      ORDER BY sequence ASC LIMIT ?" (fun statement ->
       bind_int64 statement 1 after;
       fail_rc "bind limit" (Sqlite3.bind_int statement 2 limit);
-      let rec collect events =
+      let rec collect bytes count events =
         match Sqlite3.step statement with
-        | Sqlite3.Rc.ROW ->
-            let payload =
-              Sqlite3.column_text statement 2 |> Yojson.Safe.from_string
-            in
-            let event =
-              {
-                sequence = Sqlite3.column_int64 statement 0;
-                kind = Sqlite3.column_text statement 1;
-                payload;
-                created_at = Sqlite3.column_double statement 3;
-              }
-            in
-            collect (event :: events)
+        | Sqlite3.Rc.ROW -> (
+            let event = event_of_row statement in
+            match add_to_page ~max_bytes ~bytes ~count event with
+            | Some (bytes, count) -> collect bytes count (event :: events)
+            | None -> List.rev events)
         | Sqlite3.Rc.DONE -> List.rev events
         | rc ->
             fail_rc "list events" rc;
             List.rev events
       in
-      collect [])
+      collect 2 0 [])
 
-let list_events_before store ~before ~limit =
+let list_events_before ?max_bytes store ~before ~limit =
   with_statement store.db
     "SELECT sequence, kind, payload, created_at FROM events WHERE sequence < ? \
      ORDER BY sequence DESC LIMIT ?" (fun statement ->
       bind_int64 statement 1 before;
       fail_rc "bind limit" (Sqlite3.bind_int statement 2 limit);
-      let rec collect events =
+      let rec collect bytes count events =
         match Sqlite3.step statement with
-        | Sqlite3.Rc.ROW ->
-            let event =
-              {
-                sequence = Sqlite3.column_int64 statement 0;
-                kind = Sqlite3.column_text statement 1;
-                payload =
-                  Sqlite3.column_text statement 2 |> Yojson.Safe.from_string;
-                created_at = Sqlite3.column_double statement 3;
-              }
-            in
-            collect (event :: events)
+        | Sqlite3.Rc.ROW -> (
+            let event = event_of_row statement in
+            match add_to_page ~max_bytes ~bytes ~count event with
+            | Some (bytes, count) -> collect bytes count (event :: events)
+            | None -> events)
         | Sqlite3.Rc.DONE -> events
         | rc ->
             fail_rc "list events before cursor" rc;
             events
       in
-      collect [])
+      collect 2 0 [])
 
-let list_recent_events store ~limit =
+let list_recent_events ?max_bytes store ~limit =
   with_statement store.db
     "SELECT sequence, kind, payload, created_at FROM events ORDER BY sequence \
      DESC LIMIT ?" (fun statement ->
       fail_rc "bind limit" (Sqlite3.bind_int statement 1 limit);
-      let rec collect events =
+      let rec collect bytes count events =
         match Sqlite3.step statement with
-        | Sqlite3.Rc.ROW ->
-            let event =
-              {
-                sequence = Sqlite3.column_int64 statement 0;
-                kind = Sqlite3.column_text statement 1;
-                payload =
-                  Sqlite3.column_text statement 2 |> Yojson.Safe.from_string;
-                created_at = Sqlite3.column_double statement 3;
-              }
-            in
-            collect (event :: events)
+        | Sqlite3.Rc.ROW -> (
+            let event = event_of_row statement in
+            match add_to_page ~max_bytes ~bytes ~count event with
+            | Some (bytes, count) -> collect bytes count (event :: events)
+            | None -> events)
         | Sqlite3.Rc.DONE -> events
         | rc ->
             fail_rc "list recent events" rc;
             events
       in
-      collect [])
+      collect 2 0 [])
 
 let find_command store command_id =
   with_statement store.db "SELECT state FROM commands WHERE command_id = ?"

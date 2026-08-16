@@ -29,7 +29,11 @@ and workers = Fixed of string | Managed of managed_workers
 
 let default_max_active_sessions = 32
 let max_body_bytes = 16 * 1024 * 1024
-let max_frame_bytes = 16 * 1024 * 1024
+
+(* One stored event may approach the worker's 16 MiB input limit before the
+   response envelope is added. Aggregate history pages are bounded
+   separately. *)
+let max_worker_response_bytes = 32 * 1024 * 1024
 
 let parse () =
   let port = ref 4318 in

@@ -699,6 +699,57 @@ let test_event_sequence () =
   Alcotest.(check string)
     "older page remains ascending" "first" (List.hd older).kind
 
+let test_event_pages_are_byte_bounded () =
+  with_store @@ fun store ->
+  let first =
+    Store.append_event store ~kind:"first" ~payload:(`String "aaaaaaaa")
+  in
+  let second =
+    Store.append_event store ~kind:"second" ~payload:(`String "bbbbbbbb")
+  in
+  let third =
+    Store.append_event store ~kind:"third" ~payload:(`String "cccccccc")
+  in
+  let event_bytes event =
+    Domain.event_to_yojson event |> Yojson.Safe.to_string |> String.length
+  in
+  let two_event_budget =
+    3
+    + max
+        (event_bytes first + event_bytes second)
+        (event_bytes second + event_bytes third)
+  in
+  let kinds events = List.map (fun event -> event.Domain.kind) events in
+  let earliest =
+    Store.list_events ~max_bytes:two_event_budget store ~after:0L ~limit:3
+  in
+  let latest =
+    Store.list_recent_events ~max_bytes:two_event_budget store ~limit:3
+  in
+  let before =
+    Store.list_events_before ~max_bytes:two_event_budget store
+      ~before:Int64.(add third.sequence 1L)
+      ~limit:3
+  in
+  Alcotest.(check (list string))
+    "forward polling retains earliest edge" [ "first"; "second" ]
+    (kinds earliest);
+  Alcotest.(check (list string))
+    "recent history retains latest edge" [ "second"; "third" ] (kinds latest);
+  Alcotest.(check (list string))
+    "backward history retains latest edge" [ "second"; "third" ] (kinds before);
+  let continued =
+    Store.list_events ~max_bytes:two_event_budget store ~after:second.sequence
+      ~limit:3
+  in
+  Alcotest.(check (list string))
+    "a byte-short forward page remains cursor-pageable" [ "third" ]
+    (kinds continued);
+  let oversized = Store.list_events ~max_bytes:2 store ~after:0L ~limit:3 in
+  Alcotest.(check (list string))
+    "one oversized event still advances the cursor" [ "first" ]
+    (kinds oversized)
+
 let test_wire_bounds () =
   let decode json = Wire.request_of_yojson (Yojson.Safe.from_string json) in
   let targeted json =
@@ -1089,6 +1140,8 @@ let () =
           Alcotest.test_case "legacy command schema migrates" `Quick
             test_command_content_migration;
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
+          Alcotest.test_case "event pages are byte bounded" `Quick
+            test_event_pages_are_byte_bounded;
           Alcotest.test_case "event retention compacts" `Quick
             test_event_retention_compacts;
           Alcotest.test_case "durable event kinds survive compaction" `Quick

@@ -1,0 +1,188 @@
+diff --git a/src/acp/session.ts b/src/acp/session.ts
+index d2fae68..ef8460a 100644
+--- a/src/acp/session.ts
++++ b/src/acp/session.ts
+@@ -283,6 +283,7 @@ export class PiAcpSession {
+   // when retry, compaction, or queued continuations run. The session-level prompt
+   // completes only when `agent_settled` is emitted.
+   private inAgentLoop = false
++  private agentLoopGeneration = 0
+ 
+   // For ACP diff support: capture file contents before edit/write mutations,
+   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
+@@ -341,8 +342,10 @@ export class PiAcpSession {
+     const turnPromise = new Promise<StopReason>((resolve, reject) => {
+       const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+ 
+-      // If a turn is already running, enqueue.
+-      if (this.pendingTurn) {
++      // If a requested or unsolicited turn is already running, enqueue. Pi can
++      // start an agent loop itself when a background provider wakes the session;
++      // that loop has no pending ACP request but must still serialize prompts.
++      if (this.pendingTurn || this.inAgentLoop) {
+         this.turnQueue.push(queued)
+ 
+         // Best-effort: notify client that a prompt was queued.
+@@ -386,7 +389,7 @@ export class PiAcpSession {
+       })
+       this.emit({
+         sessionUpdate: 'session_info_update',
+-        _meta: { piAcp: { queueDepth: 0, running: Boolean(this.pendingTurn) } }
++        _meta: { piAcp: { queueDepth: 0, running: Boolean(this.pendingTurn || this.inAgentLoop) } }
+       })
+     }
+ 
+@@ -819,7 +822,18 @@ export class PiAcpSession {
+       }
+ 
+       case 'agent_start': {
++        const unsolicited = !this.pendingTurn && !this.inAgentLoop
+         this.inAgentLoop = true
++        this.agentLoopGeneration += 1
++
++        // Background providers may wake Pi without an ACP session/prompt. Keep
++        // the client status truthful so it does not show idle while Pi works.
++        if (unsolicited) {
++          this.emit({
++            sessionUpdate: 'session_info_update',
++            _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
++          })
++        }
+         break
+       }
+ 
+@@ -831,15 +845,20 @@ export class PiAcpSession {
+ 
+       case 'agent_end': {
+         // One low-level run ended. Pi may still retry, compact, or process a queued
+-        // continuation, so keep the ACP turn open until `agent_settled`.
+-        this.inAgentLoop = false
++        // continuation, so keep both the ACP turn and unsolicited-loop guard open
++        // until `agent_settled`.
+         break
+       }
+ 
+       case 'agent_settled': {
++        const settledGeneration = this.agentLoopGeneration
++
+         // Ensure all updates derived from pi events are delivered before we resolve
+-        // the ACP `session/prompt` request.
++        // the ACP `session/prompt` request. A new unsolicited run can start while
++        // the flush is pending; only the newest generation may settle the session.
+         void this.flushEmits().finally(() => {
++          if (this.agentLoopGeneration !== settledGeneration) return
++
+           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+           this.pendingTurn?.resolve(reason)
+           this.pendingTurn = null
+diff --git a/test/component/session-queue-cancel.test.ts b/test/component/session-queue-cancel.test.ts
+index 041fe20..ee45ae8 100644
+--- a/test/component/session-queue-cancel.test.ts
++++ b/test/component/session-queue-cancel.test.ts
+@@ -3,6 +3,106 @@ import assert from 'node:assert/strict'
+ import { PiAcpSession } from '../../src/acp/session.js'
+ import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
+ 
++const nextTick = () => new Promise<void>(resolve => setImmediate(resolve))
++
++test('PiAcpSession: queues prompts behind unsolicited background turns', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  const session = new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  await nextTick()
++
++  const runningUpdate = conn.updates.find(
++    message => (message.update as any)?._meta?.piAcp?.running === true
++  )
++  assert.ok(runningUpdate, 'unsolicited work must project running status')
++
++  const queued = session.prompt('after background work')
++  assert.equal(proc.prompts.length, 0, 'prompt must wait for the unsolicited turn')
++
++  proc.emit({ type: 'agent_settled' })
++  await nextTick()
++
++  assert.deepEqual(proc.prompts, [{ message: 'after background work', attachments: [] }])
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++  assert.equal(await queued, 'end_turn')
++})
++
++test('PiAcpSession: a new unsolicited turn supersedes an older pending settlement', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  const session = new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  const queued = session.prompt('after both background turns')
++
++  proc.emit({ type: 'agent_settled' })
++  proc.emit({ type: 'agent_start' })
++  await nextTick()
++
++  assert.equal(proc.prompts.length, 0, 'stale settlement must not start the queued prompt')
++
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++  await nextTick()
++
++  assert.deepEqual(proc.prompts, [{ message: 'after both background turns', attachments: [] }])
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++  assert.equal(await queued, 'end_turn')
++})
++
++test('PiAcpSession: cancel clears prompts queued behind unsolicited work', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  const session = new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  const queued = session.prompt('cancel me')
++
++  await session.cancel()
++
++  assert.equal(proc.abortCount, 1)
++  assert.equal(await queued, 'cancelled')
++
++  proc.emit({ type: 'agent_settled' })
++  await nextTick()
++  assert.equal(proc.prompts.length, 0)
++})
++
+ test('PiAcpSession: cancel clears queued prompts', async () => {
+   const conn = new FakeAgentSideConnection()
+   const proc = new FakePiRpcProcess()

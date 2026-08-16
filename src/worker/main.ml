@@ -142,9 +142,26 @@ let run ~env (args : Config.args) =
                           ("requestId", `String id); ("method", `String method_);
                         ]))
           | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
-              let update = Yojson.Safe.Util.member "update" params in
-              match Yojson.Safe.Util.member "configOptions" update with
-              | `List _ as options -> State.set_config_options state options
+              match Yojson.Safe.Util.member "sessionId" params with
+              | `String session_id
+                when String.equal session_id (State.harness_session_id state)
+                -> (
+                  let update = Yojson.Safe.Util.member "update" params in
+                  (match Yojson.Safe.Util.member "configOptions" update with
+                  | `List _ as options -> State.set_config_options state options
+                  | _ -> ());
+                  let harness_running =
+                    match Yojson.Safe.Util.member "_meta" update with
+                    | `Assoc _ as metadata -> (
+                        match Yojson.Safe.Util.member "piAcp" metadata with
+                        | `Assoc _ as pi_acp ->
+                            Yojson.Safe.Util.member "running" pi_acp
+                        | _ -> `Null)
+                    | _ -> `Null
+                  in
+                  match harness_running with
+                  | `Bool running -> State.set_harness_running state running
+                  | _ -> ())
               | _ -> ())
           | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
               match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
@@ -309,7 +326,7 @@ let run ~env (args : Config.args) =
                         ("value", `String value);
                         ("error", `String (Printexc.to_string exn));
                       ]))));
-  State.set_status state Domain.Idle;
+  State.refresh_status state;
   let previous_generation = Store.get_metadata store "worker_generation" in
   Store.set_metadata store "worker_generation" args.generation;
   (match Store.get_metadata store "pending_worker_upgrade" with

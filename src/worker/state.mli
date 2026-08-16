@@ -31,6 +31,10 @@ val initialize_agent :
 val supports_images : t -> bool
 val status : t -> Piss_core.Domain.worker_status
 val set_status : t -> Piss_core.Domain.worker_status -> unit
+val set_harness_running : t -> bool -> unit
+val refresh_status : t -> unit
+val harness_running : t -> bool
+val runtime_busy : t -> bool
 val snapshot : t -> Piss_core.Domain.snapshot
 val harness_session_id : t -> string
 val set_harness_session_id : t -> string -> unit

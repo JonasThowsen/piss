@@ -178,6 +178,49 @@ done
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-base" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "delivery-follow" and .payload.state == "completed")] | length' <<<"$events") == 1 ]]
 
+# An ACP adapter can continue work without a PISS command when a background
+# provider wakes it. The worker must project that activity and still accept a
+# new prompt, which the adapter serializes behind the unsolicited turn.
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"background-base","text":"background-status: project unsolicited work"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  background_completed=$(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "background-base" and .payload.state == "completed")] | length' <<<"$events")
+  worker_status=$(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status)
+  [[ "$background_completed" == 1 && "$worker_status" == running ]] && break
+  sleep .02
+done
+[[ "$background_completed" == 1 ]]
+[[ "$worker_status" == running ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"mutationId":"background-config","configId":"thought_level","value":"low"}')" \
+  "http://127.0.0.1:$port/api/v2/config-options") == 409 ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  --data '{}' "http://127.0.0.1:$port/api/v2/session/new") == 409 ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"background-queued","text":"run after unsolicited work","action":"follow_up"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "background-queued" and .payload.state == "completed")] | length' <<<"$events") == 1 ]] && break
+  sleep .02
+done
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == idle ]]
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "background-queued" and .payload.action == "follow_up")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.update._meta.piAcp.running == true)] | length' <<<"$events") -ge 1 ]]
+
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"stale-background","text":"stale-background-status: ignore another ACP session"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "stale-background" and .payload.state == "completed")] | length' <<<"$events") == 1 ]] && break
+  sleep .02
+done
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == idle ]]
+[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.sessionId == "stale-mock-acp-session" and .payload.params.update._meta.piAcp.running == true)] | length' <<<"$events") == 1 ]]
+
 curl -NsS --max-time 12 -H "Last-Event-ID: $resume_cursor" \
   "http://127.0.0.1:$port/api/v2/event-stream?after=0" \
   >"$state/cancel.stream" 2>"$state/cancel.stream.log" &
