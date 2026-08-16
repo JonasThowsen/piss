@@ -87,16 +87,20 @@ let create_managed_session (manager : Config.managed_workers) ~harness
       Registry.insert manager.registry ~id ~title:(String.trim title) ~harness
         ~workspace_id
     in
+    let abort_creation message =
+      (* A launcher can time out while its supervised worker is still starting.
+         Stop before archiving so a failed create never leaves a hidden worker
+         running for a session omitted from the active catalog. *)
+      ignore (Lifecycle.run manager.stopper id);
+      ignore (Registry.archive manager.registry id);
+      Error message
+    in
     try
       Lifecycle.write_session_spec manager.registry manager.state_root session;
       match Lifecycle.run manager.launcher id with
       | Ok () -> Ok session
-      | Error message ->
-          ignore (Registry.archive manager.registry id);
-          Error message
-    with exn ->
-      ignore (Registry.archive manager.registry id);
-      Error (Printexc.to_string exn)
+      | Error message -> abort_creation message
+    with exn -> abort_creation (Printexc.to_string exn)
 
 let archive_managed_session (manager : Config.managed_workers) id =
   match Registry.find_active manager.registry id with

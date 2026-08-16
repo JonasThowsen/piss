@@ -71,7 +71,13 @@ if [[ -f "\$root/launch-delay" ]]; then
 fi
 if [[ -f "\$root/supervisors/\$id.pid" ]] && kill -0 "\$(cat "\$root/supervisors/\$id.pid")" 2>/dev/null; then exit 0; fi
 setsid -f "\$root/supervise" "\$id" </dev/null >/dev/null 2>&1
-for _ in \$(seq 1 100); do [[ -f "\$root/supervisors/\$id.pid" ]] && exit 0; sleep .01; done
+for _ in \$(seq 1 100); do
+  if [[ -f "\$root/supervisors/\$id.pid" ]]; then
+    [[ ! -f "\$root/force-launch-failure" ]] || exit 1
+    exit 0
+  fi
+  sleep .01
+done
 exit 1
 EOF
 chmod +x "$root/launch"
@@ -177,6 +183,23 @@ outside_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
   -H 'content-type: application/json' --data '{"path":"/tmp"}' \
   "http://127.0.0.1:$port/api/v2/workspaces")
 [[ "$outside_status" == 403 ]]
+# A launcher may fail after supervision has already started. The failed
+# session must be archived and its worker stopped rather than left hidden.
+touch "$root/force-launch-failure"
+failed_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' \
+  --data '{"harness":"pi","workspaceId":"test-workspace","title":"Failing launcher"}' \
+  "http://127.0.0.1:$port/api/v2/sessions")
+rm -f "$root/force-launch-failure"
+[[ "$failed_status" == 409 ]]
+failed_id=$(curl -fsS "http://127.0.0.1:$port/api/v2/sessions?archived=true" |
+  jq -r '.[] | select(.title == "Failing launcher") | .id')
+[[ -n "$failed_id" ]]
+[[ ! -e "$root/supervisors/$failed_id.pid" ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq 'length') == 1 ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "{\"ids\":[\"$failed_id\"]}" \
+  "http://127.0.0.1:$port/api/v2/sessions/delete-archived" >/dev/null
 second=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data '{"harness":"opencode","workspaceId":"test-workspace","title":"Review agent"}' "http://127.0.0.1:$port/api/v2/sessions" | jq -r .id)
 third=$(curl -fsS -X POST -H 'content-type: application/json' \

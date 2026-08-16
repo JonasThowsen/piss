@@ -141,7 +141,10 @@ let
     unit="piss-ocaml-worker@$id.service"
     socket="''${XDG_RUNTIME_DIR:?}/${stateName}/sessions/$id/worker.sock"
     ${lib.getExe' pkgs.systemd "systemctl"} --user start "$unit"
-    for _ in $(seq 1 200); do
+    # Pi may spend tens of seconds loading its provider and MCP catalog before
+    # the worker can expose the ready socket. Keep the lifecycle request
+    # bounded, but do not misclassify a healthy cold start as failed.
+    for _ in $(seq 1 1200); do
       [[ -S "$socket" ]] && exit 0
       ${lib.getExe' pkgs.systemd "systemctl"} --user is-active --quiet "$unit" || {
         ${lib.getExe' pkgs.systemd "systemctl"} --user status "$unit" --no-pager >&2 || true
@@ -149,7 +152,7 @@ let
       }
       sleep .05
     done
-    echo "worker socket did not become ready: $socket" >&2
+    echo "worker socket did not become ready after 60 seconds: $socket" >&2
     exit 1
   '';
 
