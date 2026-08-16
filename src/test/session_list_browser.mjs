@@ -521,6 +521,7 @@ try {
     const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
     const transfer = new DataTransfer();
     transfer.items.add(new File([bytes], "proof.gif", { type: "image/gif" }));
+    field.focus();
     field.dispatchEvent(new ClipboardEvent("paste", {
       bubbles: true,
       cancelable: true,
@@ -529,10 +530,15 @@ try {
   }, gifData);
   await page.getByText("proof.gif", { exact: true }).waitFor();
   await page.getByText("14 B", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => document.activeElement?.id === "prompt-input",
+    undefined,
+    { timeout: 2000 },
+  );
   const imageRequestPromise = page.waitForRequest(
     (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST",
   );
-  await page.getByRole("button", { name: "Send message" }).click();
+  await page.keyboard.press("Enter");
   const imageBody = (await imageRequestPromise).postDataJSON();
   if (
     imageBody.action !== "prompt"

@@ -105,6 +105,7 @@ let format_size bytes =
   else Int.to_string bytes ^ " B"
 
 let component ~available ~on_notice ~on_processing graph =
+  let paste_focus = ref None in
   let state, inject =
     Bonsai.state_machine0 ~default_model:Image_batch.empty
       ~apply_action:(fun _ state action -> Image_batch.apply state action)
@@ -118,6 +119,22 @@ let component ~available ~on_notice ~on_processing graph =
   in
   Bonsai.Edge.on_change processing_value ~equal:Bool.equal
     ~callback:on_processing graph;
+  let image_count_value =
+    let%arr state = state in
+    List.length (Image_batch.images state)
+  in
+  let restore_completed_paste =
+    let%arr _ = on_processing in
+    fun _ ->
+      match !paste_focus with
+      | None -> Effect.Ignore
+      | Some restore_focus ->
+          paste_focus := None;
+          restore_focus ();
+          Effect.Ignore
+  in
+  Bonsai.Edge.on_change image_count_value ~equal:Int.equal
+    ~callback:restore_completed_paste graph;
   let notification_value =
     let%arr state = state in
     Image_batch.notification state
@@ -135,7 +152,7 @@ let component ~available ~on_notice ~on_processing graph =
   and inject = inject in
   let images = Image_batch.images state in
   let processing = Image_batch.processing state in
-  let select files =
+  let select ?restore_focus files =
     clear_input ();
     if (not available) || processing || List.is_empty files then Effect.Ignore
     else if List.length images + List.length files > Image_attachment.max_count
@@ -169,6 +186,8 @@ let component ~available ~on_notice ~on_processing graph =
           then on_notice "Image attachments exceed the 10 MiB limit"
           else
             let token = Image_batch.next_token state in
+            Option.iter restore_focus ~f:(fun restore_focus ->
+                paste_focus := Some restore_focus);
             Effect.bind (inject (Image_batch.Begin token)) ~f:(fun () ->
                 Effect.bind
                   (Effect.of_deferred_thunk (fun () ->
@@ -181,7 +200,12 @@ let component ~available ~on_notice ~on_processing graph =
     Vdom.Attr.on_paste (fun event ->
         let files = paste_files event in
         if List.is_empty files then Effect.Ignore
-        else Effect.Many [ Vdom.Effect.Prevent_default; select files ])
+        else
+          let start, stop = Composer_ui.event_selection event 0 in
+          let restore_focus () = Composer_ui.focus_selection ~start ~stop in
+          restore_focus ();
+          Effect.Many
+            [ Vdom.Effect.Prevent_default; select ~restore_focus files ])
   in
   let previews =
     if List.is_empty images then Vdom.Node.none

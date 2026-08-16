@@ -58,7 +58,7 @@ let apply_to_field (insertion : Mention_picker.insertion) =
            Js.Unsafe.inject insertion.cursor; Js.Unsafe.inject insertion.cursor;
          |]))
 
-let focus_at cursor =
+let focus_selection ~start ~stop =
   let focus () =
     let field =
       Js.Unsafe.meth_call
@@ -67,18 +67,31 @@ let focus_at cursor =
         [| Js.Unsafe.inject (Js.string input_id) |]
     in
     if present field then (
-      ignore (Js.Unsafe.meth_call field "focus" [||]);
+      let options = Js.Unsafe.obj [||] in
+      Js.Unsafe.set options "preventScroll" true;
+      (try ignore (Js.Unsafe.meth_call field "focus" [| options |])
+       with _ -> ignore (Js.Unsafe.meth_call field "focus" [||]));
       ignore
         (Js.Unsafe.meth_call field "setSelectionRange"
-           [| Js.Unsafe.inject cursor; Js.Unsafe.inject cursor |]))
+           [| Js.Unsafe.inject start; Js.Unsafe.inject stop |]))
+  in
+  let request_frame callback =
+    ignore
+      (Js.Unsafe.meth_call
+         (Js.Unsafe.inject Dom_html.window)
+         "requestAnimationFrame"
+         [| Js.Unsafe.inject callback |])
   in
   focus ();
-  let callback = Js.wrap_callback focus in
-  ignore
-    (Js.Unsafe.meth_call
-       (Js.Unsafe.inject Dom_html.window)
-       "requestAnimationFrame"
-       [| Js.Unsafe.inject callback |])
+  let settle = Js.wrap_callback focus in
+  let after_render =
+    Js.wrap_callback (fun () ->
+        focus ();
+        request_frame settle)
+  in
+  request_frame after_render
+
+let focus_at cursor = focus_selection ~start:cursor ~stop:cursor
 
 let key event =
   try

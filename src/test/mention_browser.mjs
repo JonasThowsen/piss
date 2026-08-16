@@ -176,6 +176,25 @@ try {
     throw new Error(`mobile activity accordion escaped or expanded: ${JSON.stringify(mobileActivityBounds)}`);
   }
   const mobileTextarea = mobile.getByRole("textbox", { name: "Message agent" });
+  const mobileComposerMetrics = await mobileTextarea.evaluate((field) => {
+    const style = getComputedStyle(field);
+    const textHeight = field.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    return {
+      height: field.getBoundingClientRect().height,
+      visibleLines: textHeight / parseFloat(style.lineHeight),
+    };
+  });
+  if (mobileComposerMetrics.height < 112 || mobileComposerMetrics.visibleLines < 4.5) {
+    throw new Error(`mobile composer remained too short: ${JSON.stringify(mobileComposerMetrics)}`);
+  }
+  await mobileTextarea.fill(Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join("\n"));
+  const longDraftMetrics = await mobileTextarea.evaluate((field) => ({
+    clientHeight: field.clientHeight,
+    scrollHeight: field.scrollHeight,
+  }));
+  if (longDraftMetrics.scrollHeight <= longDraftMetrics.clientHeight) {
+    throw new Error(`long mobile draft did not remain scrollable: ${JSON.stringify(longDraftMetrics)}`);
+  }
   if (await mobile.getByRole("button", { name: "Mention a workspace file" }).count() !== 0) {
     throw new Error("redundant composer mention button remained visible");
   }

@@ -902,7 +902,7 @@ button:active { scale: 1 !important; transform: none !important; }
   .timeline-item, .timeline-user, .timeline-tool, .timeline-activity { width: 100%; margin-left: 0; }
   .composer-wrap { padding: 5px 6px max(6px, env(safe-area-inset-bottom)); }
   .composer { min-height: 86px; }
-  .composer textarea { min-height: 46px; max-height: 112px; padding: 9px 10px 3px; font-size: 16px; line-height: 1.4; }
+  .composer textarea { min-height: clamp(112px, calc(var(--app-height, 100dvh) * .18), 148px); max-height: min(240px, calc(var(--app-height, 100dvh) * .36)); padding: 9px 10px 3px; font-size: 16px; line-height: 1.4; }
   .composer-footer { min-height: 42px; }
   .send-action, .cancel-action { width: 40px; min-width: 40px; min-height: 40px; height: 40px; }
   .modal-surface-backdrop { padding: 0; }
