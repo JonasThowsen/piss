@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasThowsen/piss/actions/workflows/ci.yml)
 
-**Piss** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono) and OpenCode coding-agent sessions.
+**Piss** — **Pi sin sidecar** — is a private, mobile-first web workspace for [Pi](https://github.com/earendil-works/pi-mono), OpenAI Codex, and OpenCode coding-agent sessions.
 
 The repository contains the production OCaml implementation.
 
@@ -56,7 +56,9 @@ flake.nix           Unified OCaml 5.2 native/web shells and packages
 
 The package contains `pissd`, `piss-session-worker`, `piss-session-mcp`, and `piss-mock-agent`. Browser assets are under `share/piss/public`; a host service can use `${piss}/share/piss/public` for `--public` and `${piss}/share/piss/public/app.js` for `--app-js`.
 
-Pi, OpenCode, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building Piss rather than becoming a second NixOS configuration framework.
+Pi, Codex/OpenCode authentication, Tailscale, secrets, trusted workspaces, and systemd lifecycle policy deliberately remain host concerns. This keeps the project flake focused on building Piss rather than becoming a second NixOS configuration framework.
+
+Codex sessions use the pinned `codex-acp` adapter and an isolated `CODEX_HOME` per Piss session. By default the worker copies an existing `~/.codex/auth.json` into that session; deployments may instead set `services.piss.codexAuthFile` to an absolute credential source or provide `CODEX_API_KEY`/`OPENAI_API_KEY` through `environmentFiles`.
 
 ## Updating
 
@@ -94,6 +96,7 @@ Common recipes:
 | `just build-web` | Build only the browser bundle |
 | `just test` | Run the Alcotest unit suite |
 | `just test-integration` | Run the shell-driven integration tests |
+| `just test-codex` | Run opt-in authenticated Codex parity checks (uses account quota) |
 | `just format` | Auto-format every compiled OCaml source |
 | `just format-check` | Verify formatting without modifying files |
 | `just check` | format-check + build + test + test-integration |

@@ -200,6 +200,28 @@ let prompt_request ~delivery ~command_id ~session_id ~text ~images ~resources =
 let replace_assoc name value fields =
   (name, value) :: List.remove_assoc name fields
 
+let running_state update =
+  let open Yojson.Safe.Util in
+  match member "_meta" update with
+  | `Assoc _ as metadata -> (
+      match member "piAcp" metadata with
+      | `Assoc _ as pi_acp -> (
+          match member "running" pi_acp with
+          | `Bool running -> Some running
+          | _ -> None)
+      | _ -> (
+          match member "codex" metadata with
+          | `Assoc _ as codex -> (
+              match member "threadStatus" codex with
+              | `Assoc _ as status -> (
+                  match member "type" status with
+                  | `String "active" -> Some true
+                  | `String ("idle" | "notLoaded" | "systemError") -> Some false
+                  | _ -> None)
+              | _ -> None)
+          | _ -> None))
+  | _ -> None
+
 let redact_user_image_data json =
   match json with
   | `Assoc json_fields -> (

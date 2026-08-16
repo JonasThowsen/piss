@@ -130,9 +130,13 @@ let () =
     fail "keyboard selection did not wrap backward";
   (match
      Control_plane.decode_session_creation
-       {|{"availableHarnesses":["pi","opencode","mock"],"defaultHarness":"pi"}|}
+       {|{"availableHarnesses":["pi","codex","opencode","mock"],"defaultHarness":"pi"}|}
    with
-  | Ok { available_harnesses = [ Pi; Opencode; Mock ]; default_harness = Pi } ->
+  | Ok
+      {
+        available_harnesses = [ Pi; Codex; Opencode; Mock ];
+        default_harness = Pi;
+      } ->
       ()
   | Ok _ -> fail "session creation options lost server harness order/default"
   | Error message -> fail message);

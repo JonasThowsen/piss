@@ -16,7 +16,7 @@ piss-session-worker@<session> (independent systemd unit + SQLite WAL)
         |
         | bidirectional ACP v1 JSON-RPC over stdio
         v
-pi-acp + Pi  OR  opencode acp (selected per session)
+pi-acp + Pi  OR  codex-acp + Codex  OR  opencode acp (selected per session)
         |
         | Piss-provided MCP tools + capability-authenticated broker
         v
@@ -75,9 +75,9 @@ The deployed Bonsai application provides:
 - durable allowlisted workspaces with current-style responsive navigation,
   safe removal of empty workspace registrations, and a bounded
   local-directory picker rooted only in Nix-approved discovery paths;
-- named Pi/OpenCode session creation, renaming, switching, archival, and
+- named Pi/Codex/OpenCode session creation, renaming, switching, archival, and
   restoration through an active/archived session search;
-- simultaneous Pi and OpenCode sessions with one worker and ledger each;
+- simultaneous Pi, Codex, and OpenCode sessions with one worker and ledger each;
 - a current-workbench composer with Enter/Ctrl/Cmd dispatch,
   workspace-scoped `@` file mentions, pasted or file-selected image
   attachments, and ACP-backed model and thinking selectors;
@@ -92,6 +92,13 @@ The deployed Bonsai application provides:
 - harness-neutral agent collaboration through `piss_list_sessions`,
   `piss_ask_session`, `piss_send_session`, `piss_collect_responses`, and
   `piss_subscribe_responses` MCP tools.
+
+The pinned `codex-acp` package carries a tested Piss delivery patch that maps
+active-turn steer metadata to Codex steering and serializes durable follow-ups
+after the current turn. The opt-in authenticated `just test-codex` conformance
+suite covers prompt, model/reasoning/mode changes, images/resources,
+permissions, steer, follow-up, cancel, a real Piss MCP tool call, and restart
+resume.
 
 The NixOS module builds the control plane, session worker, browser, and
 collaboration MCP server as separate immutable Nix closures. It runs the
@@ -168,6 +175,6 @@ retrying consequential work.
   run concurrently.
 - Active sessions have a configurable resource cap (`maxActiveSessions`,
   32 by default and at most 256).
-- Pi and OpenCode are selectable per session; the bootstrap default is Pi.
+- Pi, Codex, and OpenCode are selectable per session; the bootstrap default is Pi.
 - The first SSE path uses bounded 250 ms worker-ledger reads behind one
   browser connection.

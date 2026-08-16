@@ -1,0 +1,745 @@
+diff --git a/src/CodexAcpClient.ts b/src/CodexAcpClient.ts
+index 5fd4dbe..9ce6990 100644
+--- a/src/CodexAcpClient.ts
++++ b/src/CodexAcpClient.ts
+@@ -576,8 +576,18 @@ export class CodexAcpClient {
+         await this.codexClient.runGoalClear({threadId: sessionId});
+     }
+ 
+-    async awaitMcpServerStartup(serverNames: Array<string>, afterVersion: number): Promise<McpStartupResult> {
+-        return await this.codexClient.awaitMcpServerStartup(serverNames, afterVersion);
++    async awaitMcpServerStartup(
++        threadId: string,
++        serverNames: Array<string>,
++        afterVersion: number,
++        ignoreCancelledThroughVersion = 0,
++    ): Promise<McpStartupResult> {
++        return await this.codexClient.awaitMcpServerStartup(
++            threadId,
++            serverNames,
++            afterVersion,
++            ignoreCancelledThroughVersion,
++        );
+     }
+ 
+     getMcpServerStartupVersion(): number {
+diff --git a/src/CodexAcpServer.ts b/src/CodexAcpServer.ts
+index 47e9373..592ef9a 100644
+--- a/src/CodexAcpServer.ts
++++ b/src/CodexAcpServer.ts
+@@ -202,6 +202,8 @@ interface PendingTurnStart {
+     resolve: (turnId: string | null) => void;
+ }
+ 
++type PissDelivery = "steer" | "follow_up";
++
+ interface ActivePrompt {
+     completion: Promise<void>;
+     closeSignal: Promise<null>;
+@@ -234,9 +236,12 @@ export class CodexAcpServer {
+ 
+     private readonly sessions: Map<string, SessionState>;
+     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
++    private readonly mcpStartupPromises: Map<string, Promise<void>>;
++    private readonly pendingPromptStartupCancels: Map<string, Set<() => void>>;
+     private readonly pendingTurnStarts: Map<string, PendingTurnStart>;
+     private readonly activePrompts: Map<string, ActivePrompt>;
+     private readonly steeringQueues: Map<string, SteeringQueue>;
++    private readonly pissFollowUpQueues: Map<string, Promise<void>>;
+     private readonly closingSessions: Map<string, number>;
+     private readonly sessionGenerations: Map<string, number>;
+     private readonly sessionOpenGenerations: Map<string, number>;
+@@ -251,9 +256,12 @@ export class CodexAcpServer {
+     ) {
+         this.sessions = new Map();
+         this.pendingMcpStartupSessions = new Map();
++        this.mcpStartupPromises = new Map();
++        this.pendingPromptStartupCancels = new Map();
+         this.pendingTurnStarts = new Map();
+         this.activePrompts = new Map();
+         this.steeringQueues = new Map();
++        this.pissFollowUpQueues = new Map();
+         this.closingSessions = new Map();
+         this.sessionGenerations = new Map();
+         this.sessionOpenGenerations = new Map();
+@@ -717,6 +725,7 @@ export class CodexAcpServer {
+         const closeGeneration = this.bumpSessionGeneration(params.sessionId);
+         const sessionState = this.sessions.get(params.sessionId);
+         this.beginSessionCloseFence(params.sessionId);
++        this.cancelPendingPromptStartups(params.sessionId);
+ 
+         try {
+             if (sessionState) {
+@@ -737,9 +746,12 @@ export class CodexAcpServer {
+             if (this.getSessionGeneration(params.sessionId) === closeGeneration) {
+                 this.sessions.delete(params.sessionId);
+                 this.pendingMcpStartupSessions.delete(params.sessionId);
++                this.mcpStartupPromises.delete(params.sessionId);
++                this.pendingPromptStartupCancels.delete(params.sessionId);
+                 this.pendingTurnStarts.delete(params.sessionId);
+                 this.activePrompts.delete(params.sessionId);
+                 this.steeringQueues.delete(params.sessionId);
++                this.pissFollowUpQueues.delete(params.sessionId);
+                 this.goalControlGenerations.delete(params.sessionId);
+             }
+             this.endSessionCloseFence(params.sessionId);
+@@ -1822,7 +1834,13 @@ export class CodexAcpServer {
+     }
+ 
+     private publishMcpStartupStatusAsync(sessionId: string): void {
+-        void this.doPublishMcpStartupStatus(sessionId);
++        const startup = this.doPublishMcpStartupStatus(sessionId);
++        this.mcpStartupPromises.set(sessionId, startup);
++        void startup.finally(() => {
++            if (this.mcpStartupPromises.get(sessionId) === startup) {
++                this.mcpStartupPromises.delete(sessionId);
++            }
++        });
+     }
+ 
+     private async doPublishMcpStartupStatus(sessionId: string): Promise<void> {
+@@ -1832,12 +1850,45 @@ export class CodexAcpServer {
+         }
+ 
+         try {
+-            const mcpStartup = await this.runWithProcessCheck(() =>
++            const requestedServers = Array.from(pendingStartup.requestedServers);
++            let mcpStartup = await this.runWithProcessCheck(() =>
+                 this.codexAcpClient.awaitMcpServerStartup(
+-                    Array.from(pendingStartup.requestedServers),
++                    sessionId,
++                    requestedServers,
+                     pendingStartup.afterVersion,
+                 )
+             );
++            if (mcpStartup.cancelled.length > 0 && mcpStartup.failed.length === 0) {
++                // App-server can briefly emit `cancelled` while replacing the
++                // initial MCP startup set, followed immediately by `ready` for
++                // the same thread config. Give that replacement event one
++                // bounded grace window so the first prompt sees the tools.
++                const cancelledStartup = mcpStartup;
++                const cancelledThroughVersion =
++                    this.codexAcpClient.getMcpServerStartupVersion();
++                await new Promise(resolve => setTimeout(resolve, 50));
++                const replacementStartup = this.runWithProcessCheck(() =>
++                    this.codexAcpClient.awaitMcpServerStartup(
++                        sessionId,
++                        requestedServers,
++                        pendingStartup.afterVersion,
++                        cancelledThroughVersion,
++                    )
++                );
++                mcpStartup = await new Promise<McpStartupResult>((resolve, reject) => {
++                    const timeout = setTimeout(() => resolve(cancelledStartup), 5_000);
++                    void replacementStartup.then(
++                        result => {
++                            clearTimeout(timeout);
++                            resolve(result);
++                        },
++                        error => {
++                            clearTimeout(timeout);
++                            reject(error);
++                        },
++                    );
++                });
++            }
+             if (!this.sessions.has(sessionId)
+                 || this.sessionIsClosing(sessionId)
+                 || this.pendingMcpStartupSessions.get(sessionId) !== pendingStartup) {
+@@ -2087,11 +2138,155 @@ export class CodexAcpServer {
+         return turnId;
+     }
+ 
++    private getPissDelivery(params: acp.PromptRequest): PissDelivery | null {
++        const meta = params._meta as Record<string, unknown> | null | undefined;
++        const piss = meta?.["piss"] as Record<string, unknown> | null | undefined;
++        const delivery = piss?.["delivery"];
++        return delivery === "steer" || delivery === "follow_up" ? delivery : null;
++    }
++
++    private withoutPissDelivery(params: acp.PromptRequest): acp.PromptRequest {
++        const meta = params._meta as Record<string, unknown> | null | undefined;
++        if (!meta || !("piss" in meta)) {
++            return params;
++        }
++        const {piss: _piss, ...remainingMeta} = meta;
++        const next = {...params};
++        if (Object.keys(remainingMeta).length === 0) {
++            delete next._meta;
++        } else {
++            next._meta = remainingMeta;
++        }
++        return next;
++    }
++
++    private async deliverPissSteer(params: acp.PromptRequest): Promise<acp.PromptResponse> {
++        const sessionState = this.getSessionState(params.sessionId);
++        const steeringParams: SessionSteerRequest = {
++            sessionId: params.sessionId,
++            prompt: params.prompt,
++        };
++        this.assertSteerInputSupported(steeringParams, sessionState);
++        const turnId = await this.getSteerableTurnId(sessionState);
++        if (!turnId
++            || !await this.injectSteerIntoActiveTurn(steeringParams, turnId, sessionState)) {
++            throw RequestError.invalidRequest("Codex active turn ended before steer delivery");
++        }
++        return {
++            stopReason: "end_turn",
++            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
++            _meta: this.buildQuotaMeta(sessionState),
++        };
++    }
++
++    private async deliverPissFollowUp(
++        params: acp.PromptRequest,
++        signal?: AbortSignal,
++        onTurnStarted?: () => void,
++    ): Promise<acp.PromptResponse> {
++        const sessionId = params.sessionId;
++        const predecessor = this.pissFollowUpQueues.get(sessionId)
++            ?? this.activePrompts.get(sessionId)?.completion
++            ?? Promise.resolve();
++        let release: () => void = () => {};
++        const completion = new Promise<void>((resolve) => {
++            release = resolve;
++        });
++        const tail = predecessor.catch(() => {}).then(() => completion);
++        this.pissFollowUpQueues.set(sessionId, tail);
++
++        try {
++            const predecessorFinished = await new Promise<boolean>((resolve) => {
++                const onAbort = () => resolve(false);
++                if (signal?.aborted) {
++                    resolve(false);
++                    return;
++                }
++                signal?.addEventListener("abort", onAbort, {once: true});
++                void predecessor.catch(() => {}).then(() => {
++                    signal?.removeEventListener("abort", onAbort);
++                    resolve(true);
++                });
++            });
++            if (!predecessorFinished) {
++                return this.cancelledPromptResponse(this.getSessionState(sessionId));
++            }
++            if (this.sessionIsClosing(sessionId)) {
++                throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
++            }
++            return await this.prompt(this.withoutPissDelivery(params), signal, onTurnStarted);
++        } finally {
++            release();
++            if (this.pissFollowUpQueues.get(sessionId) === tail) {
++                this.pissFollowUpQueues.delete(sessionId);
++            }
++        }
++    }
++
++    private cancelPendingPromptStartups(sessionId: string): void {
++        const pending = this.pendingPromptStartupCancels.get(sessionId);
++        if (!pending) return;
++        for (const cancel of Array.from(pending)) cancel();
++    }
++
++    private async awaitPromptMcpStartup(
++        sessionId: string,
++        startup: Promise<void>,
++        signal?: AbortSignal,
++    ): Promise<boolean> {
++        return await new Promise<boolean>((resolve, reject) => {
++            let settled = false;
++            const pending = this.pendingPromptStartupCancels.get(sessionId) ?? new Set();
++            this.pendingPromptStartupCancels.set(sessionId, pending);
++            const cleanup = () => {
++                signal?.removeEventListener("abort", cancel);
++                pending.delete(cancel);
++                if (pending.size === 0
++                    && this.pendingPromptStartupCancels.get(sessionId) === pending) {
++                    this.pendingPromptStartupCancels.delete(sessionId);
++                }
++            };
++            const finish = (result: boolean) => {
++                if (settled) return;
++                settled = true;
++                cleanup();
++                resolve(result);
++            };
++            const fail = (error: unknown) => {
++                if (settled) return;
++                settled = true;
++                cleanup();
++                reject(error);
++            };
++            const cancel = () => finish(false);
++            pending.add(cancel);
++            signal?.addEventListener("abort", cancel, {once: true});
++            if (signal?.aborted || this.sessionIsClosing(sessionId)) {
++                cancel();
++                return;
++            }
++            void startup.then(() => finish(true), fail);
++        });
++    }
++
+     async prompt(
+         params: acp.PromptRequest,
+         signal?: AbortSignal,
+         onTurnStarted?: () => void,
+     ): Promise<acp.PromptResponse> {
++        const pissDelivery = this.getPissDelivery(params);
++        if (pissDelivery === "steer") {
++            return await this.deliverPissSteer(params);
++        }
++        if (pissDelivery === "follow_up") {
++            return await this.deliverPissFollowUp(params, signal, onTurnStarted);
++        }
++
++        const mcpStartup = this.mcpStartupPromises.get(params.sessionId);
++        if (mcpStartup
++            && !await this.awaitPromptMcpStartup(params.sessionId, mcpStartup, signal)) {
++            return this.cancelledPromptResponse(this.getSessionState(params.sessionId));
++        }
+         logger.log("Prompt received", {
+             sessionId: params.sessionId,
+             prompt: params.prompt,
+@@ -2635,6 +2830,7 @@ export class CodexAcpServer {
+     }
+ 
+     async cancel(params: acp.CancelNotification): Promise<void> {
++        this.cancelPendingPromptStartups(params.sessionId);
+         const sessionState = this.sessions.get(params.sessionId);
+         if (!sessionState) {
+             logger.log("Cancel request rejected: session not found", {sessionId: params.sessionId});
+diff --git a/src/CodexAppServerClient.ts b/src/CodexAppServerClient.ts
+index 1e741eb..3d3a30b 100644
+--- a/src/CodexAppServerClient.ts
++++ b/src/CodexAppServerClient.ts
+@@ -157,7 +157,11 @@ export class CodexAppServerClient {
+             const serverNotification = data as ServerNotification;
+             if (isMcpServerStatusUpdatedNotification(serverNotification)) {
+                 this.mcpServerStartupVersion += 1;
+-                this.mcpServerStartupStates.set(serverNotification.params.name, {
++                this.mcpServerStartupStates.set(
++                    this.mcpStartupKey(
++                        serverNotification.params.threadId,
++                        serverNotification.params.name,
++                    ), {
+                     status: serverNotification.params.status,
+                     error: serverNotification.params.error,
+                     version: this.mcpServerStartupVersion,
+@@ -604,21 +608,33 @@ export class CodexAppServerClient {
+         return this.mcpServerStartupVersion;
+     }
+ 
+-    async awaitMcpServerStartup(serverNames: Array<string>, afterVersion: number): Promise<McpStartupResult> {
++    async awaitMcpServerStartup(
++        threadId: string,
++        serverNames: Array<string>,
++        afterVersion: number,
++        ignoreCancelledThroughVersion = 0,
++    ): Promise<McpStartupResult> {
+         const uniqueServerNames = Array.from(new Set(serverNames.map(serverName => serverName.trim()).filter(serverName => serverName.length > 0)));
+         if (uniqueServerNames.length === 0) {
+             return { ready: [], failed: [], cancelled: [] };
+         }
+ 
+-        const result = this.tryBuildMcpStartupResult(uniqueServerNames, afterVersion);
++        const result = this.tryBuildMcpStartupResult(
++            threadId,
++            uniqueServerNames,
++            afterVersion,
++            ignoreCancelledThroughVersion,
++        );
+         if (result !== null) {
+             return result;
+         }
+ 
+         return await new Promise((resolve) => {
+             this.mcpServerStartupResolvers.push({
++                threadId,
+                 serverNames: uniqueServerNames,
+                 afterVersion,
++                ignoreCancelledThroughVersion,
+                 resolve,
+             });
+         });
+@@ -911,7 +927,12 @@ export class CodexAppServerClient {
+     private resolveMcpServerStartupResolvers(): void {
+         const pendingResolvers: Array<McpServerStartupResolver> = [];
+         for (const resolver of this.mcpServerStartupResolvers) {
+-            const result = this.tryBuildMcpStartupResult(resolver.serverNames, resolver.afterVersion);
++            const result = this.tryBuildMcpStartupResult(
++                resolver.threadId,
++                resolver.serverNames,
++                resolver.afterVersion,
++                resolver.ignoreCancelledThroughVersion,
++            );
+             if (result !== null) {
+                 resolver.resolve(result);
+             } else {
+@@ -921,13 +942,24 @@ export class CodexAppServerClient {
+         this.mcpServerStartupResolvers.splice(0, this.mcpServerStartupResolvers.length, ...pendingResolvers);
+     }
+ 
+-    private tryBuildMcpStartupResult(serverNames: Array<string>, afterVersion: number): McpStartupResult | null {
++    private mcpStartupKey(threadId: string | null, serverName: string): string {
++        return `${threadId ?? ""}\u0000${serverName}`;
++    }
++
++    private tryBuildMcpStartupResult(
++        threadId: string,
++        serverNames: Array<string>,
++        afterVersion: number,
++        ignoreCancelledThroughVersion: number,
++    ): McpStartupResult | null {
+         const ready: Array<string> = [];
+         const failed: Array<McpStartupFailure> = [];
+         const cancelled: Array<string> = [];
+ 
+         for (const serverName of serverNames) {
+-            const state = this.mcpServerStartupStates.get(serverName);
++            const state = this.mcpServerStartupStates.get(
++                this.mcpStartupKey(threadId, serverName),
++            ) ?? this.mcpServerStartupStates.get(this.mcpStartupKey(null, serverName));
+             if (!state || state.version <= afterVersion) {
+                 return null;
+             }
+@@ -945,6 +977,9 @@ export class CodexAppServerClient {
+                     });
+                     break;
+                 case "cancelled":
++                    if (state.version <= ignoreCancelledThroughVersion) {
++                        return null;
++                    }
+                     cancelled.push(serverName);
+                     break;
+             }
+@@ -1005,8 +1040,10 @@ type McpServerStartupSnapshot = {
+ };
+ 
+ type McpServerStartupResolver = {
++    threadId: string;
+     serverNames: Array<string>;
+     afterVersion: number;
++    ignoreCancelledThroughVersion: number;
+     resolve: (result: McpStartupResult) => void;
+ };
+ 
+diff --git a/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts b/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
+index d1df699..6d658ba 100644
+--- a/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
++++ b/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
+@@ -773,10 +773,22 @@ describe('ACP server test', { timeout: 40_000 }, () => {
+         const codexAppServerClient = mockFixture.getCodexAppServerClient();
+ 
+         const startupPromise = codexAcpClient.awaitMcpServerStartup(
++            "thread-id",
+             ["alpha", "beta"],
+             codexAppServerClient.getMcpServerStartupVersion()
+         );
+ 
++        let settled = false;
++        void startupPromise.then(() => { settled = true; });
++        for (const name of ["alpha", "beta"]) {
++            mockFixture.sendServerNotification({
++                method: "mcpServer/startupStatus/updated",
++                params: { threadId: "other-thread", name, status: "ready", error: null }
++            });
++        }
++        await Promise.resolve();
++        expect(settled).toBe(false);
++
+         mockFixture.sendServerNotification({
+             method: "mcpServer/startupStatus/updated",
+             params: { threadId: "thread-id", name: "alpha", status: "starting", error: null }
+@@ -803,6 +815,50 @@ describe('ACP server test', { timeout: 40_000 }, () => {
+         });
+     });
+ 
++    it('waits past a transient MCP cancellation for a replacement status', async () => {
++        const mockFixture = createCodexMockTestFixture();
++        const codexAcpClient = mockFixture.getCodexAcpClient();
++        const codexAppServerClient = mockFixture.getCodexAppServerClient();
++        const afterVersion = codexAppServerClient.getMcpServerStartupVersion();
++
++        const cancelled = codexAcpClient.awaitMcpServerStartup(
++            "thread-id",
++            ["alpha"],
++            afterVersion,
++        );
++        mockFixture.sendServerNotification({
++            method: "mcpServer/startupStatus/updated",
++            params: {threadId: "thread-id", name: "alpha", status: "cancelled", error: null},
++        });
++        await expect(cancelled).resolves.toEqual({
++            ready: [],
++            failed: [],
++            cancelled: ["alpha"],
++        });
++
++        const cancelledThroughVersion = codexAppServerClient.getMcpServerStartupVersion();
++        const replacement = codexAcpClient.awaitMcpServerStartup(
++            "thread-id",
++            ["alpha"],
++            afterVersion,
++            cancelledThroughVersion,
++        );
++        let settled = false;
++        void replacement.then(() => { settled = true; });
++        await Promise.resolve();
++        expect(settled).toBe(false);
++
++        mockFixture.sendServerNotification({
++            method: "mcpServer/startupStatus/updated",
++            params: {threadId: "thread-id", name: "alpha", status: "ready", error: null},
++        });
++        await expect(replacement).resolves.toEqual({
++            ready: ["alpha"],
++            failed: [],
++            cancelled: [],
++        });
++    });
++
+     it('forwards failed MCP startup as failed tool call updates after new session', async () => {
+         const mockFixture = createCodexMockTestFixture();
+         const codexAcpAgent = mockFixture.getCodexAcpAgent();
+@@ -856,6 +912,80 @@ describe('ACP server test', { timeout: 40_000 }, () => {
+         expect(session.sessionId).toBe("thread-id");
+     });
+ 
++    it('waits for requested MCP startup before the first prompt', async () => {
++        const mockFixture = createCodexMockTestFixture();
++        const codexAcpAgent = mockFixture.getCodexAcpAgent();
++        const codexAcpClient = mockFixture.getCodexAcpClient();
++        const codexAppServerClient = mockFixture.getCodexAppServerClient();
++
++        vi.spyOn(codexAcpAgent, "checkAuthorization").mockResolvedValue(undefined);
++        vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
++            thread: {id: "thread-id"},
++            model: "gpt-5",
++            reasoningEffort: "medium",
++        } as any);
++        const turnStartSpy = vi.spyOn(codexAppServerClient, "turnStart")
++            .mockResolvedValue({
++                turn: {id: "turn-id", items: [], status: "inProgress", error: null},
++            } as any);
++        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
++            data: [{
++                id: "gpt-5",
++                name: "GPT-5",
++                inputModalities: ["text"],
++                supportedReasoningEfforts: [],
++            }],
++            hasMore: false,
++        } as any);
++        vi.spyOn(codexAppServerClient, "accountRead").mockResolvedValue({
++            requiresOpenaiAuth: false,
++            account: null,
++        } as any);
++        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
++        vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockResolvedValue({
++            threadId: "thread-id",
++            turn: {id: "turn-id", items: [], status: "completed", error: null},
++        } as any);
++        const startup = deferred<{
++            ready: string[];
++            failed: Array<{server: string, error: string}>;
++            cancelled: string[];
++        }>();
++        const startupSpy = vi.spyOn(codexAcpClient, "awaitMcpServerStartup")
++            .mockResolvedValueOnce({
++                ready: [],
++                failed: [],
++                cancelled: ["piss-sessions"],
++            })
++            .mockReturnValueOnce(startup.promise);
++
++        const session = await codexAcpAgent.newSession({
++            cwd: "/workspace",
++            mcpServers: [{
++                name: "piss-sessions",
++                command: "piss-session-mcp",
++                args: [],
++                env: [],
++            } as unknown as acp.McpServerStdio],
++        });
++        const cancelledPrompt = codexAcpAgent.prompt({
++            sessionId: session.sessionId,
++            prompt: [{type: "text", text: "cancel before MCP is ready"}],
++        });
++        await vi.waitFor(() => expect(startupSpy).toHaveBeenCalledTimes(2));
++        await codexAcpAgent.cancel({sessionId: session.sessionId});
++        await expect(cancelledPrompt).resolves.toMatchObject({stopReason: "cancelled"});
++        expect(turnStartSpy).not.toHaveBeenCalled();
++
++        const prompt = codexAcpAgent.prompt({
++            sessionId: session.sessionId,
++            prompt: [{type: "text", text: "use the MCP tool"}],
++        });
++        startup.resolve({ready: ["piss-sessions"], failed: [], cancelled: []});
++        await expect(prompt).resolves.toMatchObject({stopReason: "end_turn"});
++        expect(turnStartSpy).toHaveBeenCalledTimes(1);
++    });
++
+     it('prefetches skills before turn start', async () => {
+         const mockFixture = createCodexMockTestFixture();
+         const codexAcpAgent = mockFixture.getCodexAcpAgent();
+diff --git a/src/__tests__/CodexACPAgent/session-close.test.ts b/src/__tests__/CodexACPAgent/session-close.test.ts
+index 97fa73a..f667e55 100644
+--- a/src/__tests__/CodexACPAgent/session-close.test.ts
++++ b/src/__tests__/CodexACPAgent/session-close.test.ts
+@@ -173,11 +173,20 @@ describe("ACP session close", () => {
+         vi.spyOn(codexAcpClient, "closeSession").mockReturnValue(unsubscribe.promise);
+ 
+         await vi.waitFor(() => {
+-            expect(codexAcpClient.awaitMcpServerStartup).toHaveBeenCalledWith(["broken-mcp"], expect.any(Number));
++            expect(codexAcpClient.awaitMcpServerStartup).toHaveBeenCalledWith(
++                sessionId,
++                ["broken-mcp"],
++                expect.any(Number),
++            );
+         });
+         fixture.clearAcpConnectionDump();
+ 
++        const blockedPrompt = codexAcpAgent.prompt({
++            sessionId,
++            prompt: [{type: "text", text: "blocked on MCP startup"}],
++        });
+         const closePromise = codexAcpAgent.closeSession({sessionId});
++        await expect(blockedPrompt).resolves.toMatchObject({stopReason: "cancelled"});
+         await vi.waitFor(() => {
+             expect(codexAcpClient.closeSession).toHaveBeenCalledWith(sessionId);
+         });
+diff --git a/src/__tests__/CodexACPAgent/steer-events.test.ts b/src/__tests__/CodexACPAgent/steer-events.test.ts
+index c13a719..6ad8e94 100644
+--- a/src/__tests__/CodexACPAgent/steer-events.test.ts
++++ b/src/__tests__/CodexACPAgent/steer-events.test.ts
+@@ -80,6 +80,128 @@ describe('_session/steering', () => {
+         await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
+     });
+ 
++    it('maps Piss prompt metadata to an active Codex steer', async () => {
++        const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
++        const turnSteerSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
++            .mockResolvedValue({turnId: "turn-id"});
++
++        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "long running prompt"}],
++        });
++        await vi.waitFor(() => {
++            expect(sessionState.currentTurnId).toBe("turn-id");
++        });
++
++        await expect(mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "correct the active turn"}],
++            _meta: {piss: {delivery: "steer"}},
++        })).resolves.toMatchObject({stopReason: "end_turn"});
++        expect(turnSteerSpy).toHaveBeenCalledWith({
++            threadId: "session-id",
++            expectedTurnId: "turn-id",
++            input: [{type: "text", text: "correct the active turn", text_elements: []}],
++        });
++
++        turnCompleted.resolve({
++            threadId: "session-id",
++            turn: createTurn("turn-id", "completed"),
++        });
++        await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
++    });
++
++    it('does not start a competing turn when a Piss steer loses the active-turn race', async () => {
++        const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
++        const followCompleted = deferred<TurnCompletedNotification>();
++        const turnStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart")
++            .mockResolvedValueOnce({turn: createTurn("turn-1", "inProgress")})
++            .mockResolvedValueOnce({turn: createTurn("turn-2", "inProgress")});
++        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
++            .mockReturnValueOnce(turnCompleted.promise)
++            .mockReturnValueOnce(followCompleted.promise);
++        vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer").mockImplementation(async () => {
++            turnCompleted.resolve({threadId: "session-id", turn: createTurn("turn-1", "completed")});
++            throw Object.assign(new Error("Internal error"), {
++                data: {details: "no active turn to steer"},
++            });
++        });
++
++        const first = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "first"}],
++        });
++        await vi.waitFor(() => expect(sessionState.currentTurnId).toBe("turn-1"));
++        const follow = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "follow"}],
++            _meta: {piss: {delivery: "follow_up"}},
++        });
++
++        const steerError = await mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "too late"}],
++            _meta: {piss: {delivery: "steer"}},
++        }).catch((error: unknown) => error);
++        expect(steerError).toBeInstanceOf(RequestError);
++        expect((steerError as RequestError).data).toContain("active turn ended");
++        await expect(first).resolves.toMatchObject({stopReason: "end_turn"});
++        await vi.waitFor(() => expect(turnStartSpy).toHaveBeenCalledTimes(2));
++
++        followCompleted.resolve({threadId: "session-id", turn: createTurn("turn-2", "completed")});
++        await expect(follow).resolves.toMatchObject({stopReason: "end_turn"});
++        expect(turnStartSpy).toHaveBeenCalledTimes(2);
++    });
++
++    it('serializes Piss follow-up prompts after the active turn', async () => {
++        const mockFixture = createCodexMockTestFixture();
++        const sessionState = createTestSessionState();
++        vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
++        const turnStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart")
++            .mockResolvedValueOnce({turn: createTurn("turn-1", "inProgress")})
++            .mockResolvedValueOnce({turn: createTurn("turn-2", "inProgress")})
++            .mockResolvedValueOnce({turn: createTurn("turn-3", "inProgress")});
++        const firstCompleted = deferred<TurnCompletedNotification>();
++        const secondCompleted = deferred<TurnCompletedNotification>();
++        const thirdCompleted = deferred<TurnCompletedNotification>();
++        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
++            .mockReturnValueOnce(firstCompleted.promise)
++            .mockReturnValueOnce(secondCompleted.promise)
++            .mockReturnValueOnce(thirdCompleted.promise);
++
++        const first = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "first"}],
++        });
++        await vi.waitFor(() => expect(sessionState.currentTurnId).toBe("turn-1"));
++        const second = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "second"}],
++            _meta: {piss: {delivery: "follow_up"}},
++        });
++        const third = mockFixture.getCodexAcpAgent().prompt({
++            sessionId: "session-id",
++            prompt: [{type: "text", text: "third"}],
++            _meta: {piss: {delivery: "follow_up"}},
++        });
++        expect(turnStartSpy).toHaveBeenCalledTimes(1);
++
++        firstCompleted.resolve({threadId: "session-id", turn: createTurn("turn-1", "completed")});
++        await expect(first).resolves.toMatchObject({stopReason: "end_turn"});
++        await vi.waitFor(() => expect(turnStartSpy).toHaveBeenCalledTimes(2));
++        secondCompleted.resolve({threadId: "session-id", turn: createTurn("turn-2", "completed")});
++        await expect(second).resolves.toMatchObject({stopReason: "end_turn"});
++        await vi.waitFor(() => expect(turnStartSpy).toHaveBeenCalledTimes(3));
++        thirdCompleted.resolve({threadId: "session-id", turn: createTurn("turn-3", "completed")});
++        await expect(third).resolves.toMatchObject({stopReason: "end_turn"});
++
++        expect(turnStartSpy.mock.calls.map(([request]) => request.input)).toEqual([
++            [{type: "text", text: "first", text_elements: []}],
++            [{type: "text", text: "second", text_elements: []}],
++            [{type: "text", text: "third", text_elements: []}],
++        ]);
++    });
++
+     it('starts a new turn when no turn is active', async () => {
+         const mockFixture = createCodexMockTestFixture();
+         const sessionState = createTestSessionState();

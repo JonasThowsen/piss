@@ -299,7 +299,52 @@ let test_session_registry () =
     (Registry.has_open_peer_work registry ~source_id:two.id);
   Alcotest.(check int)
     "repeated archived deletion is empty" 0
-    (Registry.delete_archived registry)
+    (Registry.delete_archived registry);
+  let codex =
+    Registry.insert registry ~id:"s-codex" ~title:"Codex / tracer"
+      ~harness:"codex" ~workspace_id:"workspace-one"
+  in
+  Alcotest.(check string) "Codex harness is accepted" "codex" codex.harness
+
+let test_registry_codex_migration () =
+  let path = Filename.temp_file "piss-registry-legacy-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let db = Sqlite3.db_open path in
+      let exec sql =
+        match Sqlite3.exec db sql with
+        | rc when Sqlite3.Rc.is_success rc -> ()
+        | rc ->
+            Alcotest.fail
+              ("legacy registry setup failed: " ^ Sqlite3.Rc.to_string rc)
+      in
+      exec
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY,title TEXT NOT \
+         NULL,harness TEXT NOT NULL CHECK(harness IN \
+         ('pi','opencode','mock')),created_at REAL NOT NULL,archived_at \
+         REAL,broker_token TEXT NOT NULL DEFAULT '',workspace_id TEXT NOT NULL \
+         DEFAULT '')";
+      exec
+        "INSERT INTO sessions \
+         (id,title,harness,created_at,archived_at,broker_token,workspace_id) \
+         VALUES ('legacy-pi','Legacy Pi','pi',0,NULL,'legacy-token','')";
+      ignore (Sqlite3.db_close db);
+      let registry = Registry.open_ ~path in
+      Fun.protect
+        ~finally:(fun () -> Registry.close registry)
+        (fun () ->
+          ignore
+            (Registry.insert registry ~id:"migrated-codex" ~title:"Codex"
+               ~harness:"codex" ~workspace_id:"");
+          Alcotest.(check bool)
+            "legacy session survives Codex constraint migration" true
+            (Option.is_some (Registry.find_active registry "legacy-pi"))))
 
 let test_legacy_registry_migration () =
   let path = Filename.temp_file "piss-registry-legacy-" ".sqlite3" in
@@ -1277,6 +1322,40 @@ let test_acp_image_redaction () =
       redacted |> member "params" |> member "update" |> member "content"
       |> member "data" |> to_string)
 
+let test_acp_running_state () =
+  let update metadata = `Assoc [ ("_meta", metadata) ] in
+  let pi running =
+    update (`Assoc [ ("piAcp", `Assoc [ ("running", `Bool running) ]) ])
+  in
+  let codex status =
+    update
+      (`Assoc
+         [
+           ( "codex",
+             `Assoc [ ("threadStatus", `Assoc [ ("type", `String status) ]) ] );
+         ])
+  in
+  Alcotest.(check (option bool))
+    "Pi running" (Some true)
+    (Acp.running_state (pi true));
+  Alcotest.(check (option bool))
+    "Pi idle" (Some false)
+    (Acp.running_state (pi false));
+  Alcotest.(check (option bool))
+    "Codex active" (Some true)
+    (Acp.running_state (codex "active"));
+  List.iter
+    (fun status ->
+      Alcotest.(check (option bool))
+        ("Codex " ^ status) (Some false)
+        (Acp.running_state (codex status)))
+    [ "idle"; "notLoaded"; "systemError" ];
+  List.iter
+    (fun value ->
+      Alcotest.(check (option bool))
+        "unknown metadata is ignored" None (Acp.running_state value))
+    [ `Assoc []; update (`Assoc [ ("codex", `Null) ]); codex "futureStatus" ]
+
 let test_acp_error_response () =
   let response =
     `Assoc
@@ -1372,6 +1451,8 @@ let () =
             test_legacy_registry_migration;
           Alcotest.test_case "broker creation registry" `Quick
             test_broker_creation_registry;
+          Alcotest.test_case "session registry adds Codex to legacy schema"
+            `Quick test_registry_codex_migration;
         ] );
       ( "domain",
         [
@@ -1388,5 +1469,7 @@ let () =
             test_acp_image_redaction;
           Alcotest.test_case "ACP errors fail closed" `Quick
             test_acp_error_response;
+          Alcotest.test_case "ACP running metadata is normalized" `Quick
+            test_acp_running_state;
         ] );
     ]

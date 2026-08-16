@@ -168,18 +168,9 @@ let run ~env (args : Config.args) =
                   (match Yojson.Safe.Util.member "configOptions" update with
                   | `List _ as options -> State.set_config_options state options
                   | _ -> ());
-                  let harness_running =
-                    match Yojson.Safe.Util.member "_meta" update with
-                    | `Assoc _ as metadata -> (
-                        match Yojson.Safe.Util.member "piAcp" metadata with
-                        | `Assoc _ as pi_acp ->
-                            Yojson.Safe.Util.member "running" pi_acp
-                        | _ -> `Null)
-                    | _ -> `Null
-                  in
-                  match harness_running with
-                  | `Bool running -> State.set_harness_running state running
-                  | _ -> ())
+                  match Acp.running_state update with
+                  | Some running -> State.set_harness_running state running
+                  | None -> ())
               | _ -> ())
           | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
               match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
@@ -252,6 +243,7 @@ let run ~env (args : Config.args) =
     match (Store.get_metadata store "acp_session_id", supports_load) with
     | Some existing, true -> (
         session_load_in_progress := true;
+        State.set_harness_session_id state existing;
         match
           rpc_request ~id:"session-load"
             (Acp.load_session_request ~session_id:existing ~cwd:workspace

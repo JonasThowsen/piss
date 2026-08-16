@@ -1,7 +1,7 @@
 open! Core
 
 module Session = struct
-  type harness = Pi | Opencode | Mock | Other of string
+  type harness = Pi | Codex | Opencode | Mock | Other of string
 
   type status = Runtime_domain.status =
     | Starting
@@ -30,6 +30,7 @@ module Session = struct
 
   let harness_to_string = function
     | Pi -> "pi"
+    | Codex -> "codex"
     | Opencode -> "opencode"
     | Mock -> "mock"
     | Other value -> value
@@ -83,6 +84,7 @@ let bind_optional_field fields path name decode f =
 let harness path value =
   match value with
   | `String "pi" -> Ok Session.Pi
+  | `String "codex" -> Ok Session.Codex
   | `String "opencode" -> Ok Session.Opencode
   | `String "mock" -> Ok Session.Mock
   | `String "" -> error path "must not be empty"

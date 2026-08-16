@@ -10,6 +10,7 @@ let
   package = self.packages.${pkgs.stdenv.hostPlatform.system}.piss;
   adapterPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.pi-acp;
   opencodePackage = self.packages.${pkgs.stdenv.hostPlatform.system}.opencode;
+  codexAcpPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.codex-acp;
   stateName = "piss-ocaml";
   runtimeDirectory = "%t/${stateName}";
   stateDirectory = "%S/${stateName}";
@@ -34,9 +35,11 @@ let
         cfg.package
         cfg.adapterPackage
         cfg.opencodePackage
+        cfg.codexAcpPackage
       ]
       ++ [
         cfg.piCommand
+        (if cfg.codexAuthFile == null then "" else cfg.codexAuthFile)
         (if cfg.opencodeAuthFile == null then "" else cfg.opencodeAuthFile)
         (if cfg.sshAgentSocket == null then "" else cfg.sshAgentSocket)
         (toString cfg.port)
@@ -79,6 +82,35 @@ let
     case "$harness" in
       pi)
         command=${lib.escapeShellArg "${cfg.adapterPackage}/bin/pi-acp"}
+        args=()
+        ;;
+      codex)
+        codex_home="$session_state/codex"
+        mkdir -p "$codex_home"
+        auth_source=${lib.escapeShellArg (if cfg.codexAuthFile == null then "" else cfg.codexAuthFile)}
+        if [[ -z "$auth_source" && -f "$HOME/.codex/auth.json" ]]; then
+          auth_source="$HOME/.codex/auth.json"
+        fi
+        if [[ -n "$auth_source" ]]; then
+          [[ -f "$auth_source" ]] || {
+            echo "configured Codex authentication file is missing" >&2
+            exit 78
+          }
+          ${lib.getExe pkgs.jq} -e 'type == "object"' "$auth_source" >/dev/null || {
+            echo "configured Codex authentication file must contain a JSON object" >&2
+            exit 78
+          }
+          ${lib.getExe' pkgs.coreutils "install"} -m 0600 "$auth_source" "$codex_home/.auth.json.new"
+          mv -f "$codex_home/.auth.json.new" "$codex_home/auth.json"
+        else
+          rm -f "$codex_home/.auth.json.new" "$codex_home/auth.json"
+          if [[ -n "''${CODEX_API_KEY:-}''${OPENAI_API_KEY:-}" ]]; then
+            export DEFAULT_AUTH_REQUEST='{"methodId":"api-key"}'
+          fi
+        fi
+        export CODEX_HOME="$codex_home"
+        export NO_BROWSER=1
+        command=${lib.escapeShellArg "${cfg.codexAcpPackage}/bin/codex-acp"}
         args=()
         ;;
       opencode)
@@ -334,6 +366,17 @@ in
       defaultText = lib.literalExpression "inputs.piss.packages.\${system}.opencode";
       description = "Pinned OpenCode package with its native ACP server.";
     };
+    codexAcpPackage = lib.mkOption {
+      type = lib.types.package;
+      default = codexAcpPackage;
+      defaultText = lib.literalExpression "inputs.piss.packages.\${system}.codex-acp";
+      description = "Pinned ACP adapter package for OpenAI Codex.";
+    };
+    codexAuthFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional Codex auth.json source outside the Nix store; defaults to ~/.codex/auth.json when present.";
+    };
     opencodeAuthFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -342,6 +385,7 @@ in
     harness = lib.mkOption {
       type = lib.types.enum [
         "pi"
+        "codex"
         "opencode"
         "mock"
       ];
@@ -481,6 +525,7 @@ in
           ++ cfg.tailscale.allowedOrigins
           ++ cfg.environmentFiles
           ++ [ cfg.piCommand ]
+          ++ lib.optional (cfg.codexAuthFile != null) cfg.codexAuthFile
           ++ lib.optional (cfg.opencodeAuthFile != null) cfg.opencodeAuthFile
           ++ lib.optional (cfg.sshAgentSocket != null) cfg.sshAgentSocket
           ++ lib.optional (cfg.tailscale.authKeyFile != null) cfg.tailscale.authKeyFile
@@ -494,6 +539,10 @@ in
       {
         assertion = cfg.harness != "pi" || lib.hasPrefix "/" cfg.piCommand;
         message = "services.piss.piCommand must be absolute for the Pi harness";
+      }
+      {
+        assertion = cfg.codexAuthFile == null || lib.hasPrefix "/" cfg.codexAuthFile;
+        message = "services.piss.codexAuthFile must be absolute";
       }
       {
         assertion = cfg.opencodeAuthFile == null || lib.hasPrefix "/" cfg.opencodeAuthFile;
@@ -586,6 +635,8 @@ in
             stopWorker
             "--available-harness"
             "pi"
+            "--available-harness"
+            "codex"
             "--available-harness"
             "opencode"
             "--available-harness"

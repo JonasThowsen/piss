@@ -62,6 +62,19 @@ test:
 test-integration: build
     dune build @interaction-test @mention-browser-test @replaceability-test @session-browser-test @session-isolation-test
 
+# Run authenticated Codex parity checks against real model turns. This is
+# opt-in because it uses the configured Codex account and consumes usage.
+test-codex:
+    auth="${PISS_CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"; \
+    test -f "$auth" || { echo "set PISS_CODEX_AUTH_FILE to Codex auth.json" >&2; exit 1; }; \
+    dune build src/worker/main.exe src/session_mcp/main.exe; \
+    codex_out=$(nix build .#codex-acp --no-link --print-out-paths); \
+    python3 src/test/codex_harness_smoke.py \
+        --worker _build/default/src/worker/main.exe \
+        --codex-acp "$codex_out/bin/codex-acp" \
+        --session-mcp _build/default/src/session_mcp/main.exe \
+        --auth-file "$auth"
+
 # Format, build, and run every test. The single command to run before
 # opening a pull request.
 check: format-check build test test-integration

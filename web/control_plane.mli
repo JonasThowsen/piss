@@ -1,5 +1,5 @@
 module Session : sig
-  type harness = Pi | Opencode | Mock | Other of string
+  type harness = Pi | Codex | Opencode | Mock | Other of string
 
   type status = Runtime_domain.status =
     | Starting

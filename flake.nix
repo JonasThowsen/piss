@@ -12,6 +12,10 @@
       url = "github:anomalyco/opencode/f51665191af10f1e4e0512af3708e9c2c58ecb8d";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    codex-acp-src = {
+      url = "github:agentclientprotocol/codex-acp/97d260e3d9314d95347e50ab35ea22800546298d";
+      flake = false;
+    };
   };
 
   outputs =
@@ -21,6 +25,7 @@
       nixpkgs-ocaml-lsp,
       pi-acp-src,
       opencode-src,
+      codex-acp-src,
     }:
     let
       systems = [
@@ -248,6 +253,39 @@
         {
           inherit piss;
           opencode = opencode-src.packages.${system}.opencode;
+          codex-acp = pkgs.buildNpmPackage {
+            pname = "codex-acp";
+            version = "1.4.0";
+            src = codex-acp-src;
+            patches = [ ./nix/codex-acp-delivery.patch ];
+            npmDepsHash = "sha256-tHnOMBXerUKBqTQM+jbXT3F9wgodvP6xdWJd7XNwhxE=";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            preBuild = "npm run typecheck";
+            npmBuildScript = "build";
+            doCheck = true;
+            checkPhase = ''
+              runHook preCheck
+              npm test
+              runHook postCheck
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin $out/lib/codex-acp
+              cp dist/index.js package.json $out/lib/codex-acp/
+              npm prune --omit=dev --offline
+              cp -r node_modules $out/lib/codex-acp/node_modules
+              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/codex-acp \
+                --add-flags $out/lib/codex-acp/index.js
+              runHook postInstall
+            '';
+            meta = {
+              description = "ACP adapter for OpenAI Codex";
+              homepage = "https://github.com/agentclientprotocol/codex-acp";
+              license = nixpkgs.lib.licenses.asl20;
+              mainProgram = "codex-acp";
+              platforms = systems;
+            };
+          };
           pi-acp = pkgs.buildNpmPackage {
             pname = "pi-acp";
             version = "0.0.33";
@@ -322,7 +360,75 @@
           };
         in
         {
-          inherit (self.packages.${system}) piss piss-web pi-acp;
+          inherit (self.packages.${system})
+            piss
+            piss-web
+            pi-acp
+            codex-acp
+            ;
+          codex-acp-smoke =
+            pkgs.runCommand "piss-codex-acp-smoke"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                mkdir -p "$TMPDIR/codex"
+                CODEX_HOME="$TMPDIR/codex" NO_BROWSER=1 \
+                  python3 ${pkgs.writeText "piss-codex-acp-smoke.py" ''
+                    import json
+                    import os
+                    import selectors
+                    import signal
+                    import subprocess
+
+                    process = subprocess.Popen(
+                        ["${self.packages.${system}.codex-acp}/bin/codex-acp"],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        start_new_session=True,
+                    )
+                    request = {
+                        "jsonrpc": "2.0",
+                        "id": "initialize",
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": 1,
+                            "clientCapabilities": {},
+                            "clientInfo": {
+                                "name": "piss-smoke",
+                                "title": "Piss smoke",
+                                "version": "0",
+                            },
+                        },
+                    }
+                    try:
+                        assert process.stdin is not None
+                        assert process.stdout is not None
+                        process.stdin.write(json.dumps(request) + "\n")
+                        process.stdin.flush()
+                        selector = selectors.DefaultSelector()
+                        selector.register(process.stdout, selectors.EVENT_READ)
+                        if not selector.select(25):
+                            raise RuntimeError("timed out waiting for ACP initialize")
+                        response = json.loads(process.stdout.readline())
+                        capabilities = response["result"]["agentCapabilities"]
+                        assert response["id"] == "initialize"
+                        assert response["result"]["protocolVersion"] == 1
+                        assert capabilities["loadSession"] is True
+                        assert capabilities["promptCapabilities"]["image"] is True
+                    finally:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(process.pid, signal.SIGKILL)
+                                process.wait(timeout=5)
+                  ''}
+                touch $out
+              '';
           nixos-module =
             assert moduleEvaluation.config.services.piss.port == 4318;
             assert moduleEvaluation.config.services.piss.tailscale.hostname == "piss";
@@ -335,6 +441,8 @@
             assert builtins.elem "-%h/.pi"
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ReadWritePaths;
             assert nixpkgs.lib.hasInfix "--default-harness mock"
+              moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
+            assert nixpkgs.lib.hasInfix "--available-harness codex"
               moduleEvaluation.config.systemd.user.services.piss-ocaml.serviceConfig.ExecStart;
             assert
               moduleEvaluation.config.systemd.user.timers.piss-ocaml-worker-upgrade.timerConfig.OnUnitActiveSec
@@ -352,6 +460,9 @@
             pkgs.runCommand "piss-nixos-module-check" { } ''
               grep -F -- 'STATE_DIRECTORY' ${workerRunner}
               grep -F -- 'for suffix in "" -wal -shm' ${workerRunner}
+              grep -F -- 'codex-acp' ${workerRunner}
+              grep -F -- 'CODEX_HOME' ${workerRunner}
+              grep -F -- 'DEFAULT_AUTH_REQUEST' ${workerRunner}
               grep -F -- '--harness-arg acp' ${workerRunner}
               grep -F -- 'prepare_upgrade' ${upgradeRunner}
               grep -F -- 'systemctl --user restart' ${upgradeRunner}

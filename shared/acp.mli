@@ -120,6 +120,11 @@ val prompt_request :
     prompt and [Some action] for a steer or follow-up; the action is passed
     through `_meta.piss.delivery` so the harness can distinguish them. *)
 
+val running_state : Yojson.Safe.t -> bool option
+(** Reduce harness-specific activity metadata to a shared running state. Pi
+    reports [_meta.piAcp.running], while codex-acp reports the Codex thread
+    status in [_meta.codex.threadStatus.type]. *)
+
 val redact_user_image_data : Yojson.Safe.t -> Yojson.Safe.t
 (** Strip user-uploaded image data from a `session/update` notification whose
     `sessionUpdate` is `user_message_chunk`. The worker logs every such envelope

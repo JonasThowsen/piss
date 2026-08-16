@@ -109,6 +109,43 @@ let has_column db table column =
       in
       loop ())
 
+let sessions_support_codex db =
+  with_statement db
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions' \
+     AND sql LIKE '%''codex''%'" (fun statement ->
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> true
+      | Sqlite3.Rc.DONE -> false
+      | rc ->
+          fail_rc "inspect sessions schema" rc;
+          false)
+
+let migrate_sessions_for_codex db =
+  exec db "PRAGMA foreign_keys=OFF";
+  Fun.protect
+    ~finally:(fun () -> exec db "PRAGMA foreign_keys=ON")
+    (fun () ->
+      exec db "BEGIN IMMEDIATE";
+      try
+        exec db
+          "CREATE TABLE sessions_codex (id TEXT PRIMARY KEY,title TEXT NOT \
+           NULL,harness TEXT NOT NULL CHECK(harness IN \
+           ('pi','codex','opencode','mock')),created_at REAL NOT \
+           NULL,archived_at REAL,broker_token TEXT NOT NULL DEFAULT \
+           '',workspace_id TEXT NOT NULL DEFAULT '')";
+        exec db
+          "INSERT INTO sessions_codex \
+           (id,title,harness,created_at,archived_at,broker_token,workspace_id) \
+           SELECT \
+           id,title,harness,created_at,archived_at,broker_token,workspace_id \
+           FROM sessions";
+        exec db "DROP TABLE sessions";
+        exec db "ALTER TABLE sessions_codex RENAME TO sessions";
+        exec db "COMMIT"
+      with error ->
+        ignore (Sqlite3.exec db "ROLLBACK");
+        raise error)
+
 let initialize db =
   exec db "PRAGMA journal_mode=WAL";
   exec db "PRAGMA synchronous=FULL";
@@ -123,7 +160,7 @@ let initialize db =
   exec db
     "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY,title TEXT NOT \
      NULL,harness TEXT NOT NULL CHECK(harness IN \
-     ('pi','opencode','mock')),created_at REAL NOT NULL,archived_at \
+     ('pi','codex','opencode','mock')),created_at REAL NOT NULL,archived_at \
      REAL,broker_token TEXT NOT NULL DEFAULT '',workspace_id TEXT NOT NULL \
      DEFAULT '')";
   if not (has_column db "sessions" "broker_token") then
@@ -132,6 +169,7 @@ let initialize db =
   if not (has_column db "sessions" "workspace_id") then
     exec db
       "ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''";
+  if not (sessions_support_codex db) then migrate_sessions_for_codex db;
   exec db
     "CREATE INDEX IF NOT EXISTS sessions_active_idx ON \
      sessions(archived_at,created_at)";

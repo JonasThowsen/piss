@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "codex-acp-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786871916,
+        "narHash": "sha256-9oUtDBE1HINQaJhk4Le5GWN3YODNwDpRaVZlnDV9a5c=",
+        "owner": "agentclientprotocol",
+        "repo": "codex-acp",
+        "rev": "97d260e3d9314d95347e50ab35ea22800546298d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "agentclientprotocol",
+        "repo": "codex-acp",
+        "rev": "97d260e3d9314d95347e50ab35ea22800546298d",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1784356753,
@@ -72,6 +89,7 @@
     },
     "root": {
       "inputs": {
+        "codex-acp-src": "codex-acp-src",
         "nixpkgs": "nixpkgs",
         "nixpkgs-ocaml-lsp": "nixpkgs-ocaml-lsp",
         "opencode-src": "opencode-src",
