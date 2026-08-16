@@ -54,6 +54,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .connection-pill { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 500 9px/1 var(--mono); letter-spacing: .015em; text-transform: capitalize; }
 .connection-pill i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px rgba(49, 92, 70, .1); }
 .connection-idle { color: var(--accent); }
+.connection-waiting { color: var(--blue); }
 .connection-running { color: var(--working); }
 .connection-requires_action { color: var(--working); }
 .connection-failed, .connection-offline { color: var(--danger); }
@@ -87,6 +88,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .session-dot.status-idle { background: var(--accent); }
 .session-dot.status-finished { border-color: var(--blue); background: var(--blue); }
 .session-dot.status-running, .session-dot.status-working { border-color: var(--working); background: var(--working); }
+.session-dot.status-waiting { border-color: var(--blue); background: transparent; }
 .session-dot.status-requires_action { border-color: var(--working); }
 .session-dot.status-failed, .session-dot.status-offline { border-color: var(--danger); background: var(--danger); }
 .session-more { min-height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; letter-spacing: 1px; }

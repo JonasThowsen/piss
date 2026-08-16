@@ -172,50 +172,56 @@ let target_sequence ~net (manager : Config.managed_workers)
 let dispatch_peer_request ~net (manager : Config.managed_workers)
     ~(source : Registry.session) ~(target : Registry.session)
     (request : Registry.peer_request) =
-  if String.equal request.state "completed" then Ok request
+  if
+    List.mem request.state
+      [ "dispatching"; "dispatched"; "completed"; "failed" ]
+  then Ok request
   else
     let was_new = String.equal request.state "accepted" in
-    let request, dispatch_transition =
-      if List.mem request.state [ "accepted"; "queued" ] then (
-        Registry.mark_peer_dispatching manager.registry request.id
-          ~start_sequence:(target_sequence ~net manager target);
-        ( Option.get (Registry.find_peer_request manager.registry request.id),
-          true ))
-      else (request, false)
+    let claimed =
+      Registry.mark_peer_dispatching manager.registry request.id
+        ~start_sequence:(target_sequence ~net manager target)
     in
-    let target_prompt =
-      Printf.sprintf
-        "Inter-session request from %s (%s):\n\n\
-         %s\n\n\
-         Respond directly to the requesting session."
-        source.title source.id request.prompt
+    let request =
+      Option.get (Registry.find_peer_request manager.registry request.id)
     in
-    let socket = Lifecycle.session_socket manager.runtime_root target.id in
-    match
-      Result.bind
-        (prompt_request ~net socket ~command_id:request.command_id
-           ~text:target_prompt)
-        (worker_request ~net socket)
-    with
-    | Error message ->
-        Registry.update_peer_request manager.registry request.id ~state:"queued"
-          ~response:None;
-        if was_new then
-          ignore
-            (peer_event ~net manager source ~kind:"session.ask.queued"
-               ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
-        Error message
-    | Ok _ ->
-        Registry.update_peer_request manager.registry request.id
-          ~state:"dispatched" ~response:None;
-        if dispatch_transition then (
-          ignore
-            (peer_event ~net manager source ~kind:"session.ask.dispatched"
-               ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
-          ignore
-            (peer_event ~net manager target ~kind:"session.ask.received"
-               ~request_id:request.id ~peer_id:source.id ~text:request.prompt));
-        Ok (Option.get (Registry.find_peer_request manager.registry request.id))
+    if not claimed then Ok request
+    else
+      let target_prompt =
+        Printf.sprintf
+          "Inter-session request from %s (%s):\n\n\
+           %s\n\n\
+           Respond directly to the requesting session."
+          source.title source.id request.prompt
+      in
+      let socket = Lifecycle.session_socket manager.runtime_root target.id in
+      match
+        Result.bind
+          (prompt_request ~net socket ~command_id:request.command_id
+             ~text:target_prompt)
+          (worker_request ~net socket)
+      with
+      | Error message ->
+          ignore (Registry.requeue_peer_request manager.registry request.id);
+          if was_new then
+            ignore
+              (peer_event ~net manager source ~kind:"session.ask.queued"
+                 ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
+          Error message
+      | Ok _ ->
+          let marked =
+            Registry.mark_peer_dispatched manager.registry request.id
+          in
+          if marked then (
+            ignore
+              (peer_event ~net manager source ~kind:"session.ask.dispatched"
+                 ~request_id:request.id ~peer_id:target.id ~text:request.prompt);
+            ignore
+              (peer_event ~net manager target ~kind:"session.ask.received"
+                 ~request_id:request.id ~peer_id:source.id ~text:request.prompt));
+          Ok
+            (Option.get
+               (Registry.find_peer_request manager.registry request.id))
 
 let complete_peer_observation ~net (manager : Config.managed_workers)
     ~(source : Registry.session) (request : Registry.peer_request) observation =
@@ -228,11 +234,10 @@ let complete_peer_observation ~net (manager : Config.managed_workers)
              ~request_id:request.id ~peer_id:request.target_id ~text:response);
       Peer_completed response
   | Peer_failed message ->
-      Registry.update_peer_request manager.registry request.id ~state:"failed"
-        ~response:(Some message);
-      ignore
-        (peer_event ~net manager source ~kind:"session.ask.failed"
-           ~request_id:request.id ~peer_id:request.target_id ~text:message);
+      if Registry.fail_peer_request manager.registry request.id message then
+        ignore
+          (peer_event ~net manager source ~kind:"session.ask.failed"
+             ~request_id:request.id ~peer_id:request.target_id ~text:message);
       Peer_failed message
   | observation -> observation
 
@@ -248,19 +253,33 @@ let reconcile_peer_request ~net (manager : Config.managed_workers)
           complete_peer_observation ~net manager ~source request
             (Peer_failed "target session is not active")
       | Some target -> (
-          match dispatch_peer_request ~net manager ~source ~target request with
-          | Error _ -> Peer_pending
-          | Ok dispatched ->
-              inspect_peer_response ~net
-                ~socket:
-                  (Lifecycle.session_socket manager.runtime_root target.id)
-                dispatched
-              |> complete_peer_observation ~net manager ~source dispatched))
+          let observe dispatched =
+            inspect_peer_response ~net
+              ~socket:(Lifecycle.session_socket manager.runtime_root target.id)
+              dispatched
+            |> complete_peer_observation ~net manager ~source dispatched
+          in
+          match request.state with
+          | "dispatching" -> Peer_pending
+          | "dispatched" -> observe request
+          | "accepted" | "queued" -> (
+              match
+                dispatch_peer_request ~net manager ~source ~target request
+              with
+              | Error _ -> Peer_pending
+              | Ok dispatched when String.equal dispatched.state "dispatched" ->
+                  observe dispatched
+              | Ok _ -> Peer_pending)
+          | _ -> Peer_pending))
 
 let wait_for_peer_response ~net ~clock (manager : Config.managed_workers)
-    ~(source : Registry.session) request =
+    ~(source : Registry.session) (request : Registry.peer_request) =
   let deadline = Unix.gettimeofday () +. 600. in
   let rec loop () =
+    let request =
+      Option.value ~default:request
+        (Registry.find_peer_request manager.registry request.id)
+    in
     match reconcile_peer_request ~net manager ~source request with
     | Peer_pending when Unix.gettimeofday () < deadline ->
         Eio.Time.sleep clock 0.25;
@@ -522,17 +541,51 @@ let reconcile_peer_subscription ~net ~clock (manager : Config.managed_workers)
                      subscription.id)))
 
 let supervise ~net ~clock (manager : Config.managed_workers) =
-  let supervise subscription =
+  let supervise_subscription subscription =
     try reconcile_peer_subscription ~net ~clock manager subscription
     with exn ->
       Format.eprintf "peer subscription %s error: %s@." subscription.Registry.id
+        (Printexc.to_string exn)
+  in
+  let supervise_request (request : Registry.peer_request) =
+    try
+      match
+        Registry.find_active manager.registry request.Registry.source_id
+      with
+      | None ->
+          ignore
+            (Registry.fail_peer_request manager.registry request.id
+               "source session is not active")
+      | Some source -> (
+          try
+            Eio.Time.with_timeout_exn clock 2. (fun () ->
+                let request =
+                  if String.equal request.state "dispatching" then (
+                    ignore
+                      (Registry.requeue_peer_request manager.registry request.id);
+                    Option.get
+                      (Registry.find_peer_request manager.registry request.id))
+                  else request
+                in
+                match reconcile_peer_request ~net manager ~source request with
+                | Peer_pending ->
+                    Registry.touch_dispatched_peer_request manager.registry
+                      request.id
+                | Peer_completed _ | Peer_failed _ -> ())
+          with Eio.Time.Timeout ->
+            Registry.touch_dispatched_peer_request manager.registry request.id)
+    with exn ->
+      Format.eprintf "peer request %s error: %s@." request.Registry.id
         (Printexc.to_string exn)
   in
   let rec loop () =
     Eio.Switch.run (fun sw ->
         Registry.list_open_peer_subscriptions manager.registry
         |> List.iter (fun subscription ->
-            Eio.Fiber.fork ~sw (fun () -> supervise subscription)));
+            Eio.Fiber.fork ~sw (fun () -> supervise_subscription subscription));
+        Registry.list_reconcilable_peer_requests manager.registry ~limit:32
+        |> List.iter (fun request ->
+            Eio.Fiber.fork ~sw (fun () -> supervise_request request)));
     Eio.Time.sleep clock 0.25;
     loop ()
   in

@@ -6,6 +6,7 @@ module Session = struct
   type status = Runtime_domain.status =
     | Starting
     | Idle
+    | Waiting
     | Running
     | Requires_action
     | Stopped
@@ -92,6 +93,7 @@ let status path value =
   match value with
   | `String "starting" -> Ok Session.Starting
   | `String "idle" -> Ok Session.Idle
+  | `String "waiting" -> Ok Session.Waiting
   | `String "running" -> Ok Session.Running
   | `String "requires_action" -> Ok Session.Requires_action
   | `String "stopped" -> Ok Session.Stopped

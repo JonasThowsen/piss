@@ -38,6 +38,7 @@ let () =
       session ~last_finished_at:20. "s-finished-new" "Newest result" Pi "w-b";
       session ~last_finished_at:10. "s-finished-old" "Older result" Pi "w-a";
       session ~status:Running "s-run-b" "Live docs" Pi "w-b";
+      session ~status:Waiting "s-wait" "Waiting review" Pi "w-a";
       session ~status:Failed "s-finish-a" "Compiler crash" Pi "w-a";
       session ~status:Requires_action "s-attention-b" "Needs input" Pi "w-b";
       session "s-a" "Alpha" Opencode "w-a";
@@ -69,6 +70,7 @@ let () =
            "s-finish-b";
            "s-attention-b";
            "s-run-a";
+           "s-wait";
            "s-run-b";
            "s-a";
            "s-offline-a";
@@ -92,6 +94,15 @@ let () =
          (Global_search.status_label ~seen_finished_at newest.session)
          "idle")
   then fail "viewed completed session did not become idle";
+  let waiting =
+    List.find_exn all ~f:(fun item -> String.equal item.session.id "s-wait")
+  in
+  if
+    not
+      (String.equal
+         (Global_search.status_label ~seen_finished_at waiting.session)
+         "waiting")
+  then fail "delegated work was not labeled waiting";
   let by_workspace =
     Global_search.items ~scope:Active ~query:"compiler OPENCODE"
       ~seen_finished_at ~workspaces ~active ~archived

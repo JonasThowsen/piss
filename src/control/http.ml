@@ -45,6 +45,24 @@ let with_worker workers session_id operation =
   | Ok socket -> operation socket
   | Error error -> Error error
 
+let session_snapshot ~net workers session_id =
+  match workers with
+  | Config.Fixed _ ->
+      with_worker workers session_id (fun socket ->
+          Worker_client.request ~net ~socket
+            (`Assoc [ ("op", `String "snapshot") ]))
+  | Managed manager ->
+      let session =
+        Workers.active_session manager session_id
+        |> Result.map_error (fun _ ->
+            Error.Not_found
+              {
+                resource = "active session";
+                id = Option.value session_id ~default:"";
+              })
+      in
+      Result.bind session (Workers.snapshot ~net manager)
+
 let handler ~net ~clock ~process_mgr ~env _socket request body =
   let workers = env.Config.workers in
   let public_dir = env.public_dir in
@@ -103,11 +121,7 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                      ("pid", `Int (Unix.getpid ()));
                    ])
           | Routes.Get_session { session_id } -> (
-              match
-                with_worker workers session_id (fun socket ->
-                    Worker_client.request ~net ~socket
-                      (`Assoc [ ("op", `String "snapshot") ]))
-              with
+              match session_snapshot ~net workers session_id with
               | Ok snapshot -> Headers.respond_json snapshot
               | Error error -> Headers.error_json error)
           | Routes.Get_file_mentions { session_id; query } -> (

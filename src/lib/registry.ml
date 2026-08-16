@@ -277,8 +277,8 @@ let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
       let now = Unix.gettimeofday () in
       with_statement registry.db
         "INSERT INTO \
-         peer_requests(id,source_id,target_id,prompt,command_id,start_sequence,state,response,created_at,updated_at) \
-         VALUES (?,?,?,?,?,?,'accepted',NULL,?,?)" (fun statement ->
+         peer_requests(id,source_id,target_id,prompt,command_id,start_sequence,state,response,managed_reconciliation,created_at,updated_at) \
+         VALUES (?,?,?,?,?,?,'accepted',NULL,1,?,?)" (fun statement ->
           bind_text statement 1 id;
           bind_text statement 2 source_id;
           bind_text statement 3 target_id;
@@ -307,6 +307,54 @@ let list_peer_requests registry ~source_id =
             List.rev requests
       in
       collect [])
+
+let has_open_peer_work registry ~source_id =
+  with_statement registry.db
+    "SELECT (EXISTS (SELECT 1 FROM peer_requests WHERE source_id = ? AND \
+     managed_reconciliation = 1 AND state IN \
+     ('accepted','queued','dispatching','dispatched'))) OR (EXISTS (SELECT 1 \
+     FROM peer_subscriptions WHERE source_id = ? AND state IN \
+     ('pending','dispatching')))" (fun statement ->
+      bind_text statement 1 source_id;
+      bind_text statement 2 source_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Sqlite3.column_int statement 0 <> 0
+      | Sqlite3.Rc.DONE -> false
+      | rc ->
+          fail_rc "check open peer work" rc;
+          false)
+
+let list_reconcilable_peer_requests registry ~limit =
+  let now = Unix.gettimeofday () in
+  with_statement registry.db
+    "SELECT \
+     id,source_id,target_id,prompt,command_id,start_sequence,state,response \
+     FROM peer_requests WHERE managed_reconciliation = 1 AND (state = \
+     'dispatched' OR (state IN ('accepted','queued') AND updated_at <= ?) OR \
+     (state = 'dispatching' AND updated_at <= ?)) ORDER BY updated_at ASC \
+     LIMIT ?" (fun statement ->
+      bind_float statement 1 (now -. 1.);
+      bind_float statement 2 (now -. 5.);
+      fail_rc "bind reconcilable peer request limit"
+        (Sqlite3.bind_int statement 3 limit);
+      let rec collect requests =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (peer_request_of_statement statement :: requests)
+        | Sqlite3.Rc.DONE -> List.rev requests
+        | rc ->
+            fail_rc "list reconcilable peer requests" rc;
+            List.rev requests
+      in
+      collect [])
+
+let touch_dispatched_peer_request registry id =
+  with_statement registry.db
+    "UPDATE peer_requests SET updated_at = ? WHERE id = ? AND state IN \
+     ('dispatching','dispatched')" (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "touch dispatched peer request" statement)
 
 let find_peer_subscription registry id =
   with_statement registry.db
@@ -379,34 +427,52 @@ let complete_peer_subscription registry id =
 
 let mark_peer_dispatching registry id ~start_sequence =
   with_statement registry.db
-    "UPDATE peer_requests SET state = 'dispatching',start_sequence = \
-     ?,updated_at = ? WHERE id = ? AND state IN ('accepted','queued')"
-    (fun statement ->
+    "UPDATE peer_requests SET state = 'dispatching',start_sequence = CASE WHEN \
+     start_sequence = 0 THEN ? ELSE start_sequence END,updated_at = ? WHERE id \
+     = ? AND state IN ('accepted','queued')" (fun statement ->
       bind_int64 statement 1 start_sequence;
       bind_float statement 2 (Unix.gettimeofday ());
       bind_text statement 3 id;
-      expect_done "mark peer request dispatching" statement)
+      expect_done "mark peer request dispatching" statement);
+  Sqlite3.changes registry.db > 0
 
-let update_peer_request registry id ~state ~response =
+let mark_peer_dispatched registry id =
   with_statement registry.db
-    "UPDATE peer_requests SET state = ?,response = ?,updated_at = ? WHERE id = \
-     ?" (fun statement ->
-      bind_text statement 1 state;
-      (match response with
-      | Some value -> bind_text statement 2 value
-      | None -> fail_rc "bind null" (Sqlite3.bind statement 2 Sqlite3.Data.NULL));
-      bind_float statement 3 (Unix.gettimeofday ());
-      bind_text statement 4 id;
-      expect_done "update peer request" statement)
+    "UPDATE peer_requests SET state = 'dispatched',response = NULL,updated_at \
+     = ? WHERE id = ? AND state IN ('dispatching','dispatched')"
+    (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "mark peer request dispatched" statement);
+  Sqlite3.changes registry.db > 0
+
+let requeue_peer_request registry id =
+  with_statement registry.db
+    "UPDATE peer_requests SET state = 'queued',response = NULL,updated_at = ? \
+     WHERE id = ? AND state = 'dispatching'" (fun statement ->
+      bind_float statement 1 (Unix.gettimeofday ());
+      bind_text statement 2 id;
+      expect_done "requeue peer request" statement);
+  Sqlite3.changes registry.db > 0
 
 let complete_peer_request registry id response =
   with_statement registry.db
     "UPDATE peer_requests SET state = 'completed',response = ?,updated_at = ? \
-     WHERE id = ? AND state <> 'completed'" (fun statement ->
+     WHERE id = ? AND state NOT IN ('completed','failed')" (fun statement ->
       bind_text statement 1 response;
       bind_float statement 2 (Unix.gettimeofday ());
       bind_text statement 3 id;
       expect_done "complete peer request" statement);
+  Sqlite3.changes registry.db > 0
+
+let fail_peer_request registry id message =
+  with_statement registry.db
+    "UPDATE peer_requests SET state = 'failed',response = ?,updated_at = ? \
+     WHERE id = ? AND state NOT IN ('completed','failed')" (fun statement ->
+      bind_text statement 1 message;
+      bind_float statement 2 (Unix.gettimeofday ());
+      bind_text statement 3 id;
+      expect_done "fail peer request" statement);
   Sqlite3.changes registry.db > 0
 
 let rename_session registry id title =
@@ -438,10 +504,59 @@ let list_archived registry =
   list registry ~include_archived:true
   |> List.filter (fun session -> Option.is_some session.archived_at)
 
+let peer_request_ids_for_session registry id =
+  with_statement registry.db
+    "SELECT id FROM peer_requests WHERE source_id = ? OR target_id = ?"
+    (fun statement ->
+      bind_text statement 1 id;
+      bind_text statement 2 id;
+      let rec collect request_ids =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW ->
+            collect (Sqlite3.column_text statement 0 :: request_ids)
+        | Sqlite3.Rc.DONE -> request_ids
+        | rc ->
+            fail_rc "list peer requests for deleted session" rc;
+            request_ids
+      in
+      collect [])
+
+let delete_subscriptions_referencing registry request_ids =
+  if request_ids <> [] then
+    let request_ids = List.sort_uniq String.compare request_ids in
+    with_statement registry.db
+      "SELECT id,source_id,request_ids,wait_for,command_id,state FROM \
+       peer_subscriptions" (fun statement ->
+        let rec collect subscription_ids =
+          match Sqlite3.step statement with
+          | Sqlite3.Rc.ROW ->
+              let subscription = peer_subscription_of_statement statement in
+              let references_deleted =
+                List.exists
+                  (fun request_id -> List.mem request_id request_ids)
+                  subscription.request_ids
+              in
+              collect
+                (if references_deleted then subscription.id :: subscription_ids
+                 else subscription_ids)
+          | Sqlite3.Rc.DONE -> subscription_ids
+          | rc ->
+              fail_rc "list subscriptions for deleted peer requests" rc;
+              subscription_ids
+        in
+        collect [])
+    |> List.iter (fun subscription_id ->
+        with_statement registry.db "DELETE FROM peer_subscriptions WHERE id = ?"
+          (fun statement ->
+            bind_text statement 1 subscription_id;
+            expect_done "delete subscription for deleted peer request" statement))
+
 let delete_archived_ids registry ids =
   transaction registry (fun () ->
       List.fold_left
         (fun deleted id ->
+          peer_request_ids_for_session registry id
+          |> delete_subscriptions_referencing registry;
           with_statement registry.db
             "DELETE FROM peer_subscriptions WHERE source_id = ?"
             (fun statement ->

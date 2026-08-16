@@ -219,6 +219,23 @@ peer_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
   -H "x-piss-session-token: $first_token" --data "$peer_body" \
   "http://127.0.0.1:$port/api/v2/broker/ask")
 [[ $(jq -r .duplicate <<<"$peer_duplicate") == true ]]
+waiting_body=$(jq -nc --arg target "$second" \
+  '{requestId:"peer-waiting-status",targetSessionId:$target,prompt:"prove automatic waiting status reconciliation"}')
+curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" --data "$waiting_body" \
+  "http://127.0.0.1:$port/api/v2/broker/send" >/dev/null
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == waiting ]]
+for _ in $(seq 1 600); do
+  [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == idle ]] && break
+  sleep .02
+done
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == idle ]]
+[[ $(python3 - "$state/registry.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute("select state from peer_requests where id = 'peer-waiting-status'").fetchone()[0])
+PY
+) == completed ]]
 mcp_input=$(jq -nc --arg second "$second" --arg third "$third" '[
   {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
   {jsonrpc:"2.0",id:2,method:"tools/list",params:{}},
@@ -234,6 +251,8 @@ mcp_output=$(printf '%s\n' "$mcp_input" | env \
   "piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
 first_async=$(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 second_async=$(jq -r 'select(.id==4)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == waiting ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/sessions" | jq -r --arg id "$first" '.[]|select(.id==$id)|.status') == waiting ]]
 collect_any_input=$(jq -nc --arg first "$first_async" --arg second "$second_async" '[
   {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
   {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_collect_responses",arguments:{requestIds:[$first,$second],waitFor:"any",timeoutSeconds:10}}}
@@ -258,6 +277,7 @@ collect_json=$(jq -r 'select(.id==2)|.result.content[0].text|fromjson' <<<"$coll
 [[ $(jq '.pendingRequestIds|length' <<<"$collect_json") == 0 ]]
 [[ $(jq '[.responses[].response|select(.=="The worker retained ownership while the control plane was replaceable.")]|length' <<<"$collect_json") == 2 ]]
 [[ "$fanout_elapsed" -lt 3800 ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == idle ]]
 curl -fsS -X POST -H 'content-type: application/json' \
   --data "$(targeted_for "$first" '{"commandId":"source-still-active","text":"finish the original orchestrator turn"}')" \
   "http://127.0.0.1:$port/api/v2/commands?session=$first" >/dev/null
@@ -322,6 +342,20 @@ subscription_response=$(curl -fsS -X POST -H 'content-type: application/json' \
   "http://127.0.0.1:$port/api/v2/broker/subscribe")
 [[ $(jq -r .state <<<"$subscription_response") == pending ]]
 sleep .3
+"$root/stop" "$second"
+python3 - "$state/registry.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    connection.execute("update peer_requests set state = 'dispatching' where id = 'wake-control-first'")
+PY
+sleep .5
+[[ $(python3 - "$state/registry.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute("select state from peer_requests where id = 'wake-control-first'").fetchone()[0])
+PY
+) == dispatching ]]
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == waiting ]]
 old_control=$control_pid
 kill -9 "$control_pid"
 wait "$control_pid" 2>/dev/null || true
@@ -334,7 +368,9 @@ rm -f "$root/launch-delay"
 [[ $(head -3 "$root/launch-events" | grep -c '^start ') == 3 ]]
 [[ $(grep -c '^finish ' "$root/launch-events") == 3 ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | jq --arg id configured-empty 'any(.[]; .id==$id)') == false ]]
-[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid) == "$second_worker" ]]
+second_replacement=$(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$second" | jq -r .workerPid)
+[[ "$second_replacement" != "$second_worker" ]]
+second_worker=$second_replacement
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$third" | jq -r .workerPid) == "$third_worker" ]]
 wake_command=$(python3 - <<'PY'
 import hashlib
@@ -351,7 +387,8 @@ first_events=$(curl -fsS \
 [[ $(jq --arg command "$wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)]|length' <<<"$first_events") == 1 ]]
 wake_prompt=$(jq -r --arg command "$wake_command" '[.[]|select(.kind=="command.accepted" and .payload.commandId==$command)][0].payload.text' <<<"$first_events")
 [[ "$wake_prompt" == *wake-control-first* && "$wake_prompt" == *wake-control-second* ]]
-[[ $(grep -o 'The worker retained ownership while the control plane was replaceable.' <<<"$wake_prompt" | wc -l) == 2 ]]
+[[ "$wake_prompt" == *'peer session ended as ambiguous'* ]]
+[[ $(grep -o 'The worker retained ownership while the control plane was replaceable.' <<<"$wake_prompt" | wc -l) == 1 ]]
 wake_state=$(python3 - "$state/registry.sqlite3" <<'PY'
 import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as connection:

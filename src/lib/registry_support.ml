@@ -130,9 +130,14 @@ let initialize db =
     "CREATE TABLE IF NOT EXISTS peer_requests (id TEXT PRIMARY KEY,source_id \
      TEXT NOT NULL,target_id TEXT NOT NULL,prompt TEXT NOT NULL,command_id \
      TEXT NOT NULL UNIQUE,start_sequence INTEGER NOT NULL,state TEXT NOT \
-     NULL,response TEXT,created_at REAL NOT NULL,updated_at REAL NOT \
-     NULL,FOREIGN KEY(source_id) REFERENCES sessions(id),FOREIGN \
-     KEY(target_id) REFERENCES sessions(id))";
+     NULL,response TEXT,managed_reconciliation INTEGER NOT NULL DEFAULT \
+     0,created_at REAL NOT NULL,updated_at REAL NOT NULL,FOREIGN \
+     KEY(source_id) REFERENCES sessions(id),FOREIGN KEY(target_id) REFERENCES \
+     sessions(id))";
+  if not (has_column db "peer_requests" "managed_reconciliation") then
+    exec db
+      "ALTER TABLE peer_requests ADD COLUMN managed_reconciliation INTEGER NOT \
+       NULL DEFAULT 0";
   exec db
     "CREATE TABLE IF NOT EXISTS peer_subscriptions (id TEXT PRIMARY \
      KEY,source_id TEXT NOT NULL,request_ids TEXT NOT NULL,wait_for TEXT NOT \
@@ -142,8 +147,17 @@ let initialize db =
      NULL,updated_at REAL NOT NULL,FOREIGN KEY(source_id) REFERENCES \
      sessions(id))";
   exec db
+    "CREATE INDEX IF NOT EXISTS peer_requests_source_state_idx ON \
+     peer_requests(source_id,state)";
+  exec db
+    "CREATE INDEX IF NOT EXISTS peer_requests_reconcile_idx ON \
+     peer_requests(managed_reconciliation,state,updated_at)";
+  exec db
     "CREATE INDEX IF NOT EXISTS peer_subscriptions_open_idx ON \
-     peer_subscriptions(state,created_at)"
+     peer_subscriptions(state,created_at)";
+  exec db
+    "CREATE INDEX IF NOT EXISTS peer_subscriptions_source_state_idx ON \
+     peer_subscriptions(source_id,state)"
 
 let session_of_statement statement =
   {

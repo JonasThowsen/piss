@@ -31,6 +31,7 @@ type command_state =
 type worker_status =
   | Starting
   | Idle
+  | Waiting
   | Running
   | Requires_action
   | Stopped
@@ -90,6 +91,7 @@ let command_state_of_string = function
 let worker_status_to_string = function
   | Starting -> "starting"
   | Idle -> "idle"
+  | Waiting -> "waiting"
   | Running -> "running"
   | Requires_action -> "requires_action"
   | Stopped -> "stopped"
@@ -98,6 +100,7 @@ let worker_status_to_string = function
 let worker_status_of_string = function
   | "starting" -> Ok Starting
   | "idle" -> Ok Idle
+  | "waiting" -> Ok Waiting
   | "running" -> Ok Running
   | "requires_action" -> Ok Requires_action
   | "stopped" -> Ok Stopped

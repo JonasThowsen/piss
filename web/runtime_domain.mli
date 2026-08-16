@@ -1,6 +1,7 @@
 type status =
   | Starting
   | Idle
+  | Waiting
   | Running
   | Requires_action
   | Stopped

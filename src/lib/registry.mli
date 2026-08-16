@@ -152,6 +152,21 @@ val accept_peer_request :
 val list_peer_requests : t -> source_id:string -> peer_request list
 (** List every peer request whose source is [source_id]. *)
 
+val has_open_peer_work : t -> source_id:string -> bool
+(** Whether the source session has dispatched peer work still awaiting a result
+    or an undelivered response subscription. The control plane projects an
+    otherwise-idle source as waiting while this remains true. *)
+
+val list_reconcilable_peer_requests : t -> limit:int -> peer_request list
+(** Read managed requests eligible for background reconciliation. Accepted and
+    queued requests receive a short retry delay; dispatching claims receive a
+    longer crash-recovery lease; dispatched requests are observed immediately.
+*)
+
+val touch_dispatched_peer_request : t -> string -> unit
+(** Move a still-dispatching/dispatched request to the back of the
+    reconciliation queue. *)
+
 val find_peer_subscription : t -> string -> peer_subscription option
 (** Look up a peer subscription by id. *)
 
@@ -176,16 +191,26 @@ val complete_peer_subscription : t -> string -> bool
 (** Mark a subscription as completed (after the wake turn finishes). Returns
     [false] if the subscription was already delivered. *)
 
-val mark_peer_dispatching : t -> string -> start_sequence:int64 -> unit
-(** Mark a peer request as having been dispatched to its target. *)
+val mark_peer_dispatching : t -> string -> start_sequence:int64 -> bool
+(** Claim an accepted/queued request for dispatch. Returns [false] when another
+    caller or a terminal transition already owns the state. *)
 
-val update_peer_request :
-  t -> string -> state:string -> response:string option -> unit
-(** Update the state of a peer request. *)
+val mark_peer_dispatched : t -> string -> bool
+(** Mark a dispatching/dispatched request as dispatched. Returns [false] after a
+    concurrent terminal transition. *)
+
+val requeue_peer_request : t -> string -> bool
+(** Return a dispatching request to the queue after its initial delivery fails.
+    Returns [false] after a concurrent terminal transition. *)
 
 val complete_peer_request : t -> string -> string -> bool
-(** Mark a peer request as completed and store [response]. Returns [false] if
-    the request has already completed. *)
+(** Mark a non-terminal peer request as completed and store [response]. Returns
+    [false] if the request was already completed or failed. *)
+
+val fail_peer_request : t -> string -> string -> bool
+(** Mark a non-terminal peer request as failed and store the reason. Returns
+    [false] after any terminal observation, making concurrent reconciliation
+    idempotent. *)
 
 val rename_session : t -> string -> string -> bool
 (** Rename a session by id. Returns [false] if the id does not exist. *)

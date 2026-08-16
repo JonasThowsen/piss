@@ -60,6 +60,7 @@ type command_state =
 type worker_status =
   | Starting
   | Idle
+  | Waiting
   | Running
   | Requires_action
   | Stopped

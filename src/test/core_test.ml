@@ -139,29 +139,50 @@ let test_session_registry () =
   let request, duplicate =
     Registry.accept_peer_request registry ~id:"peer-one" ~source_id:one.id
       ~target_id:two.id ~prompt:"review this" ~command_id:"peer-command"
-      ~start_sequence:7L
+      ~start_sequence:0L
   in
   Alcotest.(check bool) "first peer request is new" false duplicate;
-  Alcotest.(check int64) "peer cursor retained" 7L request.start_sequence;
+  Alcotest.(check bool)
+    "accepted managed request projects peer waiting" true
+    (Registry.has_open_peer_work registry ~source_id:one.id);
+  Alcotest.(check int64) "peer cursor starts unset" 0L request.start_sequence;
   let _, duplicate =
     Registry.accept_peer_request registry ~id:"peer-one" ~source_id:one.id
       ~target_id:two.id ~prompt:"review this" ~command_id:"peer-command"
       ~start_sequence:99L
   in
   Alcotest.(check bool) "peer request deduplicates" true duplicate;
-  Registry.mark_peer_dispatching registry "peer-one" ~start_sequence:8L;
+  Alcotest.(check bool)
+    "first caller claims dispatch" true
+    (Registry.mark_peer_dispatching registry "peer-one" ~start_sequence:8L);
+  Alcotest.(check bool)
+    "concurrent caller cannot claim dispatch" false
+    (Registry.mark_peer_dispatching registry "peer-one" ~start_sequence:9L);
   let dispatching =
     Option.get (Registry.find_peer_request registry "peer-one")
   in
   Alcotest.(check string)
     "peer request dispatching" "dispatching" dispatching.state;
-  Alcotest.(check int64) "dispatch cursor updated" 8L dispatching.start_sequence;
+  Alcotest.(check bool)
+    "crash-stale dispatch projects peer waiting" true
+    (Registry.has_open_peer_work registry ~source_id:one.id);
+  Alcotest.(check bool)
+    "dispatch transition completes" true
+    (Registry.mark_peer_dispatched registry "peer-one");
+  Alcotest.(check bool)
+    "dispatched request projects peer waiting" true
+    (Registry.has_open_peer_work registry ~source_id:one.id);
+  Alcotest.(check int64)
+    "dispatch retry preserves original cursor" 8L dispatching.start_sequence;
   Alcotest.(check bool)
     "first completion changes state" true
     (Registry.complete_peer_request registry "peer-one" "reviewed");
   Alcotest.(check bool)
     "completion deduplicates" false
     (Registry.complete_peer_request registry "peer-one" "must not replace");
+  Alcotest.(check bool)
+    "completed request clears peer waiting" false
+    (Registry.has_open_peer_work registry ~source_id:one.id);
   Alcotest.(check int)
     "source request listing" 1
     (List.length (Registry.list_peer_requests registry ~source_id:one.id));
@@ -169,12 +190,34 @@ let test_session_registry () =
   Alcotest.(check string)
     "peer response retained" "reviewed"
     (Option.get completed.response);
+  ignore
+    (Registry.accept_peer_request registry ~id:"peer-failure" ~source_id:one.id
+       ~target_id:two.id ~prompt:"fail once" ~command_id:"peer-failure-command"
+       ~start_sequence:9L);
+  ignore
+    (Registry.mark_peer_dispatching registry "peer-failure" ~start_sequence:9L);
+  ignore (Registry.mark_peer_dispatched registry "peer-failure");
+  Alcotest.(check bool)
+    "first peer failure changes state" true
+    (Registry.fail_peer_request registry "peer-failure" "unavailable");
+  Alcotest.(check bool)
+    "duplicate peer failure is idempotent" false
+    (Registry.fail_peer_request registry "peer-failure" "duplicate");
+  Alcotest.(check bool)
+    "failed request cannot be reopened" false
+    (Registry.mark_peer_dispatched registry "peer-failure");
+  Alcotest.(check string)
+    "failed request remains terminal" "failed"
+    (Option.get (Registry.find_peer_request registry "peer-failure")).state;
   let subscription, duplicate =
     Registry.accept_peer_subscription registry ~id:"wake-one" ~source_id:one.id
       ~request_ids:[ "peer-one" ] ~wait_for:"all"
       ~command_id:"peer-wake-command"
   in
   Alcotest.(check bool) "first wake subscription is new" false duplicate;
+  Alcotest.(check bool)
+    "pending subscription projects peer waiting" true
+    (Registry.has_open_peer_work registry ~source_id:one.id);
   Alcotest.(check string)
     "wake subscription pending" "pending" subscription.state;
   let _, duplicate =
@@ -199,6 +242,9 @@ let test_session_registry () =
   Alcotest.(check int)
     "delivered wake no longer open" 0
     (List.length (Registry.list_open_peer_subscriptions registry));
+  Alcotest.(check bool)
+    "delivered subscription clears peer waiting" false
+    (Registry.has_open_peer_work registry ~source_id:one.id);
   ignore
     (Registry.insert registry ~id:"s-old" ~title:"Old session" ~harness:"pi"
        ~workspace_id:"workspace-one");
@@ -226,9 +272,31 @@ let test_session_registry () =
   Alcotest.(check int)
     "workspace count excludes selected deletion" 2
     (Registry.workspace_session_count registry "workspace-one");
+  ignore
+    (Registry.accept_peer_request registry ~id:"cross-delete-request"
+       ~source_id:two.id ~target_id:"s-old" ~prompt:"review before deletion"
+       ~command_id:"cross-delete-command" ~start_sequence:10L);
+  ignore
+    (Registry.mark_peer_dispatching registry "cross-delete-request"
+       ~start_sequence:10L);
+  ignore (Registry.mark_peer_dispatched registry "cross-delete-request");
+  ignore
+    (Registry.accept_peer_subscription registry ~id:"cross-delete-subscription"
+       ~source_id:two.id ~request_ids:[ "cross-delete-request" ] ~wait_for:"all"
+       ~command_id:"cross-delete-wake");
+  Alcotest.(check bool)
+    "cross-session subscription projects waiting" true
+    (Registry.has_open_peer_work registry ~source_id:two.id);
   Alcotest.(check int)
     "remaining archived session deleted" 1
     (Registry.delete_archived registry);
+  Alcotest.(check bool)
+    "target deletion removes source subscription" true
+    (Option.is_none
+       (Registry.find_peer_subscription registry "cross-delete-subscription"));
+  Alcotest.(check bool)
+    "target deletion clears source waiting" false
+    (Registry.has_open_peer_work registry ~source_id:two.id);
   Alcotest.(check int)
     "repeated archived deletion is empty" 0
     (Registry.delete_archived registry)

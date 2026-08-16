@@ -43,7 +43,7 @@ let searchable ~seen_finished_at session workspace =
 let status_rank ~seen_finished_at (session : Control_plane.Session.t) =
   match (session.status, finished_at ~seen_finished_at session) with
   | Idle, Some _ | (Requires_action | Stopped | Failed), _ -> 0
-  | (Starting | Running), _ -> 1
+  | (Starting | Waiting | Running), _ -> 1
   | (Idle | Offline), _ -> 2
   | Archived, _ -> 3
 

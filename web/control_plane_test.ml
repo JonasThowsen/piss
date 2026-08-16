@@ -80,6 +80,17 @@ let () =
   (match Control_plane.decode_sessions "{}" with
   | Error message when String.is_substring message ~substring:"JSON array" -> ()
   | _ -> fail "non-array response was accepted");
+  let waiting_session =
+    String.substr_replace_first live_session ~pattern:{|"status": "running"|}
+      ~with_:{|"status": "waiting"|}
+    |> fun waiting -> List.hd_exn (decode ("[" ^ waiting ^ "]"))
+  in
+  if
+    (not (phys_equal waiting_session.status Control_plane.Session.Waiting))
+    || not
+         (Option.exists waiting_session.runtime ~f:(fun runtime ->
+              phys_equal runtime.status Runtime_domain.Waiting))
+  then fail "waiting runtime status was not decoded";
   let custom = List.hd_exn (decode ("[" ^ custom_harness_session ^ "]")) in
   if
     not

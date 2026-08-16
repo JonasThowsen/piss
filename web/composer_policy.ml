@@ -18,7 +18,7 @@ let derive ~has_session ~runtime ~connecting ~submitting ~image_processing =
     | None -> Offline
     | Some runtime -> (
         match runtime.Runtime_domain.status with
-        | Idle -> Ready
+        | Idle | Waiting -> Ready
         | Running -> Running
         | Requires_action -> Requires_action
         | Starting -> Connecting

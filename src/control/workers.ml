@@ -36,15 +36,32 @@ let worker_socket (workers : Config.workers) uri =
           Lifecycle.session_socket manager.runtime_root session.id)
         (active_session manager requested)
 
+let project_waiting_status (manager : Config.managed_workers)
+    (session : Registry.session) fields =
+  if
+    Registry.has_open_peer_work manager.registry ~source_id:session.id
+    && List.assoc_opt "status" fields = Some (`String "idle")
+  then
+    List.map
+      (fun (name, value) ->
+        if String.equal name "status" then (name, `String "waiting")
+        else (name, value))
+      fields
+  else fields
+
+let snapshot ~net (manager : Config.managed_workers)
+    (session : Registry.session) =
+  let socket = Lifecycle.session_socket manager.runtime_root session.id in
+  Worker_client.request ~net ~socket (`Assoc [ ("op", `String "snapshot") ])
+  |> Result.map (function
+    | `Assoc fields -> `Assoc (project_waiting_status manager session fields)
+    | value -> value)
+
 let summary ~net (manager : Config.managed_workers) (session : Registry.session)
     =
-  let socket = Lifecycle.session_socket manager.runtime_root session.id in
   let runtime =
     try
-      match
-        Worker_client.request ~net ~socket
-          (`Assoc [ ("op", `String "snapshot") ])
-      with
+      match snapshot ~net manager session with
       | Ok (`Assoc fields) -> fields
       | Ok _ -> []
       | Error _ -> [ ("status", `String "offline") ]

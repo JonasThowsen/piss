@@ -4,6 +4,7 @@ module Session : sig
   type status = Runtime_domain.status =
     | Starting
     | Idle
+    | Waiting
     | Running
     | Requires_action
     | Stopped

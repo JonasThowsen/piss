@@ -68,7 +68,10 @@ let component session runtime connecting stream_notice notice config_controls
     && Option.value_map runtime ~default:false
          ~f:(fun (runtime : Runtime_domain.t) ->
            runtime.accepts_images
-           && match runtime.status with Idle | Running -> true | _ -> false)
+           &&
+           match runtime.status with
+           | Idle | Waiting | Running -> true
+           | _ -> false)
   in
   let attachments =
     Image_attachments.component ~available:attachment_available

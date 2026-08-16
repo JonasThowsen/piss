@@ -110,9 +110,13 @@ let component runtime ~available ~refresh ~on_error graph =
       Option.value_map open_category ~default:false
         ~f:(String.equal option.category)
     in
+    let idle_or_waiting =
+      match runtime.Runtime_domain.status with
+      | Runtime_domain.Idle | Waiting -> true
+      | _ -> false
+    in
     let disabled =
-      Option.is_some submitting || (not available)
-      || not (phys_equal runtime.Runtime_domain.status Runtime_domain.Idle)
+      Option.is_some submitting || (not available) || not idle_or_waiting
     in
     let trigger = trigger_id option in
     let menu = menu_id option in
