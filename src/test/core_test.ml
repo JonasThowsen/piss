@@ -272,6 +272,9 @@ let test_session_registry () =
   Alcotest.(check int)
     "workspace count excludes selected deletion" 2
     (Registry.workspace_session_count registry "workspace-one");
+  Alcotest.(check bool)
+    "archived target can be restored before new work" true
+    (Registry.restore registry "s-old");
   ignore
     (Registry.accept_peer_request registry ~id:"cross-delete-request"
        ~source_id:two.id ~target_id:"s-old" ~prompt:"review before deletion"
@@ -287,6 +290,9 @@ let test_session_registry () =
   Alcotest.(check bool)
     "cross-session subscription projects waiting" true
     (Registry.has_open_peer_work registry ~source_id:two.id);
+  Alcotest.(check bool)
+    "worked target can be archived for deletion" true
+    (Registry.archive registry "s-old");
   Alcotest.(check int)
     "remaining archived session deleted" 1
     (Registry.delete_archived registry);
@@ -474,6 +480,69 @@ let test_broker_creation_registry () =
   Alcotest.(check string)
     "completed request is active" "active"
     (Option.get (Registry.find_session_creation registry creation.id)).state;
+  Alcotest.(check bool)
+    "creator owns broker session" true
+    (Registry.session_created_by registry ~source_id:source.id
+       ~session_id:session.id);
+  Alcotest.(check bool)
+    "other session does not own broker session" false
+    (Registry.session_created_by registry ~source_id:"other-source"
+       ~session_id:session.id);
+  Alcotest.(check bool)
+    "unused session does not suggest cleanup" false
+    (Registry.cleanup_recommended registry ~source_id:source.id
+       ~session_id:session.id);
+  let peer_request, _duplicate =
+    Registry.accept_peer_request registry ~id:"cleanup-peer-request"
+      ~source_id:source.id ~target_id:session.id ~prompt:"finish safely"
+      ~command_id:"cleanup-command" ~start_sequence:0L
+  in
+  Alcotest.(check bool)
+    "unfinished peer work blocks cleanup" true
+    (Registry.has_open_session_work registry ~session_id:session.id);
+  Alcotest.(check bool)
+    "open work does not suggest cleanup" false
+    (Registry.cleanup_recommended registry ~source_id:source.id
+       ~session_id:session.id);
+  Alcotest.(check bool)
+    "peer work completes" true
+    (Registry.complete_peer_request registry peer_request.id "done");
+  Alcotest.(check bool)
+    "terminal peer work permits cleanup" false
+    (Registry.has_open_session_work registry ~session_id:session.id);
+  Alcotest.(check bool)
+    "completed caller-owned work suggests cleanup" true
+    (Registry.cleanup_recommended registry ~source_id:source.id
+       ~session_id:session.id);
+  (match
+     Registry.claim_session_finish registry ~source_id:source.id
+       ~session_id:session.id
+   with
+  | Ok () -> ()
+  | Error message -> Alcotest.fail message);
+  Alcotest.(check bool)
+    "finish claim fences active lookup" true
+    (Option.is_none (Registry.find_active registry session.id));
+  Alcotest.(check (list string))
+    "finish claim is durably reconcilable" [ session.id ]
+    (Registry.list_finishing_sessions registry
+    |> List.map (fun (session : Registry.session) -> session.id));
+  (try
+     ignore
+       (Registry.accept_peer_request registry ~id:"fenced-peer-request"
+          ~source_id:source.id ~target_id:session.id ~prompt:"too late"
+          ~command_id:"fenced-command" ~start_sequence:0L);
+     Alcotest.fail "finish fence accepted new peer work"
+   with Invalid_argument _ -> ());
+  Alcotest.(check bool)
+    "failed cleanup can remove finish fence" true
+    (Registry.cancel_session_finish registry session.id);
+  Alcotest.(check bool)
+    "cancelled finish restores active lookup" true
+    (Option.is_some (Registry.find_active registry session.id));
+  Alcotest.(check int)
+    "cancelled finish leaves no reconciliation work" 0
+    (List.length (Registry.list_finishing_sessions registry));
   (match
      Registry.accept_session_creation registry ~id:"session-request-two"
        ~source_id:source.id ~workspace_id:workspace.id ~title:"Limit proof"

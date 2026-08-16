@@ -15,6 +15,7 @@ let () =
   (match env.Config.workers with
   | Managed manager ->
       Workers.reconcile_session_creations manager;
+      Workers.reconcile_session_finishes manager;
       Workers.start_registered
         ~process_mgr:(Eio.Stdenv.process_mgr stdenv)
         manager
@@ -29,6 +30,7 @@ let () =
       Eio.Fiber.fork ~sw (fun () ->
           let rec reconcile_cleanup () =
             Workers.reconcile_session_creations ~recover_launching:false manager;
+            Workers.reconcile_session_finishes manager;
             Eio.Time.sleep clock 2.;
             reconcile_cleanup ()
           in

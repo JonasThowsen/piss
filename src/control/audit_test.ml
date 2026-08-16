@@ -100,6 +100,16 @@ let error_category_case () =
 
 let route_case () =
   Alcotest.(check bool)
+    "idle runtime can be explicitly finished" true
+    (Routes.finishable_runtime_status "idle");
+  List.iter
+    (fun status ->
+      Alcotest.(check bool)
+        (status ^ " runtime fails closed for cleanup")
+        false
+        (Routes.finishable_runtime_status status))
+    [ "offline"; "starting"; "waiting"; "running"; "requires_action"; "failed" ];
+  Alcotest.(check bool)
     "broker token authorizes broker route" true
     (Routes.credential_authorized ~path:"/api/v2/broker/sessions"
        ~user_authorized:false ~has_broker_session:true);
@@ -122,6 +132,9 @@ let route_case () =
   (match parse true `POST "/api/v2/broker/sessions" with
   | Ok Routes.Post_broker_sessions -> ()
   | _ -> Alcotest.fail "broker session creation route was not parsed");
+  (match parse true `POST "/api/v2/broker/finish" with
+  | Ok Routes.Post_broker_finish -> ()
+  | _ -> Alcotest.fail "broker session finish route was not parsed");
   (match parse true `GET "/api/v2/catalog-revision" with
   | Ok Routes.Get_catalog_revision -> ()
   | _ -> Alcotest.fail "catalog revision route was not parsed");

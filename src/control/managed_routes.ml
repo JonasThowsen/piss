@@ -17,6 +17,112 @@ let workspace_fields (workspace : Registry.workspace) =
     ("workspaceRoot", `String workspace.root);
   ]
 
+let cleanup_fields manager ~(caller : Registry.session)
+    (session : Registry.session) =
+  let created_by_caller =
+    Registry.session_created_by manager.Config.registry ~source_id:caller.id
+      ~session_id:session.id
+  in
+  [
+    ("createdByCaller", `Bool created_by_caller);
+    ( "cleanupRecommended",
+      `Bool
+        (created_by_caller
+        && Registry.cleanup_recommended manager.registry ~source_id:caller.id
+             ~session_id:session.id) );
+  ]
+
+let runtime_status ~net manager session =
+  match Workers.summary ~net manager session with
+  | `Assoc fields -> (
+      match List.assoc_opt "status" fields with
+      | Some (`String value) -> value
+      | _ -> "offline")
+  | _ -> "offline"
+
+let finished_response ~duplicate target_id =
+  Headers.respond_json
+    (`Assoc
+       [
+         ("sessionId", `String target_id);
+         ("state", `String "archived");
+         ("duplicate", `Bool duplicate);
+         ("hardDeleted", `Bool false);
+       ])
+
+let handle_broker_finish ~net (manager : Config.managed_workers)
+    ~(source : Registry.session) ~request ~read_body =
+  match Authentication.valid_json_content request with
+  | Error (status, message) ->
+      Headers.error_json ~status (authentication_error status message)
+  | Ok () -> (
+      let json = read_body () |> Yojson.Safe.from_string in
+      let open Yojson.Safe.Util in
+      let target_id =
+        match member "targetSessionId" json with
+        | `String value -> value
+        | _ -> ""
+      in
+      if not (Lifecycle.valid_session_id target_id) then
+        Headers.error_json
+          (validation ~field:"targetSessionId"
+             "targetSessionId must be a valid managed session identity")
+      else if
+        not
+          (Registry.session_created_by manager.registry ~source_id:source.id
+             ~session_id:target_id)
+      then
+        Headers.error_json ~status:`Forbidden
+          (forbidden
+             "only the orchestrator that created this session may finish it")
+      else
+        match Registry.find manager.registry target_id with
+        | None ->
+            Headers.error_json
+              (Error.Not_found { resource = "created session"; id = target_id })
+        | Some { archived_at = Some _; _ } ->
+            finished_response ~duplicate:true target_id
+        | Some session -> (
+            let status = runtime_status ~net manager session in
+            if not (Routes.finishable_runtime_status status) then
+              Headers.error_json
+                (conflict
+                   ("session is still " ^ status
+                  ^ "; wait for it to become idle before finishing it"))
+            else
+              match
+                Registry.claim_session_finish manager.registry
+                  ~source_id:source.id ~session_id:target_id
+              with
+              | Error message -> Headers.error_json (conflict message)
+              | Ok () -> (
+                  let fenced_status = runtime_status ~net manager session in
+                  if not (Routes.finishable_runtime_status fenced_status) then (
+                    ignore
+                      (Registry.cancel_session_finish manager.registry target_id);
+                    Headers.error_json
+                      (conflict
+                         ("session became " ^ fenced_status
+                        ^ " while cleanup was being fenced; retry after it is \
+                           idle")))
+                  else
+                    match Workers.finish_claimed_session manager target_id with
+                    | Ok () -> finished_response ~duplicate:false target_id
+                    | Error message -> (
+                        match Registry.find manager.registry target_id with
+                        | Some { archived_at = Some _; _ } ->
+                            finished_response ~duplicate:true target_id
+                        | _ -> Headers.error_json (conflict message)))))
+
+let cleanup_guidance session_id =
+  `Assoc
+    [
+      ("sessionId", `String session_id);
+      ("tool", `String "piss_finish_session");
+      ("when", `String "after all responses are durably collected");
+      ("hardDeleted", `Bool false);
+    ]
+
 let session_with_workspace (manager : Config.managed_workers)
     (session : Registry.session) =
   let workspace =
@@ -49,7 +155,8 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                 | `Assoc fields ->
                     `Assoc
                       (("self", `Bool (String.equal caller.id session.id))
-                      :: fields)
+                       :: cleanup_fields manager ~caller session
+                      @ fields)
                 | _ -> assert false)
             |> fun sessions -> Headers.respond_json (`List sessions))
   | Routes.Get_broker_workspaces ->
@@ -199,6 +306,7 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                                ("session", Registry.session_to_yojson session);
                                ( "workspace",
                                  Registry.workspace_to_yojson workspace );
+                               ("cleanup", cleanup_guidance session.id);
                              ]))
                 | Error message -> (
                     match
@@ -219,6 +327,15 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                                ("error", `String message);
                              ])
                     | _ -> Headers.error_json (conflict message)))))
+  | Routes.Post_broker_finish ->
+      Some
+        (match calling_session with
+        | None ->
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
+        | Some source ->
+            Eio.Mutex.use_ro manager.lifecycle_mutex (fun () ->
+                handle_broker_finish ~net manager ~source ~request ~read_body))
   | Routes.Post_broker_send ->
       Some
         (match calling_session with
@@ -240,6 +357,11 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                            ("requestId", `String peer_request.id);
                            ("state", `String peer_request.state);
                            ("duplicate", `Bool duplicate);
+                           ( "cleanupAfterCollection",
+                             `Bool
+                               (Registry.session_created_by manager.registry
+                                  ~source_id:source.id
+                                  ~session_id:peer_request.target_id) );
                          ]))))
   | Routes.Post_broker_subscribe ->
       Some
@@ -290,6 +412,13 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                                ("requestId", `String peer_request.id);
                                ("response", `String response);
                                ("duplicate", `Bool duplicate);
+                               ( "cleanupRecommended",
+                                 `Bool
+                                   (Registry.cleanup_recommended
+                                      manager.registry ~source_id:source.id
+                                      ~session_id:peer_request.target_id) );
+                               ( "cleanup",
+                                 cleanup_guidance peer_request.target_id );
                              ])))))
   | Routes.Post_broker_collect ->
       Some
@@ -336,6 +465,16 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                     Broker.collect_peer_requests ~net ~clock manager ~source
                       ~request_ids ~wait_for ~timeout
                   in
+                  let cleanup_session_ids =
+                    finished
+                    |> List.filter_map (fun (request : Registry.peer_request) ->
+                        if
+                          Registry.cleanup_recommended manager.registry
+                            ~source_id:source.id ~session_id:request.target_id
+                        then Some request.target_id
+                        else None)
+                    |> List.sort_uniq String.compare
+                  in
                   Headers.respond_json
                     (`Assoc
                        [
@@ -347,6 +486,11 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                                 (fun (request : Registry.peer_request) ->
                                   `String request.id)
                                 pending) );
+                         ( "cleanupRecommendedSessionIds",
+                           `List
+                             (List.map
+                                (fun id -> `String id)
+                                cleanup_session_ids) );
                        ])))
   | Routes.Get_workspaces ->
       Some

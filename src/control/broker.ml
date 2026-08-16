@@ -316,16 +316,18 @@ let accept_peer_json ~net (manager : Config.managed_workers)
                  && String.equal request.prompt prompt) ->
             Error "requestId belongs to a different peer request"
         | Some request -> Ok (request, true)
-        | None ->
-            let request, _ =
-              Registry.accept_peer_request manager.registry ~id:request_id
-                ~source_id:source.id ~target_id:target.id ~prompt ~command_id
-                ~start_sequence:0L
-            in
-            ignore
-              (peer_event ~net manager source ~kind:"session.ask.sent"
-                 ~request_id ~peer_id:target.id ~text:prompt);
-            Ok (request, false))
+        | None -> (
+            try
+              let request, _ =
+                Registry.accept_peer_request manager.registry ~id:request_id
+                  ~source_id:source.id ~target_id:target.id ~prompt ~command_id
+                  ~start_sequence:0L
+              in
+              ignore
+                (peer_event ~net manager source ~kind:"session.ask.sent"
+                   ~request_id ~peer_id:target.id ~text:prompt);
+              Ok (request, false)
+            with Invalid_argument message -> Error message))
 
 let send_peer_request ~net (manager : Config.managed_workers)
     ~(source : Registry.session) json =

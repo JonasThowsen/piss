@@ -162,7 +162,7 @@ let initialize db =
      NULL,harness TEXT NOT NULL CHECK(harness IN \
      ('pi','codex','opencode','mock')),created_at REAL NOT NULL,archived_at \
      REAL,broker_token TEXT NOT NULL DEFAULT '',workspace_id TEXT NOT NULL \
-     DEFAULT '')";
+     DEFAULT '',finishing_at REAL)";
   if not (has_column db "sessions" "broker_token") then
     exec db
       "ALTER TABLE sessions ADD COLUMN broker_token TEXT NOT NULL DEFAULT ''";
@@ -170,6 +170,8 @@ let initialize db =
     exec db
       "ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''";
   if not (sessions_support_codex db) then migrate_sessions_for_codex db;
+  if not (has_column db "sessions" "finishing_at") then
+    exec db "ALTER TABLE sessions ADD COLUMN finishing_at REAL";
   exec db
     "CREATE INDEX IF NOT EXISTS sessions_active_idx ON \
      sessions(archived_at,created_at)";

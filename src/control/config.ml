@@ -23,6 +23,7 @@ and managed_workers = {
   mutable default_workspace_id : string;
   workspace_discovery_roots : string list;
   max_active_sessions : int;
+  lifecycle_mutex : Eio.Mutex.t;
 }
 
 and workers = Fixed of string | Managed of managed_workers
@@ -181,6 +182,7 @@ let parse () =
             List.rev !workspace_discovery_roots
             |> List.filter_map Workspaces.canonical_directory;
           max_active_sessions = !max_active_sessions;
+          lifecycle_mutex = Eio.Mutex.create ();
         }
       in
       if

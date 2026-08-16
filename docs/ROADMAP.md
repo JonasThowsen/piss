@@ -20,7 +20,8 @@ The current implementation proves these end-to-end paths:
 - server updates stage immediately but activate only after working, queued, compacting, interactive, and autonomous workflow phases settle;
 - an authenticated user can conversationally refine a guided engineering workflow, choose a local/targeted/required disclosure boundary, receive a validated source-pinned read-only Research brief, grant revision-bound authority once through **Approve & Run**, and continue unattended through ordered Build → Verify → Review slices, bounded repairs, durable guidance/progress, exact structured authority checks, and independent read-only supervisor adjudication;
 - an owned Pi session can use a Piss-managed, loopback-only Chromium context to inspect and interact with a local UI, publish validated PNG/WebM evidence, and use bounded keyboard, form, wait, viewport, page-info, and console-error tools;
-- an active Pi/OpenCode session can register an existing directory under an approved discovery root, idempotently create a normal durable managed sibling session there, see it appear in the open web catalog, and address it through the existing durable peer broker.
+- an active Pi/OpenCode session can register an existing directory under an approved discovery root, idempotently create a normal durable managed sibling session there, see it appear in the open web catalog, and address it through the existing durable peer broker;
+- the creating orchestrator is guided to finish its managed child only after durable response collection, while creator ownership, open-work checks, runtime status, and archive-only cleanup prevent premature task deletion.
 
 These paths are covered by focused Node tests, an HTTP integration test with mock Pi RPC processes, Playwright browser coverage, and production-style Nix builds.
 

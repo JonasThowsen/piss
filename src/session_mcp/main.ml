@@ -190,6 +190,27 @@ let session_input_schema =
       ("additionalProperties", `Bool false);
     ]
 
+let finish_input_schema =
+  `Assoc
+    [
+      ("type", `String "object");
+      ( "properties",
+        `Assoc
+          [
+            ( "targetSessionId",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ( "description",
+                    `String
+                      "Caller-created session to stop and archive after all \
+                       work and responses are complete" );
+                ] );
+          ] );
+      ("required", `List [ `String "targetSessionId" ]);
+      ("additionalProperties", `Bool false);
+    ]
+
 let peer_input_schema =
   `Assoc
     [
@@ -249,9 +270,23 @@ let tools =
           ( "description",
             `String
               "Create a visible, durable, normally managed Piss agent session \
-               in a registered workspace. After it returns active, use \
-               piss_send_session for the initial assignment." );
+               in a registered workspace. The caller owns its cleanup: after \
+               all assigned work and durable responses are collected, call \
+               piss_finish_session. Never finish a session with pending work."
+          );
           ("inputSchema", session_input_schema);
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_finish_session");
+          ( "description",
+            `String
+              "Stop and archive a session created by this orchestrator. Call \
+               only after every assigned task has completed and every response \
+               has been durably collected. Piss rejects pending or busy \
+               sessions. This is idempotent and does not hard-delete history."
+          );
+          ("inputSchema", finish_input_schema);
         ];
       `Assoc
         [
@@ -259,7 +294,10 @@ let tools =
           ( "description",
             `String
               "List active Piss sessions available for agent-to-agent \
-               collaboration." );
+               collaboration. createdByCaller identifies sessions this \
+               orchestrator may finish; cleanupRecommended becomes true only \
+               after caller-owned peer work is terminal with nothing pending."
+          );
           ( "inputSchema",
             `Assoc
               [
@@ -274,8 +312,9 @@ let tools =
           ( "description",
             `String
               "Ask another active Piss session to perform one durable turn and \
-               return its response. Use piss_list_sessions first to choose the \
-               target." );
+               return its response. Use piss_list_sessions first. If this \
+               orchestrator created the target and no more work is needed, \
+               call piss_finish_session after the response returns." );
           ("inputSchema", peer_input_schema);
         ];
       `Assoc
@@ -285,7 +324,8 @@ let tools =
             `String
               "Send work to another Piss session without waiting. Returns a \
                durable request ID for later collection, enabling parallel \
-               fan-out." );
+               fan-out. Never finish the target until this request and every \
+               other request for it have been collected." );
           ("inputSchema", peer_input_schema);
         ];
       `Assoc
@@ -297,7 +337,8 @@ let tools =
                completion, then end the current turn. Piss will wait while the \
                session is dormant and automatically start exactly one new turn \
                with the captured responses when any or all requests are \
-               finished." );
+               finished. After waking, finish caller-created targets only when \
+               all of their work is complete." );
           ( "inputSchema",
             `Assoc
               [
@@ -331,9 +372,9 @@ let tools =
           ( "description",
             `String
               "Listen for completion of asynchronous session requests. Wait \
-               for any response or all responses, and return captured outputs \
-               plus pending request IDs. To keep listening after waitFor=any, \
-               call again with the returned pendingRequestIds." );
+               for any response or all responses, and return captured outputs, \
+               pending IDs, and cleanupRecommendedSessionIds. Finish only IDs \
+               recommended after all pending work has been collected." );
           ( "inputSchema",
             `Assoc
               [
@@ -403,6 +444,9 @@ let call_tool params =
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_create_session" ->
       retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/sessions")
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_finish_session" ->
+      retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/finish")
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_list_sessions" ->
       curl "/api/v2/broker/sessions"

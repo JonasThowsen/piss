@@ -116,12 +116,15 @@ Every managed Pi/OpenCode session receives the `piss-sessions` MCP server. An ac
 
 - `piss_list_workspaces` to inspect registered canonical roots;
 - `piss_create_workspace` to register an **existing** local directory under an approved workspace-discovery root;
-- `piss_create_session` to launch a normal durable managed session in that workspace; and
-- `piss_send_session` to deliver the new session's initial assignment.
+- `piss_create_session` to launch a normal durable managed session in that workspace;
+- `piss_send_session` and `piss_collect_responses` to assign and durably collect work; and
+- `piss_finish_session` to stop and archive a caller-created session after all of its work is complete.
 
 Registering a Piss workspace does not create a directory, clone a repository, or run Git. Create a directory or Git worktree first with normal shell tools, then register its existing canonical path. Symlink escapes, files, missing paths, and paths outside configured `workspaceDiscoveryRoots` are rejected.
 
 Creation requests require a stable `requestId`. Retrying the same ID and payload returns the original workspace/session with `duplicate: true`; reusing an ID with different input is a conflict. Requests are authenticated by the active source session's broker token, validate the configured harness list, and share the global `maxActiveSessions` limit with browser-created sessions. Agent-created sessions use the same registry, workers, session rail, rename/archive controls, and restart recovery as every other Piss session.
+
+The creating orchestrator owns cleanup. Tool descriptions and responses guide it through **create → assign → collect → finish**, while `piss_list_sessions` exposes `createdByCaller` and only sets `cleanupRecommended` after caller-owned work is terminal with nothing pending. `piss_finish_session` is creator-only and idempotent; it refuses sessions with unfinished peer work or a busy runtime, then stops and archives the session. It never hard-deletes history, so a completed response remains recoverable and cleanup cannot erase a task prematurely.
 
 ## Security
 

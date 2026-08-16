@@ -12,6 +12,7 @@ type route =
   | Get_broker_workspaces
   | Post_broker_workspaces
   | Post_broker_sessions
+  | Post_broker_finish
   | Post_broker_send
   | Post_broker_subscribe
   | Post_broker_ask
@@ -41,6 +42,10 @@ type route =
   | Get_app_js
   | Get_asset of string
   | Method_not_allowed of { method_ : Cohttp.Code.meth; path : string }
+
+val finishable_runtime_status : string -> bool
+(** Only a positively observed idle worker is safe for creator-owned cleanup.
+    Offline and failed snapshots deliberately fail closed. *)
 
 val credential_authorized :
   path:string -> user_authorized:bool -> has_broker_session:bool -> bool

@@ -187,8 +187,8 @@ let remove_workspace registry id =
 
 let source_is_active registry source_id =
   with_statement registry.db
-    "SELECT 1 FROM sessions WHERE id = ? AND archived_at IS NULL"
-    (fun statement ->
+    "SELECT 1 FROM sessions WHERE id = ? AND archived_at IS NULL AND \
+     finishing_at IS NULL" (fun statement ->
       bind_text statement 1 source_id;
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW -> true
@@ -412,6 +412,92 @@ let mark_session_creation_failed registry id message =
       expect_done "fail broker session creation" statement);
   Sqlite3.changes registry.db > 0
 
+let session_created_by registry ~source_id ~session_id =
+  with_statement registry.db
+    "SELECT 1 FROM broker_session_requests WHERE source_id = ? AND session_id \
+     = ? AND state = 'active'" (fun statement ->
+      bind_text statement 1 source_id;
+      bind_text statement 2 session_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> true
+      | Sqlite3.Rc.DONE -> false
+      | rc ->
+          fail_rc "check broker session ownership" rc;
+          false)
+
+let has_open_session_work registry ~session_id =
+  with_statement registry.db
+    "SELECT (EXISTS (SELECT 1 FROM peer_requests WHERE (source_id = ? OR \
+     target_id = ?) AND state IN \
+     ('accepted','queued','dispatching','dispatched'))) OR (EXISTS (SELECT 1 \
+     FROM peer_subscriptions WHERE source_id = ? AND state IN \
+     ('pending','dispatching')))" (fun statement ->
+      bind_text statement 1 session_id;
+      bind_text statement 2 session_id;
+      bind_text statement 3 session_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Sqlite3.column_int statement 0 <> 0
+      | Sqlite3.Rc.DONE -> false
+      | rc ->
+          fail_rc "check open session work" rc;
+          false)
+
+let cleanup_recommended registry ~source_id ~session_id =
+  session_created_by registry ~source_id ~session_id
+  && (not (has_open_session_work registry ~session_id))
+  && with_statement registry.db
+       "SELECT 1 FROM peer_requests WHERE source_id = ? AND target_id = ? AND \
+        state IN ('completed','failed') LIMIT 1" (fun statement ->
+         bind_text statement 1 source_id;
+         bind_text statement 2 session_id;
+         match Sqlite3.step statement with
+         | Sqlite3.Rc.ROW -> true
+         | Sqlite3.Rc.DONE -> false
+         | rc ->
+             fail_rc "check completed work for session cleanup" rc;
+             false)
+
+let claim_session_finish registry ~source_id ~session_id =
+  transaction registry (fun () ->
+      if not (session_created_by registry ~source_id ~session_id) then
+        Error "only the creating orchestrator may finish this session"
+      else if has_open_session_work registry ~session_id then
+        Error
+          "session still has unfinished peer work; collect every response \
+           before finishing it"
+      else (
+        with_statement registry.db
+          "UPDATE sessions SET finishing_at = ? WHERE id = ? AND archived_at \
+           IS NULL AND finishing_at IS NULL" (fun statement ->
+            bind_float statement 1 (Unix.gettimeofday ());
+            bind_text statement 2 session_id;
+            expect_done "claim session finish" statement);
+        if Sqlite3.changes registry.db = 1 then Ok ()
+        else Error "session finish is already in progress or archived"))
+
+let cancel_session_finish registry session_id =
+  with_statement registry.db
+    "UPDATE sessions SET finishing_at = NULL WHERE id = ? AND archived_at IS \
+     NULL AND finishing_at IS NOT NULL" (fun statement ->
+      bind_text statement 1 session_id;
+      expect_done "cancel session finish" statement);
+  Sqlite3.changes registry.db > 0
+
+let list_finishing_sessions registry =
+  with_statement registry.db
+    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
+     FROM sessions WHERE archived_at IS NULL AND finishing_at IS NOT NULL \
+     ORDER BY created_at ASC" (fun statement ->
+      let rec collect sessions =
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW -> collect (session_of_statement statement :: sessions)
+        | Sqlite3.Rc.DONE -> List.rev sessions
+        | rc ->
+            fail_rc "list finishing sessions" rc;
+            List.rev sessions
+      in
+      collect [])
+
 let list_incomplete_session_creations registry =
   with_statement registry.db
     "SELECT \
@@ -439,7 +525,8 @@ let list registry ~include_archived =
     else
       "SELECT \
        id,title,harness,created_at,archived_at,broker_token,workspace_id FROM \
-       sessions WHERE archived_at IS NULL ORDER BY created_at ASC"
+       sessions WHERE archived_at IS NULL AND finishing_at IS NULL ORDER BY \
+       created_at ASC"
   in
   with_statement registry.db sql (fun statement ->
       let rec collect sessions =
@@ -455,15 +542,23 @@ let list registry ~include_archived =
 let find = find_session
 
 let find_active registry id =
-  match find registry id with
-  | Some ({ archived_at = None; _ } as session) -> Some session
-  | _ -> None
+  with_statement registry.db
+    "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
+     FROM sessions WHERE id = ? AND archived_at IS NULL AND finishing_at IS \
+     NULL" (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "find active session" rc;
+          None)
 
 let find_active_by_token registry token =
   with_statement registry.db
     "SELECT id,title,harness,created_at,archived_at,broker_token,workspace_id \
-     FROM sessions WHERE broker_token = ? AND archived_at IS NULL"
-    (fun statement ->
+     FROM sessions WHERE broker_token = ? AND archived_at IS NULL AND \
+     finishing_at IS NULL" (fun statement ->
       bind_text statement 1 token;
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW -> Some (session_of_statement statement)
@@ -494,7 +589,10 @@ let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
       with_statement registry.db
         "INSERT INTO \
          peer_requests(id,source_id,target_id,prompt,command_id,start_sequence,state,response,managed_reconciliation,created_at,updated_at) \
-         VALUES (?,?,?,?,?,?,'accepted',NULL,1,?,?)" (fun statement ->
+         SELECT ?,?,?,?,?,?,'accepted',NULL,1,?,? WHERE EXISTS (SELECT 1 FROM \
+         sessions WHERE id = ? AND archived_at IS NULL AND finishing_at IS \
+         NULL) AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND archived_at \
+         IS NULL AND finishing_at IS NULL)" (fun statement ->
           bind_text statement 1 id;
           bind_text statement 2 source_id;
           bind_text statement 3 target_id;
@@ -503,7 +601,11 @@ let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
           bind_int64 statement 6 start_sequence;
           bind_float statement 7 now;
           bind_float statement 8 now;
+          bind_text statement 9 source_id;
+          bind_text statement 10 target_id;
           expect_done "accept peer request" statement);
+      if Sqlite3.changes registry.db = 0 then
+        invalid_arg "source or target session is no longer active";
       (Option.get (find_peer_request registry id), false)
 
 let list_peer_requests registry ~source_id =
@@ -701,8 +803,8 @@ let rename_session registry id title =
 
 let archive registry id =
   with_statement registry.db
-    "UPDATE sessions SET archived_at = ? WHERE id = ? AND archived_at IS NULL"
-    (fun statement ->
+    "UPDATE sessions SET archived_at = ?,finishing_at = NULL WHERE id = ? AND \
+     archived_at IS NULL" (fun statement ->
       bind_float statement 1 (Unix.gettimeofday ());
       bind_text statement 2 id;
       expect_done "archive session" statement);
@@ -710,8 +812,8 @@ let archive registry id =
 
 let restore registry id =
   with_statement registry.db
-    "UPDATE sessions SET archived_at = NULL WHERE id = ? AND archived_at IS \
-     NOT NULL" (fun statement ->
+    "UPDATE sessions SET archived_at = NULL,finishing_at = NULL WHERE id = ? \
+     AND archived_at IS NOT NULL" (fun statement ->
       bind_text statement 1 id;
       expect_done "restore session" statement);
   Sqlite3.changes registry.db > 0

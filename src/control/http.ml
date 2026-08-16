@@ -45,6 +45,11 @@ let with_worker workers session_id operation =
   | Ok socket -> operation socket
   | Error error -> Error error
 
+let with_lifecycle_lock workers operation =
+  match workers with
+  | Config.Fixed _ -> operation ()
+  | Config.Managed manager -> Eio.Mutex.use_ro manager.lifecycle_mutex operation
+
 let session_snapshot ~net workers session_id =
   match workers with
   | Config.Fixed _ ->
@@ -175,8 +180,9 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_worker workers session_id (fun socket ->
-                            Worker_client.request ~net ~socket worker_json)
+                        with_lifecycle_lock workers (fun () ->
+                            with_worker workers session_id (fun socket ->
+                                Worker_client.request ~net ~socket worker_json))
                       with
                       | Ok result -> Headers.respond_json result
                       | Error error -> Headers.error_json error)))
@@ -307,8 +313,9 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_worker workers session_id (fun socket ->
-                            Worker_client.request ~net ~socket worker_json)
+                        with_lifecycle_lock workers (fun () ->
+                            with_worker workers session_id (fun socket ->
+                                Worker_client.request ~net ~socket worker_json))
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Accepted result
@@ -336,8 +343,9 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_worker workers session_id (fun socket ->
-                            Worker_client.request ~net ~socket worker_json)
+                        with_lifecycle_lock workers (fun () ->
+                            with_worker workers session_id (fun socket ->
+                                Worker_client.request ~net ~socket worker_json))
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Accepted result
@@ -367,8 +375,9 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_worker workers session_id (fun socket ->
-                            Worker_client.request ~net ~socket worker_json)
+                        with_lifecycle_lock workers (fun () ->
+                            with_worker workers session_id (fun socket ->
+                                Worker_client.request ~net ~socket worker_json))
                       with
                       | Ok result -> Headers.respond_json result
                       | Error error -> Headers.error_json error)))
@@ -399,14 +408,15 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                    (method_name ^ " not allowed for " ^ path))
           | Routes.Get_broker_sessions | Routes.Get_broker_workspaces
           | Routes.Post_broker_workspaces | Routes.Post_broker_sessions
-          | Routes.Post_broker_send | Routes.Post_broker_subscribe
-          | Routes.Post_broker_ask | Routes.Post_broker_collect
-          | Routes.Get_workspaces | Routes.Get_catalog_revision
-          | Routes.Get_session_creation | Routes.Post_workspace_delete _
-          | Routes.Get_workspace_directories _ | Routes.Post_workspaces
-          | Routes.Get_sessions _ | Routes.Get_session_audit _
-          | Routes.Post_sessions | Routes.Post_archived_sessions_delete
-          | Routes.Post_session_action _ ->
+          | Routes.Post_broker_finish | Routes.Post_broker_send
+          | Routes.Post_broker_subscribe | Routes.Post_broker_ask
+          | Routes.Post_broker_collect | Routes.Get_workspaces
+          | Routes.Get_catalog_revision | Routes.Get_session_creation
+          | Routes.Post_workspace_delete _ | Routes.Get_workspace_directories _
+          | Routes.Post_workspaces | Routes.Get_sessions _
+          | Routes.Get_session_audit _ | Routes.Post_sessions
+          | Routes.Post_archived_sessions_delete | Routes.Post_session_action _
+            ->
               assert false)
   with
   | Eio.Io _ as exn -> Headers.error_json (upstream (Printexc.to_string exn))

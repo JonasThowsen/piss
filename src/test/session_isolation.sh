@@ -88,6 +88,10 @@ cat >"$root/stop" <<EOF
 set -euo pipefail
 id=\${1:?}
 root='$root'
+if [[ -f "\$root/stop-delay" ]]; then
+  echo "\$id" >"\$root/stop-started"
+  sleep "\$(cat "\$root/stop-delay")"
+fi
 if [[ -f "\$root/force-stop-failure" ]]; then
   rm -f "\$root/force-stop-failure"
   exit 1
@@ -352,7 +356,7 @@ wait_session_count 4
 [[ $(curl -fsS -H "x-piss-session-token: $first_token" \
   "http://127.0.0.1:$port/api/v2/broker/sessions" | \
   jq --arg id "$agent_created" --arg root "$root/agent-project" --arg workspace "$agent_workspace" \
-    'any(.[]; .id==$id and .workspaceId==$workspace and .workspaceName=="agent-project" and .workspaceRoot==$root)') == true ]]
+    'any(.[]; .id==$id and .workspaceId==$workspace and .workspaceName=="agent-project" and .workspaceRoot==$root and .createdByCaller==true and .cleanupRecommended==false)') == true ]]
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
   -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
   --data "$(jq -nc --arg workspace "$agent_workspace" \
@@ -407,10 +411,12 @@ mcp_output=$(printf '%s\n' "$mcp_input" | env \
   PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
   "$session_mcp_exe")
 [[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
-  "piss_list_workspaces,piss_create_workspace,piss_create_session,piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
+  "piss_list_workspaces,piss_create_workspace,piss_create_session,piss_finish_session,piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_workspace")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,path" ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,workspaceId,title" ]]
-[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.description' <<<"$mcp_output") == *piss_send_session* ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.description' <<<"$mcp_output") == *piss_finish_session* ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_finish_session")|.inputSchema.required|join(",")' <<<"$mcp_output") == "targetSessionId" ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_finish_session")|.description' <<<"$mcp_output") == *"does not hard-delete"* ]]
 first_async=$(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 second_async=$(jq -r 'select(.id==4)|.result.content[0].text|fromjson|.requestId' <<<"$mcp_output")
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$first" | jq -r .status) == waiting ]]
@@ -569,10 +575,93 @@ third_events=$(curl -fsS \
 [[ $(jq '[.[]|select(.kind=="command.accepted" and .payload.commandId=="peer-fd4ac6c02d97bb22f38918c9dc354468")]|length' <<<"$third_events") == 1 ]]
 
 # The externally-created session remained the same normal worker across the
-# control-plane replacement. Remove only this tracer data before continuing the
-# pre-existing archive/restore proof.
-curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
-  "http://127.0.0.1:$port/api/v2/sessions/$agent_created/archive" >/dev/null
+# control-plane replacement. Its creator is encouraged to clean it up only after
+# terminal work is durably collected; pending work and foreign creators fail
+# closed, and finishing archives rather than hard-deleting history.
+[[ $(curl -fsS -H "x-piss-session-token: $first_token" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions" | \
+  jq -r --arg id "$agent_created" '.[]|select(.id==$id)|.cleanupRecommended') == true ]]
+cleanup_peer=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" \
+    '{requestId:"cleanup-safety-peer",targetSessionId:$target,prompt:"complete before creator cleanup"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/send")
+cleanup_request=$(jq -r .requestId <<<"$cleanup_peer")
+[[ $(jq -r .cleanupAfterCollection <<<"$cleanup_peer") == true ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
+  "http://127.0.0.1:$port/api/v2/broker/finish") == 409 ]]
+second_token=$(tr -d '\n' <"$state/sessions/$second/broker-token")
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $second_token" \
+  --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
+  "http://127.0.0.1:$port/api/v2/broker/finish") == 403 ]]
+cleanup_collection=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg request "$cleanup_request" \
+    '{requestIds:[$request],waitFor:"all",timeoutSeconds:10}')" \
+  "http://127.0.0.1:$port/api/v2/broker/collect")
+[[ $(jq '.pendingRequestIds|length' <<<"$cleanup_collection") == 0 ]]
+[[ $(jq -r '.cleanupRecommendedSessionIds[0]' <<<"$cleanup_collection") == "$agent_created" ]]
+echo 4 >"$root/stop-delay"
+touch "$root/force-stop-failure"
+curl -sS -o "$root/blocked-finish.json" -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
+  "http://127.0.0.1:$port/api/v2/broker/finish" \
+  >"$root/blocked-finish.status" &
+blocked_finish_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$root/stop-started" ]] && break
+  sleep .02
+done
+[[ $(cat "$root/stop-started") == "$agent_created" ]]
+[[ $(python3 - "$state/registry.sqlite3" "$agent_created" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute(
+        "select finishing_at is not null from sessions where id = ?", (sys.argv[2],)
+    ).fetchone()[0])
+PY
+) == 1 ]]
+sleep 3
+[[ $(python3 - "$state/registry.sqlite3" "$agent_created" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute(
+        "select finishing_at is not null from sessions where id = ?", (sys.argv[2],)
+    ).fetchone()[0])
+PY
+) == 1 ]]
+wait "$blocked_finish_pid"
+[[ $(cat "$root/blocked-finish.status") == 409 ]]
+rm -f "$root/stop-delay" "$root/stop-started"
+[[ $(curl -fsS -H "x-piss-session-token: $first_token" \
+  "http://127.0.0.1:$port/api/v2/broker/sessions" | \
+  jq --arg id "$agent_created" 'any(.[]; .id==$id)') == true ]]
+finish_response=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
+  "http://127.0.0.1:$port/api/v2/broker/finish")
+[[ $(jq -r .state <<<"$finish_response") == archived ]]
+[[ $(jq -r .duplicate <<<"$finish_response") == false ]]
+[[ $(jq -r .hardDeleted <<<"$finish_response") == false ]]
+finish_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
+  "http://127.0.0.1:$port/api/v2/broker/finish")
+[[ $(jq -r .duplicate <<<"$finish_duplicate") == true ]]
+finish_mcp_input=$(jq -nc --arg target "$agent_created" '[
+  {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
+  {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_finish_session",arguments:{targetSessionId:$target}}}
+] | .[]')
+finish_mcp_output=$(printf '%s\n' "$finish_mcp_input" | env \
+  PISS_BROKER_URL="http://127.0.0.1:$port" \
+  PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
+  "$session_mcp_exe")
+[[ $(jq -r 'select(.id==2)|.result.content[0].text|fromjson|.state' <<<"$finish_mcp_output") == archived ]]
+[[ $(jq -r 'select(.id==2)|.result.content[0].text|fromjson|.duplicate' <<<"$finish_mcp_output") == true ]]
 wait_session_count 3
 mv "$root/agent-project" "$root/agent-project-real"
 ln -s /tmp "$root/agent-project"

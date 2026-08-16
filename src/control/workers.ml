@@ -250,6 +250,34 @@ let create_managed_session (manager : Config.managed_workers) ~harness
       | Error message -> abort_creation message
     with exn -> abort_creation (Printexc.to_string exn)
 
+let finish_claimed_session (manager : Config.managed_workers) id =
+  match Lifecycle.run manager.stopper id with
+  | Error message ->
+      ignore (Registry.cancel_session_finish manager.registry id);
+      Error message
+  | Ok () ->
+      if Registry.archive manager.registry id then Ok ()
+      else (
+        ignore (Registry.cancel_session_finish manager.registry id);
+        Error "session was already archived")
+
+let reconcile_session_finishes (manager : Config.managed_workers) =
+  Eio.Mutex.use_ro manager.lifecycle_mutex (fun () ->
+      Registry.list_finishing_sessions manager.registry
+      |> List.iter (fun (session : Registry.session) ->
+          match Lifecycle.run manager.stopper session.id with
+          | Ok () ->
+              if not (Registry.archive manager.registry session.id) then
+                Format.eprintf "could not archive reconciled session %s@."
+                  session.id
+          | Error message ->
+              ignore
+                (Registry.cancel_session_finish manager.registry session.id);
+              Format.eprintf
+                "could not reconcile session finish %s; restored it to active: \
+                 %s@."
+                session.id message))
+
 let archive_managed_session (manager : Config.managed_workers) id =
   match Registry.find_active manager.registry id with
   | None -> Error "active session not found"

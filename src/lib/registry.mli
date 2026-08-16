@@ -159,6 +159,30 @@ val accept_session_creation :
     mismatch is rejected; retries return the original request and session. *)
 
 val find_session_creation : t -> string -> session_creation option
+
+val session_created_by : t -> source_id:string -> session_id:string -> bool
+(** Whether [source_id] durably created [session_id] through the broker. *)
+
+val has_open_session_work : t -> session_id:string -> bool
+(** Whether a session is still sending, receiving, or subscribed to unfinished
+    peer work. Finishing must fail while this is true. *)
+
+val cleanup_recommended : t -> source_id:string -> session_id:string -> bool
+(** True after caller-owned peer work has reached a terminal state and no peer
+    work involving the created session remains open. *)
+
+val claim_session_finish :
+  t -> source_id:string -> session_id:string -> (unit, string) result
+(** Atomically fence a caller-owned session from new peer work, but only when no
+    peer work involving it remains open. *)
+
+val cancel_session_finish : t -> string -> bool
+(** Remove a finish fence after a worker stop failure. *)
+
+val list_finishing_sessions : t -> session list
+(** Sessions durably fenced for cleanup but not yet archived. Startup and live
+    reconciliation finish stopping these without relaunching them. *)
+
 val claim_session_creation : ?reclaim_before:float -> t -> string -> bool
 val mark_session_creation_active : t -> string -> bool
 val mark_session_creation_cleanup : t -> string -> string -> bool
