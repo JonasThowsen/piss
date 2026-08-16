@@ -300,13 +300,14 @@ let component session runtime connecting stream_notice notice config_controls
             set_notice message
         | Ok command ->
             let pending = { session_id = session.id; command } in
-            Effect.bind
-              (Effect.Many
-                 [
-                   set_submission (Prompt_command.Submission.start pending);
-                   on_busy true;
-                 ])
-              ~f:(fun () -> send_pending pending))
+            Effect.bind (Timeline_scroll.jump_to_latest ()) ~f:(fun () ->
+                Effect.bind
+                  (Effect.Many
+                     [
+                       set_submission (Prompt_command.Submission.start pending);
+                       on_busy true;
+                     ])
+                  ~f:(fun () -> send_pending pending)))
   in
   let retry () =
     match (submission, runtime, connecting) with

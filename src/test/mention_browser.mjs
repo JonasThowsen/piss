@@ -126,11 +126,26 @@ try {
   const manualScrollTop = await timeline.evaluate((value) => value.scrollTop);
   if (manualScrollTop > 4) throw new Error(`stream overrode the user's manual scroll position: ${manualScrollTop}px`);
 
-  await desktop.getByRole("button", { name: "Jump to latest message" }).click();
-  await desktop.waitForFunction(() => {
-    const value = document.getElementById("timeline");
-    return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
-  });
+  await waitForIdle();
+  const resumedAgentCount = await desktop.locator(".timeline-agent").count();
+  await textarea.fill("sending should resume timeline follow");
+  await desktop.getByRole("button", { name: "Send message" }).click();
+  await desktop.waitForFunction((count) => document.querySelectorAll(".timeline-agent").length > count, resumedAgentCount);
+  try {
+    await desktop.waitForFunction(() => {
+      const value = document.getElementById("timeline");
+      return value && value.scrollHeight - value.scrollTop - value.clientHeight <= 2;
+    }, undefined, { timeout: 2000 });
+  } catch {
+    const metrics = await timeline.evaluate((value) => ({
+      scrollTop: value.scrollTop,
+      scrollHeight: value.scrollHeight,
+      clientHeight: value.clientHeight,
+    }));
+    throw new Error(`sending did not reach the latest event: ${JSON.stringify(metrics)}`);
+  }
+  if (await latestButton.isVisible()) throw new Error("sending did not resume sticky timeline follow");
+
   await waitForIdle();
   const nextAgentCount = await desktop.locator(".timeline-agent").count();
   await dispatchPrompt("follow this stream while typing");
