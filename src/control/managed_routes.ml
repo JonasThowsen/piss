@@ -278,55 +278,67 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                   | `String value -> value
                   | _ -> manager.default_harness
                 in
-                let existed =
-                  Option.is_some
-                    (Registry.find_session_creation manager.registry request_id)
+                let model =
+                  match member "model" json with
+                  | `String value -> String.trim value
+                  | _ -> ""
                 in
-                match
-                  Workers.create_broker_session ~clock manager
-                    ~source_id:source.id ~request_id ~harness ~workspace_id
-                    ~title
-                with
-                | Ok (session, duplicate) -> (
-                    match
-                      Registry.find_workspace manager.registry
-                        session.workspace_id
-                    with
-                    | None ->
-                        Headers.error_json
-                          (conflict "created session workspace is missing")
-                    | Some workspace ->
-                        Headers.respond_json
-                          ~status:(if duplicate then `OK else `Created)
-                          (`Assoc
-                             [
-                               ("requestId", `String request_id);
-                               ("state", `String "active");
-                               ("duplicate", `Bool duplicate);
-                               ("session", Registry.session_to_yojson session);
-                               ( "workspace",
-                                 Registry.workspace_to_yojson workspace );
-                               ("cleanup", cleanup_guidance session.id);
-                             ]))
-                | Error message -> (
-                    match
-                      Registry.find_session_creation manager.registry request_id
-                    with
-                    | Some creation
-                      when String.equal creation.state "failed"
-                           && not
-                                (String.starts_with ~prefix:"requestId was"
-                                   message) ->
-                        Headers.respond_json ~status:`Conflict
-                          (`Assoc
-                             [
-                               ("requestId", `String request_id);
-                               ("sessionId", `String creation.session_id);
-                               ("state", `String "failed");
-                               ("duplicate", `Bool existed);
-                               ("error", `String message);
-                             ])
-                    | _ -> Headers.error_json (conflict message)))))
+if String.length model > 256 then
+                  Headers.error_json
+                    (validation ~field:"model"
+                       "model must be 256 characters or fewer")
+                else
+                  let existed =
+                    Option.is_some
+                      (Registry.find_session_creation manager.registry
+                         request_id)
+                  in
+                  match
+                    Workers.create_broker_session ~clock manager
+                      ~source_id:source.id ~request_id ~harness ~workspace_id
+                      ~title ~model
+                  with
+                  | Ok (session, duplicate) -> (
+                      match
+                        Registry.find_workspace manager.registry
+                          session.workspace_id
+                      with
+                      | None ->
+                          Headers.error_json
+                            (conflict "created session workspace is missing")
+                      | Some workspace ->
+                          Headers.respond_json
+                            ~status:(if duplicate then `OK else `Created)
+                            (`Assoc
+                               [
+                                 ("requestId", `String request_id);
+                                 ("state", `String "active");
+                                 ("duplicate", `Bool duplicate);
+                                 ("session", Registry.session_to_yojson session);
+                                 ( "workspace",
+                                   Registry.workspace_to_yojson workspace );
+                                 ("cleanup", cleanup_guidance session.id);
+                               ]))
+                  | Error message -> (
+                      match
+                        Registry.find_session_creation manager.registry
+                          request_id
+                      with
+                      | Some creation
+                        when String.equal creation.state "failed"
+                             && not
+                                  (String.starts_with ~prefix:"requestId was"
+                                     message) ->
+                          Headers.respond_json ~status:`Conflict
+                            (`Assoc
+                               [
+                                 ("requestId", `String request_id);
+                                 ("sessionId", `String creation.session_id);
+                                 ("state", `String "failed");
+                                 ("duplicate", `Bool existed);
+                                 ("error", `String message);
+                               ])
+                      | _ -> Headers.error_json (conflict message)))))
   | Routes.Post_broker_finish ->
       Some
         (match calling_session with

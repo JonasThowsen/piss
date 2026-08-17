@@ -336,6 +336,65 @@ let run ~env (args : Config.args) =
                         ("value", `String value);
                         ("error", `String (Printexc.to_string exn));
                       ]))));
+  (* When the session was created with an explicit `model` spec, that value wins
+     over any persisted preference. The spec file lives next to the worker
+     SQLite database so the launcher does not have to relay it. *)
+  let seed_model_path =
+    Filename.concat (Filename.dirname args.database_path) "model"
+  in
+  let seed_model =
+    if Sys.file_exists seed_model_path then
+      let ic = open_in_bin seed_model_path in
+      Fun.protect
+        ~finally:(fun () -> close_in_noerr ic)
+        (fun () ->
+          try Some (String.trim (input_line ic)) with End_of_file -> None)
+    else None
+  in
+  (match seed_model with
+  | None | Some "" -> ()
+  | Some value -> (
+      match State.current_config_value state ~config_id:"model" with
+      | None ->
+          ignore
+            (Store.append_event store ~kind:"acp.config_option.seed_skipped"
+               ~payload:
+                 (`Assoc
+                    [
+                      ("configId", `String "model");
+                      ("reason", `String "harness does not expose model");
+                    ]))
+      | Some current when current = value -> ()
+      | Some _ -> (
+          let id =
+            "config-seed-"
+            ^ Digest.to_hex
+                (Digest.string
+                   ("model" ^ "\000" ^ value ^ "\000" ^ args.generation))
+          in
+          try
+            let _, response =
+              State.change_config_option state ~id ~config_id:"model" ~value
+            in
+            ignore
+              (Store.append_event store ~kind:"acp.config_option.seeded"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("configId", `String "model");
+                        ("value", `String value);
+                        ("response", response);
+                      ]))
+          with exn ->
+            ignore
+              (Store.append_event store ~kind:"acp.config_option.seed_failed"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("configId", `String "model");
+                        ("value", `String value);
+                        ("error", `String (Printexc.to_string exn));
+                      ])))));
   State.refresh_status state;
   let previous_generation = Store.get_metadata store "worker_generation" in
   Store.set_metadata store "worker_generation" args.generation;

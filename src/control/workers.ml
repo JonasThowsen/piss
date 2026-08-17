@@ -142,7 +142,7 @@ let rec wait_for_session_creation ~clock (manager : Config.managed_workers)
         session
 
 let create_broker_session ~clock (manager : Config.managed_workers) ~source_id
-    ~request_id ~harness ~workspace_id ~title =
+    ~request_id ~harness ~workspace_id ~title ~model =
   let title = String.trim title in
   if not (Lifecycle.valid_session_id request_id) then
     Error "requestId must contain 3 to 64 lowercase letters, digits, or hyphens"
@@ -167,10 +167,15 @@ let create_broker_session ~clock (manager : Config.managed_workers) ~source_id
     with
     | Error _ as error -> error
     | Ok (request, session, duplicate) ->
-        if Registry.claim_session_creation manager.registry request.id then
+        if Registry.claim_session_creation manager.registry request.id then (
+          (match model with
+          | "" -> ()
+          | _ ->
+              Lifecycle.write_session_model_spec manager.state_root session
+                model);
           Result.map
             (fun active -> (active, duplicate))
-            (launch_session_creation manager request session)
+            (launch_session_creation manager request session))
         else
           wait_for_session_creation ~clock manager
             ~deadline:(Unix.gettimeofday () +. 65.)

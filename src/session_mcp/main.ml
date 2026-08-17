@@ -184,6 +184,18 @@ let session_input_schema =
                       "Optional managed harness. Omit to use the configured \
                        default." );
                 ] );
+            ( "model",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("maxLength", `Int 256);
+                  ( "description",
+                    `String
+                      "Optional initial model identifier applied to the \
+                       harness at startup. Must be a non-empty string; the \
+                       harness must expose a `model` config option for it to \
+                       take effect. Omit to inherit the harness default." );
+                ] );
           ] );
       ( "required",
         `List [ `String "requestId"; `String "workspaceId"; `String "title" ] );

@@ -77,6 +77,11 @@ let write_session_spec registry state_root (session : Registry.session) =
     (Filename.concat directory "workspace")
     (workspace.root ^ "\n")
 
+let write_session_model_spec state_root (session : Registry.session) model =
+  let directory = Filename.concat state_root session.id in
+  mkdir_p directory;
+  write_private_file (Filename.concat directory "model") (model ^ "\n")
+
 let run executable session_id =
   if not (valid_session_id session_id) then Error "invalid session identity"
   else
