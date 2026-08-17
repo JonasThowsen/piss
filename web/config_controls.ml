@@ -227,7 +227,6 @@ let component runtime ~available ~refresh ~on_error graph =
                      Vdom.Node.span
                        [
                          Vdom.Node.b [ text choice.name ];
-                         Vdom.Node.create "small" [ text choice.value ];
                        ];
                    ])));
       ]
