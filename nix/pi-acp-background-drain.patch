@@ -1,5 +1,5 @@
 diff --git a/src/acp/session.ts b/src/acp/session.ts
-index 15d21c3..64ee6b5 100644
+index 15d21c3..e846592 100644
 --- a/src/acp/session.ts
 +++ b/src/acp/session.ts
 @@ -285,6 +285,10 @@ export class PiAcpSession {
@@ -33,18 +33,7 @@ index 15d21c3..64ee6b5 100644
          if (this.bashToolCallIds.has(toolCallId)) {
            this.emitBashOutputUpdate({
              toolCallId,
-@@ -824,6 +841,10 @@ export class PiAcpSession {
- 
-       case 'agent_start': {
-         const unsolicited = !this.pendingTurn && !this.inAgentLoop
-+        if (unsolicited) {
-+          const completed = this.backgroundWorkIds.values().next().value
-+          if (typeof completed === 'string') this.backgroundWorkIds.delete(completed)
-+        }
-         this.inAgentLoop = true
-         this.agentLoopGeneration += 1
- 
-@@ -876,7 +897,7 @@ export class PiAcpSession {
+@@ -876,7 +893,7 @@ export class PiAcpSession {
            } else {
              this.emit({
                sessionUpdate: 'session_info_update',
@@ -53,15 +42,72 @@ index 15d21c3..64ee6b5 100644
              })
            }
          })
+@@ -888,6 +905,44 @@ export class PiAcpSession {
+     }
+   }
+ 
++  private restoreBackgroundWork(ev: PiRpcEvent): void {
++    const prefix = 'PI_SUBAGENT_ASYNC_JSON:'
++    const lines = Array.isArray((ev as any).widgetLines) ? (ev as any).widgetLines : []
++    const line = lines.find((value: unknown) => typeof value === 'string' && value.startsWith(prefix))
++    const active = new Set<string>()
++
++    if (typeof line === 'string') {
++      try {
++        const snapshot = JSON.parse(line.slice(prefix.length))
++        if (snapshot?.kind === 'pi-subagents.async-status-snapshot' && snapshot?.version === 1) {
++          for (const run of Array.isArray(snapshot.runs) ? snapshot.runs : []) {
++            if (
++              run &&
++              typeof run.id === 'string' &&
++              (run.state === 'queued' || run.state === 'running')
++            ) {
++              active.add(run.id)
++            }
++          }
++        }
++      } catch {
++        return
++      }
++    }
++
++    this.backgroundWorkIds.clear()
++    for (const asyncId of active) this.backgroundWorkIds.add(asyncId)
++    this.emit({
++      sessionUpdate: 'session_info_update',
++      _meta: {
++        piAcp: {
++          queueDepth: this.turnQueue.length,
++          running: Boolean(this.pendingTurn || this.inAgentLoop || this.backgroundWorkIds.size > 0)
++        }
++      }
++    })
++  }
++
+   private async handleExtensionUiRequest(ev: PiRpcEvent): Promise<void> {
+     const id = stringProp(ev, 'id')
+     const method = stringProp(ev, 'method')
+@@ -895,6 +950,11 @@ export class PiAcpSession {
+       return
+     }
+ 
++    if (method === 'setWidget' && stringProp(ev, 'widgetKey') === 'subagent-async') {
++      this.restoreBackgroundWork(ev)
++      return
++    }
++
+     if (method === 'select') {
+       await this.handleExtensionSelect(ev, id)
+       return
 diff --git a/test/component/session-queue-cancel.test.ts b/test/component/session-queue-cancel.test.ts
-index ee45ae8..fdb7278 100644
+index ee45ae8..9a2d462 100644
 --- a/test/component/session-queue-cancel.test.ts
 +++ b/test/component/session-queue-cancel.test.ts
-@@ -5,6 +5,87 @@ import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpe
+@@ -5,6 +5,134 @@ import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpe
  
  const nextTick = () => new Promise<void>(resolve => setImmediate(resolve))
  
-+test('PiAcpSession: reports detached subagent work until completion turns arrive', async () => {
++test('PiAcpSession: reports exact detached work from structured status snapshots', async () => {
 +  const conn = new FakeAgentSideConnection()
 +  const proc = new FakePiRpcProcess()
 +
@@ -95,9 +141,22 @@ index ee45ae8..fdb7278 100644
 +  await nextTick()
 +  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, true)
 +
-+  proc.emit({ type: 'agent_start' })
-+  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
-+  proc.emit({ type: 'agent_settled' })
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-1',
++    method: 'setWidget',
++    widgetKey: 'subagent-async',
++    widgetLines: [
++      'PI_SUBAGENT_ASYNC_JSON:' + JSON.stringify({
++        kind: 'pi-subagents.async-status-snapshot',
++        version: 1,
++        runs: [
++          { id: 'run-1', state: 'complete' },
++          { id: 'run-2', state: 'running' }
++        ]
++      })
++    ]
++  })
 +  await nextTick()
 +  assert.equal(
 +    (conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running,
@@ -105,11 +164,45 @@ index ee45ae8..fdb7278 100644
 +    'one remaining detached run must keep the ACP session active'
 +  )
 +
-+  proc.emit({ type: 'agent_start' })
-+  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
-+  proc.emit({ type: 'agent_settled' })
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-clear',
++    method: 'setWidget',
++    widgetKey: 'subagent-async'
++  })
 +  await nextTick()
 +  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++})
++
++test('PiAcpSession: restores detached work after an adapter restart', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-restored',
++    method: 'setWidget',
++    widgetKey: 'subagent-async',
++    widgetLines: [
++      'PI_SUBAGENT_ASYNC_JSON:' + JSON.stringify({
++        kind: 'pi-subagents.async-status-snapshot',
++        version: 1,
++        runs: [{ id: 'restored-run', state: 'running' }]
++      })
++    ]
++  })
++  await nextTick()
++
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, true)
 +})
 +
 +test('PiAcpSession: ignores unrelated asyncId-shaped tool results', async () => {
