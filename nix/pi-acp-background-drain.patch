@@ -1,0 +1,147 @@
+diff --git a/src/acp/session.ts b/src/acp/session.ts
+index 15d21c3..64ee6b5 100644
+--- a/src/acp/session.ts
++++ b/src/acp/session.ts
+@@ -285,6 +285,10 @@ export class PiAcpSession {
+   // completes only when `agent_settled` is emitted.
+   private inAgentLoop = false
+   private agentLoopGeneration = 0
++  // Pi's subagent tool can detach work after the originating agent turn. Keep
++  // that work visible to ACP clients until each completion-triggered turn is
++  // observed instead of falsely projecting an idle session.
++  private readonly backgroundWorkIds = new Set<string>()
+ 
+   // For ACP diff support: capture file contents before edit/write mutations,
+   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
+@@ -719,6 +723,19 @@ export class PiAcpSession {
+ 
+         const result = (ev as any).result
+         const isError = Boolean((ev as any).isError)
++        const toolName = String((ev as any).toolName ?? '')
++        const details = (result as any)?.details
++        const asyncId = details?.asyncId
++        const asyncMode = details?.mode
++        if (
++          !isError &&
++          toolName === 'subagent' &&
++          typeof asyncId === 'string' &&
++          asyncId.length > 0 &&
++          ['single', 'parallel', 'chain', 'workflow'].includes(asyncMode)
++        ) {
++          this.backgroundWorkIds.add(asyncId)
++        }
+         if (this.bashToolCallIds.has(toolCallId)) {
+           this.emitBashOutputUpdate({
+             toolCallId,
+@@ -824,6 +841,10 @@ export class PiAcpSession {
+ 
+       case 'agent_start': {
+         const unsolicited = !this.pendingTurn && !this.inAgentLoop
++        if (unsolicited) {
++          const completed = this.backgroundWorkIds.values().next().value
++          if (typeof completed === 'string') this.backgroundWorkIds.delete(completed)
++        }
+         this.inAgentLoop = true
+         this.agentLoopGeneration += 1
+ 
+@@ -876,7 +897,7 @@ export class PiAcpSession {
+           } else {
+             this.emit({
+               sessionUpdate: 'session_info_update',
+-              _meta: { piAcp: { queueDepth: 0, running: false } }
++              _meta: { piAcp: { queueDepth: 0, running: this.backgroundWorkIds.size > 0 } }
+             })
+           }
+         })
+diff --git a/test/component/session-queue-cancel.test.ts b/test/component/session-queue-cancel.test.ts
+index ee45ae8..fdb7278 100644
+--- a/test/component/session-queue-cancel.test.ts
++++ b/test/component/session-queue-cancel.test.ts
+@@ -5,6 +5,87 @@ import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpe
+ 
+ const nextTick = () => new Promise<void>(resolve => setImmediate(resolve))
+ 
++test('PiAcpSession: reports detached subagent work until completion turns arrive', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  const session = new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  const prompt = session.prompt('delegate twice')
++  proc.emit({ type: 'agent_start' })
++  for (const asyncId of ['run-1', 'run-2']) {
++    proc.emit({
++      type: 'tool_execution_end',
++      toolCallId: `launch-${asyncId}`,
++      toolName: 'subagent',
++      isError: false,
++      result: {
++        content: [{ type: 'text', text: `Async workflow [${asyncId}]` }],
++        details: { mode: 'workflow', asyncId }
++      }
++    })
++  }
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++
++  assert.equal(await prompt, 'end_turn')
++  await nextTick()
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, true)
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++  await nextTick()
++  assert.equal(
++    (conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running,
++    true,
++    'one remaining detached run must keep the ACP session active'
++  )
++
++  proc.emit({ type: 'agent_start' })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++  await nextTick()
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++})
++
++test('PiAcpSession: ignores unrelated asyncId-shaped tool results', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  const session = new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  const prompt = session.prompt('run an unrelated tool')
++  proc.emit({ type: 'agent_start' })
++  proc.emit({
++    type: 'tool_execution_end',
++    toolCallId: 'unrelated',
++    toolName: 'other-extension',
++    isError: false,
++    result: { details: { mode: 'workflow', asyncId: 'not-subagent-work' } }
++  })
++  proc.emit({ type: 'agent_end', messages: [], willRetry: false })
++  proc.emit({ type: 'agent_settled' })
++
++  assert.equal(await prompt, 'end_turn')
++  await nextTick()
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++})
++
+ test('PiAcpSession: queues prompts behind unsolicited background turns', async () => {
+   const conn = new FakeAgentSideConnection()
+   const proc = new FakePiRpcProcess()
