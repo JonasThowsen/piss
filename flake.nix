@@ -295,6 +295,7 @@
               ./nix/pi-acp-mcp.patch
               ./nix/pi-acp-background-turn.patch
               ./nix/pi-acp-background-drain.patch
+              ./nix/pi-acp-prelude-events.patch
             ];
             npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
             nativeBuildInputs = [ pkgs.makeWrapper ];
