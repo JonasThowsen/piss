@@ -11,6 +11,7 @@ type route =
   | Get_broker_sessions
   | Get_broker_workspaces
   | Post_broker_workspaces
+  | Post_broker_workspace_delete
   | Post_broker_sessions
   | Post_broker_finish
   | Post_broker_send
@@ -148,6 +149,8 @@ let rec parse ~managed ~method_ ~uri ~last_event_id =
     | `GET, "/api/v2/broker/sessions", _, _, _ -> Ok Get_broker_sessions
     | `GET, "/api/v2/broker/workspaces", _, _, _ -> Ok Get_broker_workspaces
     | `POST, "/api/v2/broker/workspaces", _, _, _ -> Ok Post_broker_workspaces
+    | `POST, "/api/v2/broker/workspaces/delete", _, _, _ ->
+        Ok Post_broker_workspace_delete
     | `POST, "/api/v2/broker/sessions", _, _, _ -> Ok Post_broker_sessions
     | `POST, "/api/v2/broker/finish", _, _, _ -> Ok Post_broker_finish
     | `POST, "/api/v2/broker/send", _, _, _ -> Ok Post_broker_send

@@ -17,6 +17,34 @@ let workspace_fields (workspace : Registry.workspace) =
     ("workspaceRoot", `String workspace.root);
   ]
 
+let workspace_delete_response ~removed id =
+  Headers.respond_json
+    (`Assoc
+       [
+         ("removed", `Bool removed);
+         ("duplicate", `Bool (not removed));
+         ("id", `String id);
+       ])
+
+let delete_empty_workspace ?(missing_ok = false)
+    (manager : Config.managed_workers) id =
+  match Registry.remove_empty_workspace manager.registry id with
+  | `Not_found when missing_ok -> workspace_delete_response ~removed:false id
+  | `Not_found ->
+      Headers.error_json (Error.Not_found { resource = "workspace"; id })
+  | `Not_empty session_count ->
+      Headers.error_json
+        (conflict
+           (Printf.sprintf "Delete %d %s first, including archived sessions"
+              session_count
+              (if session_count = 1 then "session" else "sessions")))
+  | `Removed ->
+      (if String.equal manager.default_workspace_id id then
+         match Registry.list_workspaces manager.registry with
+         | replacement :: _ -> manager.default_workspace_id <- replacement.id
+         | [] -> ());
+      workspace_delete_response ~removed:true id
+
 let cleanup_fields manager ~(caller : Registry.session)
     (session : Registry.session) =
   let created_by_caller =
@@ -245,6 +273,29 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                                  ( "workspace",
                                    Registry.workspace_to_yojson workspace );
                                ])))))
+  | Routes.Post_broker_workspace_delete ->
+      Some
+        (match calling_session with
+        | None ->
+            Headers.error_json ~status:`Unauthorized
+              (forbidden "broker token required")
+        | Some _ -> (
+            match Authentication.valid_json_content request with
+            | Error (status, message) ->
+                Headers.error_json ~status (authentication_error status message)
+            | Ok () ->
+                let json = read_body () |> Yojson.Safe.from_string in
+                let workspace_id =
+                  match Yojson.Safe.Util.member "workspaceId" json with
+                  | `String value -> value
+                  | _ -> ""
+                in
+                if not (Lifecycle.valid_session_id workspace_id) then
+                  Headers.error_json
+                    (validation ~field:"workspaceId"
+                       "workspaceId must be a valid workspace identity")
+                else
+                  delete_empty_workspace ~missing_ok:true manager workspace_id))
   | Routes.Post_broker_sessions ->
       Some
         (match calling_session with
@@ -283,7 +334,7 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                   | `String value -> String.trim value
                   | _ -> ""
                 in
-if String.length model > 256 then
+                if String.length model > 256 then
                   Headers.error_json
                     (validation ~field:"model"
                        "model must be 256 characters or fewer")
@@ -545,29 +596,7 @@ if String.length model > 256 then
             | None ->
                 Headers.error_json
                   (Error.Not_found { resource = "workspace"; id })
-            | Some workspace ->
-                let session_count =
-                  Registry.workspace_session_count manager.registry id
-                in
-                if session_count > 0 then
-                  Headers.error_json
-                    (conflict
-                       (Printf.sprintf
-                          "Delete %d %s first, including archived sessions"
-                          session_count
-                          (if session_count = 1 then "session" else "sessions")))
-                else if not (Registry.remove_workspace manager.registry id) then
-                  Headers.error_json (conflict "workspace was not removed")
-                else (
-                  (if String.equal manager.default_workspace_id id then
-                     match Registry.list_workspaces manager.registry with
-                     | replacement :: _ ->
-                         manager.default_workspace_id <- replacement.id
-                     | [] -> ());
-                  Headers.respond_json
-                    (`Assoc
-                       [ ("removed", `Bool true); ("id", `String workspace.id) ]))
-            ))
+            | Some workspace -> delete_empty_workspace manager workspace.id))
   | Routes.Get_workspace_directories { query } ->
       Some
         ( Workspaces.search_workspace_directories

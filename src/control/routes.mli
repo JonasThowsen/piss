@@ -11,6 +11,7 @@ type route =
   | Get_broker_sessions
   | Get_broker_workspaces
   | Post_broker_workspaces
+  | Post_broker_workspace_delete
   | Post_broker_sessions
   | Post_broker_finish
   | Post_broker_send

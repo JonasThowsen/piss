@@ -70,9 +70,9 @@ let test_session_registry () =
     (List.length (Registry.list_workspaces registry));
   Registry.configure_workspace registry ~id:"workspace-empty"
     ~name:"Empty workspace" ~root:"/tmp/workspace-empty";
-  Alcotest.(check bool)
-    "empty workspace can be removed" true
-    (Registry.remove_workspace registry "workspace-empty");
+  (match Registry.remove_empty_workspace registry "workspace-empty" with
+  | `Removed -> ()
+  | _ -> Alcotest.fail "empty workspace was not removed");
   Registry.configure_workspace registry ~id:"workspace-empty"
     ~name:"Configured again" ~root:"/tmp/workspace-empty";
   Alcotest.(check bool)
@@ -98,6 +98,9 @@ let test_session_registry () =
   Alcotest.(check int)
     "workspace session count includes both sessions" 2
     (Registry.workspace_session_count registry "workspace-one");
+  (match Registry.remove_empty_workspace registry "workspace-one" with
+  | `Not_empty 2 -> ()
+  | _ -> Alcotest.fail "non-empty workspace was removable");
   Alcotest.(check bool)
     "archive changes state" true
     (Registry.archive registry "s-one");
@@ -115,6 +118,9 @@ let test_session_registry () =
     "last active session can be archived" true
     (Registry.archive registry "s-two");
   Alcotest.(check int) "no active sessions" 0 (Registry.active_count registry);
+  (match Registry.remove_empty_workspace registry "workspace-one" with
+  | `Not_empty 2 -> ()
+  | _ -> Alcotest.fail "workspace with archived sessions was removable");
   Alcotest.(check bool)
     "first restore changes state" true
     (Registry.restore registry "s-one");

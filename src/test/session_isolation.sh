@@ -359,6 +359,13 @@ wait_session_count 4
     'any(.[]; .id==$id and .workspaceId==$workspace and .workspaceName=="agent-project" and .workspaceRoot==$root and .createdByCaller==true and .cleanupRecommended==false)') == true ]]
 [[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
   -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg workspace "$agent_workspace" '{workspaceId:$workspace}')" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces/delete") == 409 ]]
+[[ $(curl -fsS -H "x-piss-session-token: $first_token" \
+  "http://127.0.0.1:$port/api/v2/broker/workspaces" | \
+  jq --arg id "$agent_workspace" 'any(.[]; .id==$id)') == true ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
   --data "$(jq -nc --arg workspace "$agent_workspace" \
     '{requestId:"over-limit-agent",workspaceId:$workspace,title:"Over limit",harness:"pi"}')" \
   "http://127.0.0.1:$port/api/v2/broker/sessions") == 409 ]]
@@ -411,8 +418,9 @@ mcp_output=$(printf '%s\n' "$mcp_input" | env \
   PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
   "$session_mcp_exe")
 [[ $(jq -r 'select(.id==2)|.result.tools|map(.name)|join(",")' <<<"$mcp_output") == \
-  "piss_list_workspaces,piss_create_workspace,piss_create_session,piss_finish_session,piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
+  "piss_list_workspaces,piss_create_workspace,piss_delete_workspace,piss_create_session,piss_finish_session,piss_list_sessions,piss_ask_session,piss_send_session,piss_subscribe_responses,piss_collect_responses" ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_workspace")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,path" ]]
+[[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_delete_workspace")|.inputSchema.required|join(",")' <<<"$mcp_output") == "workspaceId" ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.inputSchema.required|join(",")' <<<"$mcp_output") == "requestId,workspaceId,title" ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_create_session")|.description' <<<"$mcp_output") == *piss_finish_session* ]]
 [[ $(jq -r 'select(.id==2)|.result.tools[]|select(.name=="piss_finish_session")|.inputSchema.required|join(",")' <<<"$mcp_output") == "targetSessionId" ]]
@@ -674,8 +682,22 @@ curl -fsS -X POST -H 'content-type: application/json' \
   --data "$(jq -cn --arg failed "$failed_agent_id" --arg created "$agent_created" \
     '{ids:[$failed,$created]}')" \
   "http://127.0.0.1:$port/api/v2/sessions/delete-archived" >/dev/null
-curl -fsS -X POST -H 'content-type: application/json' --data '{}' \
-  "http://127.0.0.1:$port/api/v2/workspaces/$agent_workspace/delete" >/dev/null
+touch "$root/agent-project/retained-after-unregister"
+delete_workspace_input=$(jq -nc --arg workspace "$agent_workspace" '[
+  {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
+  {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_delete_workspace",arguments:{workspaceId:$workspace}}},
+  {jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"piss_delete_workspace",arguments:{workspaceId:$workspace}}}
+] | .[]')
+delete_workspace_output=$(printf '%s\n' "$delete_workspace_input" | env \
+  PISS_BROKER_URL="http://127.0.0.1:$port" \
+  PISS_SESSION_TOKEN="$first_token" PISS_CURL="$(command -v curl)" \
+  "$session_mcp_exe")
+[[ $(jq -r 'select(.id==2)|.result.content[0].text|fromjson|.removed' <<<"$delete_workspace_output") == true ]]
+[[ $(jq -r 'select(.id==2)|.result.content[0].text|fromjson|.duplicate' <<<"$delete_workspace_output") == false ]]
+[[ $(jq -r 'select(.id==2)|.result.content[0].text|fromjson|.id' <<<"$delete_workspace_output") == "$agent_workspace" ]]
+[[ $(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.removed' <<<"$delete_workspace_output") == false ]]
+[[ $(jq -r 'select(.id==3)|.result.content[0].text|fromjson|.duplicate' <<<"$delete_workspace_output") == true ]]
+[[ -f "$root/agent-project/retained-after-unregister" ]]
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/workspaces" | \
   jq --arg id "$agent_workspace" 'any(.[]; .id==$id)') == false ]]
 

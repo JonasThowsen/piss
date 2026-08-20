@@ -152,6 +152,24 @@ let workspace_input_schema =
       ("additionalProperties", `Bool false);
     ]
 
+let workspace_delete_input_schema =
+  `Assoc
+    [
+      ("type", `String "object");
+      ( "properties",
+        `Assoc
+          [
+            ( "workspaceId",
+              `Assoc
+                [
+                  ("type", `String "string");
+                  ("description", `String "Registered Piss workspace ID");
+                ] );
+          ] );
+      ("required", `List [ `String "workspaceId" ]);
+      ("additionalProperties", `Bool false);
+    ]
+
 let session_input_schema =
   `Assoc
     [
@@ -275,6 +293,16 @@ let tools =
                canonical root. Create directories, clones, and Git worktrees \
                first with normal shell tools." );
           ("inputSchema", workspace_input_schema);
+        ];
+      `Assoc
+        [
+          ("name", `String "piss_delete_workspace");
+          ( "description",
+            `String
+              "Idempotently unregister an empty durable Piss workspace. Empty \
+               means no active or archived sessions are bound to it. This \
+               never deletes the local directory or any files." );
+          ("inputSchema", workspace_delete_input_schema);
         ];
       `Assoc
         [
@@ -453,6 +481,10 @@ let call_tool params =
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_create_workspace" ->
       retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/workspaces")
+      |> Yojson.Safe.pretty_to_string |> tool_result
+  | `String "piss_delete_workspace" ->
+      retry_broker (fun () ->
+          curl ~body:arguments "/api/v2/broker/workspaces/delete")
       |> Yojson.Safe.pretty_to_string |> tool_result
   | `String "piss_create_session" ->
       retry_broker (fun () -> curl ~body:arguments "/api/v2/broker/sessions")

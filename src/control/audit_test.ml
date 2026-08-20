@@ -129,6 +129,9 @@ let route_case () =
   (match parse true `POST "/api/v2/broker/workspaces" with
   | Ok Routes.Post_broker_workspaces -> ()
   | _ -> Alcotest.fail "broker workspace creation route was not parsed");
+  (match parse true `POST "/api/v2/broker/workspaces/delete" with
+  | Ok Routes.Post_broker_workspace_delete -> ()
+  | _ -> Alcotest.fail "broker workspace deletion route was not parsed");
   (match parse true `POST "/api/v2/broker/sessions" with
   | Ok Routes.Post_broker_sessions -> ()
   | _ -> Alcotest.fail "broker session creation route was not parsed");

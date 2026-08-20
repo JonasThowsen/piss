@@ -185,6 +185,27 @@ let remove_workspace registry id =
           expect_done "remove workspace" statement);
       Sqlite3.changes registry.db > 0)
 
+let remove_empty_workspace registry id =
+  transaction registry (fun () ->
+      match find_workspace registry id with
+      | None -> `Not_found
+      | Some _ ->
+          let session_count = workspace_session_count registry id in
+          if session_count > 0 then `Not_empty session_count
+          else (
+            with_statement registry.db
+              "INSERT INTO workspace_removals(id,removed_at) VALUES (?,?) ON \
+               CONFLICT(id) DO UPDATE SET removed_at=excluded.removed_at"
+              (fun statement ->
+                bind_text statement 1 id;
+                bind_float statement 2 (Unix.gettimeofday ());
+                expect_done "record empty workspace removal" statement);
+            with_statement registry.db "DELETE FROM workspaces WHERE id = ?"
+              (fun statement ->
+                bind_text statement 1 id;
+                expect_done "remove empty workspace" statement);
+            `Removed))
+
 let source_is_active registry source_id =
   with_statement registry.db
     "SELECT 1 FROM sessions WHERE id = ? AND archived_at IS NULL AND \

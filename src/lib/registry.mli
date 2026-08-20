@@ -115,6 +115,12 @@ val remove_workspace : t -> string -> bool
     caller is responsible for ensuring no sessions are bound to the workspace
     before calling. *)
 
+val remove_empty_workspace :
+  t -> string -> [ `Removed | `Not_found | `Not_empty of int ]
+(** Atomically remove a workspace only when it has no active or archived
+    sessions. This unregisters the workspace but does not alter its directory.
+*)
+
 val accept_broker_workspace :
   t ->
   id:string ->
