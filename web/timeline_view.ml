@@ -57,10 +57,8 @@ let retained_runtime session runtime =
     (Option.bind session ~f:(fun (session : Control_plane.Session.t) ->
          session.runtime))
 
-let history_controls ~session ~runtime ~buffer ~on_load_older =
+let history_controls ~session ~runtime ~buffer ~pending ~on_load_older =
   let snapshot = retained_runtime session runtime in
-  let entries = Event_buffer.entries buffer in
-  let pending = Event_history.pending_permissions entries in
   let requires_action =
     Option.exists session ~f:(fun session ->
         phys_equal session.Control_plane.Session.status
@@ -184,7 +182,8 @@ let render_timeline state selected_id ~session ~runtime ~deciding_permissions
     | Loaded (history_id, buffer), Some selected_id
       when String.equal history_id selected_id ->
         let entries = Event_buffer.entries buffer in
-        history_controls ~session ~runtime ~buffer ~on_load_older
+        let pending = Event_history.pending_permissions entries in
+        history_controls ~session ~runtime ~buffer ~pending ~on_load_older
         @
         if List.is_empty entries then
           [
@@ -193,7 +192,7 @@ let render_timeline state selected_id ~session ~runtime ~deciding_permissions
           ]
         else
           Timeline_entry_view.render_timeline ~copy_feedback ~on_copy entries
-          @ Permission_view.render_pending entries
+          @ Permission_view.render_pending_requests pending
               ~deciding:deciding_permissions ~on_decide:on_permission
     | Loaded _, _ ->
         [
@@ -218,7 +217,7 @@ let render_outbox state selected_id =
   match (state, selected_id) with
   | Loaded (history_id, buffer), Some selected_id
     when String.equal history_id selected_id ->
-      Outbox_view.render (Event_buffer.events buffer)
+      Outbox_view.render (Event_buffer.outbox buffer)
   | _ -> Outbox_view.render []
 
 let render_tabs selected ~on_select =

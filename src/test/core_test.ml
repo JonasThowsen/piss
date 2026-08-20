@@ -1143,6 +1143,18 @@ let test_wire_bounds () =
   (match decode {|{"op":"events","after":0,"limit":501}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "oversized event page was accepted");
+  (match
+     decode {|{"op":"wait_events","after":12,"limit":200,"timeoutMs":15000}|}
+   with
+  | Ok (Wire.Wait_events { after = 12L; limit = 200; timeout_ms = 15_000 }) ->
+      ()
+  | Ok _ -> Alcotest.fail "event wait decoded incorrectly"
+  | Error message -> Alcotest.fail message);
+  (match
+     decode {|{"op":"wait_events","after":0,"limit":200,"timeoutMs":15001}|}
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "oversized event wait was accepted");
   (match decode {|{"op":"events_before","before":0,"limit":200}|} with
   | Error _ -> ()
   | Ok _ -> Alcotest.fail "non-positive before cursor was accepted");

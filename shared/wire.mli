@@ -24,6 +24,7 @@ type request =
   | Snapshot
   | Prepare_upgrade of { generation : string }
   | Events of { after : int64; limit : int }
+  | Wait_events of { after : int64; limit : int; timeout_ms : int }
   | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
   | File_search of { query : string }

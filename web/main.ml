@@ -548,11 +548,7 @@ let component graph =
             ~set_creation_options
         in
         let snapshot_refresh = load_snapshot ~inject_shell id in
-        let prepare_catalog =
-          if Option.is_some (Session_rail.selected sessions (Some id)) then
-            Effect.Ignore
-          else set_polled_catalog None
-        in
+        let prepare_catalog = set_polled_catalog None in
         Effect.bind (Timeline_scroll.reset ()) ~f:(fun () ->
             Effect.bind prepare_catalog ~f:(fun () ->
                 Effect.bind (set_selected_id (Some id)) ~f:(fun () ->

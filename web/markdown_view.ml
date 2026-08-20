@@ -4,6 +4,51 @@ open! Bonsai_web.Cont
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
+type cached_parse = {
+  body : string;
+  blocks : Markdown_syntax.block list;
+  inserted : int;
+}
+
+let parse_cache_capacity = 512
+let parse_cache_byte_capacity = 16 * 1024 * 1024
+let markdown_body_limit = 1024 * 1024
+let parse_cache_clock = ref 0
+let parse_cache = ref String.Map.empty
+
+let parse_cache_bytes cache =
+  Map.fold cache ~init:0 ~f:(fun ~key:_ ~data:cached bytes ->
+      bytes + String.length cached.body)
+
+let trim_parse_cache cache =
+  let rec trim cache =
+    if
+      Map.length cache <= parse_cache_capacity
+      && parse_cache_bytes cache <= parse_cache_byte_capacity
+    then cache
+    else
+      match
+        Map.to_alist cache
+        |> List.min_elt ~compare:(fun (_, left) (_, right) ->
+            Int.compare left.inserted right.inserted)
+      with
+      | None -> cache
+      | Some (item_key, _) -> trim (Map.remove cache item_key)
+  in
+  trim cache
+
+let parse ~item_key body =
+  match Map.find !parse_cache item_key with
+  | Some cached when String.equal cached.body body -> cached.blocks
+  | None | Some _ ->
+      Int.incr parse_cache_clock;
+      let blocks = Markdown_syntax.parse body in
+      parse_cache :=
+        Map.set !parse_cache ~key:item_key
+          ~data:{ body; blocks; inserted = !parse_cache_clock }
+        |> trim_parse_cache;
+      blocks
+
 let copy_button ~key ~kind ~value ~copy_feedback ~on_copy =
   let status =
     match copy_feedback with
@@ -108,6 +153,11 @@ let render_block ~item_key ~copy_feedback ~on_copy index block =
         ]
 
 let render ~item_key ~copy_feedback ~on_copy body =
-  Markdown_syntax.parse body
-  |> List.mapi ~f:(render_block ~item_key ~copy_feedback ~on_copy)
-  |> Vdom.Node.div ~attrs:[ class_ "message-body markdown-body" ]
+  if String.length body > markdown_body_limit then
+    Vdom.Node.pre
+      ~attrs:[ class_ "message-body markdown-body markdown-oversized" ]
+      [ text body ]
+  else
+    parse ~item_key body
+    |> List.mapi ~f:(render_block ~item_key ~copy_feedback ~on_copy)
+    |> Vdom.Node.div ~attrs:[ class_ "message-body markdown-body" ]

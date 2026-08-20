@@ -58,11 +58,15 @@ type entry = Timeline_projection.entry =
   | Permission_cancelled of { sequence : int64; request_id : string }
 
 type event
+type projection
 
 val decode : string -> (entry list, string) result
 val decode_events : string -> (event list, string) result
 val decode_event : string -> (event, string) result
 val project : event list -> entry list
+val projection : event list -> projection
+val append_projection : projection -> event -> projection option
+val projection_entries : projection -> entry list
 val sequence : event -> int64
 val kind : event -> string
 val outbox_update : event -> Outbox_projection.update option

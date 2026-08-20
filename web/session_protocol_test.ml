@@ -337,6 +337,26 @@ let () =
     | Ok event -> event
     | Error message -> fail message
   in
+  let replay_boundary sequence kind =
+    match
+      Event_history.decode_event
+        (Printf.sprintf
+           {|{"sequence":%d,"kind":"%s","payload":{},"createdAt":4.0}|} sequence
+           kind)
+    with
+    | Ok event -> event
+    | Error message -> fail message
+  in
+  let replay_with_permission =
+    [
+      replay_boundary 1 "acp.initialize";
+      requested;
+      replay_boundary 100 "acp.session.loaded";
+    ]
+    |> Event_history.project |> Event_history.pending_permissions
+  in
+  if List.is_empty replay_with_permission then
+    fail "session-load filtering discarded an authoritative permission";
   let resolved =
     match Event_history.decode_event permission_resolved with
     | Ok event -> event

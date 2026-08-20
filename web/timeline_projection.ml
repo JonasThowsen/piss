@@ -185,137 +185,139 @@ let equal_agent_group left right =
   | Leading_idless _, (Explicit_message _ | Command_message _) ->
       false
 
-let project updates =
-  let projected =
-    List.fold updates
-      ~init:
+let empty_projection =
+  {
+    order = [];
+    entries = String.Map.empty;
+    current_command = None;
+    current_agent_group = None;
+  }
+
+let apply_update state update =
+  match update with
+  | User_update { sequence; command_id; text } ->
+      add_or_replace
         {
-          order = [];
-          entries = String.Map.empty;
-          current_command = None;
+          state with
+          current_command = Some command_id;
           current_agent_group = None;
-        } ~f:(fun state update ->
-        match update with
-        | User_update { sequence; command_id; text } ->
-            add_or_replace
+        }
+        ("event:user:" ^ Int64.to_string sequence)
+        (User { sequence; command_id; text })
+  | Agent_chunk { sequence; message_id; text } ->
+      let group, message_id =
+        if not (String.is_empty message_id) then
+          (Explicit_message message_id, message_id)
+        else
+          match state.current_command with
+          | Some command_id ->
+              (Command_message command_id, "command-" ^ command_id)
+          | None -> (
+              match state.current_agent_group with
+              | Some (Leading_idless first_sequence as group) ->
+                  (group, "event-" ^ Int64.to_string first_sequence)
+              | Some (Explicit_message _ | Command_message _) | None ->
+                  (Leading_idless sequence, "event-" ^ Int64.to_string sequence)
+              )
+      in
+      let same_group =
+        Option.exists state.current_agent_group ~f:(fun previous ->
+            equal_agent_group previous group)
+      in
+      let key, entry =
+        match state.order with
+        | key :: _ when same_group -> (
+            match Map.find state.entries key with
+            | Some (Agent previous) ->
+                (key, Agent { previous with text = previous.text ^ text })
+            | Some _ | None ->
+                ( "event:agent:" ^ Int64.to_string sequence,
+                  Agent { sequence; message_id; text } ))
+        | _ ->
+            ( "event:agent:" ^ Int64.to_string sequence,
+              Agent { sequence; message_id; text } )
+      in
+      let state = add_or_replace state key entry in
+      { state with current_agent_group = Some group }
+  | Tool_call { sequence; tool_call_id; title; input; status; artifacts } ->
+      let key = "tool:" ^ tool_call_id in
+      let entry =
+        match Map.find state.entries key with
+        | Some (Tool previous) ->
+            Tool
               {
-                state with
-                current_command = Some command_id;
-                current_agent_group = None;
+                previous with
+                title;
+                input;
+                status;
+                artifacts = append_unique previous.artifacts artifacts;
               }
-              ("event:user:" ^ Int64.to_string sequence)
-              (User { sequence; command_id; text })
-        | Agent_chunk { sequence; message_id; text } ->
-            let group, message_id =
-              if not (String.is_empty message_id) then
-                (Explicit_message message_id, message_id)
-              else
-                match state.current_command with
-                | Some command_id ->
-                    (Command_message command_id, "command-" ^ command_id)
-                | None -> (
-                    match state.current_agent_group with
-                    | Some (Leading_idless first_sequence as group) ->
-                        (group, "event-" ^ Int64.to_string first_sequence)
-                    | Some (Explicit_message _ | Command_message _) | None ->
-                        ( Leading_idless sequence,
-                          "event-" ^ Int64.to_string sequence ))
-            in
-            let same_group =
-              Option.exists state.current_agent_group ~f:(fun previous ->
-                  equal_agent_group previous group)
-            in
-            let key, entry =
-              match state.order with
-              | key :: _ when same_group -> (
-                  match Map.find state.entries key with
-                  | Some (Agent previous) ->
-                      (key, Agent { previous with text = previous.text ^ text })
-                  | Some _ | None ->
-                      ( "event:agent:" ^ Int64.to_string sequence,
-                        Agent { sequence; message_id; text } ))
-              | _ ->
-                  ( "event:agent:" ^ Int64.to_string sequence,
-                    Agent { sequence; message_id; text } )
-            in
-            let state = add_or_replace state key entry in
-            { state with current_agent_group = Some group }
-        | Tool_call { sequence; tool_call_id; title; input; status; artifacts }
-          ->
-            let key = "tool:" ^ tool_call_id in
-            let entry =
-              match Map.find state.entries key with
-              | Some (Tool previous) ->
-                  Tool
-                    {
-                      previous with
-                      title;
-                      input;
-                      status;
-                      artifacts = append_unique previous.artifacts artifacts;
-                    }
-              | _ ->
-                  Tool
-                    {
-                      sequence;
-                      tool_call_id;
-                      title;
-                      input;
-                      output = "";
-                      status;
-                      artifacts;
-                    }
-            in
-            add_or_replace (interrupt_agent state) key entry
-        | Tool_call_update
-            { sequence; tool_call_id; title; input; output; status; artifacts }
-          ->
-            let key = "tool:" ^ tool_call_id in
-            let entry =
-              match Map.find state.entries key with
-              | Some (Tool previous) ->
-                  Tool
-                    {
-                      previous with
-                      title = Option.value title ~default:previous.title;
-                      input = Option.value input ~default:previous.input;
-                      output = append_output previous.output output;
-                      status = Option.value status ~default:previous.status;
-                      artifacts = append_unique previous.artifacts artifacts;
-                    }
-              | _ ->
-                  Tool
-                    {
-                      sequence;
-                      tool_call_id;
-                      title = Option.value title ~default:"Tool";
-                      input = Option.value input ~default:"";
-                      output = append_output "" output;
-                      status = Option.value status ~default:"in_progress";
-                      artifacts;
-                    }
-            in
-            add_or_replace (interrupt_agent state) key entry
-        | Command_state_update { sequence; command_id; state = command_state }
-          ->
-            add_or_replace (interrupt_agent state)
-              ("event:command:" ^ Int64.to_string sequence)
-              (Command_state { sequence; command_id; state = command_state })
-        | Permission_requested_update { sequence; request } ->
-            add_or_replace (interrupt_agent state)
-              ("event:permission:" ^ Int64.to_string sequence)
-              (Permission_requested { sequence; request })
-        | Permission_resolved_update { sequence; request_id; option_id } ->
-            add_or_replace (interrupt_agent state)
-              ("event:permission:" ^ Int64.to_string sequence)
-              (Permission_resolved { sequence; request_id; option_id })
-        | Permission_cancelled_update { sequence; request_id } ->
-            add_or_replace (interrupt_agent state)
-              ("event:permission:" ^ Int64.to_string sequence)
-              (Permission_cancelled { sequence; request_id }))
-  in
+        | _ ->
+            Tool
+              {
+                sequence;
+                tool_call_id;
+                title;
+                input;
+                output = "";
+                status;
+                artifacts;
+              }
+      in
+      add_or_replace (interrupt_agent state) key entry
+  | Tool_call_update
+      { sequence; tool_call_id; title; input; output; status; artifacts } ->
+      let key = "tool:" ^ tool_call_id in
+      let entry =
+        match Map.find state.entries key with
+        | Some (Tool previous) ->
+            Tool
+              {
+                previous with
+                title = Option.value title ~default:previous.title;
+                input = Option.value input ~default:previous.input;
+                output = append_output previous.output output;
+                status = Option.value status ~default:previous.status;
+                artifacts = append_unique previous.artifacts artifacts;
+              }
+        | _ ->
+            Tool
+              {
+                sequence;
+                tool_call_id;
+                title = Option.value title ~default:"Tool";
+                input = Option.value input ~default:"";
+                output = append_output "" output;
+                status = Option.value status ~default:"in_progress";
+                artifacts;
+              }
+      in
+      add_or_replace (interrupt_agent state) key entry
+  | Command_state_update { sequence; command_id; state = command_state } ->
+      add_or_replace (interrupt_agent state)
+        ("event:command:" ^ Int64.to_string sequence)
+        (Command_state { sequence; command_id; state = command_state })
+  | Permission_requested_update { sequence; request } ->
+      add_or_replace (interrupt_agent state)
+        ("event:permission:" ^ Int64.to_string sequence)
+        (Permission_requested { sequence; request })
+  | Permission_resolved_update { sequence; request_id; option_id } ->
+      add_or_replace (interrupt_agent state)
+        ("event:permission:" ^ Int64.to_string sequence)
+        (Permission_resolved { sequence; request_id; option_id })
+  | Permission_cancelled_update { sequence; request_id } ->
+      add_or_replace (interrupt_agent state)
+        ("event:permission:" ^ Int64.to_string sequence)
+        (Permission_cancelled { sequence; request_id })
+
+let projection_entries projected =
   List.rev_map projected.order ~f:(fun key ->
       Map.find_exn projected.entries key)
+
+let project_updates updates =
+  List.fold updates ~init:empty_projection ~f:apply_update
+
+let project updates = project_updates updates |> projection_entries
 
 let tool_text ~input ~output ~artifacts =
   List.filter

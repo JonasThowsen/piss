@@ -15,5 +15,11 @@ type update =
     }
   | State of { command_id : string; state : Timeline_projection.command_state }
 
+type projection
+
+val empty : projection
+val apply : projection -> update -> projection
+val items : projection -> item list
+val project_updates : update list -> projection
 val project : update list -> item list
 val status_to_string : status -> string

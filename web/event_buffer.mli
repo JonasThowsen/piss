@@ -9,6 +9,7 @@ val begin_page : t -> t
 val fail_page : t -> string -> t
 val events : t -> Event_history.event list
 val entries : t -> Event_history.entry list
+val outbox : t -> Outbox_projection.item list
 val highest_sequence : t -> int64
 val earliest_sequence : t -> int64 option
 val can_page_before : t -> first_sequence:int64 -> bool
@@ -16,3 +17,7 @@ val is_loading : t -> bool
 val page_error : t -> string option
 val history_length : t -> int
 val live_length : t -> int
+
+val projection_rebuilds : t -> int
+(** Deterministic performance diagnostic: ordered live appends must not rebuild
+    the retained projection. *)

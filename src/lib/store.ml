@@ -17,6 +17,7 @@ type t = {
   session_id : session_id;
   worker_id : worker_id;
   claimed_runtime : runtime_identity option ref;
+  event_count : int64 ref;
 }
 
 let max_retained_events = 65_536
@@ -118,10 +119,24 @@ let initialize db =
      NOT NULL)";
   exec db "CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind, sequence)"
 
+let count_events db =
+  with_statement db "SELECT COUNT(*) FROM events" (fun statement ->
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Sqlite3.column_int64 statement 0
+      | rc ->
+          fail_rc "count events" rc;
+          0L)
+
 let open_ ~path ~session_id ~worker_id =
   let db = Sqlite3.db_open path in
   initialize db;
-  { db; session_id; worker_id; claimed_runtime = ref None }
+  {
+    db;
+    session_id;
+    worker_id;
+    claimed_runtime = ref None;
+    event_count = ref (count_events db);
+  }
 
 let close store =
   if not (Sqlite3.db_close store.db) then
@@ -129,13 +144,14 @@ let close store =
 
 let transaction store f =
   exec store.db "BEGIN IMMEDIATE";
-  match f () with
-  | result ->
-      exec store.db "COMMIT";
-      result
-  | exception exn ->
-      (try exec store.db "ROLLBACK" with _ -> ());
-      raise exn
+  try
+    let result = f () in
+    exec store.db "COMMIT";
+    result
+  with exn ->
+    (try exec store.db "ROLLBACK" with _ -> ());
+    store.event_count := count_events store.db;
+    raise exn
 
 let scalar_int64 store ~operation sql =
   with_statement store.db sql (fun statement ->
@@ -284,25 +300,17 @@ let retention_predicate kinds =
   ^ ")"
 
 let compact_events_if_needed store =
-  let count = row_count store "events" in
-  if count >= Int64.of_int max_retained_events then
+  if !(store.event_count) >= Int64.of_int max_retained_events then (
     let predicate = retention_predicate retained_event_kinds in
     exec store.db
       ("DELETE FROM events WHERE sequence IN (SELECT sequence FROM events \
-        WHERE " ^ predicate ^ " ORDER BY sequence ASC LIMIT 1024)")
+        WHERE " ^ predicate ^ " ORDER BY sequence ASC LIMIT 1024)");
+    store.event_count :=
+      Int64.sub !(store.event_count) (Int64.of_int (Sqlite3.changes store.db)))
 
 let append_event store ~kind ~(payload : Yojson.Safe.t) =
   compact_events_if_needed store;
-  let count = row_count store "events" in
-  let predicate = retention_predicate retained_event_kinds in
-  let retained_count =
-    scalar_int64 store ~operation:"count retained events"
-      ("SELECT COUNT(*) FROM events WHERE " ^ predicate)
-  in
-  if
-    count >= Int64.of_int max_retained_events
-    && retained_count >= Int64.of_int max_retained_events
-  then
+  if !(store.event_count) >= Int64.of_int max_retained_events then
     raise
       (Store_error
          (Printf.sprintf
@@ -318,6 +326,7 @@ let append_event store ~kind ~(payload : Yojson.Safe.t) =
       bind_text statement 2 (Yojson.Safe.to_string payload);
       bind_float statement 3 created_at;
       expect_done "append event" statement);
+  store.event_count := Int64.succ !(store.event_count);
   let sequence = Sqlite3.last_insert_rowid store.db in
   { sequence; kind; payload; created_at }
 

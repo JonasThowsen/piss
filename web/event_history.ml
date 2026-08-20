@@ -79,6 +79,16 @@ let decode_event = Event_decode.decode_event
    every finished load attempt at read time so already-durable replay does not
    reappear as new agent output after a worker restart. Scanning backwards also
    handles a bounded recent page that begins in the middle of a long replay. *)
+let replayed_timeline_update kind =
+  List.mem
+    [
+      "acp.user_message_chunk";
+      "acp.agent_message_chunk";
+      "acp.tool_call";
+      "acp.tool_call_update";
+    ]
+    kind ~equal:String.equal
+
 let without_session_load_replays events =
   let rec loop dropping kept = function
     | [] -> kept
@@ -90,16 +100,34 @@ let without_session_load_replays events =
         then loop true (event :: kept) rest
         else if dropping && String.equal kind "acp.initialize" then
           loop false (event :: kept) rest
-        else if dropping then loop true kept rest
-        else loop false (event :: kept) rest
+        else if dropping && replayed_timeline_update kind then
+          loop true kept rest
+        else loop dropping (event :: kept) rest
   in
   loop false [] (List.rev events)
 
-let project events =
+type projection = Timeline_projection.projection
+
+let projection events =
   events |> without_session_load_replays
   |> List.filter_map ~f:Event_decode.update
-  |> Timeline_projection.project
+  |> Timeline_projection.project_updates
 
+let append_projection projected event =
+  let kind = Event_decode.kind event in
+  if
+    String.equal kind "acp.session.loaded"
+    || String.equal kind "acp.session.load_failed"
+  then None
+  else
+    Some
+      (Option.value_map
+         (Event_decode.update event)
+         ~default:projected
+         ~f:(Timeline_projection.apply_update projected))
+
+let projection_entries = Timeline_projection.projection_entries
+let project events = projection events |> projection_entries
 let decode body = Result.map (decode_events body) ~f:project
 let sequence = Event_decode.sequence
 let kind = Event_decode.kind

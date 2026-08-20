@@ -11,6 +11,7 @@ type request =
   | Snapshot
   | Prepare_upgrade of { generation : string }
   | Events of { after : int64; limit : int }
+  | Wait_events of { after : int64; limit : int; timeout_ms : int }
   | Events_before of { before : int64; limit : int }
   | Recent_events of { limit : int }
   | File_search of { query : string }
@@ -261,6 +262,14 @@ let request_of_yojson json =
       let* limit = int_member ~default:200 "limit" json in
       if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
       else Ok (Events { after; limit })
+  | "wait_events" ->
+      let* after = int64_member ~default:0L "after" json in
+      let* limit = int_member ~default:200 "limit" json in
+      let* timeout_ms = int_member ~default:15_000 "timeoutMs" json in
+      if limit < 1 || limit > 500 then Error "limit must be between 1 and 500"
+      else if timeout_ms < 1 || timeout_ms > 15_000 then
+        Error "timeoutMs must be between 1 and 15000"
+      else Ok (Wait_events { after; limit; timeout_ms })
   | "events_before" ->
       let* before = int64_member "before" json in
       let* limit = int_member ~default:200 "limit" json in

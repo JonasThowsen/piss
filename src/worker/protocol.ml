@@ -86,7 +86,7 @@ let dispatch_prompt state ?action ~target ~command_id ~text ~images ~resources
             State.record_dispatch_failed state ~command_id;
             internal (Printexc.to_string exn)))
 
-let handle state request =
+let handle ~clock state request =
   let args = State.args state in
   let store = State.store state in
   let target =
@@ -111,6 +111,7 @@ let handle state request =
                    `List
                      ([
                         `String "events";
+                        `String "wait_events";
                         `String "prompt";
                         `String "steer";
                         `String "follow_up";
@@ -173,6 +174,8 @@ let handle state request =
           Store.list_events ~max_bytes:Config.max_event_page_bytes store ~after
             ~limit
           |> event_page
+      | Wire.Wait_events { after; limit; timeout_ms } ->
+          State.wait_events state ~clock ~after ~limit ~timeout_ms |> event_page
       | Wire.Events_before { before; limit } ->
           Store.list_events_before ~max_bytes:Config.max_event_page_bytes store
             ~before ~limit
@@ -319,7 +322,7 @@ let handle state request =
                     ~value
                 in
                 ignore
-                  (Store.append_event store ~kind:"acp.config_option.changed"
+                  (State.append_event state ~kind:"acp.config_option.changed"
                      ~payload:
                        (`Assoc
                           [
@@ -335,7 +338,7 @@ let handle state request =
                 conflict "the session has no active prompt"
               else (
                 ignore
-                  (Store.append_event store ~kind:"command.cancel.requested"
+                  (State.append_event state ~kind:"command.cancel.requested"
                      ~payload:
                        (`Assoc
                           [
@@ -348,7 +351,7 @@ let handle state request =
                      ~session_id:(State.harness_session_id state));
                 Ok (`Assoc [ ("state", `String "cancelling") ])))
       | Wire.Peer_event { kind; request_id; peer_id; text } ->
-          Store.append_event store ~kind
+          State.append_event state ~kind
             ~payload:
               (`Assoc
                  [
@@ -385,7 +388,7 @@ let handle state request =
                         | None -> `Assoc [ ("outcome", `String "cancelled") ]
                       in
                       ignore
-                        (Store.append_event store
+                        (State.append_event state
                            ~kind:"acp.permission.resolved"
                            ~payload:
                              (`Assoc

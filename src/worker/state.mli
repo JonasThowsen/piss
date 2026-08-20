@@ -20,6 +20,20 @@ val make :
 
 val args : t -> Config.args
 val store : t -> Piss_core.Store.t
+
+val append_event :
+  t -> kind:string -> payload:Yojson.Safe.t -> Piss_core.Domain.event
+(** Append and wake every blocked live-event observer. *)
+
+val wait_events :
+  t ->
+  clock:_ Eio.Time.clock ->
+  after:int64 ->
+  limit:int ->
+  timeout_ms:int ->
+  Piss_core.Domain.event list
+(** Block without polling until events exist after [after], or until timeout. *)
+
 val workspace : t -> string
 val runtime_worker_id : t -> string
 val runtime_target : t -> Piss_core.Domain.runtime_target

@@ -116,7 +116,7 @@ let run ~env (args : Config.args) =
           (if not replayed_session_update then
              let durable_json = Acp.redact_user_image_data json in
              ignore
-               (Store.append_event store ~kind:(Harness.event_kind json)
+               (State.append_event state ~kind:(Harness.event_kind json)
                   ~payload:durable_json));
           (match envelope with
           | Ok (Acp.Response { id = "session-load"; _ }) ->
@@ -153,7 +153,7 @@ let run ~env (args : Config.args) =
                    ~code:(-32601)
                    ~message:("unsupported ACP client method: " ^ method_));
               ignore
-                (Store.append_event store ~kind:"acp.client_request.rejected"
+                (State.append_event state ~kind:"acp.client_request.rejected"
                    ~payload:
                      (`Assoc
                         [
@@ -176,7 +176,7 @@ let run ~env (args : Config.args) =
               match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with
               | Some id when State.cancel_permission state ~request_id:id ->
                   ignore
-                    (Store.append_event store ~kind:"acp.permission.cancelled"
+                    (State.append_event state ~kind:"acp.permission.cancelled"
                        ~payload:(`Assoc [ ("requestId", `String id) ]))
               | _ -> ())
           | Ok _ -> ()
@@ -187,14 +187,14 @@ let run ~env (args : Config.args) =
           State.set_status state Domain.Failed;
           fail_pending "ACP harness disconnected";
           ignore
-            (Store.append_event store ~kind:"harness.disconnected"
+            (State.append_event state ~kind:"harness.disconnected"
                ~payload:(`Assoc [ ("harnessPid", `Int harness_pid) ]));
           raise End_of_file
       | exn ->
           State.set_status state Domain.Failed;
           fail_pending (Printexc.to_string exn);
           ignore
-            (Store.append_event store ~kind:"harness.protocol_error"
+            (State.append_event state ~kind:"harness.protocol_error"
                ~payload:
                  (`Assoc
                     [
@@ -206,7 +206,7 @@ let run ~env (args : Config.args) =
     require_rpc_result ~id:"initialize" Acp.initialize_request
   in
   ignore
-    (Store.append_event store ~kind:"acp.initialize"
+    (State.append_event state ~kind:"acp.initialize"
        ~payload:initialize_response);
   (match Yojson.Safe.Util.member "protocolVersion" initialize_result with
   | `Int 1 -> ()
@@ -258,12 +258,12 @@ let run ~env (args : Config.args) =
                 | `List _ as options -> State.set_config_options state options
                 | _ -> ());
                 ignore
-                  (Store.append_event store ~kind:"acp.session.loaded"
+                  (State.append_event state ~kind:"acp.session.loaded"
                      ~payload:response);
                 existing
             | Error message ->
                 ignore
-                  (Store.append_event store ~kind:"acp.session.load_failed"
+                  (State.append_event state ~kind:"acp.session.load_failed"
                      ~payload:
                        (`Assoc
                           [
@@ -274,7 +274,7 @@ let run ~env (args : Config.args) =
         | Error message ->
             session_load_in_progress := false;
             ignore
-              (Store.append_event store ~kind:"acp.session.load_failed"
+              (State.append_event state ~kind:"acp.session.load_failed"
                  ~payload:
                    (`Assoc
                       [
@@ -318,7 +318,7 @@ let run ~env (args : Config.args) =
               State.change_config_option state ~id ~config_id ~value
             in
             ignore
-              (Store.append_event store ~kind:"acp.config_option.restored"
+              (State.append_event state ~kind:"acp.config_option.restored"
                  ~payload:
                    (`Assoc
                       [
@@ -328,7 +328,7 @@ let run ~env (args : Config.args) =
                       ]))
           with exn ->
             ignore
-              (Store.append_event store ~kind:"acp.config_option.restore_failed"
+              (State.append_event state ~kind:"acp.config_option.restore_failed"
                  ~payload:
                    (`Assoc
                       [
@@ -357,7 +357,7 @@ let run ~env (args : Config.args) =
       match State.current_config_value state ~config_id:"model" with
       | None ->
           ignore
-            (Store.append_event store ~kind:"acp.config_option.seed_skipped"
+            (State.append_event state ~kind:"acp.config_option.seed_skipped"
                ~payload:
                  (`Assoc
                     [
@@ -377,7 +377,7 @@ let run ~env (args : Config.args) =
               State.change_config_option state ~id ~config_id:"model" ~value
             in
             ignore
-              (Store.append_event store ~kind:"acp.config_option.seeded"
+              (State.append_event state ~kind:"acp.config_option.seeded"
                  ~payload:
                    (`Assoc
                       [
@@ -387,7 +387,7 @@ let run ~env (args : Config.args) =
                       ]))
           with exn ->
             ignore
-              (Store.append_event store ~kind:"acp.config_option.seed_failed"
+              (State.append_event state ~kind:"acp.config_option.seed_failed"
                  ~payload:
                    (`Assoc
                       [
@@ -401,7 +401,7 @@ let run ~env (args : Config.args) =
   (match Store.get_metadata store "pending_worker_upgrade" with
   | Some target when String.equal target args.generation ->
       ignore
-        (Store.append_event store ~kind:"worker.upgrade.completed"
+        (State.append_event state ~kind:"worker.upgrade.completed"
            ~payload:
              (`Assoc
                 [
@@ -435,7 +435,7 @@ let run ~env (args : Config.args) =
     in
     match receive Wire.request_of_yojson with
     | Ok (Wire.Hello { protocol_version } as hello) -> (
-        let negotiation = Protocol.handle state hello in
+        let negotiation = Protocol.handle ~clock state hello in
         write_json flow (Wire.response_to_yojson negotiation);
         match negotiation with
         | Error _ -> ()
@@ -456,7 +456,7 @@ let run ~env (args : Config.args) =
             in
             match receive decode with
             | Ok request ->
-                Protocol.handle state request
+                Protocol.handle ~clock state request
                 |> Wire.response_to_yojson |> write_json flow
             | Error error ->
                 write_json flow (Wire.response_to_yojson (Error error))))
@@ -486,7 +486,7 @@ let run ~env (args : Config.args) =
   Eio.Net.run_server socket handle_connection
     ~on_error:(fun exn ->
       Format.eprintf "worker connection failed: %a@." Eio.Exn.pp exn)
-    ~max_connections:32
+    ~max_connections:128
 
 let () =
   let args = Config.parse () in

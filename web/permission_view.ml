@@ -82,6 +82,10 @@ let render_request ~deciding ~on_decide
           ]);
     ]
 
+let render_pending_requests pending ~deciding ~on_decide =
+  List.map pending ~f:(render_request ~deciding ~on_decide)
+
 let render_pending entries ~deciding ~on_decide =
-  Event_history.pending_permissions entries
-  |> List.map ~f:(render_request ~deciding ~on_decide)
+  render_pending_requests
+    (Event_history.pending_permissions entries)
+    ~deciding ~on_decide

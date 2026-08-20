@@ -92,6 +92,12 @@ type timeline_block =
   | Message_entry of entry
   | Activity_group of { key : string; sequence : int64; entries : entry list }
 
+type projection
+
+val empty_projection : projection
+val apply_update : projection -> update -> projection
+val projection_entries : projection -> entry list
+val project_updates : update list -> projection
 val project : update list -> entry list
 val group_timeline : entry list -> timeline_block list
 

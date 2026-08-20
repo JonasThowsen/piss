@@ -22,6 +22,7 @@ type t = {
   upgrade_target : string option ref;
   upgrade_deadline : float ref;
   sessions_created_since_start : int ref;
+  event_condition : Eio.Condition.t;
   send : Yojson.Safe.t -> unit;
   require_rpc_result :
     id:string -> Yojson.Safe.t -> Yojson.Safe.t * Yojson.Safe.t;
@@ -49,12 +50,35 @@ let make ~args ~store ~workspace ~harness_pid ~runtime_worker_id
     upgrade_target = ref None;
     upgrade_deadline = ref 0.;
     sessions_created_since_start = ref 0;
+    event_condition = Eio.Condition.create ();
     send;
     require_rpc_result;
   }
 
 let args t = t.args
 let store t = t.store
+let notify_events t = Eio.Condition.broadcast t.event_condition
+
+let append_event t ~kind ~payload =
+  let event = Store.append_event t.store ~kind ~payload in
+  notify_events t;
+  event
+
+let wait_events t ~clock ~after ~limit ~timeout_ms =
+  let read () =
+    match
+      Store.list_events ~max_bytes:Config.max_event_page_bytes t.store ~after
+        ~limit
+    with
+    | [] -> None
+    | events -> Some events
+  in
+  try
+    Eio.Time.with_timeout_exn clock
+      (Float.of_int timeout_ms /. 1_000.)
+      (fun () -> Eio.Condition.loop_no_mutex t.event_condition read)
+  with Eio.Time.Timeout -> []
+
 let workspace t = t.workspace
 let runtime_worker_id t = t.runtime_worker_id
 
@@ -145,15 +169,14 @@ let create_harness_session t =
   in
   Store.set_metadata t.store "acp_session_id" created;
   install_config_options_from_result t result;
-  ignore
-    (Store.append_event t.store ~kind:"acp.session.created" ~payload:response);
+  ignore (append_event t ~kind:"acp.session.created" ~payload:response);
   created
 
 let record_additional_session t ~session_id =
   set_harness_session_id t session_id;
   incr t.sessions_created_since_start;
   ignore
-    (Store.append_event t.store ~kind:"timeline.reset"
+    (append_event t ~kind:"timeline.reset"
        ~payload:(`Assoc [ ("acpSessionId", `String session_id) ]));
   (* A newly selected ACP session starts idle. Late updates from the previous
      session are filtered by session id in the worker reader. *)
@@ -208,16 +231,19 @@ let runtime_busy t = harness_running t || Hashtbl.length t.running_commands > 0
 let record_dispatched t ~command_id =
   set_status t Domain.Running;
   Store.set_command_state t.store ~command_id Domain.Dispatched;
+  notify_events t;
   Hashtbl.replace t.running_commands command_id (Unix.gettimeofday ())
 
 let record_dispatch_failed t ~command_id =
   Hashtbl.remove t.running_commands command_id;
   Store.set_command_state t.store ~command_id Domain.Ambiguous;
+  notify_events t;
   set_status t Domain.Failed
 
 let record_completed t ~command_id ~state =
   Hashtbl.remove t.running_commands command_id;
   Store.set_command_state t.store ~command_id state;
+  notify_events t;
   recompute_status t
 
 let is_running_command t ~command_id = Hashtbl.mem t.running_commands command_id
@@ -258,7 +284,7 @@ let expire_stuck_permissions t ~now =
     (fun (request_id, permission) ->
       Hashtbl.remove t.pending_permissions request_id;
       ignore
-        (Store.append_event t.store ~kind:"acp.permission.expired"
+        (append_event t ~kind:"acp.permission.expired"
            ~payload:
              (`Assoc
                 [
@@ -285,7 +311,7 @@ let refresh_upgrade_lease t =
       t.upgrade_deadline := 0.;
       Store.set_metadata t.store "pending_worker_upgrade" "";
       ignore
-        (Store.append_event t.store ~kind:"worker.upgrade.expired"
+        (append_event t ~kind:"worker.upgrade.expired"
            ~payload:(`Assoc [ ("targetGeneration", `String target) ]))
   | _ -> ()
 
@@ -294,7 +320,7 @@ let start_upgrade t ~target ~deadline =
   t.upgrade_deadline := deadline;
   persist_config_values t;
   Store.set_metadata t.store "pending_worker_upgrade" target;
-  Store.append_event t.store ~kind:"worker.upgrade.prepared"
+  append_event t ~kind:"worker.upgrade.prepared"
     ~payload:
       (`Assoc
          [

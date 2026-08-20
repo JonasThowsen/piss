@@ -190,19 +190,38 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
               match worker_socket workers session_id with
               | Error error -> Headers.error_json error
               | Ok socket ->
-                  (* TODO(tracer): Add a worker-side wait_events primitive
-                     before supporting many concurrent observers per session;
-                     this first browser stream uses bounded 250 ms reads. *)
+                  let wait_supported = ref true in
+                  let event_request ~wait cursor =
+                    Worker_client.request ~net ~socket
+                      (`Assoc
+                         ([
+                            ( "op",
+                              `String (if wait then "wait_events" else "events")
+                            );
+                            ("after", `Intlit (Int64.to_string cursor));
+                            ("limit", `Int 200);
+                          ]
+                         @ if wait then [ ("timeoutMs", `Int 5_000) ] else []))
+                  in
                   let fetch cursor =
-                    match
-                      Worker_client.request ~net ~socket
-                        (`Assoc
-                           [
-                             ("op", `String "events");
-                             ("after", `Intlit (Int64.to_string cursor));
-                             ("limit", `Int 200);
-                           ])
-                    with
+                    let response =
+                      if !wait_supported then
+                        match event_request ~wait:true cursor with
+                        | Ok _ as response -> response
+                        | Error (Error.Validation { field; reason })
+                          when String.equal field "request"
+                               && String.equal reason
+                                    "unknown operation: wait_events" ->
+                            (* Workers are replaced independently. Fall back to
+                               bounded polling only for a pre-wait_events
+                               worker; transient errors reconnect and retry the
+                               efficient path. *)
+                            wait_supported := false;
+                            event_request ~wait:false cursor
+                        | Error _ as response -> response
+                      else event_request ~wait:false cursor
+                    in
+                    match response with
                     | Ok (`List events) -> Ok events
                     | Ok _ -> Error "worker returned an invalid event page"
                     | Error error -> Error (Error.to_string error)

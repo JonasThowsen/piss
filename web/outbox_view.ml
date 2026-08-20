@@ -4,12 +4,7 @@ open! Bonsai_web.Cont
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 
-let render events =
-  let outbox =
-    events
-    |> List.filter_map ~f:Event_history.outbox_update
-    |> Outbox_projection.project
-  in
+let render outbox =
   if List.is_empty outbox then Vdom.Node.none
   else
     Vdom.Node.section
