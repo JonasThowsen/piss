@@ -1,0 +1,112 @@
+diff --git a/src/acp/session.ts b/src/acp/session.ts
+index e846592..e222d37 100644
+--- a/src/acp/session.ts
++++ b/src/acp/session.ts
+@@ -130,6 +130,17 @@ type QueuedTurn = {
+   reject: (reason?: any) => void
+ }
+ 
++const ACTIVE_TURN_CONTRACT = `
++
++<execution-status-contract>
++Work only continues while this turn is active or while explicitly tracked background work is running. A final response ends the active turn.
++Do not end a turn by saying that you are still working, fixing, investigating, reviewing, or will continue later. Before responding finally, do one of the following:
++1. Finish the intended work now using tools.
++2. Launch explicitly tracked background work and state exactly what remains active.
++3. State clearly that work is paused or incomplete and what user action is required to resume it.
++Never imply that work will continue after the session becomes idle.
++</execution-status-contract>`
++
+ export class PiAcpSession {
+   private readonly sessionId: SessionId
+   private readonly cwd: string
+@@ -339,7 +350,7 @@ export class PiAcpSession {
+     const expandedMessage = expandSlashCommand(message, this.fileCommands)
+ 
+     const turnPromise = new Promise<StopReason>((resolve, reject) => {
+-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
++      const queued: QueuedTurn = { message: expandedMessage + ACTIVE_TURN_CONTRACT, images, resolve, reject }
+ 
+       // If a turn is already running, enqueue.
+       if (this.pendingTurn) {
+diff --git a/test/component/session-events.test.ts b/test/component/session-events.test.ts
+index 554644c..ca9ea82 100644
+--- a/test/component/session-events.test.ts
++++ b/test/component/session-events.test.ts
+@@ -695,7 +695,11 @@ test('PiAcpSession: does not re-emit startup info on first prompt after it was a
+   await new Promise(r => setTimeout(r, 0))
+ 
+   assert.equal(proc.prompts.length, 1)
+-  assert.equal(proc.prompts[0]!.message, 'hello')
++  assert.match(proc.prompts[0]!.message, /^hello\n\n<execution-status-contract>/)
++  assert.match(
++    proc.prompts[0]!.message,
++    /Never imply that work will continue after the session becomes idle\./
++  )
+   const startupUpdates = conn.updates.filter(
+     entry =>
+       entry.update.sessionUpdate === 'agent_message_chunk' &&
+@@ -755,7 +759,7 @@ test('PiAcpSession: queues concurrent prompt and starts it after agent_settled',
+   const second = session.prompt('two')
+ 
+   assert.equal(proc.prompts.length, 1)
+-  assert.equal(proc.prompts[0]!.message, 'one')
++  assert.match(proc.prompts[0]!.message, /^one\n\n<execution-status-contract>/)
+ 
+   proc.emit({ type: 'agent_start' })
+   proc.emit({ type: 'turn_end' })
+@@ -766,7 +770,7 @@ test('PiAcpSession: queues concurrent prompt and starts it after agent_settled',
+   assert.equal(r1, 'end_turn')
+ 
+   assert.equal(proc.prompts.length, 2)
+-  assert.equal(proc.prompts[1]!.message, 'two')
++  assert.match(proc.prompts[1]!.message, /^two\n\n<execution-status-contract>/)
+ 
+   proc.emit({ type: 'agent_start' })
+   proc.emit({ type: 'turn_end' })
+@@ -830,7 +834,7 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
+ 
+   const p = session.prompt('/hello world')
+   assert.equal(proc.prompts.length, 1)
+-  assert.equal(proc.prompts[0]!.message, 'Say hello to world')
++  assert.match(proc.prompts[0]!.message, /^Say hello to world\n\n<execution-status-contract>/)
+ 
+   proc.emit({ type: 'agent_start' })
+   proc.emit({ type: 'turn_end' })
+diff --git a/test/component/session-queue-cancel.test.ts b/test/component/session-queue-cancel.test.ts
+index 9a2d462..526ce6e 100644
+--- a/test/component/session-queue-cancel.test.ts
++++ b/test/component/session-queue-cancel.test.ts
+@@ -161,7 +161,9 @@ test('PiAcpSession: queues prompts behind unsolicited background turns', async (
+   proc.emit({ type: 'agent_settled' })
+   await nextTick()
+ 
+-  assert.deepEqual(proc.prompts, [{ message: 'after background work', attachments: [] }])
++  assert.equal(proc.prompts.length, 1)
++  assert.match(proc.prompts[0]!.message, /^after background work\n\n<execution-status-contract>/)
++  assert.deepEqual(proc.prompts[0]!.attachments, [])
+ 
+   proc.emit({ type: 'agent_start' })
+   proc.emit({ type: 'agent_end', messages: [], willRetry: false })
+@@ -196,7 +198,9 @@ test('PiAcpSession: a new unsolicited turn supersedes an older pending settlemen
+   proc.emit({ type: 'agent_settled' })
+   await nextTick()
+ 
+-  assert.deepEqual(proc.prompts, [{ message: 'after both background turns', attachments: [] }])
++  assert.equal(proc.prompts.length, 1)
++  assert.match(proc.prompts[0]!.message, /^after both background turns\n\n<execution-status-contract>/)
++  assert.deepEqual(proc.prompts[0]!.attachments, [])
+ 
+   proc.emit({ type: 'agent_start' })
+   proc.emit({ type: 'agent_end', messages: [], willRetry: false })
+diff --git a/test/component/session-slash-commands.test.ts b/test/component/session-slash-commands.test.ts
+index ac950ab..9c4326c 100644
+--- a/test/component/session-slash-commands.test.ts
++++ b/test/component/session-slash-commands.test.ts
+@@ -33,5 +33,5 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
+ 
+   assert.equal(reason, 'end_turn')
+   assert.equal(proc.prompts.length, 1)
+-  assert.equal(proc.prompts[0]!.message, 'Expanded world')
++  assert.match(proc.prompts[0]!.message, /^Expanded world\n\n<execution-status-contract>/)
+ })
