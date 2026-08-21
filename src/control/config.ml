@@ -1,6 +1,6 @@
 (* Control plane configuration: CLI parsing, the workers type, and bootstrap. *)
 
-open Piss_core
+open Control_prelude
 
 type env = {
   workers : workers;

@@ -1,5 +1,6 @@
 (lang dune 3.20)
 (name piss)
+(implicit_transitive_deps false)
 (generate_opam_files true)
 (source (github JonasThowsen/piss))
 (license MIT)

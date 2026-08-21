@@ -108,6 +108,13 @@ val image_content : Domain.image_input -> Yojson.Safe.t
 val resource_link_content : Workspace_files.resource -> Yojson.Safe.t
 (** A single content block of type `resource_link` for a session prompt. *)
 
+val command_request_id : string -> string
+val mutation_request_id : string -> string
+
+val command_id_of_request_id : string -> string option
+(** Disjoint internal ACP request namespaces. External Piss IDs are unchanged;
+    decoding succeeds only for command-origin ACP responses. *)
+
 val prompt_request :
   delivery:string option ->
   command_id:string ->

@@ -31,14 +31,14 @@ type request =
   | New_session
   | Prompt of {
       target : Domain.runtime_target;
-      command_id : string;
+      command_id : Domain.Command_id.t;
       text : string;
       images : Domain.image_input list;
       resources : Domain.resource_input list;
     }
   | Deliver of {
       target : Domain.runtime_target;
-      command_id : string;
+      command_id : Domain.Command_id.t;
       text : string;
       images : Domain.image_input list;
       resources : Domain.resource_input list;
@@ -46,27 +46,30 @@ type request =
     }
   | Recover_command of {
       target : Domain.runtime_target;
-      command_id : string;
+      command_id : Domain.Command_id.t;
       action : string;
       discard_cleared_attachments : bool;
     }
-  | Cancel of { target : Domain.runtime_target; mutation_id : string }
+  | Cancel of {
+      target : Domain.runtime_target;
+      mutation_id : Domain.Request_id.t;
+    }
   | Config_options
   | Set_config_option of {
       target : Domain.runtime_target;
-      mutation_id : string;
+      mutation_id : Domain.Request_id.t;
       config_id : string;
       value : string;
     }
   | Permission of {
       target : Domain.runtime_target;
-      mutation_id : string;
-      request_id : string;
+      mutation_id : Domain.Request_id.t;
+      request_id : Domain.Request_id.t;
       option_id : string option;
     }
   | Peer_event of {
       kind : string;
-      request_id : string;
+      request_id : Domain.Request_id.t;
       peer_id : string;
       text : string;
     }

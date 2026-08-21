@@ -34,7 +34,7 @@ type error =
   | Internal_error
 
 val error_message : error -> string
-val to_control_error : error -> Piss_core.Error.t
+val to_control_error : error -> Control_prelude.Error.t
 val parse_porcelain : string -> status_entry list
 val role_and_reason : string -> string * string
 val select_journey : status_entry list -> string list

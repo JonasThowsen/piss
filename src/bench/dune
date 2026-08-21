@@ -1,0 +1,4 @@
+(executable
+ (name catalog_summary_bench)
+ (modules catalog_summary_bench)
+ (libraries control_audit eio eio_main))

@@ -20,8 +20,8 @@ type pending_permission = {
 type args = {
   socket_path : string;
   database_path : string;
-  session_id : string;
-  worker_id : string;
+  session_id : Piss_shared.Domain.Session_id.t;
+  worker_id : Piss_shared.Domain.Worker_id.t;
   generation : string;
   workspace : string;
   harness_command : string;
@@ -68,11 +68,21 @@ let parse () =
     "piss-session-worker";
   if !socket_path = "" then raise (Arg.Bad "--socket is required");
   if !database_path = "" then raise (Arg.Bad "--database is required");
+  let session_id =
+    match Piss_shared.Domain.Session_id.of_string !session_id with
+    | Ok value -> value
+    | Error message -> raise (Arg.Bad ("--session: " ^ message))
+  in
+  let worker_id =
+    match Piss_shared.Domain.Worker_id.of_string !worker_id with
+    | Ok value -> value
+    | Error message -> raise (Arg.Bad ("--worker: " ^ message))
+  in
   {
     socket_path = !socket_path;
     database_path = !database_path;
-    session_id = !session_id;
-    worker_id = !worker_id;
+    session_id;
+    worker_id;
     generation = !generation;
     workspace = !workspace;
     harness_command = !harness_command;

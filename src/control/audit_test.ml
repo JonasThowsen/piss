@@ -80,7 +80,7 @@ let diversity_case () =
     Alcotest.fail "proof did not end the feature flow"
 
 let error_category_case () =
-  let open Piss_core.Error in
+  let open Control_prelude.Error in
   let check expected actual =
     Alcotest.(check string) "typed control error" expected (to_string actual)
   in

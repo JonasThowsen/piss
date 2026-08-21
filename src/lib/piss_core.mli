@@ -1,11 +1,9 @@
-(* Piss_core is the backend umbrella for the Piss libraries. *)
+(** Deprecated source-compatibility facade. New code must import one of the
+    ownership libraries documented in [docs/ARCHITECTURE.md]. *)
 
-module Domain : module type of Piss_shared.Domain
-module Error : module type of Piss_shared.Error
-module Wire : module type of Piss_shared.Wire
-module Acp : module type of Piss_shared.Acp
-module Workspace_files : module type of Piss_shared.Workspace_files
-module Origin_pattern : module type of Origin_pattern
-module Registry : module type of Registry
-module Store : module type of Store
-module Workspace_io : module type of Workspace_io
+include module type of Piss_shared
+module Origin_pattern : module type of Piss_origin.Origin_pattern
+module Registry : module type of Piss_registry.Registry
+module Registry_domain : module type of Piss_registry_domain.Registry_domain
+module Store : module type of Piss_worker_store.Store
+module Workspace_io : module type of Piss_workspace_io.Workspace_io

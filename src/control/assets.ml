@@ -1,6 +1,6 @@
 (* Static asset serving for the browser shell. *)
 
-open Piss_core
+open Control_prelude
 
 let safe_asset_path root resource =
   match resource with

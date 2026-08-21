@@ -93,6 +93,21 @@ let () =
   in
   if Event_buffer.can_page_before stopped ~first_sequence:1L then
     fail "empty server page did not stop paging";
+  let capped =
+    Event_buffer.create ~live_capacity:4 [ event 10 "fixture.initial" ]
+    |> Event_buffer.begin_page
+    |> fun buffer ->
+    match Event_buffer.prepend buffer [ event 5 "fixture.recovered" ] with
+    | Error message -> fail message
+    | Ok buffer -> Event_buffer.fail_page buffer "recovery capped"
+  in
+  if not (List.equal Int.equal (sequences capped) [ 5; 10 ]) then
+    fail "capped recovery discarded accumulated pages";
+  if not (Event_buffer.can_page_before capped ~first_sequence:1L) then
+    fail "capped recovery disabled manual paging";
+  (match Event_buffer.page_error capped with
+  | Some "recovery capped" -> ()
+  | _ -> fail "capped recovery notice was not retained");
   let streamed =
     List.range 1 1_001
     |> List.fold ~init:(Event_buffer.create ~live_capacity:1_001 [])

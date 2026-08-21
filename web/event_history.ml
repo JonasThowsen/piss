@@ -207,5 +207,18 @@ let has_unresolved_recoveries events =
   in
   not (Set.is_subset recovered ~of_:accepted)
 
+let max_initial_recovery_events = 4_096
+
+let initial_recovery_can_request_more events =
+  List.length events < max_initial_recovery_events
+
 let initial_history_is_complete events =
   has_conversation_boundary events && not (has_unresolved_recoveries events)
+
+type initial_recovery_budget = Complete | Fetch_more of int | Capped
+
+let initial_recovery_budget events =
+  if initial_history_is_complete events then Complete
+  else
+    let remaining = max_initial_recovery_events - List.length events in
+    if remaining <= 0 then Capped else Fetch_more (Int.min 500 remaining)

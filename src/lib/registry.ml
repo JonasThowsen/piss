@@ -1,5 +1,7 @@
 exception Registry_error = Registry_support.Registry_error
 
+module State = Piss_registry_domain.Registry_domain
+
 type workspace = Registry_support.workspace = {
   id : string;
   name : string;
@@ -28,7 +30,7 @@ type peer_request = Registry_support.peer_request = {
   partial_response : string;
   command_seen : bool;
   observed_terminal : string option;
-  state : string;
+  state : State.Peer_request_state.t;
   response : string option;
 }
 
@@ -38,7 +40,7 @@ type peer_subscription = Registry_support.peer_subscription = {
   request_ids : string list;
   wait_for : string;
   command_id : string;
-  state : string;
+  state : State.Subscription_state.t;
 }
 
 type session_creation = Registry_support.session_creation = {
@@ -48,7 +50,7 @@ type session_creation = Registry_support.session_creation = {
   title : string;
   harness : string;
   session_id : string;
-  state : string;
+  state : State.Session_creation_state.t;
   error : string option;
   updated_at : float;
 }
@@ -56,6 +58,38 @@ type session_creation = Registry_support.session_creation = {
 type t = Registry_support.t = { db : Sqlite3.db }
 
 open Registry_support
+
+let ensure_session_transition predecessors target =
+  List.iter
+    (fun from ->
+      match State.Session_lifecycle.transition ~from target with
+      | Ok _ -> ()
+      | Error message -> raise (Registry_error message))
+    predecessors
+
+let ensure_peer_transition predecessors target =
+  List.iter
+    (fun from ->
+      match State.Peer_request_state.transition ~from target with
+      | Ok _ -> ()
+      | Error message -> raise (Registry_error message))
+    predecessors
+
+let ensure_subscription_transition predecessors target =
+  List.iter
+    (fun from ->
+      match State.Subscription_state.transition ~from target with
+      | Ok _ -> ()
+      | Error message -> raise (Registry_error message))
+    predecessors
+
+let ensure_creation_transition predecessors target =
+  List.iter
+    (fun from ->
+      match State.Session_creation_state.transition ~from target with
+      | Ok _ -> ()
+      | Error message -> raise (Registry_error message))
+    predecessors
 
 let open_ ~path =
   let db = Sqlite3.db_open path in
@@ -392,6 +426,9 @@ let accept_session_creation registry ~id ~source_id ~workspace_id ~title
           Ok (Option.get (find_session_creation registry id), session, false))
 
 let claim_session_creation ?reclaim_before registry id =
+  ensure_creation_transition
+    State.Session_creation_state.[ Pending; Launching ]
+    Launching;
   let condition =
     match reclaim_before with
     | None -> "state = 'pending'"
@@ -408,6 +445,7 @@ let claim_session_creation ?reclaim_before registry id =
   Sqlite3.changes registry.db > 0
 
 let mark_session_creation_active registry id =
+  ensure_creation_transition State.Session_creation_state.[ Launching ] Active;
   with_statement registry.db
     "UPDATE broker_session_requests SET state = 'active',error = \
      NULL,updated_at = ? WHERE id = ? AND state = 'launching'" (fun statement ->
@@ -417,6 +455,9 @@ let mark_session_creation_active registry id =
   Sqlite3.changes registry.db > 0
 
 let mark_session_creation_cleanup registry id message =
+  ensure_creation_transition
+    State.Session_creation_state.[ Pending; Launching ]
+    Cleanup;
   with_statement registry.db
     "UPDATE broker_session_requests SET state = 'cleanup',error = ?,updated_at \
      = ? WHERE id = ? AND state IN ('pending','launching')" (fun statement ->
@@ -427,6 +468,9 @@ let mark_session_creation_cleanup registry id message =
   Sqlite3.changes registry.db > 0
 
 let mark_session_creation_failed registry id message =
+  ensure_creation_transition
+    State.Session_creation_state.[ Pending; Launching; Cleanup ]
+    Failed;
   with_statement registry.db
     "UPDATE broker_session_requests SET state = 'failed',error = ?,updated_at \
      = ? WHERE id = ? AND state IN ('pending','launching','cleanup')"
@@ -483,6 +527,7 @@ let cleanup_recommended registry ~source_id ~session_id =
              false)
 
 let claim_session_finish registry ~source_id ~session_id =
+  ensure_session_transition State.Session_lifecycle.[ Active ] Finishing;
   transaction registry (fun () ->
       if not (session_created_by registry ~source_id ~session_id) then
         Error "only the creating orchestrator may finish this session"
@@ -501,6 +546,7 @@ let claim_session_finish registry ~source_id ~session_id =
         else Error "session finish is already in progress or archived"))
 
 let cancel_session_finish registry session_id =
+  ensure_session_transition State.Session_lifecycle.[ Finishing ] Active;
   with_statement registry.db
     "UPDATE sessions SET finishing_at = NULL WHERE id = ? AND archived_at IS \
      NULL AND finishing_at IS NOT NULL" (fun statement ->
@@ -565,6 +611,26 @@ let list registry ~include_archived =
       collect [])
 
 let find = find_session
+
+let session_lifecycle registry id =
+  with_statement registry.db
+    "SELECT archived_at,finishing_at FROM sessions WHERE id = ?"
+    (fun statement ->
+      bind_text statement 1 id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW ->
+          let present column =
+            match Sqlite3.column statement column with
+            | Sqlite3.Data.NULL -> false
+            | _ -> true
+          in
+          if present 0 then Some State.Session_lifecycle.Archived
+          else if present 1 then Some State.Session_lifecycle.Finishing
+          else Some State.Session_lifecycle.Active
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "read session lifecycle" rc;
+          None)
 
 let find_active registry id =
   with_statement registry.db
@@ -763,6 +829,9 @@ let list_open_peer_subscriptions registry =
       collect [])
 
 let mark_peer_subscription_dispatching registry id =
+  ensure_subscription_transition
+    State.Subscription_state.[ Pending ]
+    Dispatching;
   with_statement registry.db
     "UPDATE peer_subscriptions SET state = 'dispatching',updated_at = ? WHERE \
      id = ? AND state = 'pending'" (fun statement ->
@@ -771,15 +840,21 @@ let mark_peer_subscription_dispatching registry id =
       expect_done "mark peer subscription dispatching" statement)
 
 let complete_peer_subscription registry id =
+  ensure_subscription_transition
+    State.Subscription_state.[ Pending; Dispatching ]
+    Delivered;
   with_statement registry.db
     "UPDATE peer_subscriptions SET state = 'delivered',updated_at = ? WHERE id \
-     = ? AND state <> 'delivered'" (fun statement ->
+     = ? AND state IN ('pending','dispatching')" (fun statement ->
       bind_float statement 1 (Unix.gettimeofday ());
       bind_text statement 2 id;
       expect_done "complete peer subscription" statement);
   Sqlite3.changes registry.db > 0
 
 let mark_peer_dispatching registry id ~start_sequence =
+  ensure_peer_transition
+    State.Peer_request_state.[ Accepted; Queued ]
+    Dispatching;
   with_statement registry.db
     "UPDATE peer_requests SET start_sequence = CASE WHEN state = 'accepted' \
      THEN ? ELSE start_sequence END,observation_sequence = CASE WHEN state = \
@@ -794,6 +869,9 @@ let mark_peer_dispatching registry id ~start_sequence =
   Sqlite3.changes registry.db > 0
 
 let mark_peer_dispatched registry id =
+  ensure_peer_transition
+    State.Peer_request_state.[ Dispatching; Dispatched ]
+    Dispatched;
   with_statement registry.db
     "UPDATE peer_requests SET state = 'dispatched',response = NULL,updated_at \
      = ? WHERE id = ? AND state IN ('dispatching','dispatched')"
@@ -804,6 +882,7 @@ let mark_peer_dispatched registry id =
   Sqlite3.changes registry.db > 0
 
 let requeue_peer_request registry id =
+  ensure_peer_transition State.Peer_request_state.[ Dispatching ] Queued;
   with_statement registry.db
     "UPDATE peer_requests SET state = 'queued',response = NULL,updated_at = ? \
      WHERE id = ? AND state = 'dispatching'" (fun statement ->
@@ -835,9 +914,13 @@ let advance_peer_observation registry id ~from_sequence ~through_sequence
   Sqlite3.changes registry.db > 0
 
 let complete_peer_request registry id response =
+  ensure_peer_transition
+    State.Peer_request_state.[ Accepted; Queued; Dispatching; Dispatched ]
+    Completed;
   with_statement registry.db
     "UPDATE peer_requests SET state = 'completed',response = ?,updated_at = ? \
-     WHERE id = ? AND state NOT IN ('completed','failed')" (fun statement ->
+     WHERE id = ? AND state IN \
+     ('accepted','queued','dispatching','dispatched')" (fun statement ->
       bind_text statement 1 response;
       bind_float statement 2 (Unix.gettimeofday ());
       bind_text statement 3 id;
@@ -845,9 +928,13 @@ let complete_peer_request registry id response =
   Sqlite3.changes registry.db > 0
 
 let fail_peer_request registry id message =
+  ensure_peer_transition
+    State.Peer_request_state.[ Accepted; Queued; Dispatching; Dispatched ]
+    Failed;
   with_statement registry.db
     "UPDATE peer_requests SET state = 'failed',response = ?,updated_at = ? \
-     WHERE id = ? AND state NOT IN ('completed','failed')" (fun statement ->
+     WHERE id = ? AND state IN \
+     ('accepted','queued','dispatching','dispatched')" (fun statement ->
       bind_text statement 1 message;
       bind_float statement 2 (Unix.gettimeofday ());
       bind_text statement 3 id;
@@ -863,6 +950,9 @@ let rename_session registry id title =
   Sqlite3.changes registry.db > 0
 
 let archive registry id =
+  ensure_session_transition
+    State.Session_lifecycle.[ Active; Finishing ]
+    Archived;
   with_statement registry.db
     "UPDATE sessions SET archived_at = ?,finishing_at = NULL WHERE id = ? AND \
      archived_at IS NULL" (fun statement ->
@@ -872,6 +962,7 @@ let archive registry id =
   Sqlite3.changes registry.db > 0
 
 let restore registry id =
+  ensure_session_transition State.Session_lifecycle.[ Archived ] Active;
   with_statement registry.db
     "UPDATE sessions SET archived_at = NULL,finishing_at = NULL WHERE id = ? \
      AND archived_at IS NOT NULL" (fun statement ->

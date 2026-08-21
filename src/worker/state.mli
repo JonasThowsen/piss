@@ -6,11 +6,11 @@ type t
 
 val make :
   args:Config.args ->
-  store:Piss_core.Store.t ->
+  store:Worker_prelude.Store.t ->
   workspace:string ->
   harness_pid:int ->
-  runtime_worker_id:string ->
-  runtime_generation:int ->
+  runtime_worker_id:Worker_prelude.Domain.Worker_id.t ->
+  runtime_generation:Worker_prelude.Domain.Runtime_generation.t ->
   send:(Yojson.Safe.t -> unit) ->
   require_rpc_result:
     (id:string -> Yojson.Safe.t -> Yojson.Safe.t * Yojson.Safe.t) ->
@@ -19,10 +19,10 @@ val make :
     installed after the initialize handshake completes. *)
 
 val args : t -> Config.args
-val store : t -> Piss_core.Store.t
+val store : t -> Worker_prelude.Store.t
 
 val append_event :
-  t -> kind:string -> payload:Yojson.Safe.t -> Piss_core.Domain.event
+  t -> kind:string -> payload:Yojson.Safe.t -> Worker_prelude.Domain.event
 (** Append and wake every blocked live-event observer. *)
 
 val wait_events :
@@ -31,25 +31,25 @@ val wait_events :
   after:int64 ->
   limit:int ->
   timeout_ms:int ->
-  Piss_core.Domain.event list
+  Worker_prelude.Domain.event list
 (** Block without polling until events exist after [after], or until timeout. *)
 
 val workspace : t -> string
-val runtime_worker_id : t -> string
-val runtime_target : t -> Piss_core.Domain.runtime_target
+val runtime_worker_id : t -> Worker_prelude.Domain.Worker_id.t
+val runtime_target : t -> Worker_prelude.Domain.runtime_target
 
 val initialize_agent :
   t -> name:string -> supports_load:bool -> supports_images:bool -> unit
 (** Complete the ACP initialize transition with the negotiated agent data. *)
 
 val supports_images : t -> bool
-val status : t -> Piss_core.Domain.worker_status
-val set_status : t -> Piss_core.Domain.worker_status -> unit
+val status : t -> Worker_prelude.Domain.worker_status
+val set_status : t -> Worker_prelude.Domain.worker_status -> unit
 val set_harness_running : t -> bool -> unit
 val refresh_status : t -> unit
 val harness_running : t -> bool
 val runtime_busy : t -> bool
-val snapshot : t -> Piss_core.Domain.snapshot
+val snapshot : t -> Worker_prelude.Domain.snapshot
 val harness_session_id : t -> string
 val set_harness_session_id : t -> string -> unit
 val create_harness_session : t -> string
@@ -72,7 +72,15 @@ val record_dispatched : t -> command_id:string -> unit
 val record_dispatch_failed : t -> command_id:string -> unit
 
 val record_completed :
-  t -> command_id:string -> state:Piss_core.Domain.command_state -> unit
+  t -> command_id:string -> state:Worker_prelude.Domain.command_state -> unit
+
+val reconcile_late_response :
+  t ->
+  command_id:string ->
+  state:Worker_prelude.Domain.command_state ->
+  (bool, string) result
+(** Reconcile terminal evidence for a durably Ambiguous command without opening
+    any other terminal transition. *)
 
 val is_running_command : t -> command_id:string -> bool
 val running_command_count : t -> int
@@ -93,6 +101,6 @@ val send : t -> Yojson.Safe.t -> unit
 (** Send a protocol payload to the ACP harness. *)
 
 val start_upgrade :
-  t -> target:string -> deadline:float -> Piss_core.Domain.event
+  t -> target:string -> deadline:float -> Worker_prelude.Domain.event
 
 val upgrade_is_preparing : t -> bool

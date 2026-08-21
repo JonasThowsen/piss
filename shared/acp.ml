@@ -178,6 +178,21 @@ let resource_link_content (resource : Workspace_files.resource) =
     | Some value -> [ ("mimeType", `String value) ]
     | None -> [])
 
+let command_request_prefix = "piss-command:"
+let mutation_request_prefix = "piss-mutation:"
+let command_request_id command_id = command_request_prefix ^ command_id
+let mutation_request_id request_id = mutation_request_prefix ^ request_id
+
+let command_id_of_request_id request_id =
+  if String.starts_with ~prefix:command_request_prefix request_id then
+    let length =
+      String.length request_id - String.length command_request_prefix
+    in
+    if length = 0 then None
+    else
+      Some (String.sub request_id (String.length command_request_prefix) length)
+  else None
+
 let prompt_request ~delivery ~command_id ~session_id ~text ~images ~resources =
   let prompt =
     (if text = "" then []
@@ -195,7 +210,9 @@ let prompt_request ~delivery ~command_id ~session_id ~text ~images ~resources =
         ("_meta", `Assoc [ ("piss", `Assoc [ ("delivery", `String action) ]) ])
         :: fields
   in
-  request ~id:command_id ~method_:"session/prompt" (`Assoc fields)
+  request
+    ~id:(command_request_id command_id)
+    ~method_:"session/prompt" (`Assoc fields)
 
 let replace_assoc name value fields =
   (name, value) :: List.remove_assoc name fields

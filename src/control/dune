@@ -1,11 +1,16 @@
 (library
  (name control_audit)
  (wrapped false)
- (modules audit routes lifecycle)
+ (modules audit routes lifecycle parallel_map control_prelude)
  (libraries
-  piss.core
+  piss.shared
+  piss.registry-domain
+  piss.registry
+  piss.origin
+  eio
   eio_main
   eio.unix
+  cohttp
   cohttp-eio
   cstruct
   uri
@@ -31,9 +36,14 @@
   assets)
  (libraries
   control_audit
-  piss.core
+  piss.shared
+  piss.registry-domain
+  piss.registry
+  piss.origin
+  eio
   eio_main
   eio.unix
+  cohttp
   cohttp-eio
   cstruct
   uri
@@ -44,4 +54,9 @@
 (test
  (name audit_test)
  (modules audit_test)
- (libraries control_audit alcotest eio_main eio.unix uri unix))
+ (libraries control_audit alcotest eio eio_main eio.unix str uri yojson unix))
+
+(test
+ (name parallel_map_test)
+ (modules parallel_map_test)
+ (libraries control_audit alcotest eio eio_main unix))

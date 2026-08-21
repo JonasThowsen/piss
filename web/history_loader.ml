@@ -151,42 +151,52 @@ let older_request ~generation ~limit ~session_id ~before =
       ("session", session_id);
     ]
 
+type initial_recovery = { events : Event_history.event list; capped : bool }
+
+let recovery_capped_notice =
+  "Automatic recovery stopped at the 4096-event work budget. Loaded events are \
+   retained; use Load earlier activity to continue."
+
 let rec extend_initial_history ~generation ~session_id events =
   if not (current_load generation) then
     Async_kernel.Deferred.return (Error "history load superseded")
-  else if Event_history.initial_history_is_complete events then
-    Async_kernel.Deferred.return (Ok events)
   else
-    match List.hd events with
-    | None -> Async_kernel.Deferred.return (Ok events)
-    | Some earliest -> (
-        let open Async_kernel.Deferred.Let_syntax in
-        let%bind response =
-          older_request ~generation ~limit:500 ~session_id
-            ~before:(Event_history.sequence earliest)
-        in
-        match response with
-        | Error error ->
-            Async_kernel.Deferred.return (Error (Error.to_string_hum error))
-        | Ok body -> (
-            match Event_history.decode_events body with
-            | Error message -> Async_kernel.Deferred.return (Error message)
-            | Ok [] ->
-                if Event_history.has_unresolved_recoveries events then
-                  Async_kernel.Deferred.return
-                    (Error "recovered command acceptance is unavailable")
-                else Async_kernel.Deferred.return (Ok events)
-            | Ok (page_earliest :: _ as page) ->
-                if
-                  Int64.(
-                    Event_history.sequence page_earliest
-                    >= Event_history.sequence earliest)
-                then
-                  Async_kernel.Deferred.return
-                    (Error "older history page did not advance")
-                else
-                  extend_initial_history ~generation ~session_id (page @ events)
-            ))
+    match Event_history.initial_recovery_budget events with
+    | Complete -> Async_kernel.Deferred.return (Ok { events; capped = false })
+    | Capped -> Async_kernel.Deferred.return (Ok { events; capped = true })
+    | Fetch_more limit -> (
+        match List.hd events with
+        | None -> Async_kernel.Deferred.return (Ok { events; capped = false })
+        | Some earliest -> (
+            let open Async_kernel.Deferred.Let_syntax in
+            let%bind response =
+              older_request ~generation ~limit ~session_id
+                ~before:(Event_history.sequence earliest)
+            in
+            match response with
+            | Error error ->
+                Async_kernel.Deferred.return (Error (Error.to_string_hum error))
+            | Ok body -> (
+                match Event_history.decode_events body with
+                | Error message -> Async_kernel.Deferred.return (Error message)
+                | Ok [] ->
+                    if Event_history.has_unresolved_recoveries events then
+                      Async_kernel.Deferred.return
+                        (Error "recovered command acceptance is unavailable")
+                    else
+                      Async_kernel.Deferred.return
+                        (Ok { events; capped = false })
+                | Ok (page_earliest :: _ as page) ->
+                    if
+                      Int64.(
+                        Event_history.sequence page_earliest
+                        >= Event_history.sequence earliest)
+                    then
+                      Async_kernel.Deferred.return
+                        (Error "older history page did not advance")
+                    else
+                      extend_initial_history ~generation ~session_id
+                        (page @ events))))
 
 let initial_history_request ~generation session_id =
   let open Async_kernel.Deferred.Let_syntax in
@@ -265,8 +275,8 @@ let finish_recovery session_id generation =
         String.equal active_session session_id && active_generation = generation)
   then active_recovery := None
 
-let recover_initial_history ~inject_history ~session_id ~generation ~reserved
-    events =
+let recover_initial_history ~inject_history ~set_stream_notice ~session_id
+    ~generation ~reserved events =
   if (not reserved) || not (current_load generation) then Effect.Ignore
   else
     Effect.bind
@@ -278,12 +288,24 @@ let recover_initial_history ~inject_history ~session_id ~generation ~reserved
         else
           match result with
           | Error message -> inject_history (Older_failed (session_id, message))
-          | Ok events ->
-              let untrimmed = merge_history session_id events in
-              if untrimmed then mark_history_exhausted session_id
-              else refresh_history_completeness session_id;
-              Timeline_scroll.preserve_after_prepend
-                (inject_history (Prepend_older (session_id, events))))
+          | Ok recovery ->
+              let untrimmed = merge_history session_id recovery.events in
+              if recovery.capped || not untrimmed then
+                refresh_history_completeness session_id
+              else mark_history_exhausted session_id;
+              let prepend =
+                Timeline_scroll.preserve_after_prepend
+                  (inject_history (Prepend_older (session_id, recovery.events)))
+              in
+              if recovery.capped then
+                Effect.bind prepend ~f:(fun () ->
+                    Effect.Many
+                      [
+                        inject_history
+                          (Older_failed (session_id, recovery_capped_notice));
+                        set_stream_notice recovery_capped_notice;
+                      ])
+              else prepend)
 
 let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
     ~refresh_snapshot_effect ~set_stream_notice session_id =
@@ -318,8 +340,8 @@ let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
                   reserve_initial_recovery session_id ~generation ~complete
                 in
                 Effect.bind (activate events) ~f:(fun () ->
-                    recover_initial_history ~inject_history ~session_id
-                      ~generation ~reserved events)
+                    recover_initial_history ~inject_history ~set_stream_notice
+                      ~session_id ~generation ~reserved events)
             | None ->
                 Effect.bind
                   (Effect.of_deferred_thunk (fun () ->
@@ -340,7 +362,8 @@ let load_initial ~inject_history ~inject_deciding ~refresh_catalog_effect
                           in
                           Effect.bind (activate events) ~f:(fun () ->
                               recover_initial_history ~inject_history
-                                ~session_id ~generation ~reserved events))))
+                                ~set_stream_notice ~session_id ~generation
+                                ~reserved events))))
 
 let load_older ~inject_history ~set_stream_notice ~session_id ~before =
   let generation = !load_generation in

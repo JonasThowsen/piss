@@ -145,6 +145,22 @@ let () =
   in
   if Event_history.has_conversation_boundary history_events then
     fail "history stopped paging without a prior completed conversation";
+  let sample = List.hd_exn history_events in
+  let at_budget =
+    List.init Event_history.max_initial_recovery_events ~f:(fun _ -> sample)
+  in
+  if Event_history.initial_recovery_can_request_more at_budget then
+    fail "initial history requested a zero-sized page at its work budget";
+  (match Event_history.initial_recovery_budget at_budget with
+  | Capped -> ()
+  | Complete | Fetch_more _ -> fail "history cap did not return pageable data");
+  let below_budget = List.tl_exn at_budget in
+  if not (Event_history.initial_recovery_can_request_more below_budget) then
+    fail "initial history stopped before its documented work budget";
+  (match Event_history.initial_recovery_budget below_budget with
+  | Fetch_more 1 -> ()
+  | Complete | Capped | Fetch_more _ ->
+      fail "history recovery did not clamp its final page to the work budget");
   let orphaned_boundary_events =
     match
       Event_history.decode_events

@@ -18,8 +18,10 @@ https://piss.<tailnet>.ts.net
 ## Source layout
 
 ```text
+shared/             pure domain and wire library (`piss.shared`)
 src/                OCaml native services
-  lib/              shared library (types, protocols, SQLite stores)
+  lib/              ownership libraries: persistence, worker store,
+                    registry/control domain, and workspace I/O
   control/          piss-control (replaceable control plane)
   worker/           piss-session-worker (one per active session)
   session_mcp/      piss-session-mcp (collaboration broker)
@@ -99,6 +101,7 @@ Common recipes:
 | `just test-codex` | Run opt-in authenticated Codex parity checks (uses account quota) |
 | `just format` | Auto-format every compiled OCaml source |
 | `just format-check` | Verify formatting without modifying files |
+| `just bench-catalog` | Compare serial vs bounded-parallel catalog summaries |
 | `just check` | format-check + build + test + test-integration |
 | `just serve` | Run the control plane against the mock harness |
 | `just worker` | Run one session worker against the mock harness |
@@ -108,7 +111,7 @@ Common recipes:
 
 Run `just` with no arguments to list every recipe.
 
-Browser changes should follow the [web performance guidelines](./docs/WEB-PERFORMANCE.md), especially the Bonsai invalidation-boundary and regression-test checklist.
+Architecture and ownership changes must follow [the authoritative architecture guide](./docs/ARCHITECTURE.md). Browser changes should also follow the [web performance guidelines](./docs/WEB-PERFORMANCE.md), especially the Bonsai invalidation-boundary and regression-test checklist.
 
 ## Agent-created workspaces and sessions
 

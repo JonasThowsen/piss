@@ -79,6 +79,11 @@ test-codex:
 # opening a pull request.
 check: format-check build test test-integration
 
+# Reproduce the bounded catalog-summary fan-out benchmark. It compares the
+# former serial path with the production eight-fiber implementation.
+bench-catalog:
+    dune exec src/bench/catalog_summary_bench.exe
+
 # ────────────────────────────── Format ────────────────────────────────────
 
 # Auto-format every compiled OCaml source.
@@ -90,6 +95,9 @@ format:
 format-check:
     dune build @fmt
     nix develop .#web -c dune build --root web @fmt
+
+# Compatibility spelling used by phase/review checklists.
+fmt-check: format-check
 
 # ──────────────────────────────── Doc ─────────────────────────────────────
 

@@ -1,6 +1,6 @@
 (* Session worker process lifecycle: launcher, stopper, and spec files. *)
 
-open Piss_core
+open Control_prelude
 
 type session_locks = (string, Eio.Mutex.t) Hashtbl.t
 

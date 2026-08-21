@@ -1,5 +1,7 @@
 exception Registry_error of string
 
+module State = Piss_registry_domain.Registry_domain
+
 type workspace = {
   id : string;
   name : string;
@@ -28,7 +30,7 @@ type peer_request = {
   partial_response : string;
   command_seen : bool;
   observed_terminal : string option;
-  state : string;
+  state : State.Peer_request_state.t;
   response : string option;
 }
 
@@ -38,7 +40,7 @@ type peer_subscription = {
   request_ids : string list;
   wait_for : string;
   command_id : string;
-  state : string;
+  state : State.Subscription_state.t;
 }
 
 type session_creation = {
@@ -48,7 +50,7 @@ type session_creation = {
   title : string;
   harness : string;
   session_id : string;
-  state : string;
+  state : State.Session_creation_state.t;
   error : string option;
   updated_at : float;
 }
@@ -98,20 +100,7 @@ let random_secret () =
   Buffer.contents buffer
 
 let has_column db table column =
-  with_statement db
-    ("PRAGMA table_info(" ^ table ^ ")")
-    (fun statement ->
-      let rec loop () =
-        match Sqlite3.step statement with
-        | Sqlite3.Rc.ROW ->
-            if String.equal (Sqlite3.column_text statement 1) column then true
-            else loop ()
-        | Sqlite3.Rc.DONE -> false
-        | rc ->
-            fail_rc "inspect table" rc;
-            false
-      in
-      loop ())
+  Piss_persistence.Sqlite_support.has_column db ~table ~column
 
 let sessions_support_codex db =
   with_statement db
@@ -136,13 +125,17 @@ let migrate_sessions_for_codex db =
            NULL,harness TEXT NOT NULL CHECK(harness IN \
            ('pi','codex','opencode','mock')),created_at REAL NOT \
            NULL,archived_at REAL,broker_token TEXT NOT NULL DEFAULT \
-           '',workspace_id TEXT NOT NULL DEFAULT '')";
+           '',workspace_id TEXT NOT NULL DEFAULT '',finishing_at REAL)";
+        let finishing_at =
+          if has_column db "sessions" "finishing_at" then "finishing_at"
+          else "NULL"
+        in
         exec db
-          "INSERT INTO sessions_codex \
-           (id,title,harness,created_at,archived_at,broker_token,workspace_id) \
-           SELECT \
-           id,title,harness,created_at,archived_at,broker_token,workspace_id \
-           FROM sessions";
+          ("INSERT INTO sessions_codex \
+            (id,title,harness,created_at,archived_at,broker_token,workspace_id,finishing_at) \
+            SELECT \
+            id,title,harness,created_at,archived_at,broker_token,workspace_id,"
+         ^ finishing_at ^ " FROM sessions");
         exec db "DROP TABLE sessions";
         exec db "ALTER TABLE sessions_codex RENAME TO sessions";
         exec db "COMMIT"
@@ -151,10 +144,7 @@ let migrate_sessions_for_codex db =
         raise error)
 
 let initialize db =
-  exec db "PRAGMA journal_mode=WAL";
-  exec db "PRAGMA synchronous=FULL";
-  exec db "PRAGMA foreign_keys=ON";
-  exec db "PRAGMA busy_timeout=5000";
+  Piss_persistence.Sqlite_support.configure_durable db;
   exec db
     "CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY,name TEXT NOT \
      NULL,root TEXT NOT NULL UNIQUE,created_at REAL NOT NULL)";
@@ -304,7 +294,12 @@ let peer_request_of_statement statement =
       (match Sqlite3.column statement 9 with
       | Sqlite3.Data.NULL -> None
       | _ -> Some (Sqlite3.column_text statement 9));
-    state = Sqlite3.column_text statement 10;
+    state =
+      (match
+         State.Peer_request_state.of_string (Sqlite3.column_text statement 10)
+       with
+      | Ok state -> state
+      | Error message -> raise (Registry_error message));
     response =
       (match Sqlite3.column statement 11 with
       | Sqlite3.Data.NULL -> None
@@ -323,7 +318,12 @@ let peer_subscription_of_statement statement =
     request_ids;
     wait_for = Sqlite3.column_text statement 3;
     command_id = Sqlite3.column_text statement 4;
-    state = Sqlite3.column_text statement 5;
+    state =
+      (match
+         State.Subscription_state.of_string (Sqlite3.column_text statement 5)
+       with
+      | Ok state -> state
+      | Error message -> raise (Registry_error message));
   }
 
 let session_creation_of_statement statement =
@@ -334,7 +334,13 @@ let session_creation_of_statement statement =
     title = Sqlite3.column_text statement 3;
     harness = Sqlite3.column_text statement 4;
     session_id = Sqlite3.column_text statement 5;
-    state = Sqlite3.column_text statement 6;
+    state =
+      (match
+         State.Session_creation_state.of_string
+           (Sqlite3.column_text statement 6)
+       with
+      | Ok state -> state
+      | Error message -> raise (Registry_error message));
     error =
       (match Sqlite3.column statement 7 with
       | Sqlite3.Data.NULL -> None

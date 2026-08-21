@@ -1,6 +1,6 @@
 (* Effectful handling for routes available only in managed-worker mode. *)
 
-open Piss_core
+open Control_prelude
 
 let validation ?(field = "request") reason = Error.Validation { field; reason }
 let conflict reason = Error.Conflict { reason }
@@ -391,7 +391,8 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                           request_id
                       with
                       | Some creation
-                        when String.equal creation.state "failed"
+                        when creation.state
+                             = Registry_domain.Session_creation_state.Failed
                              && not
                                   (String.starts_with ~prefix:"requestId was"
                                      message) ->
@@ -433,7 +434,10 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                       (`Assoc
                          [
                            ("requestId", `String peer_request.id);
-                           ("state", `String peer_request.state);
+                           ( "state",
+                             `String
+                               (Registry_domain.Peer_request_state.to_string
+                                  peer_request.state) );
                            ("duplicate", `Bool duplicate);
                            ( "cleanupAfterCollection",
                              `Bool
@@ -460,7 +464,10 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                       (`Assoc
                          [
                            ("subscriptionId", `String subscription.id);
-                           ("state", `String subscription.state);
+                           ( "state",
+                             `String
+                               (Registry_domain.Subscription_state.to_string
+                                  subscription.state) );
                            ("duplicate", `Bool duplicate);
                          ]))))
   | Routes.Post_broker_ask ->
@@ -674,7 +681,7 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
               | _ -> assert false)
         else
           Registry.list manager.registry ~include_archived:false
-          |> List.map (Workers.summary ~net manager)
+          |> Workers.summaries ~net ~clock manager
       in
       Some (Headers.respond_json (`List sessions))
   | Routes.Get_session_audit session_id ->

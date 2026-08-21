@@ -1,4 +1,4 @@
-open Piss_core
+open Piss_shared
 
 let write json =
   Yojson.Safe.to_channel stdout json;
@@ -10,6 +10,9 @@ let response_id json =
   | `String id -> id
   | `Int id -> string_of_int id
   | value -> Yojson.Safe.to_string value
+
+let external_command_id id =
+  Option.value ~default:id (Acp.command_id_of_request_id id)
 
 let session_update ~session_id update =
   Acp.notification ~method_:"session/update"
@@ -31,6 +34,7 @@ let duration () =
   | None -> 8
 
 let request_permission ~id ~session_id =
+  let id = external_command_id id in
   let request_id = "permission-" ^ id in
   write
     (Acp.request ~id:request_id ~method_:"session/request_permission"
@@ -98,6 +102,7 @@ let prompt_resources params =
       Yojson.Safe.Util.member "type" content = `String "resource_link")
 
 let write_user_prompt ~id ~session_id ~text ~images ~resources =
+  let id = external_command_id id in
   if text <> "" then
     write
       (session_update ~session_id
@@ -158,6 +163,7 @@ let poll_pending ~session_id () =
       else false
 
 let rec run_prompt ~id ~session_id ~text ~images ~resources =
+  let event_id = external_command_id id in
   write_user_prompt ~id ~session_id ~text ~images ~resources;
   let allowed =
     if String.starts_with ~prefix:"permission:" text then
@@ -172,7 +178,7 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
          (`Assoc
             [
               ("sessionUpdate", `String "tool_call");
-              ("toolCallId", `String ("tool-" ^ id));
+              ("toolCallId", `String ("tool-" ^ event_id));
               ("title", `String "Running durability tests");
               ("kind", `String "execute");
               ("status", `String "in_progress");
@@ -194,7 +200,7 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
              (`Assoc
                 [
                   ("sessionUpdate", `String "tool_call_update");
-                  ("toolCallId", `String ("tool-" ^ id));
+                  ("toolCallId", `String ("tool-" ^ event_id));
                   ("status", `String "in_progress");
                   ( "content",
                     `List
@@ -225,7 +231,7 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
            (`Assoc
               [
                 ("sessionUpdate", `String "tool_call_update");
-                ("toolCallId", `String ("tool-" ^ id));
+                ("toolCallId", `String ("tool-" ^ event_id));
                 ("status", `String "completed");
                 ( "locations",
                   `List
@@ -303,7 +309,7 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
            (`Assoc
               [
                 ("sessionUpdate", `String "agent_message_chunk");
-                ("messageId", `String ("agent-" ^ id));
+                ("messageId", `String ("agent-" ^ event_id));
                 ( "content",
                   `Assoc
                     [

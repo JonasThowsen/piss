@@ -1,6 +1,6 @@
 (* Session registry operations and runtime discovery. *)
 
-open Piss_core
+open Control_prelude
 
 let canonical_session_workspace (manager : Config.managed_workers)
     (session : Registry.session) =
@@ -87,19 +87,29 @@ let snapshot ~net (manager : Config.managed_workers)
     | `Assoc fields -> `Assoc (project_waiting_status manager session fields)
     | value -> value)
 
-let summary ~net (manager : Config.managed_workers) (session : Registry.session)
-    =
-  let runtime =
-    try
-      match snapshot ~net manager session with
-      | Ok (`Assoc fields) -> fields
-      | Ok _ -> []
-      | Error _ -> [ ("status", `String "offline") ]
-    with _ -> [ ("status", `String "offline") ]
-  in
+let summary_json (session : Registry.session) runtime =
   match Registry.session_to_yojson session with
   | `Assoc fields -> `Assoc (fields @ runtime)
   | _ -> assert false
+
+let offline_summary session =
+  summary_json session [ ("status", `String "offline") ]
+
+let summary ~net (manager : Config.managed_workers) (session : Registry.session)
+    =
+  try
+    match snapshot ~net manager session with
+    | Ok (`Assoc fields) -> summary_json session fields
+    | Ok _ | Error _ -> offline_summary session
+  with _ -> offline_summary session
+
+let max_parallel_summaries = 8
+let summary_timeout_seconds = 1.
+
+let summaries ~net ~clock manager sessions =
+  Parallel_map.map_with_timeout ~clock ~timeout_seconds:summary_timeout_seconds
+    ~max_fibers:max_parallel_summaries ~on_timeout:offline_summary
+    (summary ~net manager) sessions
 
 let fail_session_creation ~process_mgr ~clock (manager : Config.managed_workers)
     (request : Registry.session_creation) message =
@@ -144,9 +154,11 @@ let rec wait_for_session_creation ~clock (manager : Config.managed_workers)
     ~deadline ~duplicate request session =
   match Registry.find_session_creation manager.registry request.Registry.id with
   | None -> Error "session creation request disappeared"
-  | Some current when String.equal current.state "active" ->
+  | Some { state = Registry_domain.Session_creation_state.Active; _ } ->
       Ok (session, duplicate)
-  | Some current when String.equal current.state "failed" ->
+  | Some
+      ({ state = Registry_domain.Session_creation_state.Failed; _ } as current)
+    ->
       Error (Option.value current.error ~default:"session launcher failed")
   | Some _ when Unix.gettimeofday () >= deadline ->
       Error "session creation is still being reconciled"
@@ -202,7 +214,7 @@ let reconcile_session_creations ?(recover_launching = true) ~process_mgr ~clock
       match
         (request.state, Registry.find manager.registry request.session_id)
       with
-      | "cleanup", Some _ -> (
+      | Registry_domain.Session_creation_state.Cleanup, Some _ -> (
           match
             Lifecycle.run ~process_mgr ~clock manager.stopper request.session_id
           with

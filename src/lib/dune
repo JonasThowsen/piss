@@ -1,14 +1,54 @@
-; Backend-only library: SQLite stores, filesystem access, the
-; workers registry. Pure types and protocol definitions are
-; provided by `piss.shared` and re-exported through the umbrella
-; `Piss_core` module in `piss_core.ml`.
-;
-; Anything that the browser shell (web/) needs must live in
-; `piss.shared` instead.
+; Backend ownership seams. Each effectful area is a separate wrapped library so
+; Dune rejects accidental cross-owner imports. `piss.core` remains only as a
+; source-compatibility facade; production executables and tests must not use it.
+
+(library
+ (name piss_persistence)
+ (public_name piss.persistence)
+ (modules sqlite_support)
+ (libraries sqlite3))
+
+(library
+ (name piss_worker_store)
+ (public_name piss.worker-store)
+ (modules store)
+ (libraries piss.shared piss.persistence yojson sqlite3 unix))
+
+(library
+ (name piss_registry_domain)
+ (public_name piss.registry-domain)
+ (modules registry_domain))
+
+(library
+ (name piss_registry)
+ (public_name piss.registry)
+ (modules registry registry_support)
+ (private_modules registry_support)
+ (libraries piss.registry-domain piss.persistence yojson sqlite3 unix))
+
+(library
+ (name piss_workspace_io)
+ (public_name piss.workspace-io)
+ (modules workspace_io)
+ (libraries piss.shared unix))
+
+(library
+ (name piss_origin)
+ (public_name piss.origin)
+ (modules origin_pattern))
+
+; Compatibility only. New production code must depend on the ownership library
+; above and import its wrapped module explicitly.
 
 (library
  (name piss_core)
  (public_name piss.core)
- (private_modules registry_support)
- (libraries piss.shared yojson sqlite3 unix)
+ (modules piss_core)
+ (libraries
+  piss.shared
+  piss.worker-store
+  piss.registry-domain
+  piss.registry
+  piss.workspace-io
+  piss.origin)
  (wrapped true))

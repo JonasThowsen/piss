@@ -1,6 +1,6 @@
 (* Worker wire protocol: request handlers for the Unix-domain socket. *)
 
-open Piss_core
+open Worker_prelude
 
 let conflict reason = Result.Error (Error.Conflict { reason })
 let validation field reason = Result.Error (Error.Validation { field; reason })
@@ -33,6 +33,7 @@ let resource_metadata (resource : Workspace_files.resource) =
 
 let dispatch_prompt state ?action ~target ~command_id ~text ~images ~resources
     () =
+  let command_id = Domain.Command_id.to_string command_id in
   let store = State.store state in
   match resolve_resources ~workspace:(State.workspace state) resources with
   | Error message -> validation "resources" message
@@ -106,7 +107,10 @@ let handle ~clock state request =
             (`Assoc
                [
                  ("protocolVersion", `Int protocol_version);
-                 ("workerId", `String (State.runtime_worker_id state));
+                 ( "workerId",
+                   `String
+                     (Domain.Worker_id.to_string
+                        (State.runtime_worker_id state)) );
                  ( "capabilities",
                    `List
                      ([
@@ -217,17 +221,18 @@ let handle ~clock state request =
         when images <> [] && not (State.supports_images state) ->
           validation "images" "the ACP agent does not accept image prompts"
       | Wire.Prompt { target; command_id; text; images; resources } -> (
+          let command_id_text = Domain.Command_id.to_string command_id in
           (* A known command is a read of its durable receipt, not a new runtime
              mutation. Return it even after worker replacement so a
              response-loss retry can recover authoritatively with the original
              command identity. Unknown commands are fenced atomically with
              acceptance in [dispatch_prompt]. *)
-          match Store.find_command store command_id with
+          match Store.find_command store command_id_text with
           | Some command_state ->
               Ok
                 (`Assoc
                    [
-                     ("commandId", `String command_id);
+                     ("commandId", `String command_id_text);
                      ( "state",
                        `String (Domain.command_state_to_string command_state) );
                      ("duplicate", `Bool true);
@@ -242,12 +247,13 @@ let handle ~clock state request =
           validation "images" "the ACP agent does not accept image prompts"
       | Wire.Deliver { target; command_id; text; images; resources; action }
         -> (
-          match Store.find_command store command_id with
+          let command_id_text = Domain.Command_id.to_string command_id in
+          match Store.find_command store command_id_text with
           | Some command_state ->
               Ok
                 (`Assoc
                    [
-                     ("commandId", `String command_id);
+                     ("commandId", `String command_id_text);
                      ( "state",
                        `String (Domain.command_state_to_string command_state) );
                      ("duplicate", `Bool true);
@@ -259,6 +265,7 @@ let handle ~clock state request =
                 ~resources ())
       | Wire.Recover_command
           { target; command_id; action; discard_cleared_attachments } -> (
+          let command_id = Domain.Command_id.to_string command_id in
           if action = "prompt" && State.running_command_count state > 0 then
             conflict "the session already has an active prompt"
           else if action = "follow_up" && not (State.runtime_busy state) then
@@ -307,6 +314,7 @@ let handle ~clock state request =
          and fences their stable mutation IDs but only command IDs currently
          have durable duplicate-result replay. *)
       | Wire.Set_config_option { target; mutation_id; config_id; value } -> (
+          let mutation_id = Domain.Request_id.to_string mutation_id in
           match Store.validate_runtime_target store target with
           | Error reason -> conflict reason
           | Ok () ->
@@ -331,6 +339,7 @@ let handle ~clock state request =
                           ]));
                 Ok (`Assoc [ ("configOptions", State.config_options state) ]))
       | Wire.Cancel { target; mutation_id } -> (
+          let mutation_id = Domain.Request_id.to_string mutation_id in
           match Store.validate_runtime_target store target with
           | Error reason -> conflict reason
           | Ok () ->
@@ -351,6 +360,7 @@ let handle ~clock state request =
                      ~session_id:(State.harness_session_id state));
                 Ok (`Assoc [ ("state", `String "cancelling") ])))
       | Wire.Peer_event { kind; request_id; peer_id; text } ->
+          let request_id = Domain.Request_id.to_string request_id in
           State.append_event state ~kind
             ~payload:
               (`Assoc
@@ -361,6 +371,8 @@ let handle ~clock state request =
                  ])
           |> Domain.event_to_yojson |> Result.ok
       | Wire.Permission { target; mutation_id; request_id; option_id } -> (
+          let mutation_id = Domain.Request_id.to_string mutation_id in
+          let request_id = Domain.Request_id.to_string request_id in
           match Store.validate_runtime_target store target with
           | Error reason -> conflict reason
           | Ok () -> (

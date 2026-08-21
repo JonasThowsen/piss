@@ -1,7 +1,7 @@
 (* HTTP request handler for the control plane. *)
 
 open Cohttp
-open Piss_core
+open Control_prelude
 
 let validation ?(field = "request") reason = Error.Validation { field; reason }
 let conflict reason = Error.Conflict { reason }

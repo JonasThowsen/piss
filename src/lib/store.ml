@@ -86,25 +86,10 @@ let expect_done operation statement =
   | rc -> fail_rc operation rc
 
 let table_has_column db table column =
-  with_statement db
-    ("PRAGMA table_info(" ^ table ^ ")")
-    (fun statement ->
-      let rec search () =
-        match Sqlite3.step statement with
-        | Sqlite3.Rc.ROW ->
-            String.equal (Sqlite3.column_text statement 1) column || search ()
-        | Sqlite3.Rc.DONE -> false
-        | rc ->
-            fail_rc "inspect table columns" rc;
-            false
-      in
-      search ())
+  Piss_persistence.Sqlite_support.has_column db ~table ~column
 
 let initialize db =
-  exec db "PRAGMA journal_mode=WAL";
-  exec db "PRAGMA synchronous=FULL";
-  exec db "PRAGMA foreign_keys=ON";
-  exec db "PRAGMA busy_timeout=5000";
+  Piss_persistence.Sqlite_support.configure_durable db;
   exec db
     "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT \
      NULL)";
@@ -223,8 +208,9 @@ let last_finished_at store =
       match Sqlite3.step statement with
       | Sqlite3.Rc.ROW ->
           let state = Sqlite3.column_text statement 0 in
-          if List.mem state [ "completed"; "cancelled"; "rejected" ] then
-            Some (Sqlite3.column_double statement 1)
+          if
+            List.mem state [ "completed"; "cancelled"; "ambiguous"; "rejected" ]
+          then Some (Sqlite3.column_double statement 1)
           else None
       | Sqlite3.Rc.DONE -> None
       | rc ->
@@ -662,21 +648,62 @@ let recover_targeted_text_command ?(discard_cleared_attachments = false) store
                                 ]));
                       Ok { state = Accepted; duplicate = false; prompt }))))
 
+let write_command_state store ~command_id state =
+  update_command_state store ~command_id state;
+  (match state with
+  | Completed | Cancelled | Ambiguous | Rejected ->
+      clear_command_content store ~command_id
+  | Received | Accepted | Dispatched | Acknowledged -> ());
+  ignore
+    (append_event store ~kind:"command.state"
+       ~payload:
+         (`Assoc
+            [
+              ("commandId", `String command_id);
+              ("state", `String (command_state_to_string state));
+            ]))
+
 let set_command_state store ~command_id state =
+  transaction store (fun () -> write_command_state store ~command_id state)
+
+let transition_command_state store ~command_id state =
   transaction store (fun () ->
-      update_command_state store ~command_id state;
-      (match state with
-      | Completed | Cancelled | Ambiguous | Rejected ->
-          clear_command_content store ~command_id
-      | Received | Accepted | Dispatched | Acknowledged -> ());
-      ignore
-        (append_event store ~kind:"command.state"
-           ~payload:
-             (`Assoc
-                [
-                  ("commandId", `String command_id);
-                  ("state", `String (command_state_to_string state));
-                ])))
+      match find_command store command_id with
+      | None -> Error "command does not exist"
+      | Some current -> (
+          match
+            Piss_shared.Domain.transition_command_state ~from:current state
+          with
+          | Error _ as error -> error
+          | Ok next ->
+              write_command_state store ~command_id next;
+              Ok ()))
+
+let reconcile_ambiguous_command store ~command_id state =
+  match Piss_shared.Domain.reconcile_ambiguous_command_state state with
+  | Error _ as error -> error
+  | Ok terminal ->
+      transaction store (fun () ->
+          with_statement store.db
+            "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = \
+             ? AND state = 'ambiguous'" (fun statement ->
+              bind_text statement 1 (command_state_to_string terminal);
+              bind_float statement 2 (Unix.gettimeofday ());
+              bind_text statement 3 command_id;
+              expect_done "reconcile ambiguous command response" statement);
+          if Sqlite3.changes store.db = 0 then Ok false
+          else (
+            clear_command_content store ~command_id;
+            ignore
+              (append_event store ~kind:"command.state"
+                 ~payload:
+                   (`Assoc
+                      [
+                        ("commandId", `String command_id);
+                        ("state", `String (command_state_to_string terminal));
+                        ("reconciledLateResponse", `Bool true);
+                      ]));
+            Ok true))
 
 (* Atomically transition a command only while it is still in an open state.
    Returns true if the transition won the race against any concurrent state
@@ -685,36 +712,45 @@ let set_command_state store ~command_id state =
    has landed (for example, the dispatch-timeout watcher). *)
 let try_set_command_state_if_open store ~command_id state =
   transaction store (fun () ->
-      let now = Unix.gettimeofday () in
-      let updated =
-        with_statement store.db
-          "UPDATE commands SET state = ?, updated_at = ? WHERE command_id = ? \
-           AND state IN ('accepted', 'dispatched', 'acknowledged')"
-          (fun statement ->
-            bind_text statement 1 (command_state_to_string state);
-            bind_float statement 2 now;
-            bind_text statement 3 command_id;
-            match Sqlite3.step statement with
-            | Sqlite3.Rc.DONE -> Sqlite3.changes store.db
-            | rc ->
-                fail_rc "try-set command state" rc;
-                0)
-      in
-      let claimed = updated > 0 in
-      if claimed then (
-        (match state with
-        | Completed | Cancelled | Ambiguous | Rejected ->
-            clear_command_content store ~command_id
-        | Received | Accepted | Dispatched | Acknowledged -> ());
-        ignore
-          (append_event store ~kind:"command.state"
-             ~payload:
-               (`Assoc
-                  [
-                    ("commandId", `String command_id);
-                    ("state", `String (command_state_to_string state));
-                  ])));
-      claimed)
+      match find_command store command_id with
+      | None -> false
+      | Some current when command_state_is_terminal current -> false
+      | Some current -> (
+          match
+            Piss_shared.Domain.transition_command_state ~from:current state
+          with
+          | Error _ -> false
+          | Ok next ->
+              let now = Unix.gettimeofday () in
+              let updated =
+                with_statement store.db
+                  "UPDATE commands SET state = ?, updated_at = ? WHERE \
+                   command_id = ? AND state = ?" (fun statement ->
+                    bind_text statement 1 (command_state_to_string next);
+                    bind_float statement 2 now;
+                    bind_text statement 3 command_id;
+                    bind_text statement 4 (command_state_to_string current);
+                    match Sqlite3.step statement with
+                    | Sqlite3.Rc.DONE -> Sqlite3.changes store.db
+                    | rc ->
+                        fail_rc "try-set command state" rc;
+                        0)
+              in
+              let claimed = updated > 0 in
+              if claimed then (
+                (match next with
+                | Completed | Cancelled | Ambiguous | Rejected ->
+                    clear_command_content store ~command_id
+                | Received | Accepted | Dispatched | Acknowledged -> ());
+                ignore
+                  (append_event store ~kind:"command.state"
+                     ~payload:
+                       (`Assoc
+                          [
+                            ("commandId", `String command_id);
+                            ("state", `String (command_state_to_string next));
+                          ])));
+              claimed))
 
 let incomplete_command_ids store =
   with_statement store.db
@@ -858,22 +894,28 @@ let reconcile_ambiguous_responses store =
                   let open Yojson.Safe.Util in
                   let response =
                     match member "id" payload with
-                    | `String command_id -> (
+                    | `String acp_request_id -> (
                         match
-                          (member "error" payload, member "result" payload)
+                          Piss_shared.Acp.command_id_of_request_id
+                            acp_request_id
                         with
-                        | (`Assoc _ | `String _), _ ->
-                            Some (sequence, command_id, Rejected)
-                        | _, `Assoc result ->
-                            let state =
-                              if
-                                member "stopReason" (`Assoc result)
-                                = `String "cancelled"
-                              then Cancelled
-                              else Completed
-                            in
-                            Some (sequence, command_id, state)
-                        | _ -> None)
+                        | None -> None
+                        | Some command_id -> (
+                            match
+                              (member "error" payload, member "result" payload)
+                            with
+                            | (`Assoc _ | `String _), _ ->
+                                Some (sequence, command_id, Rejected)
+                            | _, `Assoc result ->
+                                let state =
+                                  if
+                                    member "stopReason" (`Assoc result)
+                                    = `String "cancelled"
+                                  then Cancelled
+                                  else Completed
+                                in
+                                Some (sequence, command_id, state)
+                            | _ -> None))
                     | _ -> None
                   in
                   collect

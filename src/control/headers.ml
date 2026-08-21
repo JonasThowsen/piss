@@ -1,6 +1,6 @@
 (* HTTP response helpers and security headers for the control plane. *)
 
-open Piss_core
+open Control_prelude
 
 let security_headers =
   [

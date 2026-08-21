@@ -13,8 +13,8 @@
 type args = {
   socket_path : string;
   database_path : string;
-  session_id : string;
-  worker_id : string;
+  session_id : Piss_shared.Domain.Session_id.t;
+  worker_id : Piss_shared.Domain.Worker_id.t;
   generation : string;
   workspace : string;
   harness_command : string;

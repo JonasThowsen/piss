@@ -1,6 +1,7 @@
 (* Inter-session request broker used by the Piss-provided MCP tools. *)
 
-open Piss_core
+open Control_prelude
+module Peer_state = Registry_domain.Peer_request_state
 
 type observation =
   | Peer_pending
@@ -177,9 +178,9 @@ let inspect_peer_response ~net ~socket ~registry
                     pages advanced
               else
                 match Registry.find_peer_request registry request.id with
-                | Some latest when String.equal latest.state "completed" ->
+                | Some ({ state = Peer_state.Completed; _ } as latest) ->
                     Peer_completed (Option.value ~default:"" latest.response)
-                | Some latest when String.equal latest.state "failed" ->
+                | Some ({ state = Peer_state.Failed; _ } as latest) ->
                     Peer_failed
                       (Option.value ~default:"peer request failed"
                          latest.response)
@@ -207,11 +208,12 @@ let dispatch_peer_request ~net (manager : Config.managed_workers)
     ~(source : Registry.session) ~(target : Registry.session)
     (request : Registry.peer_request) =
   if
-    List.mem request.state
-      [ "dispatching"; "dispatched"; "completed"; "failed" ]
+    match request.state with
+    | Peer_state.Dispatching | Dispatched | Completed | Failed -> true
+    | Accepted | Queued -> false
   then Ok request
   else
-    let was_new = String.equal request.state "accepted" in
+    let was_new = request.state = Peer_state.Accepted in
     let claimed =
       Registry.mark_peer_dispatching manager.registry request.id
         ~start_sequence:(target_sequence ~net manager target)
@@ -278,8 +280,9 @@ let complete_peer_observation ~net (manager : Config.managed_workers)
 let reconcile_peer_request ~net (manager : Config.managed_workers)
     ~(source : Registry.session) (request : Registry.peer_request) =
   match request.state with
-  | "completed" -> Peer_completed (Option.value ~default:"" request.response)
-  | "failed" ->
+  | Peer_state.Completed ->
+      Peer_completed (Option.value ~default:"" request.response)
+  | Peer_state.Failed ->
       Peer_failed (Option.value ~default:"peer request failed" request.response)
   | _ -> (
       match Registry.find_active manager.registry request.target_id with
@@ -294,17 +297,17 @@ let reconcile_peer_request ~net (manager : Config.managed_workers)
             |> complete_peer_observation ~net manager ~source dispatched
           in
           match request.state with
-          | "dispatching" -> Peer_pending
-          | "dispatched" -> observe request
-          | "accepted" | "queued" -> (
+          | Peer_state.Dispatching -> Peer_pending
+          | Peer_state.Dispatched -> observe request
+          | Peer_state.Accepted | Peer_state.Queued -> (
               match
                 dispatch_peer_request ~net manager ~source ~target request
               with
               | Error _ -> Peer_pending
-              | Ok dispatched when String.equal dispatched.state "dispatched" ->
+              | Ok ({ state = Peer_state.Dispatched; _ } as dispatched) ->
                   observe dispatched
               | Ok _ -> Peer_pending)
-          | _ -> Peer_pending))
+          | Peer_state.Completed | Peer_state.Failed -> Peer_pending))
 
 let wait_for_peer_response ~net ~clock (manager : Config.managed_workers)
     ~(source : Registry.session) (request : Registry.peer_request) =
@@ -327,17 +330,23 @@ let wait_for_peer_response ~net ~clock (manager : Config.managed_workers)
 let accept_peer_json ~net (manager : Config.managed_workers)
     ~(source : Registry.session) json =
   let open Yojson.Safe.Util in
-  let request_id = json |> member "requestId" |> to_string in
+  let request_id_text = json |> member "requestId" |> to_string in
+  let request_id =
+    if String.length request_id_text > 100 then None
+    else Result.to_option (Domain.Request_id.of_string request_id_text)
+  in
   let target_id = json |> member "targetSessionId" |> to_string in
   let prompt = json |> member "prompt" |> to_string in
-  if request_id = "" || String.length request_id > 100 then
-    Error "requestId must contain between 1 and 100 characters"
+  if Option.is_none request_id then
+    Error "requestId must contain between 1 and 100 characters and no NUL"
   else if prompt = "" || String.length prompt > 64 * 1024 then
     Error "prompt must contain between 1 and 65536 characters"
   else if String.equal source.id target_id then
     Error "a session cannot ask itself"
   else
-    match Registry.find_peer_request manager.registry request_id with
+    let request_id = Option.get request_id in
+    let request_id_text = Domain.Request_id.to_string request_id in
+    match Registry.find_peer_request manager.registry request_id_text with
     | Some request
       when not
              (String.equal request.source_id source.id
@@ -350,10 +359,10 @@ let accept_peer_json ~net (manager : Config.managed_workers)
         | None -> Error "target session is not active"
         | Some target -> (
             let command_id =
-              "peer-" ^ Digest.to_hex (Digest.string request_id)
+              "peer-" ^ Digest.to_hex (Digest.string request_id_text)
             in
             match
-              Registry.accept_peer_request manager.registry ~id:request_id
+              Registry.accept_peer_request manager.registry ~id:request_id_text
                 ~source_id:source.id ~target_id:target.id ~prompt ~command_id
                 ~start_sequence:0L
             with
@@ -362,7 +371,8 @@ let accept_peer_json ~net (manager : Config.managed_workers)
                 if not duplicate then
                   ignore
                     (peer_event ~net manager source ~kind:"session.ask.sent"
-                       ~request_id ~peer_id:target.id ~text:prompt);
+                       ~request_id:request_id_text ~peer_id:target.id
+                       ~text:prompt);
                 Ok (request, duplicate)))
 
 let send_peer_request ~net (manager : Config.managed_workers)
@@ -389,7 +399,7 @@ let peer_request_json (request : Registry.peer_request) =
     [
       ("requestId", `String request.id);
       ("targetSessionId", `String request.target_id);
-      ("state", `String request.state);
+      ("state", `String (Peer_state.to_string request.state));
       ( "response",
         Option.fold ~none:`Null
           ~some:(fun value -> `String value)
@@ -419,7 +429,7 @@ let collect_peer_requests ~net ~clock (manager : Config.managed_workers)
     let finished, pending =
       List.partition
         (fun (request : Registry.peer_request) ->
-          List.exists (String.equal request.state) [ "completed"; "failed" ])
+          Peer_state.is_terminal request.state)
         requests
     in
     let ready =
@@ -452,7 +462,7 @@ let subscription_requests (manager : Config.managed_workers)
     subscription.request_ids
 
 let peer_request_finished (request : Registry.peer_request) =
-  List.exists (String.equal request.state) [ "completed"; "failed" ]
+  Peer_state.is_terminal request.state
 
 let peer_subscription_ready (subscription : Registry.peer_subscription) requests
     =
@@ -464,7 +474,8 @@ let peer_subscription_ready (subscription : Registry.peer_subscription) requests
 let peer_wake_prompt (subscription : Registry.peer_subscription) requests =
   let request_text (request : Registry.peer_request) =
     Printf.sprintf "\nRequest %s\nTarget: %s\nState: %s\nResponse:\n%s\n"
-      request.id request.target_id request.state
+      request.id request.target_id
+      (Peer_state.to_string request.state)
       (Option.value ~default:"(no response)" request.response)
   in
   let pending, finished =
@@ -496,25 +507,46 @@ let peer_wake_prompt (subscription : Registry.peer_subscription) requests =
 let accept_peer_subscription (manager : Config.managed_workers)
     ~(source : Registry.session) json =
   let open Yojson.Safe.Util in
-  let id = json |> member "subscriptionId" |> to_string in
-  let request_ids =
+  let id_text = json |> member "subscriptionId" |> to_string in
+  let id =
+    if String.length id_text > 100 then None
+    else Result.to_option (Domain.Subscription_id.of_string id_text)
+  in
+  let request_id_texts =
     json |> member "requestIds" |> to_list |> List.map to_string
     |> List.sort_uniq String.compare
+  in
+  let request_ids =
+    List.fold_left
+      (fun validated value ->
+        Result.bind validated (fun values ->
+            Domain.Request_id.of_string value
+            |> Result.map (fun id -> id :: values)))
+      (Ok []) request_id_texts
+    |> Result.map List.rev
   in
   let wait_for =
     match member "waitFor" json with `String value -> value | _ -> "all"
   in
-  if id = "" || String.length id > 100 then
-    Error "subscriptionId must contain between 1 and 100 characters"
-  else if request_ids = [] || List.length request_ids > 64 then
-    Error "requestIds must contain between 1 and 64 identities"
+  if Option.is_none id then
+    Error "subscriptionId must contain between 1 and 100 characters and no NUL"
+  else if
+    request_id_texts = []
+    || List.length request_id_texts > 64
+    || Result.is_error request_ids
+  then Error "requestIds must contain between 1 and 64 identities"
   else if not (List.mem wait_for [ "any"; "all" ]) then
     Error "waitFor must be 'any' or 'all'"
   else
+    let id = Option.get id in
+    let id_text = Domain.Subscription_id.to_string id in
+    let request_ids = Result.get_ok request_ids in
+    let request_id_texts = List.map Domain.Request_id.to_string request_ids in
     let requests =
       List.map
         (fun request_id ->
-          match Registry.find_peer_request manager.registry request_id with
+          let request_id_text = Domain.Request_id.to_string request_id in
+          match Registry.find_peer_request manager.registry request_id_text with
           | Some request when String.equal request.source_id source.id ->
               request
           | Some _ ->
@@ -522,13 +554,14 @@ let accept_peer_subscription (manager : Config.managed_workers)
                 (Invalid_argument
                    "peer request belongs to another source session")
           | None ->
-              raise (Invalid_argument ("unknown peer request: " ^ request_id)))
+              raise
+                (Invalid_argument ("unknown peer request: " ^ request_id_text)))
         request_ids
     in
-    let command_id = "peer-wake-" ^ Digest.to_hex (Digest.string id) in
+    let command_id = "peer-wake-" ^ Digest.to_hex (Digest.string id_text) in
     let _ = requests in
-    Registry.accept_peer_subscription manager.registry ~id ~source_id:source.id
-      ~request_ids ~wait_for ~command_id
+    Registry.accept_peer_subscription manager.registry ~id:id_text
+      ~source_id:source.id ~request_ids:request_id_texts ~wait_for ~command_id
 
 let bounded_subscription_operation ~clock operation =
   try Eio.Time.with_timeout_exn clock 2. operation with Eio.Time.Timeout -> ()
@@ -587,7 +620,7 @@ let supervise ~net ~clock (manager : Config.managed_workers) =
           try
             Eio.Time.with_timeout_exn clock 2. (fun () ->
                 let request =
-                  if String.equal request.state "dispatching" then (
+                  if request.state = Peer_state.Dispatching then (
                     ignore
                       (Registry.requeue_peer_request manager.registry request.id);
                     Option.get

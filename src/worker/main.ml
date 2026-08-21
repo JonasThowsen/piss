@@ -1,6 +1,6 @@
 (* Entry point and orchestration for the piss-session-worker binary. *)
 
-open Piss_core
+open Worker_prelude
 
 let write_json sink json =
   Eio.Flow.copy_string (Yojson.Safe.to_string json ^ "\n") sink
@@ -30,11 +30,22 @@ let run ~env (args : Config.args) =
      A pathname replacement cannot redirect /proc/<worker>/cwd elsewhere. *)
   let workspace = Printf.sprintf "/proc/%d/cwd" (Unix.getpid ()) in
   let store =
-    Store.open_ ~path:args.database_path
-      ~session_id:(Domain.session_id args.session_id)
-      ~worker_id:(Domain.worker_id args.worker_id)
+    Store.open_ ~path:args.database_path ~session_id:args.session_id
+      ~worker_id:args.worker_id
   in
   let runtime_identity = Store.claim_runtime store in
+  let runtime_worker_id =
+    match Domain.Worker_id.of_string runtime_identity.worker_id with
+    | Ok value -> value
+    | Error message -> raise (Store.Store_error message)
+  in
+  let runtime_generation =
+    match
+      Domain.Runtime_generation.of_int runtime_identity.runtime_generation
+    with
+    | Ok value -> value
+    | Error message -> raise (Store.Store_error message)
+  in
   let reconciled_commands = Store.reconcile_incomplete_commands store in
   if reconciled_commands <> [] then
     Format.eprintf "reconciled %d incomplete command(s) as ambiguous@."
@@ -92,10 +103,8 @@ let run ~env (args : Config.args) =
         | Error message -> raise (Failure message))
   in
   let state =
-    State.make ~args ~store ~workspace ~harness_pid
-      ~runtime_worker_id:runtime_identity.worker_id
-      ~runtime_generation:runtime_identity.runtime_generation ~send
-      ~require_rpc_result
+    State.make ~args ~store ~workspace ~harness_pid ~runtime_worker_id
+      ~runtime_generation ~send ~require_rpc_result
   in
   Eio.Fiber.fork ~sw (fun () ->
       while true do
@@ -133,18 +142,29 @@ let run ~env (args : Config.args) =
               | Some resolver ->
                   Hashtbl.remove pending_responses id;
                   ignore (Eio.Promise.try_resolve resolver (Ok json))
-              | None
-                when State.is_running_command state ~command_id:id
-                     || Store.find_command store id = Some Domain.Ambiguous ->
-                  let command_state =
-                    match (error, Harness.response_stop_reason json) with
-                    | Some _, _ -> Domain.Rejected
-                    | None, Some "cancelled" -> Domain.Cancelled
-                    | None, _ -> Domain.Completed
-                  in
-                  State.record_completed state ~command_id:id
-                    ~state:command_state
-              | None -> ())
+              | None -> (
+                  match Acp.command_id_of_request_id id with
+                  | None -> ()
+                  | Some command_id ->
+                      let command_state =
+                        match (error, Harness.response_stop_reason json) with
+                        | Some _, _ -> Domain.Rejected
+                        | None, Some "cancelled" -> Domain.Cancelled
+                        | None, _ -> Domain.Completed
+                      in
+                      if
+                        Store.find_command store command_id
+                        = Some Domain.Ambiguous
+                      then
+                        match
+                          State.reconcile_late_response state ~command_id
+                            ~state:command_state
+                        with
+                        | Ok _ -> ()
+                        | Error message -> raise (Store.Store_error message)
+                      else if State.is_running_command state ~command_id then
+                        State.record_completed state ~command_id
+                          ~state:command_state))
           | Ok
               (Acp.Request
                  { id; method_ = "session/request_permission"; params }) ->
@@ -252,9 +272,9 @@ let run ~env (args : Config.args) =
         match
           rpc_request ~id:"session-load"
             (Acp.load_session_request ~session_id:existing ~cwd:workspace
-               ~piss_session_id:args.session_id ~mcp_command:args.session_mcp
-               ~broker_url:args.broker_url ~broker_token:args.broker_token
-               ~curl_command:args.curl_command)
+               ~piss_session_id:(Domain.Session_id.to_string args.session_id)
+               ~mcp_command:args.session_mcp ~broker_url:args.broker_url
+               ~broker_token:args.broker_token ~curl_command:args.curl_command)
         with
         | Ok response -> (
             match Acp.response_result ~expected_id:"session-load" response with
@@ -486,8 +506,8 @@ let run ~env (args : Config.args) =
   Unix.chmod args.socket_path 0o600;
   Printf.printf
     "worker_ready session=%s worker=%s pid=%d harness_pid=%d socket=%s\n%!"
-    args.session_id runtime_identity.worker_id (Unix.getpid ()) harness_pid
-    args.socket_path;
+    (Domain.Session_id.to_string args.session_id)
+    runtime_identity.worker_id (Unix.getpid ()) harness_pid args.socket_path;
   Eio.Net.run_server socket handle_connection
     ~on_error:(fun exn ->
       Format.eprintf "worker connection failed: %a@." Eio.Exn.pp exn)

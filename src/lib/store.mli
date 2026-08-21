@@ -192,8 +192,24 @@ val clear_command_content : t -> command_id:string -> unit
 
 val set_command_state :
   t -> command_id:string -> Piss_shared.Domain.command_state -> unit
-(** Force the durable state of a command. Used when the harness has acknowledged
-    the dispatch. Does not check the previous state. *)
+(** Compatibility/migration escape hatch that forces durable state. New runtime
+    code must use [transition_command_state]. *)
+
+val transition_command_state :
+  t ->
+  command_id:string ->
+  Piss_shared.Domain.command_state ->
+  (unit, string) result
+(** Apply a validated nominal command lifecycle transition atomically. *)
+
+val reconcile_ambiguous_command :
+  t ->
+  command_id:string ->
+  Piss_shared.Domain.command_state ->
+  (bool, string) result
+(** Apply terminal state from a late ACP response only when the durable command
+    is still Ambiguous. Returns [true] when reconciled and [false] after a
+    racing reconciliation already changed the row. *)
 
 val try_set_command_state_if_open :
   t -> command_id:string -> Piss_shared.Domain.command_state -> bool

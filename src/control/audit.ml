@@ -45,10 +45,11 @@ let error_message = function
 
 let to_control_error = function
   | Validation_error reason ->
-      Piss_core.Error.Validation { field = "workspace"; reason }
-  | Upstream_error message -> Piss_core.Error.Upstream_unavailable { message }
+      Control_prelude.Error.Validation { field = "workspace"; reason }
+  | Upstream_error message ->
+      Control_prelude.Error.Upstream_unavailable { message }
   | Internal_error ->
-      Piss_core.Error.Internal { message = "Audit failed unexpectedly" }
+      Control_prelude.Error.Internal { message = "Audit failed unexpectedly" }
 
 type git_result = {
   status : Eio.Process.exit_status;

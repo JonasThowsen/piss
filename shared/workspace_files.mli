@@ -1,7 +1,7 @@
 (* Workspace file mention and resource types plus the pure helpers that validate
    them, build file:// URIs, and turn them into JSON. The filesystem IO (walking
    a directory, resolving a workspace path to an absolute file) lives in
-   `Piss_core__Workspace_io` in src/lib/.
+   `Piss_workspace_io.Workspace_io` in src/lib/.
 
    Both the backend (validating user-supplied paths, building resource_link
    blocks for ACP) and the browser shell (rendering mention dropdowns) depend on
@@ -50,7 +50,7 @@ val valid_relative_path : string -> bool
 (** True when [path] is a syntactically valid workspace-relative path. No
     traversal, no NUL, no whitespace control characters, no non-printable bytes.
     The filesystem check that the path actually exists happens in
-    `Workspace_io.resolve_resource`. *)
+    `Piss_workspace_io.Workspace_io.resolve_resource`. *)
 
 val path_within : root:string -> path:string -> bool
 (** True when [child] is [parent] or below [parent] in the filesystem. The check

@@ -1,10 +1,39 @@
 (test
  (name core_test)
- (libraries piss.core alcotest unix))
+ (libraries
+  piss.shared
+  piss.registry-domain
+  piss.registry
+  piss.worker-store
+  piss.workspace-io
+  piss.origin
+  alcotest
+  sqlite3
+  yojson
+  unix))
 
 (test
  (name error_test)
- (libraries piss.core alcotest))
+ (libraries piss.shared alcotest yojson))
+
+(rule
+ (alias runtest)
+ (deps
+  module_boundaries.sh
+  ../../src/lib/dune
+  ../../src/worker/dune
+  ../../src/control/dune
+  ../../src/mock_agent/dune
+  ../../src/session_mcp/dune
+  ../../src/bench/dune)
+ (action
+  (run bash %{dep:module_boundaries.sh} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps worker_cli_ids.sh ../worker/main.exe)
+ (action
+  (run bash %{dep:worker_cli_ids.sh} %{dep:../worker/main.exe})))
 
 (rule
  (alias runtest)

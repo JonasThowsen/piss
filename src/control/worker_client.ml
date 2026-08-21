@@ -1,6 +1,6 @@
 (* Client for the worker-side wire protocol over a Unix-domain socket. *)
 
-open Piss_core
+open Control_prelude
 
 type attempt = Before_request of Error.t | Complete of Wire.response
 

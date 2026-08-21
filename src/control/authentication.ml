@@ -1,7 +1,7 @@
 (* Tailscale identity and same-origin mutation policy. *)
 
 open Cohttp
-open Piss_core
+open Control_prelude
 
 let request_header request name = Header.get (Request.headers request) name
 

@@ -18,14 +18,14 @@ type request =
   | New_session
   | Prompt of {
       target : runtime_target;
-      command_id : string;
+      command_id : Command_id.t;
       text : string;
       images : image_input list;
       resources : resource_input list;
     }
   | Deliver of {
       target : runtime_target;
-      command_id : string;
+      command_id : Command_id.t;
       text : string;
       images : image_input list;
       resources : resource_input list;
@@ -33,27 +33,27 @@ type request =
     }
   | Recover_command of {
       target : runtime_target;
-      command_id : string;
+      command_id : Command_id.t;
       action : string;
       discard_cleared_attachments : bool;
     }
-  | Cancel of { target : runtime_target; mutation_id : string }
+  | Cancel of { target : runtime_target; mutation_id : Request_id.t }
   | Config_options
   | Set_config_option of {
       target : runtime_target;
-      mutation_id : string;
+      mutation_id : Request_id.t;
       config_id : string;
       value : string;
     }
   | Permission of {
       target : runtime_target;
-      mutation_id : string;
-      request_id : string;
+      mutation_id : Request_id.t;
+      request_id : Request_id.t;
       option_id : string option;
     }
   | Peer_event of {
       kind : string;
-      request_id : string;
+      request_id : Request_id.t;
       peer_id : string;
       text : string;
     }
@@ -93,40 +93,32 @@ let int64_member ?default name json =
 
 let ( let* ) = Result.bind
 
-let bounded_identity ~field ~max value =
-  if value = "" || String.length value > max then
-    Error
-      (Printf.sprintf "%s must contain between 1 and %d characters" field max)
-  else if String.contains value '\000' then
-    Error (field ^ " must not contain NUL")
-  else Ok value
-
 let runtime_target_member json =
   match member "target" json with
   | `Assoc _ as target ->
       let* session_id = string_member "sessionId" target in
       let* session_id =
-        bounded_identity ~field:"target.sessionId" ~max:128 session_id
+        Session_id.of_string session_id
+        |> Result.map_error (fun _ ->
+            "target.sessionId must contain between 1 and 128 characters and no \
+             NUL")
       in
       let* worker_id = string_member "workerId" target in
-      let* worker_id =
-        bounded_identity ~field:"target.workerId" ~max:128 worker_id
-      in
+      let* worker_id = Worker_id.of_string worker_id in
       let* runtime_generation = int_member "runtimeGeneration" target in
-      if runtime_generation < 0 then
-        Error "target.runtimeGeneration must be non-negative"
-      else
-        Ok
-          {
-            session_id = Domain.session_id session_id;
-            worker_id = Domain.worker_id worker_id;
-            runtime_generation = Domain.runtime_generation runtime_generation;
-          }
+      let* runtime_generation = Runtime_generation.of_int runtime_generation in
+      Ok { session_id; worker_id; runtime_generation }
   | _ -> Error "target must be an object"
 
 let mutation_id_member json =
   let* mutation_id = string_member "mutationId" json in
-  bounded_identity ~field:"mutationId" ~max:128 mutation_id
+  Request_id.of_string mutation_id
+  |> Result.map_error (fun _ ->
+      "mutationId must contain between 1 and 128 characters and no NUL")
+
+let command_id_member json =
+  let* command_id = string_member "commandId" json in
+  Command_id.of_string command_id
 
 let is_base64_character = function
   | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '+' | '/' -> true
@@ -290,29 +282,24 @@ let request_of_yojson json =
   | "new_session" -> Ok New_session
   | "prompt" ->
       let* target = runtime_target_member json in
-      let* command_id = string_member "commandId" json in
+      let* command_id = command_id_member json in
       let* text = string_member "text" json in
       let* images = images_member json in
       let* resources = resources_member json in
-      if command_id = "" then Error "commandId must not be empty"
-      else if String.length command_id > 128 then Error "commandId is too long"
-      else
-        let* () =
-          validate_prompt
-            ~empty_message:"prompt must contain text, an image, or a resource"
-            ~text ~images ~resources
-        in
-        Ok (Prompt { target; command_id; text; images; resources })
+      let* () =
+        validate_prompt
+          ~empty_message:"prompt must contain text, an image, or a resource"
+          ~text ~images ~resources
+      in
+      Ok (Prompt { target; command_id; text; images; resources })
   | "deliver" ->
       let* target = runtime_target_member json in
-      let* command_id = string_member "commandId" json in
+      let* command_id = command_id_member json in
       let* text = string_member "text" json in
       let* images = images_member json in
       let* resources = resources_member json in
       let* action = string_member "action" json in
-      if command_id = "" then Error "commandId must not be empty"
-      else if String.length command_id > 128 then Error "commandId is too long"
-      else if action <> "steer" && action <> "follow_up" then
+      if action <> "steer" && action <> "follow_up" then
         Error "delivery action must be steer or follow_up"
       else
         let* () =
@@ -323,7 +310,7 @@ let request_of_yojson json =
         Ok (Deliver { target; command_id; text; images; resources; action })
   | "recover_command" ->
       let* target = runtime_target_member json in
-      let* command_id = string_member "commandId" json in
+      let* command_id = command_id_member json in
       let* action = string_member "action" json in
       let* discard_cleared_attachments =
         match member "discardClearedAttachments" json with
@@ -331,9 +318,7 @@ let request_of_yojson json =
         | `Bool value -> Ok value
         | _ -> Error "discardClearedAttachments must be a boolean"
       in
-      if command_id = "" || String.length command_id > 128 then
-        Error "commandId must contain between 1 and 128 characters"
-      else if action <> "prompt" && action <> "follow_up" then
+      if action <> "prompt" && action <> "follow_up" then
         Error "recovery action must be prompt or follow_up"
       else
         Ok
@@ -357,6 +342,7 @@ let request_of_yojson json =
   | "peer_event" ->
       let* kind = string_member "kind" json in
       let* request_id = string_member "requestId" json in
+      let* request_id = Request_id.of_string request_id in
       let* peer_id = string_member "peerId" json in
       let* text = string_member "text" json in
       if
@@ -371,8 +357,6 @@ let request_of_yojson json =
                "session.ask.failed";
              ])
       then Error "unsupported peer event kind"
-      else if request_id = "" || String.length request_id > 128 then
-        Error "requestId must contain between 1 and 128 characters"
       else if peer_id = "" || String.length peer_id > 64 then
         Error "peerId must contain between 1 and 64 characters"
       else if String.length text > 64 * 1024 then
@@ -382,6 +366,7 @@ let request_of_yojson json =
       let* target = runtime_target_member json in
       let* mutation_id = mutation_id_member json in
       let* request_id = string_member "requestId" json in
+      let* request_id = Request_id.of_string request_id in
       let option_id =
         match member "optionId" json with
         | `String value -> Ok (Some value)
@@ -389,9 +374,7 @@ let request_of_yojson json =
         | _ -> Error "optionId must be a string or null"
       in
       let* option_id = option_id in
-      if request_id = "" || String.length request_id > 128 then
-        Error "requestId must contain between 1 and 128 characters"
-      else if
+      if
         Option.fold ~none:false
           ~some:(fun value -> String.length value > 128)
           option_id

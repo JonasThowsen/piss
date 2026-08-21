@@ -1,4 +1,4 @@
-open Piss_core
+open Piss_shared
 
 let cases =
   [

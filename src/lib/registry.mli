@@ -12,6 +12,8 @@
 
 exception Registry_error of string
 
+module State = Piss_registry_domain.Registry_domain
+
 type t
 (** A handle to an open registry database. *)
 
@@ -47,7 +49,7 @@ type peer_request = {
   partial_response : string;
   command_seen : bool;
   observed_terminal : string option;
-  state : string;
+  state : State.Peer_request_state.t;
   response : string option;
 }
 (** A durable inter-session request: the source session asked the target session
@@ -60,7 +62,7 @@ type peer_subscription = {
   request_ids : string list;
   wait_for : string;
   command_id : string;
-  state : string;
+  state : State.Subscription_state.t;
 }
 (** A durable subscription: the source session is waiting for one or more peer
     requests to finish (either any one, or all of them) before the control plane
@@ -73,7 +75,7 @@ type session_creation = {
   title : string;
   harness : string;
   session_id : string;
-  state : string;
+  state : State.Session_creation_state.t;
   error : string option;
   updated_at : float;
 }
@@ -205,6 +207,9 @@ val list : t -> include_archived:bool -> session list
 
 val find : t -> string -> session option
 (** Look up a session by id, active or archived. *)
+
+val session_lifecycle : t -> string -> State.Session_lifecycle.t option
+(** Read the algebraic lifecycle for a durable session. *)
 
 val find_active : t -> string -> session option
 (** Look up an active (not archived) session by id. *)

@@ -4,13 +4,77 @@
 type session_id = Session_id of string
 type worker_id = Worker_id of string
 type runtime_generation = Runtime_generation of int
+type command_id = Command_id of string
+type request_id = Request_id of string
+type subscription_id = Subscription_id of string
 
-let session_id s = Session_id s
-let worker_id s = Worker_id s
-let runtime_generation i = Runtime_generation i
-let session_id_to_string (Session_id s) = s
-let worker_id_to_string (Worker_id s) = s
-let runtime_generation_to_int (Runtime_generation i) = i
+let bounded_id ~label ~max value wrap =
+  if value = "" || String.length value > max then
+    Error
+      (Printf.sprintf "%s must contain between 1 and %d characters" label max)
+  else if String.contains value '\000' then
+    Error (label ^ " must not contain NUL")
+  else Ok (wrap value)
+
+module Session_id = struct
+  type t = session_id
+
+  let of_string value =
+    bounded_id ~label:"sessionId" ~max:128 value (fun value -> Session_id value)
+
+  let to_string (Session_id value) = value
+end
+
+module Worker_id = struct
+  type t = worker_id
+
+  let of_string value =
+    bounded_id ~label:"workerId" ~max:128 value (fun value -> Worker_id value)
+
+  let to_string (Worker_id value) = value
+end
+
+module Runtime_generation = struct
+  type t = runtime_generation
+
+  let of_int value =
+    if value < 0 then Error "runtimeGeneration must be non-negative"
+    else Ok (Runtime_generation value)
+
+  let to_int (Runtime_generation value) = value
+end
+
+module Command_id = struct
+  type t = command_id
+
+  let of_string value =
+    bounded_id ~label:"commandId" ~max:128 value (fun value -> Command_id value)
+
+  let to_string (Command_id value) = value
+end
+
+module Request_id = struct
+  type t = request_id
+
+  let of_string value =
+    bounded_id ~label:"requestId" ~max:128 value (fun value -> Request_id value)
+
+  let to_string (Request_id value) = value
+end
+
+module Subscription_id = struct
+  type t = subscription_id
+
+  let of_string value =
+    bounded_id ~label:"subscriptionId" ~max:128 value (fun value ->
+        Subscription_id value)
+
+  let to_string (Subscription_id value) = value
+end
+
+let session_id_to_string = Session_id.to_string
+let worker_id_to_string = Worker_id.to_string
+let runtime_generation_to_int = Runtime_generation.to_int
 
 type runtime_target = {
   session_id : session_id;
@@ -87,6 +151,31 @@ let command_state_of_string = function
   | "ambiguous" -> Ok Ambiguous
   | "rejected" -> Ok Rejected
   | value -> Error ("unknown command state: " ^ value)
+
+let command_state_is_terminal = function
+  | Completed | Cancelled | Ambiguous | Rejected -> true
+  | Received | Accepted | Dispatched | Acknowledged -> false
+
+let transition_command_state ~from into =
+  match (from, into) with
+  | Received, (Accepted | Rejected)
+  | Accepted, (Dispatched | Cancelled | Ambiguous | Rejected)
+  | Dispatched, (Acknowledged | Completed | Cancelled | Ambiguous | Rejected)
+  | Acknowledged, (Completed | Cancelled | Ambiguous | Rejected) ->
+      Ok into
+  | left, right when left = right -> Ok right
+  | left, right ->
+      Error
+        (Printf.sprintf "invalid command transition from %s to %s"
+           (command_state_to_string left)
+           (command_state_to_string right))
+
+let reconcile_ambiguous_command_state = function
+  | (Completed | Cancelled | Rejected) as state -> Ok state
+  | Received | Accepted | Dispatched | Acknowledged | Ambiguous ->
+      Error
+        "ambiguous command reconciliation requires completed, cancelled, or \
+         rejected ACP evidence"
 
 let worker_status_to_string = function
   | Starting -> "starting"
@@ -174,81 +263,68 @@ let snapshot_to_yojson snapshot =
       ("retentionPruned", `Bool snapshot.retention_pruned);
     ]
 
+let bounded_int field ~minimum value =
+  if value < Int64.of_int minimum || value > Int64.of_int max_int then
+    Error (Printf.sprintf "%s must be between %d and %d" field minimum max_int)
+  else Ok (Int64.to_int value)
+
 let snapshot_of_yojson json =
   let open Yojson.Safe.Util in
-  let bind a b = Result.bind a b in
-  let map f a = Result.map f a in
-  bind
-    (string_of_json_exn "sessionId" (member "sessionId" json))
-    (fun session_id_str ->
-      bind
-        (string_of_json_exn "workerId" (member "workerId" json))
-        (fun worker_id_str ->
-          bind
-            (int64_of_json_exn "runtimeGeneration"
-               (member "runtimeGeneration" json)
-            |> map Int64.to_int)
-            (fun runtime_generation_int ->
-              bind
-                (int64_of_json_exn "workerPid" (member "workerPid" json)
-                |> map Int64.to_int)
-                (fun worker_pid ->
-                  bind
-                    (match member "harnessPid" json with
-                    | `Null -> Ok None
-                    | value ->
-                        int64_of_json_exn "harnessPid" value
-                        |> map Int64.to_int |> map Option.some)
-                    (fun harness_pid ->
-                      bind
-                        (string_of_json_exn "agentName"
-                           (member "agentName" json))
-                        (fun agent_name ->
-                          bind
-                            (string_of_json_exn "status" (member "status" json))
-                            (fun status_str ->
-                              bind (worker_status_of_string status_str)
-                                (fun status ->
-                                  bind
-                                    (int64_of_json_exn "firstSequence"
-                                       (member "firstSequence" json))
-                                    (fun first_sequence ->
-                                      bind
-                                        (int64_of_json_exn "lastSequence"
-                                           (member "lastSequence" json))
-                                        (fun last_sequence ->
-                                          bind
-                                            (match
-                                               member "lastFinishedAt" json
-                                             with
-                                            | `Null -> Ok None
-                                            | value ->
-                                                float_of_json_exn
-                                                  "lastFinishedAt" value
-                                                |> map Option.some)
-                                            (fun last_finished_at ->
-                                              bind
-                                                (bool_of_json_exn
-                                                   "retentionPruned"
-                                                   (member "retentionPruned"
-                                                      json))
-                                                (fun retention_pruned ->
-                                                  Ok
-                                                    {
-                                                      session_id =
-                                                        Session_id
-                                                          session_id_str;
-                                                      worker_id =
-                                                        Worker_id worker_id_str;
-                                                      runtime_generation =
-                                                        Runtime_generation
-                                                          runtime_generation_int;
-                                                      worker_pid;
-                                                      harness_pid;
-                                                      agent_name;
-                                                      status;
-                                                      first_sequence;
-                                                      last_sequence;
-                                                      last_finished_at;
-                                                      retention_pruned;
-                                                    }))))))))))))
+  let ( let* ) = Result.bind in
+  let* session_id_string =
+    string_of_json_exn "sessionId" (member "sessionId" json)
+  in
+  let* session_id = Session_id.of_string session_id_string in
+  let* worker_id_string =
+    string_of_json_exn "workerId" (member "workerId" json)
+  in
+  let* worker_id = Worker_id.of_string worker_id_string in
+  let* runtime_generation =
+    int64_of_json_exn "runtimeGeneration" (member "runtimeGeneration" json)
+  in
+  let* runtime_generation =
+    bounded_int "runtimeGeneration" ~minimum:0 runtime_generation
+  in
+  let* worker_pid = int64_of_json_exn "workerPid" (member "workerPid" json) in
+  let* worker_pid = bounded_int "workerPid" ~minimum:1 worker_pid in
+  let* harness_pid =
+    match member "harnessPid" json with
+    | `Null -> Ok None
+    | value ->
+        let* pid = int64_of_json_exn "harnessPid" value in
+        let* pid = bounded_int "harnessPid" ~minimum:1 pid in
+        Ok (Some pid)
+  in
+  let* agent_name = string_of_json_exn "agentName" (member "agentName" json) in
+  let* status_string = string_of_json_exn "status" (member "status" json) in
+  let* status = worker_status_of_string status_string in
+  let* first_sequence =
+    int64_of_json_exn "firstSequence" (member "firstSequence" json)
+  in
+  let* last_sequence =
+    int64_of_json_exn "lastSequence" (member "lastSequence" json)
+  in
+  let* last_finished_at =
+    match member "lastFinishedAt" json with
+    | `Null -> Ok None
+    | value ->
+        let* value = float_of_json_exn "lastFinishedAt" value in
+        Ok (Some value)
+  in
+  let* retention_pruned =
+    bool_of_json_exn "retentionPruned" (member "retentionPruned" json)
+  in
+  Ok
+    {
+      session_id;
+      worker_id;
+      runtime_generation = Runtime_generation runtime_generation;
+      worker_pid;
+      harness_pid;
+      agent_name;
+      status;
+      first_sequence;
+      last_sequence;
+      last_finished_at;
+      retention_pruned;
+    }

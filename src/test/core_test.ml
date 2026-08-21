@@ -1,5 +1,19 @@
-open Piss_core
-module Durable_registry = Registry
+open Piss_shared
+module Shared_domain = Domain
+
+module Domain = struct
+  include Shared_domain
+
+  let session_id value = Result.get_ok (Session_id.of_string value)
+  let worker_id value = Result.get_ok (Worker_id.of_string value)
+  let runtime_generation value = Result.get_ok (Runtime_generation.of_int value)
+end
+
+module Registry_domain = Piss_registry_domain.Registry_domain
+module Store = Piss_worker_store.Store
+module Workspace_io = Piss_workspace_io.Workspace_io
+module Origin_pattern = Piss_origin.Origin_pattern
+module Durable_registry = Piss_registry.Registry
 
 module Registry = struct
   include Durable_registry
@@ -198,7 +212,8 @@ let test_session_registry () =
     Option.get (Registry.find_peer_request registry "peer-one")
   in
   Alcotest.(check string)
-    "peer request dispatching" "dispatching" dispatching.state;
+    "peer request dispatching" "dispatching"
+    (Registry_domain.Peer_request_state.to_string dispatching.state);
   Alcotest.(check bool)
     "crash-stale dispatch projects peer waiting" true
     (Registry.has_open_peer_work registry ~source_id:one.id);
@@ -244,7 +259,8 @@ let test_session_registry () =
     (Registry.mark_peer_dispatched registry "peer-failure");
   Alcotest.(check string)
     "failed request remains terminal" "failed"
-    (Option.get (Registry.find_peer_request registry "peer-failure")).state;
+    (Registry_domain.Peer_request_state.to_string
+       (Option.get (Registry.find_peer_request registry "peer-failure")).state);
   let subscription, duplicate =
     Registry.accept_peer_subscription registry ~id:"wake-one" ~source_id:one.id
       ~request_ids:[ "peer-one" ] ~wait_for:"all"
@@ -255,7 +271,8 @@ let test_session_registry () =
     "pending subscription projects peer waiting" true
     (Registry.has_open_peer_work registry ~source_id:one.id);
   Alcotest.(check string)
-    "wake subscription pending" "pending" subscription.state;
+    "wake subscription pending" "pending"
+    (Registry_domain.Subscription_state.to_string subscription.state);
   let _, duplicate =
     Registry.accept_peer_subscription registry ~id:"wake-one" ~source_id:one.id
       ~request_ids:[ "peer-one" ] ~wait_for:"all"
@@ -272,7 +289,8 @@ let test_session_registry () =
   Registry.mark_peer_subscription_dispatching registry "wake-one";
   Alcotest.(check string)
     "wake subscription dispatching" "dispatching"
-    (Option.get (Registry.find_peer_subscription registry "wake-one")).state;
+    (Registry_domain.Subscription_state.to_string
+       (Option.get (Registry.find_peer_subscription registry "wake-one")).state);
   Alcotest.(check int)
     "open wake subscription listed" 1
     (List.length (Registry.list_open_peer_subscriptions registry));
@@ -389,11 +407,11 @@ let test_registry_codex_migration () =
          NULL,harness TEXT NOT NULL CHECK(harness IN \
          ('pi','opencode','mock')),created_at REAL NOT NULL,archived_at \
          REAL,broker_token TEXT NOT NULL DEFAULT '',workspace_id TEXT NOT NULL \
-         DEFAULT '')";
+         DEFAULT '',finishing_at REAL)";
       exec
         "INSERT INTO sessions \
-         (id,title,harness,created_at,archived_at,broker_token,workspace_id) \
-         VALUES ('legacy-pi','Legacy Pi','pi',0,NULL,'legacy-token','')";
+         (id,title,harness,created_at,archived_at,broker_token,workspace_id,finishing_at) \
+         VALUES ('legacy-pi','Legacy Pi','pi',0,NULL,'legacy-token','',123.0)";
       ignore (Sqlite3.db_close db);
       let registry = Registry.open_ ~path in
       Fun.protect
@@ -404,7 +422,11 @@ let test_registry_codex_migration () =
                ~harness:"codex" ~workspace_id:"");
           Alcotest.(check bool)
             "legacy session survives Codex constraint migration" true
-            (Option.is_some (Registry.find_active registry "legacy-pi"))))
+            (Option.is_some (Registry.find registry "legacy-pi"));
+          Alcotest.(check bool)
+            "legacy finish fence survives Codex constraint migration" true
+            (Registry.session_lifecycle registry "legacy-pi"
+            = Some Registry_domain.Session_lifecycle.Finishing)))
 
 let test_legacy_registry_migration () =
   let path = Filename.temp_file "piss-registry-legacy-" ".sqlite3" in
@@ -521,7 +543,9 @@ let test_broker_creation_registry () =
   Alcotest.(check string)
     "session retry retains identity" session.id repeated_session.id;
   Alcotest.(check string)
-    "session request remains pending" creation.state repeated_creation.state;
+    "session request remains pending"
+    (Registry_domain.Session_creation_state.to_string creation.state)
+    (Registry_domain.Session_creation_state.to_string repeated_creation.state);
   Alcotest.(check bool)
     "one launcher claims the request" true
     (Registry.claim_session_creation registry creation.id);
@@ -533,7 +557,8 @@ let test_broker_creation_registry () =
     (Registry.mark_session_creation_active registry creation.id);
   Alcotest.(check string)
     "completed request is active" "active"
-    (Option.get (Registry.find_session_creation registry creation.id)).state;
+    (Registry_domain.Session_creation_state.to_string
+       (Option.get (Registry.find_session_creation registry creation.id)).state);
   Alcotest.(check bool)
     "creator owns broker session" true
     (Registry.session_created_by registry ~source_id:source.id
@@ -745,7 +770,22 @@ let test_command_recovery () =
          (`Assoc
             [
               ("jsonrpc", `String "2.0");
-              ("id", `String "late-response");
+              ("id", `String (Acp.mutation_request_id "late-response"));
+              ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
+            ]));
+  Alcotest.(check (list string))
+    "same-text mutation response is not command evidence" []
+    (Store.reconcile_ambiguous_responses store);
+  (match Store.find_command store "late-response" with
+  | Some Domain.Ambiguous -> ()
+  | _ -> Alcotest.fail "mutation response changed ambiguous command");
+  ignore
+    (Store.append_event store ~kind:"acp.response"
+       ~payload:
+         (`Assoc
+            [
+              ("jsonrpc", `String "2.0");
+              ("id", `String (Acp.command_request_id "late-response"));
               ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
             ]));
   Alcotest.(check (list string))
@@ -796,6 +836,45 @@ let test_command_recovery () =
             recovered.prompt
       | Error reason -> Alcotest.fail reason)
   | Ok _ -> Alcotest.fail "image command was unsafely recovered without data"
+
+let test_live_late_response_reconciliation () =
+  with_store @@ fun store ->
+  ignore
+    (Store.accept_command store ~command_id:"late-live" ~request_id:"late-live"
+       ~prompt:"finish after timeout");
+  Store.set_command_state store ~command_id:"late-live" Domain.Ambiguous;
+  (match
+     Store.reconcile_ambiguous_command store ~command_id:"late-live"
+       Domain.Completed
+   with
+  | Ok true -> ()
+  | Ok false -> Alcotest.fail "late response did not reconcile ambiguity"
+  | Error message -> Alcotest.fail message);
+  Alcotest.(check (option string))
+    "late response installs terminal state" (Some "completed")
+    (Store.find_command store "late-live"
+    |> Option.map Domain.command_state_to_string);
+  (match
+     Store.reconcile_ambiguous_command store ~command_id:"late-live"
+       Domain.Rejected
+   with
+  | Ok false -> ()
+  | Ok true -> Alcotest.fail "terminal late response was overwritten"
+  | Error message -> Alcotest.fail message);
+  Alcotest.(check bool)
+    "non-terminal late evidence rejected" true
+    (Result.is_error
+       (Store.reconcile_ambiguous_command store ~command_id:"late-live"
+          Domain.Dispatched));
+  let reconciled_events =
+    Store.list_recent_events store ~limit:10
+    |> List.filter (fun event ->
+        Yojson.Safe.Util.member "reconciledLateResponse" event.Domain.payload
+        = `Bool true)
+  in
+  Alcotest.(check int)
+    "one live late-response event" 1
+    (List.length reconciled_events)
 
 let test_command_deduplication () =
   with_store @@ fun store ->
@@ -898,7 +977,7 @@ let test_reused_command_ignores_old_response_after_restart () =
              (`Assoc
                 [
                   ("jsonrpc", `String "2.0");
-                  ("id", `String "reused-command");
+                  ("id", `String (Acp.command_request_id "reused-command"));
                   ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
                 ]));
       Store.set_command_state first ~command_id:"reused-command"
@@ -933,7 +1012,7 @@ let test_reused_command_ignores_old_response_after_restart () =
              (`Assoc
                 [
                   ("jsonrpc", `String "2.0");
-                  ("id", `String "reused-command");
+                  ("id", `String (Acp.command_request_id "reused-command"));
                   ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
                 ]));
       Alcotest.(check (list string))
@@ -1051,6 +1130,10 @@ let test_try_set_command_state_if_open () =
   in
   Alcotest.(check bool)
     "first accept is not a duplicate" false accepted.duplicate;
+  Alcotest.(check bool)
+    "open command cannot transition backward" false
+    (Store.try_set_command_state_if_open store ~command_id:"race-cmd"
+       Domain.Received);
   Store.set_command_state store ~command_id:"race-cmd" Domain.Dispatched;
   (* While the command is still in `dispatched`, the watcher may try to mark it
      ambiguous. The transition succeeds. *)
@@ -1110,6 +1193,11 @@ let test_dispatched_commands_lists_open_records () =
     (match Store.last_finished_at store with
     | Some value -> value > 0.
     | None -> false);
+  accept "ambiguous-1" "uncertain";
+  Store.set_command_state store ~command_id:"ambiguous-1" Domain.Ambiguous;
+  Alcotest.(check bool)
+    "ambiguous transition records finish time" true
+    (Option.is_some (Store.last_finished_at store));
   accept "open-2" "third";
   Alcotest.(check bool)
     "newer open command is not finished" true
@@ -1433,9 +1521,9 @@ let test_wire_bounds () =
        (Yojson.Safe.from_string
           {|{"op":"prompt","commandId":"legacy-command","text":"rollback"}|})
    with
-  | Ok
-      (Wire.Prompt
-         { target; command_id = "legacy-command"; text = "rollback"; _ }) ->
+  | Ok (Wire.Prompt { target; command_id; text = "rollback"; _ })
+    when String.equal (Domain.Command_id.to_string command_id) "legacy-command"
+    ->
       Alcotest.(check int)
         "legacy prompt binds current generation" 3
         (Domain.runtime_generation_to_int target.runtime_generation)
@@ -1446,7 +1534,11 @@ let test_wire_bounds () =
        ~mutation_id:"legacy-mutation"
        (Yojson.Safe.from_string {|{"op":"cancel"}|})
    with
-  | Ok (Wire.Cancel { mutation_id = "legacy-mutation"; _ }) -> ()
+  | Ok (Wire.Cancel { mutation_id; _ })
+    when String.equal
+           (Domain.Request_id.to_string mutation_id)
+           "legacy-mutation" ->
+      ()
   | Ok _ -> Alcotest.fail "legacy cancel decoded incorrectly"
   | Error message -> Alcotest.fail message);
   (match
@@ -1825,6 +1917,167 @@ let test_stable_state_decoding () =
         Rejected;
       ]
 
+let test_validated_ids () =
+  let valid label to_string = function
+    | Ok value -> Alcotest.(check string) label "stable-id" (to_string value)
+    | Error message -> Alcotest.fail message
+  in
+  valid "session id" Domain.Session_id.to_string
+    (Domain.Session_id.of_string "stable-id");
+  valid "worker id" Domain.Worker_id.to_string
+    (Domain.Worker_id.of_string "stable-id");
+  valid "command id" Domain.Command_id.to_string
+    (Domain.Command_id.of_string "stable-id");
+  valid "request id" Domain.Request_id.to_string
+    (Domain.Request_id.of_string "stable-id");
+  valid "subscription id" Domain.Subscription_id.to_string
+    (Domain.Subscription_id.of_string "stable-id");
+  List.iter
+    (fun rejected ->
+      Alcotest.(check bool)
+        "invalid request identity rejected" true
+        (Result.is_error (Domain.Request_id.of_string rejected)))
+    [ ""; "nul\000id"; String.make 129 'x' ];
+  Alcotest.(check bool)
+    "negative runtime generation rejected" true
+    (Result.is_error (Domain.Runtime_generation.of_int (-1)));
+  let command_request = Acp.command_request_id "stable-id" in
+  let mutation_request = Acp.mutation_request_id "stable-id" in
+  Alcotest.(check bool)
+    "ACP command and mutation namespaces differ" true
+    (not (String.equal command_request mutation_request));
+  Alcotest.(check (option string))
+    "ACP command namespace decodes" (Some "stable-id")
+    (Acp.command_id_of_request_id command_request);
+  Alcotest.(check (option string))
+    "ACP mutation is not command evidence" None
+    (Acp.command_id_of_request_id mutation_request)
+
+let test_snapshot_identity_validation () =
+  let fields =
+    [
+      ("sessionId", `String "session");
+      ("workerId", `String "worker");
+      ("runtimeGeneration", `Int 1);
+      ("workerPid", `Int 2);
+      ("harnessPid", `Null);
+      ("agentName", `String "agent");
+      ("status", `String "idle");
+      ("firstSequence", `Int 0);
+      ("lastSequence", `Int 0);
+      ("lastFinishedAt", `Null);
+      ("retentionPruned", `Bool false);
+    ]
+  in
+  let replace name value =
+    `Assoc
+      (List.map
+         (fun (field, current) ->
+           if String.equal field name then (field, value) else (field, current))
+         fields)
+  in
+  List.iter
+    (fun json ->
+      Alcotest.(check bool)
+        "malformed snapshot identity rejected" true
+        (Result.is_error (Domain.snapshot_of_yojson json)))
+    [
+      replace "sessionId" (`String "");
+      replace "workerId" (`String "worker\000bad");
+      replace "runtimeGeneration" (`Int (-1));
+      replace "runtimeGeneration" (`Intlit "9223372036854775807");
+      replace "workerPid" (`Int 0);
+    ]
+
+let test_typed_transitions () =
+  let command from into = Domain.transition_command_state ~from into in
+  Alcotest.(check bool)
+    "accepted dispatches" true
+    (Result.is_ok (command Domain.Accepted Domain.Dispatched));
+  Alcotest.(check bool)
+    "terminal command cannot reopen" true
+    (Result.is_error (command Domain.Completed Domain.Dispatched));
+  List.iter
+    (fun terminal ->
+      Alcotest.(check bool)
+        "ambiguous command accepts only terminal ACP evidence" true
+        (Result.is_ok (Domain.reconcile_ambiguous_command_state terminal)))
+    Domain.[ Completed; Cancelled; Rejected ];
+  Alcotest.(check bool)
+    "ambiguous command rejects non-terminal evidence" true
+    (Result.is_error
+       (Domain.reconcile_ambiguous_command_state Domain.Dispatched));
+  with_store @@ fun store ->
+  ignore
+    (Store.accept_command store ~command_id:"typed-transition"
+       ~request_id:"typed-transition" ~prompt:"transition");
+  Alcotest.(check bool)
+    "store applies valid transition" true
+    (Result.is_ok
+       (Store.transition_command_state store ~command_id:"typed-transition"
+          Domain.Dispatched));
+  Alcotest.(check bool)
+    "store rejects invalid predecessor" true
+    (Result.is_error
+       (Store.transition_command_state store ~command_id:"typed-transition"
+          Domain.Accepted));
+  let module Peer = Registry_domain.Peer_request_state in
+  Alcotest.(check bool)
+    "peer request completes" true
+    (Result.is_ok (Peer.transition ~from:Peer.Dispatched Peer.Completed));
+  Alcotest.(check bool)
+    "completed peer cannot requeue" true
+    (Result.is_error (Peer.transition ~from:Peer.Completed Peer.Queued));
+  let module Subscription = Registry_domain.Subscription_state in
+  Alcotest.(check bool)
+    "subscription dispatches" true
+    (Result.is_ok
+       (Subscription.transition ~from:Subscription.Pending
+          Subscription.Dispatching));
+  Alcotest.(check bool)
+    "delivered subscription cannot reopen" true
+    (Result.is_error
+       (Subscription.transition ~from:Subscription.Delivered
+          Subscription.Pending))
+
+let test_session_lifecycle_state () =
+  with_registry @@ fun registry ->
+  Registry.upsert_workspace registry ~id:"workspace-life" ~name:"Lifecycle"
+    ~root:"/tmp/lifecycle";
+  let session =
+    Registry.insert registry ~id:"session-life" ~title:"Lifecycle" ~harness:"pi"
+      ~workspace_id:"workspace-life"
+  in
+  let lifecycle () = Registry.session_lifecycle registry session.id in
+  Alcotest.(check bool)
+    "new session active" true
+    (lifecycle () = Some Registry_domain.Session_lifecycle.Active);
+  (match
+     Registry.accept_session_creation registry ~id:"creation-life"
+       ~source_id:session.id ~workspace_id:"workspace-life" ~title:"Child"
+       ~harness:"pi" ~session_id:"child-life" ~max_active_sessions:4
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  ignore (Registry.claim_session_creation registry "creation-life");
+  ignore (Registry.mark_session_creation_active registry "creation-life");
+  (* Creator ownership is required by the durable finish fence. *)
+  (match
+     Registry.claim_session_finish registry ~source_id:session.id
+       ~session_id:"child-life"
+   with
+  | Ok () -> ()
+  | Error message -> Alcotest.fail message);
+  Alcotest.(check bool)
+    "finish fence is typed" true
+    (Registry.session_lifecycle registry "child-life"
+    = Some Registry_domain.Session_lifecycle.Finishing);
+  ignore (Registry.archive registry "child-life");
+  Alcotest.(check bool)
+    "archive is typed" true
+    (Registry.session_lifecycle registry "child-life"
+    = Some Registry_domain.Session_lifecycle.Archived)
+
 let () =
   Alcotest.run "piss"
     [
@@ -1834,6 +2087,8 @@ let () =
           Alcotest.test_case "legacy runtime migration" `Quick
             test_legacy_runtime_migration;
           Alcotest.test_case "command recovery" `Quick test_command_recovery;
+          Alcotest.test_case "live late ACP response reconciliation" `Quick
+            test_live_late_response_reconciliation;
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
           Alcotest.test_case "terminal command receipts compact" `Quick
@@ -1878,6 +2133,14 @@ let () =
             test_origin_patterns;
           Alcotest.test_case "command states round trip" `Quick
             test_stable_state_decoding;
+          Alcotest.test_case "owned identifiers validate" `Quick
+            test_validated_ids;
+          Alcotest.test_case "snapshot identities validate" `Quick
+            test_snapshot_identity_validation;
+          Alcotest.test_case "typed lifecycle transitions" `Quick
+            test_typed_transitions;
+          Alcotest.test_case "session lifecycle is algebraic" `Quick
+            test_session_lifecycle_state;
           Alcotest.test_case "wire bounds fail closed" `Quick test_wire_bounds;
           Alcotest.test_case "workspace file mentions are bounded" `Quick
             test_workspace_file_mentions;

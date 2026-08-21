@@ -1,16 +1,8 @@
-(* Piss_core is the backend-only library: SQLite stores, filesystem access, and
-   the workers registry. The pure type and protocol definitions live in
-   `piss.shared`; we re-export them here so existing call sites can keep `open
-   Piss_core` and reach every shared type and value through the umbrella.
-
-   Dune wraps sibling files at the same directory level into `Piss_core__*`
-   names rather than as submodules of `Piss_core`, so we alias them explicitly.
-   Without these aliases, code outside this directory has to write
-   `Piss_core__Registry.t` instead of the more readable `Registry.t` after `open
-   Piss_core`. *)
-
+(* Deprecated source-compatibility facade. Production targets intentionally do
+   not depend on this library; see docs/ARCHITECTURE.md. *)
 include Piss_shared
-module Origin_pattern = Piss_core__Origin_pattern
-module Registry = Piss_core__Registry
-module Store = Piss_core__Store
-module Workspace_io = Piss_core__Workspace_io
+module Origin_pattern = Piss_origin.Origin_pattern
+module Registry = Piss_registry.Registry
+module Registry_domain = Piss_registry_domain.Registry_domain
+module Store = Piss_worker_store.Store
+module Workspace_io = Piss_workspace_io.Workspace_io

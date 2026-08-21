@@ -7,7 +7,7 @@ val handle :
   manager:Config.managed_workers ->
   allowed_origins:string list ->
   dev_bypass:bool ->
-  calling_session:Piss_core.Registry.session option ->
+  calling_session:Control_prelude.Registry.session option ->
   request:Cohttp.Request.t ->
   read_body:(unit -> string) ->
   Routes.route ->

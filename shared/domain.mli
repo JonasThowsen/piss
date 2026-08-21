@@ -28,6 +28,57 @@ type runtime_generation
     ledger. Every command that targets a worker binds to a runtime generation so
     stale generations fail closed. *)
 
+type command_id
+(** A validated command identity. *)
+
+type request_id
+(** A validated mutation, permission, or peer-request identity. *)
+
+type subscription_id
+(** A validated durable peer-subscription identity. *)
+
+module Session_id : sig
+  type t = session_id
+
+  val of_string : string -> (t, string) result
+  val to_string : t -> string
+end
+
+module Worker_id : sig
+  type t = worker_id
+
+  val of_string : string -> (t, string) result
+  val to_string : t -> string
+end
+
+module Runtime_generation : sig
+  type t = runtime_generation
+
+  val of_int : int -> (t, string) result
+  val to_int : t -> int
+end
+
+module Command_id : sig
+  type t = command_id
+
+  val of_string : string -> (t, string) result
+  val to_string : t -> string
+end
+
+module Request_id : sig
+  type t = request_id
+
+  val of_string : string -> (t, string) result
+  val to_string : t -> string
+end
+
+module Subscription_id : sig
+  type t = subscription_id
+
+  val of_string : string -> (t, string) result
+  val to_string : t -> string
+end
+
 type runtime_target = {
   session_id : session_id;
   worker_id : worker_id;
@@ -36,10 +87,14 @@ type runtime_target = {
 (** The complete fencing identity supplied by a mutation initiator. *)
 
 (** Lifecycle state of a single command issued by the browser and accepted by
-    the worker. Transitions are:
+    the worker. Normal transitions are:
 
-    received -> accepted -> dispatched -> acknowledged -> completed \\->
-    ambiguous received -> rejected
+    - Received -> Accepted or Rejected
+    - Accepted -> Dispatched, Cancelled, Ambiguous, or Rejected
+    - Dispatched -> Acknowledged, Completed, Cancelled, Ambiguous, or Rejected
+    - Acknowledged -> Completed, Cancelled, Ambiguous, or Rejected
+    - Ambiguous -> Completed, Cancelled, or Rejected only through the dedicated
+      late-ACP-response reconciliation API
 
     The worker persists `accepted` before writing to the harness. A duplicate
     command returns the existing state and is never redispatched. A worker crash
@@ -109,14 +164,24 @@ type snapshot = {
     `retention_pruned` signals whether the spool has been compacted at least
     once since startup. *)
 
-val session_id : string -> session_id
-val worker_id : string -> worker_id
-val runtime_generation : int -> runtime_generation
 val session_id_to_string : session_id -> string
 val worker_id_to_string : worker_id -> string
 val runtime_generation_to_int : runtime_generation -> int
 val command_state_to_string : command_state -> string
 val command_state_of_string : string -> (command_state, string) result
+val command_state_is_terminal : command_state -> bool
+
+val transition_command_state :
+  from:command_state -> command_state -> (command_state, string) result
+(** Validate a worker-owned lifecycle transition. Repeating a state is
+    idempotent; terminal states cannot be reopened. *)
+
+val reconcile_ambiguous_command_state :
+  command_state -> (command_state, string) result
+(** Validate evidence-backed reconciliation of an ambiguous command after its
+    late ACP response arrives. Only Completed, Cancelled, and Rejected are
+    accepted; this does not permit arbitrary terminal-state reopening. *)
+
 val worker_status_to_string : worker_status -> string
 val worker_status_of_string : string -> (worker_status, string) result
 val event_to_yojson : event -> Yojson.Safe.t

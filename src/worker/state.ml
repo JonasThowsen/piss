@@ -1,14 +1,14 @@
 (* Mutable runtime state for one session worker. *)
 
-open Piss_core
+open Worker_prelude
 
 type t = {
   args : Config.args;
   store : Store.t;
   workspace : string;
   harness_pid : int;
-  runtime_worker_id : string;
-  runtime_generation : int;
+  runtime_worker_id : Domain.Worker_id.t;
+  runtime_generation : Domain.Runtime_generation.t;
   agent_name : string ref;
   supports_load : bool ref;
   supports_images : bool ref;
@@ -85,9 +85,9 @@ let runtime_worker_id t = t.runtime_worker_id
 let runtime_target t =
   Domain.
     {
-      session_id = session_id t.args.session_id;
-      worker_id = worker_id t.runtime_worker_id;
-      runtime_generation = runtime_generation t.runtime_generation;
+      session_id = t.args.session_id;
+      worker_id = t.runtime_worker_id;
+      runtime_generation = t.runtime_generation;
     }
 
 let initialize_agent t ~name ~supports_load ~supports_images =
@@ -113,9 +113,9 @@ let snapshot t =
   if retention_pruned then Store.set_metadata t.store "retention_pruned" "true";
   Domain.
     {
-      session_id = session_id t.args.session_id;
-      worker_id = worker_id t.runtime_worker_id;
-      runtime_generation = runtime_generation t.runtime_generation;
+      session_id = t.args.session_id;
+      worker_id = t.runtime_worker_id;
+      runtime_generation = t.runtime_generation;
       worker_pid = Unix.getpid ();
       harness_pid = Some t.harness_pid;
       agent_name = !(t.agent_name);
@@ -158,7 +158,8 @@ let install_config_options_from_result t result =
 let create_harness_session t =
   let result, response =
     t.require_rpc_result ~id:"session-new"
-      (Acp.new_session_request ~cwd:t.workspace ~session_id:t.args.session_id
+      (Acp.new_session_request ~cwd:t.workspace
+         ~session_id:(Domain.Session_id.to_string t.args.session_id)
          ~mcp_command:t.args.session_mcp ~broker_url:t.args.broker_url
          ~broker_token:t.args.broker_token ~curl_command:t.args.curl_command)
   in
@@ -200,14 +201,15 @@ let current_config_value t ~config_id =
   | _ -> None
 
 let change_config_option t ~id ~config_id ~value =
+  let acp_request_id = Acp.mutation_request_id id in
   incr t.configuration_changes;
   let result, response =
     Fun.protect
       ~finally:(fun () -> decr t.configuration_changes)
       (fun () ->
-        t.require_rpc_result ~id
-          (Acp.set_config_option_request ~id ~session_id:(harness_session_id t)
-             ~config_id ~value))
+        t.require_rpc_result ~id:acp_request_id
+          (Acp.set_config_option_request ~id:acp_request_id
+             ~session_id:(harness_session_id t) ~config_id ~value))
   in
   install_config_options_from_result t result;
   persist_config_values t;
@@ -228,23 +230,36 @@ let refresh_status t = recompute_status t
 let harness_running t = !(t.harness_running)
 let runtime_busy t = harness_running t || Hashtbl.length t.running_commands > 0
 
+let transition_command t ~command_id state =
+  match Store.transition_command_state t.store ~command_id state with
+  | Ok () -> ()
+  | Error message -> raise (Store.Store_error message)
+
 let record_dispatched t ~command_id =
   set_status t Domain.Running;
-  Store.set_command_state t.store ~command_id Domain.Dispatched;
+  transition_command t ~command_id Domain.Dispatched;
   notify_events t;
   Hashtbl.replace t.running_commands command_id (Unix.gettimeofday ())
 
 let record_dispatch_failed t ~command_id =
   Hashtbl.remove t.running_commands command_id;
-  Store.set_command_state t.store ~command_id Domain.Ambiguous;
+  transition_command t ~command_id Domain.Ambiguous;
   notify_events t;
   set_status t Domain.Failed
 
 let record_completed t ~command_id ~state =
   Hashtbl.remove t.running_commands command_id;
-  Store.set_command_state t.store ~command_id state;
+  transition_command t ~command_id state;
   notify_events t;
   recompute_status t
+
+let reconcile_late_response t ~command_id ~state =
+  match Store.reconcile_ambiguous_command t.store ~command_id state with
+  | Error _ as error -> error
+  | Ok changed ->
+      if changed then notify_events t;
+      recompute_status t;
+      Ok changed
 
 let is_running_command t ~command_id = Hashtbl.mem t.running_commands command_id
 let running_command_count t = Hashtbl.length t.running_commands

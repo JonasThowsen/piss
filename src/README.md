@@ -37,14 +37,13 @@ shared/                shared library (Piss_shared) — pure types and
 │   └── workspace_files.ml  mention + resource types, validators,
 │                            file:// uri builder, MIME table
 src/
-├── lib/                 backend-only library (Piss_core)
-│   ├── workspace_io.ml bounded workspace file mention search,
-│                       resolve_resource (filesystem IO)
-│   ├── registry.ml    durable session + workspace registry (SQLite)
-│   ├── store.ml       durable worker command + event ledger (SQLite)
-│   └── piss_core.ml   umbrella that re-exports Piss_shared plus
-│                       aliases for the wrapped sibling modules so
-│                       every name is reachable as `Piss_core.X`
+├── lib/                 compiler-enforced ownership libraries
+│   ├── sqlite_support.ml shared durable SQLite connection policy
+│   ├── store.ml         `piss.worker-store`: command/event ledger
+│   ├── registry_domain.ml pure algebraic registry lifecycle states
+│   ├── registry.ml      `piss.registry`: catalog + peer SQLite authority
+│   ├── workspace_io.ml  `piss.workspace-io`: bounded filesystem IO
+│   └── piss_core.ml     deprecated compatibility facade only
 ├── control/             piss-control (control plane)
 │   ├── config.ml        CLI parsing, the workers type
 │   ├── http.ml          HTTP request routing
@@ -141,7 +140,10 @@ just format         # auto-format every compiled OCaml source
 just check          # format-check + build + test + test-integration
 ```
 
-Direct dune equivalents remain available (`dune build @all`, etc.).
+Direct dune equivalents remain available (`dune build @all`, etc.). Run
+`just bench-catalog` to reproduce the serial-versus-eight-fiber catalog summary
+benchmark. See [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for ownership,
+state-machine, migration, budget, extension, and deployment rules.
 
 Production Nix package:
 
