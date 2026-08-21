@@ -87,6 +87,7 @@ try {
     ["/", "text/html"],
     ["/app.js", "text/javascript"],
     ["/styles.css", "text/css"],
+    ["/components/audit.css", "text/css"],
     ["/components/config-controls.css", "text/css"],
     ["/manifest.webmanifest", "application/manifest+json"],
     ["/service-worker.js", "text/javascript"],

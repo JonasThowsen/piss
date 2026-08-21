@@ -78,6 +78,8 @@
                 ./web/dune-workspace
                 ./web/app_header.ml
                 ./web/app_header.mli
+                ./web/app_shell.ml
+                ./web/app_shell.mli
                 ./web/app_state.ml
                 ./web/app_state.mli
                 ./web/artifact_view.ml

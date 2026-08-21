@@ -29,6 +29,7 @@
  (name main)
  (modules
   app_header
+  app_shell
   app_state
   artifact_view
   audit_view

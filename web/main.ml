@@ -4,7 +4,6 @@ open Bonsai.Let_syntax
 open App_state
 open Js_of_ocaml
 
-let class_ name = [ Vdom.Attr.class_ name ]
 let dispatch action = Vdom.Effect.Expert.handle_non_dom_event_exn action
 let focus_acknowledger = ref (fun () -> ())
 
@@ -691,49 +690,40 @@ let component graph =
       (Effect.Many [ set_mobile_open false; set_menu_open None ])
       ~f:(fun () -> action)
   in
-  Vdom.Node.div ~attrs:(class_ "app-shell")
-    [
-      Vdom.Node.main
-        ~attrs:([ Vdom.Attr.id "control-room" ] @ class_ "control-room")
-        [
-          App_header.render sessions workspaces selected_id runtime
-            (Mobile_shell.menu_button ~open_:mobile_open
-               ~on_toggle:toggle_mobile)
-            search.trigger;
-          Vdom.Node.section ~attrs:(class_ "workspace-grid")
-            [
-              Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile;
-              Session_rail.render navigation_sessions
-                ~workspaces:navigation_workspaces ~seen_finished_at ~selected_id
-                ~collapsed ~menu_open ~mobile_open ~on_toggle:toggle_workspace
-                ~on_menu:set_menu_open
-                ~on_select:(fun id ->
-                  Effect.Many [ set_menu_open None; select id ])
-                ~on_add_workspace:(fun () ->
-                  open_modal (workspace_dialogs.open_add ()))
-                ~on_remove_workspace:(fun workspace ->
-                  open_modal (workspace_dialogs.open_remove workspace))
-                ~on_create:(fun workspace ->
-                  open_modal (lifecycle.open_create workspace))
-                ~on_rename:(fun session ->
-                  open_modal (lifecycle.open_rename session))
-                ~on_archive:(fun session ->
-                  if composer.has_pending () then
-                    composer.set_notice
-                      "Retry or abandon the uncertain command before archiving \
-                       its session."
-                  else open_modal (lifecycle.open_archive session));
-              Timeline_view.render ~session ~workspace ~runtime
-                ~runtime_loading:shell.runtime.loading
-                ~runtime_error:shell.runtime.error ~tab:shell.tab
-                ~on_tab:select_tab ~timeline ~audit:audit.view ~outbox
-                ~composer:(Some composer.view);
-            ];
-        ];
-      search.view;
-      lifecycle.view;
-      workspace_dialogs.view;
-    ]
+  let header =
+    App_header.render sessions workspaces selected_id runtime
+      (Mobile_shell.menu_button ~open_:mobile_open ~on_toggle:toggle_mobile)
+      search.trigger
+  in
+  let navigation_scrim =
+    Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile
+  in
+  let session_rail =
+    Session_rail.render navigation_sessions ~workspaces:navigation_workspaces
+      ~seen_finished_at ~selected_id ~collapsed ~menu_open ~mobile_open
+      ~on_toggle:toggle_workspace ~on_menu:set_menu_open
+      ~on_select:(fun id -> Effect.Many [ set_menu_open None; select id ])
+      ~on_add_workspace:(fun () -> open_modal (workspace_dialogs.open_add ()))
+      ~on_remove_workspace:(fun workspace ->
+        open_modal (workspace_dialogs.open_remove workspace))
+      ~on_create:(fun workspace -> open_modal (lifecycle.open_create workspace))
+      ~on_rename:(fun session -> open_modal (lifecycle.open_rename session))
+      ~on_archive:(fun session ->
+        if composer.has_pending () then
+          composer.set_notice
+            "Retry or abandon the uncertain command before archiving its \
+             session."
+        else open_modal (lifecycle.open_archive session))
+  in
+  let workbench =
+    Timeline_view.render ~session ~workspace ~runtime
+      ~runtime_loading:shell.runtime.loading ~runtime_error:shell.runtime.error
+      ~tab:shell.tab ~on_tab:select_tab ~timeline ~audit:audit.view ~outbox
+      ~composer:(Some composer.view)
+  in
+  App_shell.render ~header ~navigation_scrim ~session_rail ~workbench
+    ~search_dialog:search.view ~session_lifecycle:lifecycle.view
+    ~workspace_dialogs:workspace_dialogs.view
 
 let () =
   register_service_worker ();
