@@ -78,12 +78,13 @@ let finished_response ~duplicate target_id =
          ("hardDeleted", `Bool false);
        ])
 
-let handle_broker_finish ~net (manager : Config.managed_workers)
-    ~(source : Registry.session) ~request ~read_body =
+let handle_broker_finish ~net ~process_mgr ~clock
+    (manager : Config.managed_workers) ~(source : Registry.session) ~request
+    ~read_body =
   match Authentication.valid_json_content request with
   | Error (status, message) ->
       Headers.error_json ~status (authentication_error status message)
-  | Ok () -> (
+  | Ok () ->
       let json = read_body () |> Yojson.Safe.from_string in
       let open Yojson.Safe.Util in
       let target_id =
@@ -95,52 +96,66 @@ let handle_broker_finish ~net (manager : Config.managed_workers)
         Headers.error_json
           (validation ~field:"targetSessionId"
              "targetSessionId must be a valid managed session identity")
-      else if
-        not
-          (Registry.session_created_by manager.registry ~source_id:source.id
-             ~session_id:target_id)
-      then
-        Headers.error_json ~status:`Forbidden
-          (forbidden
-             "only the orchestrator that created this session may finish it")
       else
-        match Registry.find manager.registry target_id with
-        | None ->
-            Headers.error_json
-              (Error.Not_found { resource = "created session"; id = target_id })
-        | Some { archived_at = Some _; _ } ->
-            finished_response ~duplicate:true target_id
-        | Some session -> (
-            let status = runtime_status ~net manager session in
-            if not (Routes.finishable_runtime_status status) then
-              Headers.error_json
-                (conflict
-                   ("session is still " ^ status
-                  ^ "; wait for it to become idle before finishing it"))
+        Workers.with_session_lock manager target_id (fun () ->
+            if
+              not
+                (Registry.session_created_by manager.registry
+                   ~source_id:source.id ~session_id:target_id)
+            then
+              Headers.error_json ~status:`Forbidden
+                (forbidden
+                   "only the orchestrator that created this session may finish \
+                    it")
             else
-              match
-                Registry.claim_session_finish manager.registry
-                  ~source_id:source.id ~session_id:target_id
-              with
-              | Error message -> Headers.error_json (conflict message)
-              | Ok () -> (
-                  let fenced_status = runtime_status ~net manager session in
-                  if not (Routes.finishable_runtime_status fenced_status) then (
-                    ignore
-                      (Registry.cancel_session_finish manager.registry target_id);
+              match Registry.find manager.registry target_id with
+              | None ->
+                  Headers.error_json
+                    (Error.Not_found
+                       { resource = "created session"; id = target_id })
+              | Some { archived_at = Some _; _ } ->
+                  finished_response ~duplicate:true target_id
+              | Some session -> (
+                  let status = runtime_status ~net manager session in
+                  if not (Routes.finishable_runtime_status status) then
                     Headers.error_json
                       (conflict
-                         ("session became " ^ fenced_status
-                        ^ " while cleanup was being fenced; retry after it is \
-                           idle")))
+                         ("session is still " ^ status
+                        ^ "; wait for it to become idle before finishing it"))
                   else
-                    match Workers.finish_claimed_session manager target_id with
-                    | Ok () -> finished_response ~duplicate:false target_id
-                    | Error message -> (
-                        match Registry.find manager.registry target_id with
-                        | Some { archived_at = Some _; _ } ->
-                            finished_response ~duplicate:true target_id
-                        | _ -> Headers.error_json (conflict message)))))
+                    match
+                      Registry.claim_session_finish manager.registry
+                        ~source_id:source.id ~session_id:target_id
+                    with
+                    | Error message -> Headers.error_json (conflict message)
+                    | Ok () -> (
+                        let fenced_status =
+                          runtime_status ~net manager session
+                        in
+                        if not (Routes.finishable_runtime_status fenced_status)
+                        then (
+                          ignore
+                            (Registry.cancel_session_finish manager.registry
+                               target_id);
+                          Headers.error_json
+                            (conflict
+                               ("session became " ^ fenced_status
+                              ^ " while cleanup was being fenced; retry after \
+                                 it is idle")))
+                        else
+                          match
+                            Workers.finish_claimed_session ~process_mgr ~clock
+                              manager target_id
+                          with
+                          | Ok () ->
+                              finished_response ~duplicate:false target_id
+                          | Error message -> (
+                              match
+                                Registry.find manager.registry target_id
+                              with
+                              | Some { archived_at = Some _; _ } ->
+                                  finished_response ~duplicate:true target_id
+                              | _ -> Headers.error_json (conflict message)))))
 
 let cleanup_guidance session_id =
   `Assoc
@@ -345,7 +360,7 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                          request_id)
                   in
                   match
-                    Workers.create_broker_session ~clock manager
+                    Workers.create_broker_session ~process_mgr ~clock manager
                       ~source_id:source.id ~request_id ~harness ~workspace_id
                       ~title ~model
                   with
@@ -397,8 +412,8 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
             Headers.error_json ~status:`Unauthorized
               (forbidden "broker token required")
         | Some source ->
-            Eio.Mutex.use_ro manager.lifecycle_mutex (fun () ->
-                handle_broker_finish ~net manager ~source ~request ~read_body))
+            handle_broker_finish ~net ~process_mgr ~clock manager ~source
+              ~request ~read_body)
   | Routes.Post_broker_send ->
       Some
         (match calling_session with
@@ -727,8 +742,8 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
                   else "New Pi session"
             in
             match
-              Workers.create_managed_session manager ~harness ~workspace_id
-                ~title
+              Workers.create_managed_session ~process_mgr ~clock manager
+                ~harness ~workspace_id ~title
             with
             | Ok session ->
                 Headers.respond_json ~status:`Created
@@ -785,12 +800,16 @@ let handle ~net ~clock ~process_mgr ~(manager : Config.managed_workers)
             let request_body = read_body () in
             match action with
             | Routes.Archive id -> (
-                match Workers.archive_managed_session manager id with
+                match
+                  Workers.archive_managed_session ~process_mgr ~clock manager id
+                with
                 | Ok () ->
                     Headers.respond_json (`Assoc [ ("archived", `Bool true) ])
                 | Error message -> Headers.error_json (conflict message))
             | Routes.Restore id -> (
-                match Workers.restore_managed_session manager id with
+                match
+                  Workers.restore_managed_session ~process_mgr ~clock manager id
+                with
                 | Ok () ->
                     Headers.respond_json (`Assoc [ ("restored", `Bool true) ])
                 | Error message -> Headers.error_json (conflict message))

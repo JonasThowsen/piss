@@ -229,6 +229,7 @@
               pkgs.git
               pkgs.landrun
               pkgs.makeWrapper
+              pkgs.python3
             ];
             buildInputs = dependencies;
             postInstall = ''

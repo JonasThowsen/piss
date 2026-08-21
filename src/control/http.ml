@@ -45,10 +45,20 @@ let with_worker workers session_id operation =
   | Ok socket -> operation socket
   | Error error -> Error error
 
-let with_lifecycle_lock workers operation =
+let with_worker_mutation workers session_id operation =
   match workers with
-  | Config.Fixed _ -> operation ()
-  | Config.Managed manager -> Eio.Mutex.use_ro manager.lifecycle_mutex operation
+  | Config.Fixed _ -> with_worker workers session_id operation
+  | Managed manager -> (
+      match session_id with
+      | Some id ->
+          Workers.with_session_lock manager id (fun () ->
+              with_worker workers (Some id) operation)
+      | None -> (
+          match Workers.active_session manager None with
+          | Error _ -> with_worker workers None operation
+          | Ok session ->
+              Workers.with_session_lock manager session.id (fun () ->
+                  with_worker workers (Some session.id) operation)))
 
 let session_snapshot ~net workers session_id =
   match workers with
@@ -180,9 +190,8 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_lifecycle_lock workers (fun () ->
-                            with_worker workers session_id (fun socket ->
-                                Worker_client.request ~net ~socket worker_json))
+                        with_worker_mutation workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result -> Headers.respond_json result
                       | Error error -> Headers.error_json error)))
@@ -272,8 +281,8 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   match workers with
                   | Managed manager -> (
                       match
-                        Workers.create_managed_session manager
-                          ~harness:manager.default_harness
+                        Workers.create_managed_session ~process_mgr ~clock
+                          manager ~harness:manager.default_harness
                           ~workspace_id:manager.default_workspace_id
                           ~title:"New session"
                       with
@@ -332,9 +341,8 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_lifecycle_lock workers (fun () ->
-                            with_worker workers session_id (fun socket ->
-                                Worker_client.request ~net ~socket worker_json))
+                        with_worker_mutation workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Accepted result
@@ -362,9 +370,8 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_lifecycle_lock workers (fun () ->
-                            with_worker workers session_id (fun socket ->
-                                Worker_client.request ~net ~socket worker_json))
+                        with_worker_mutation workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result ->
                           Headers.respond_json ~status:`Accepted result
@@ -394,9 +401,8 @@ let handler ~net ~clock ~process_mgr ~env _socket request body =
                   | Error message -> Headers.error_json (validation message)
                   | Ok _ -> (
                       match
-                        with_lifecycle_lock workers (fun () ->
-                            with_worker workers session_id (fun socket ->
-                                Worker_client.request ~net ~socket worker_json))
+                        with_worker_mutation workers session_id (fun socket ->
+                            Worker_client.request ~net ~socket worker_json)
                       with
                       | Ok result -> Headers.respond_json result
                       | Error error -> Headers.error_json error)))

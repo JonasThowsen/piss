@@ -612,6 +612,10 @@ cleanup_collection=$(curl -fsS -X POST -H 'content-type: application/json' \
   "http://127.0.0.1:$port/api/v2/broker/collect")
 [[ $(jq '.pendingRequestIds|length' <<<"$cleanup_collection") == 0 ]]
 [[ $(jq -r '.cleanupRecommendedSessionIds[0]' <<<"$cleanup_collection") == "$agent_created" ]]
+blocked_mutation_body=$(targeted_for "$agent_created" \
+  '{"commandId":"mutation-during-finish","text":"run only after failed finish releases the session lock"}')
+independent_mutation_body=$(targeted_for "$second" \
+  '{"commandId":"independent-during-finish","text":"prove another session remains concurrent"}')
 echo 4 >"$root/stop-delay"
 touch "$root/force-stop-failure"
 curl -sS -o "$root/blocked-finish.json" -w '%{http_code}' -X POST \
@@ -625,6 +629,19 @@ for _ in $(seq 1 100); do
   sleep .02
 done
 [[ $(cat "$root/stop-started") == "$agent_created" ]]
+curl -sS -o "$root/blocked-mutation.json" -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data "$blocked_mutation_body" \
+  "http://127.0.0.1:$port/api/v2/commands?session=$agent_created" \
+  >"$root/blocked-mutation.status" &
+blocked_mutation_pid=$!
+sleep .1
+kill -0 "$blocked_mutation_pid"
+independent_started=$(date +%s%3N)
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' --data "$independent_mutation_body" \
+  "http://127.0.0.1:$port/api/v2/commands?session=$second") == 202 ]]
+independent_elapsed=$(( $(date +%s%3N) - independent_started ))
+[[ "$independent_elapsed" -lt 2000 ]]
 [[ $(python3 - "$state/registry.sqlite3" "$agent_created" <<'PY'
 import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as connection:
@@ -643,8 +660,15 @@ with sqlite3.connect(sys.argv[1]) as connection:
 PY
 ) == 1 ]]
 wait "$blocked_finish_pid"
+wait "$blocked_mutation_pid"
 [[ $(cat "$root/blocked-finish.status") == 409 ]]
+[[ $(cat "$root/blocked-mutation.status") == 202 ]]
 rm -f "$root/stop-delay" "$root/stop-started"
+for _ in $(seq 1 600); do
+  [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$agent_created" | jq -r .status) == idle ]] && break
+  sleep .02
+done
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session?session=$agent_created" | jq -r .status) == idle ]]
 [[ $(curl -fsS -H "x-piss-session-token: $first_token" \
   "http://127.0.0.1:$port/api/v2/broker/sessions" | \
   jq --arg id "$agent_created" 'any(.[]; .id==$id)') == true ]]
@@ -660,6 +684,18 @@ finish_duplicate=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data "$(jq -nc --arg target "$agent_created" '{targetSessionId:$target}')" \
   "http://127.0.0.1:$port/api/v2/broker/finish")
 [[ $(jq -r .duplicate <<<"$finish_duplicate") == true ]]
+archived_peer_retry=$(curl -fsS -X POST -H 'content-type: application/json' \
+  -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" \
+    '{requestId:"cleanup-safety-peer",targetSessionId:$target,prompt:"complete before creator cleanup"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/send")
+[[ $(jq -r .duplicate <<<"$archived_peer_retry") == true ]]
+[[ $(jq -r .requestId <<<"$archived_peer_retry") == cleanup-safety-peer ]]
+[[ $(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  -H 'content-type: application/json' -H "x-piss-session-token: $first_token" \
+  --data "$(jq -nc --arg target "$agent_created" \
+    '{requestId:"cleanup-safety-peer",targetSessionId:$target,prompt:"different archived retry"}')" \
+  "http://127.0.0.1:$port/api/v2/broker/send") == 409 ]]
 finish_mcp_input=$(jq -nc --arg target "$agent_created" '[
   {jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"test",version:"1"}}},
   {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"piss_finish_session",arguments:{targetSessionId:$target}}}

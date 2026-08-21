@@ -43,6 +43,10 @@ type peer_request = {
   prompt : string;
   command_id : string;
   start_sequence : int64;
+  observation_sequence : int64;
+  partial_response : string;
+  command_seen : bool;
+  observed_terminal : string option;
   state : string;
   response : string option;
 }
@@ -222,11 +226,10 @@ val accept_peer_request :
   prompt:string ->
   command_id:string ->
   start_sequence:int64 ->
-  peer_request * bool
+  (peer_request * bool, string) result
 (** Accept a new peer request. If [id] already exists with the same source,
-    target, and prompt, the existing row is returned (with [duplicate] returned
-    as [true] via the second tuple component). Otherwise a fresh row is
-    inserted. *)
+    target, and prompt, the existing row is returned as a duplicate. Reusing an
+    id with different input fails closed. *)
 
 val list_peer_requests : t -> source_id:string -> peer_request list
 (** List every peer request whose source is [source_id]. *)
@@ -256,9 +259,9 @@ val accept_peer_subscription :
   request_ids:string list ->
   wait_for:string ->
   command_id:string ->
-  peer_subscription * bool
+  (peer_subscription * bool, string) result
 (** Accept a new peer subscription. Idempotent on [id] with the same (source_id,
-    request_ids, wait_for) triple. *)
+    request_ids, wait_for) triple; payload mismatch fails closed. *)
 
 val list_open_peer_subscriptions : t -> peer_subscription list
 (** Every peer subscription that has not yet fired its wake command. *)
@@ -281,6 +284,19 @@ val mark_peer_dispatched : t -> string -> bool
 val requeue_peer_request : t -> string -> bool
 (** Return a dispatching request to the queue after its initial delivery fails.
     Returns [false] after a concurrent terminal transition. *)
+
+val advance_peer_observation :
+  t ->
+  string ->
+  from_sequence:int64 ->
+  through_sequence:int64 ->
+  command_seen:bool ->
+  partial_response:string ->
+  terminal_state:string option ->
+  bool
+(** Persist one newly observed event page using a compare-and-set cursor. The
+    partial response and any terminal observation survive retries and restart.
+*)
 
 val complete_peer_request : t -> string -> string -> bool
 (** Mark a non-terminal peer request as completed and store [response]. Returns

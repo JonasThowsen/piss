@@ -697,6 +697,81 @@ let linked_sha256_case () =
           Alcotest.fail
             "linked SHA-256 sanitized view omitted the changed patch")
 
+let session_lock_case () =
+  Eio_main.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  let locks = Lifecycle.create_session_locks () in
+  let first_entered, first_entered_resolver = Eio.Promise.create () in
+  let release_first, release_first_resolver = Eio.Promise.create () in
+  let same_session_entered = ref false in
+  let same_session_done, same_session_done_resolver = Eio.Promise.create () in
+  let independent_session_entered = ref false in
+  Eio.Switch.run @@ fun sw ->
+  Eio.Fiber.fork ~sw (fun () ->
+      Lifecycle.with_session_lock locks "s-one" (fun () ->
+          Eio.Promise.resolve first_entered_resolver ();
+          Eio.Promise.await release_first));
+  Eio.Promise.await first_entered;
+  Eio.Fiber.fork ~sw (fun () ->
+      Lifecycle.with_session_lock locks "s-one" (fun () ->
+          same_session_entered := true;
+          Eio.Promise.resolve same_session_done_resolver ()));
+  Eio.Fiber.fork ~sw (fun () ->
+      Lifecycle.with_session_lock locks "s-two" (fun () ->
+          independent_session_entered := true));
+  Eio.Time.sleep clock 0.02;
+  Alcotest.(check bool)
+    "same-session mutation waits behind finish" false !same_session_entered;
+  Alcotest.(check bool)
+    "independent session remains concurrent" true
+    !independent_session_entered;
+  Eio.Promise.resolve release_first_resolver ();
+  Eio.Promise.await same_session_done;
+  Alcotest.(check bool)
+    "same-session mutation resumes after finish" true !same_session_entered
+
+let lifecycle_process_case () =
+  with_temporary_directory "piss-lifecycle-" @@ fun root ->
+  let failing = Filename.concat root "failing" in
+  let sleeping = Filename.concat root "sleeping" in
+  write failing "#!/bin/sh\n[ \"$1\" = s-lifecycle ] || exit 9\nexit 7\n";
+  write sleeping "#!/bin/sh\nsleep 2\n";
+  Unix.chmod failing 0o700;
+  Unix.chmod sleeping 0o700;
+  Eio_main.run @@ fun env ->
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  (match
+     Lifecycle.run ~process_mgr ~clock ~timeout_seconds:1. failing "s-lifecycle"
+   with
+  | Error message ->
+      Alcotest.(check bool)
+        "non-zero lifecycle status is reported" true
+        (contains message "exited with status 7")
+  | Ok () -> Alcotest.fail "failing lifecycle command succeeded");
+  let progressed = ref false in
+  let result = ref (Ok ()) in
+  let started = Unix.gettimeofday () in
+  Eio.Fiber.both
+    (fun () ->
+      result :=
+        Lifecycle.run ~process_mgr ~clock ~timeout_seconds:0.05 sleeping
+          "s-lifecycle")
+    (fun () ->
+      Eio.Time.sleep clock 0.01;
+      progressed := true);
+  Alcotest.(check bool)
+    "unrelated fiber progressed during lifecycle wait" true !progressed;
+  Alcotest.(check bool)
+    "timeout remained bounded" true
+    (Unix.gettimeofday () -. started < 0.5);
+  match !result with
+  | Error message ->
+      Alcotest.(check bool)
+        "timeout is explicit" true
+        (contains message "timed out after")
+  | Ok () -> Alcotest.fail "sleeping lifecycle command did not time out"
+
 let invalid_utf8_case () =
   with_temporary_directory "piss-audit-utf8-" @@ fun root ->
   Eio_main.run @@ fun env ->
@@ -750,6 +825,10 @@ let () =
             metadata_identity_replacement_case;
           Alcotest.test_case "registered linked worktree" `Quick
             linked_worktree_case;
+          Alcotest.test_case "per-session lifecycle lock" `Quick
+            session_lock_case;
+          Alcotest.test_case "cooperative bounded lifecycle process" `Quick
+            lifecycle_process_case;
           Alcotest.test_case "nested linked worktree" `Quick
             nested_linked_worktree_case;
           Alcotest.test_case "SHA-256 repository" `Quick sha256_case;

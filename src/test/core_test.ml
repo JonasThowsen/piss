@@ -1,4 +1,27 @@
 open Piss_core
+module Durable_registry = Registry
+
+module Registry = struct
+  include Durable_registry
+
+  let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
+      ~start_sequence =
+    match
+      Durable_registry.accept_peer_request registry ~id ~source_id ~target_id
+        ~prompt ~command_id ~start_sequence
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+
+  let accept_peer_subscription registry ~id ~source_id ~request_ids ~wait_for
+      ~command_id =
+    match
+      Durable_registry.accept_peer_subscription registry ~id ~source_id
+        ~request_ids ~wait_for ~command_id
+    with
+    | Ok value -> value
+    | Error message -> Alcotest.fail message
+end
 
 let with_store f =
   let path = Filename.temp_file "piss-worker-" ".sqlite3" in
@@ -158,6 +181,13 @@ let test_session_registry () =
       ~start_sequence:99L
   in
   Alcotest.(check bool) "peer request deduplicates" true duplicate;
+  (match
+     Durable_registry.accept_peer_request registry ~id:"peer-one"
+       ~source_id:one.id ~target_id:two.id ~prompt:"different payload"
+       ~command_id:"ignored" ~start_sequence:99L
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "peer request ID accepted a different payload");
   Alcotest.(check bool)
     "first caller claims dispatch" true
     (Registry.mark_peer_dispatching registry "peer-one" ~start_sequence:8L);
@@ -232,6 +262,13 @@ let test_session_registry () =
       ~command_id:"peer-wake-command"
   in
   Alcotest.(check bool) "wake subscription deduplicates" true duplicate;
+  (match
+     Durable_registry.accept_peer_subscription registry ~id:"wake-one"
+       ~source_id:one.id ~request_ids:[ "peer-failure" ] ~wait_for:"any"
+       ~command_id:"ignored"
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "subscription ID accepted a different payload");
   Registry.mark_peer_subscription_dispatching registry "wake-one";
   Alcotest.(check string)
     "wake subscription dispatching" "dispatching"
@@ -299,6 +336,17 @@ let test_session_registry () =
   Alcotest.(check bool)
     "worked target can be archived for deletion" true
     (Registry.archive registry "s-old");
+  (match
+     Durable_registry.accept_peer_request registry ~id:"cross-delete-request"
+       ~source_id:two.id ~target_id:"s-old" ~prompt:"review before deletion"
+       ~command_id:"ignored-on-retry" ~start_sequence:999L
+   with
+  | Ok (retried, true) ->
+      Alcotest.(check string)
+        "archived-target retry returns durable request" "cross-delete-request"
+        retried.id
+  | Ok _ -> Alcotest.fail "archived-target retry was treated as fresh"
+  | Error message -> Alcotest.fail message);
   Alcotest.(check int)
     "remaining archived session deleted" 1
     (Registry.delete_archived registry);
@@ -533,13 +581,13 @@ let test_broker_creation_registry () =
     "finish claim is durably reconcilable" [ session.id ]
     (Registry.list_finishing_sessions registry
     |> List.map (fun (session : Registry.session) -> session.id));
-  (try
-     ignore
-       (Registry.accept_peer_request registry ~id:"fenced-peer-request"
-          ~source_id:source.id ~target_id:session.id ~prompt:"too late"
-          ~command_id:"fenced-command" ~start_sequence:0L);
-     Alcotest.fail "finish fence accepted new peer work"
-   with Invalid_argument _ -> ());
+  (match
+     Durable_registry.accept_peer_request registry ~id:"fenced-peer-request"
+       ~source_id:source.id ~target_id:session.id ~prompt:"too late"
+       ~command_id:"fenced-command" ~start_sequence:0L
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "finish fence accepted new peer work");
   Alcotest.(check bool)
     "failed cleanup can remove finish fence" true
     (Registry.cancel_session_finish registry session.id);
@@ -797,6 +845,102 @@ let test_command_deduplication () =
     "large content is scrubbed after dispatch" (Some "[]")
     (Store.command_content store "command-1")
 
+let test_command_receipt_compaction () =
+  with_store @@ fun store ->
+  let count = Store.max_retained_command_receipts + 8 in
+  for index = 0 to count - 1 do
+    let id = Printf.sprintf "bounded-%04d" index in
+    let accepted =
+      Store.accept_command store ~command_id:id ~request_id:id ~prompt:"done"
+    in
+    Alcotest.(check bool) "fresh bounded command" false accepted.duplicate;
+    Store.set_command_state store ~command_id:id Domain.Completed
+  done;
+  let retained_id = Printf.sprintf "bounded-%04d" (count - 1) in
+  let retained =
+    Store.accept_command store ~command_id:retained_id ~request_id:retained_id
+      ~prompt:"retry"
+  in
+  Alcotest.(check bool)
+    "newest retained receipt remains authoritative" true retained.duplicate;
+  Alcotest.(check bool)
+    "oldest terminal receipt was compacted" true
+    (Option.is_none (Store.find_command store "bounded-0000"));
+  let recycled =
+    Store.accept_command store ~command_id:"bounded-0000"
+      ~request_id:"bounded-0000" ~prompt:"outside bounded window"
+  in
+  Alcotest.(check bool)
+    "commands beyond the historical limit are accepted" false recycled.duplicate
+
+let test_reused_command_ignores_old_response_after_restart () =
+  let path = Filename.temp_file "piss-command-reuse-" ".sqlite3" in
+  let open_store () =
+    Store.open_ ~path
+      ~session_id:(Domain.session_id "session")
+      ~worker_id:(Domain.worker_id "worker")
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let first = open_store () in
+      ignore
+        (Store.accept_command first ~command_id:"reused-command"
+           ~request_id:"reused-command" ~prompt:"first invocation");
+      ignore
+        (Store.append_event first ~kind:"acp.response"
+           ~payload:
+             (`Assoc
+                [
+                  ("jsonrpc", `String "2.0");
+                  ("id", `String "reused-command");
+                  ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
+                ]));
+      Store.set_command_state first ~command_id:"reused-command"
+        Domain.Completed;
+      for index = 0 to Store.max_retained_command_receipts - 1 do
+        let id = Printf.sprintf "evictor-%04d" index in
+        ignore
+          (Store.accept_command first ~command_id:id ~request_id:id
+             ~prompt:"terminal filler");
+        Store.set_command_state first ~command_id:id Domain.Completed
+      done;
+      Alcotest.(check (option string))
+        "first invocation receipt was evicted" None
+        (Store.find_command first "reused-command"
+        |> Option.map Domain.command_state_to_string);
+      ignore
+        (Store.accept_command first ~command_id:"reused-command"
+           ~request_id:"reused-command" ~prompt:"second invocation");
+      Store.set_command_state first ~command_id:"reused-command"
+        Domain.Ambiguous;
+      Store.close first;
+      let replacement = open_store () in
+      Alcotest.(check (list string))
+        "old response cannot complete reused identity" []
+        (Store.reconcile_ambiguous_responses replacement);
+      (match Store.find_command replacement "reused-command" with
+      | Some Domain.Ambiguous -> ()
+      | _ -> Alcotest.fail "reused command did not remain ambiguous");
+      ignore
+        (Store.append_event replacement ~kind:"acp.response"
+           ~payload:
+             (`Assoc
+                [
+                  ("jsonrpc", `String "2.0");
+                  ("id", `String "reused-command");
+                  ("result", `Assoc [ ("stopReason", `String "end_turn") ]);
+                ]));
+      Alcotest.(check (list string))
+        "response after current acceptance reconciles" [ "reused-command" ]
+        (Store.reconcile_ambiguous_responses replacement);
+      Store.close replacement)
+
 let test_command_content_migration () =
   let path = Filename.temp_file "piss-worker-legacy-" ".sqlite3" in
   Fun.protect
@@ -1007,6 +1151,183 @@ let test_restart_reconciliation () =
           Alcotest.failf "expected ambiguous, got %s"
             (Domain.command_state_to_string state)
       | None -> Alcotest.fail "reconciled command disappeared")
+
+let test_permission_restart_reconciliation () =
+  let path = Filename.temp_file "piss-permission-restart-" ".sqlite3" in
+  let open_store () =
+    Store.open_ ~path
+      ~session_id:(Domain.session_id "session")
+      ~worker_id:(Domain.worker_id "worker")
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let first = open_store () in
+      ignore
+        (Store.append_event first ~kind:"acp.permission.requested"
+           ~payload:
+             (`Assoc
+                [
+                  ("jsonrpc", `String "2.0");
+                  ("id", `String "permission-restart");
+                  ("method", `String "session/request_permission");
+                ]));
+      Store.close first;
+      let replacement = open_store () in
+      Alcotest.(check (list string))
+        "restart cancels unanswerable permission" [ "permission-restart" ]
+        (Store.reconcile_pending_permissions replacement);
+      let cancellation =
+        Store.list_recent_events replacement ~limit:1 |> List.hd
+      in
+      Alcotest.(check string)
+        "restart cancellation is durable" "acp.permission.cancelled"
+        cancellation.kind;
+      Store.close replacement;
+      let retried = open_store () in
+      Fun.protect ~finally:(fun () -> Store.close retried) @@ fun () ->
+      Alcotest.(check (list string))
+        "durable cancellation is idempotent" []
+        (Store.reconcile_pending_permissions retried))
+
+let test_peer_observation_schema_migration () =
+  let path = Filename.temp_file "piss-peer-migration-" ".sqlite3" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let db = Sqlite3.db_open path in
+      let exec sql =
+        Alcotest.(check bool)
+          "legacy peer schema statement" true
+          (Sqlite3.Rc.is_success (Sqlite3.exec db sql))
+      in
+      exec
+        "CREATE TABLE workspaces (id TEXT PRIMARY KEY,name TEXT NOT NULL,root \
+         TEXT NOT NULL UNIQUE,created_at REAL NOT NULL)";
+      exec
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY,title TEXT NOT \
+         NULL,harness TEXT NOT NULL CHECK(harness IN \
+         ('pi','codex','opencode','mock')),created_at REAL NOT \
+         NULL,archived_at REAL,broker_token TEXT NOT NULL DEFAULT \
+         '',workspace_id TEXT NOT NULL DEFAULT '',finishing_at REAL)";
+      exec
+        "CREATE TABLE peer_requests (id TEXT PRIMARY KEY,source_id TEXT NOT \
+         NULL,target_id TEXT NOT NULL,prompt TEXT NOT NULL,command_id TEXT NOT \
+         NULL UNIQUE,start_sequence INTEGER NOT NULL,observation_sequence \
+         INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL,response \
+         TEXT,managed_reconciliation INTEGER NOT NULL DEFAULT 0,created_at \
+         REAL NOT NULL,updated_at REAL NOT NULL)";
+      exec "INSERT INTO workspaces VALUES ('workspace','Workspace','/tmp',0)";
+      exec
+        "INSERT INTO sessions VALUES \
+         ('source','Source','pi',0,NULL,'source-token','workspace',NULL)";
+      exec
+        "INSERT INTO sessions VALUES \
+         ('target','Target','pi',0,NULL,'target-token','workspace',NULL)";
+      exec
+        "INSERT INTO peer_requests VALUES \
+         ('legacy-peer','source','target','work','legacy-command',42,0,'dispatched',NULL,1,0,0)";
+      Alcotest.(check bool)
+        "legacy peer database closed" true (Sqlite3.db_close db);
+      let registry = Durable_registry.open_ ~path in
+      Fun.protect ~finally:(fun () -> Durable_registry.close registry)
+      @@ fun () ->
+      let migrated =
+        Option.get (Durable_registry.find_peer_request registry "legacy-peer")
+      in
+      Alcotest.(check int64)
+        "migration starts observation at dispatch cursor" 42L
+        migrated.observation_sequence;
+      Alcotest.(check string)
+        "migration starts with no partial response" "" migrated.partial_response;
+      Alcotest.(check bool)
+        "migration starts before command acceptance" false migrated.command_seen;
+      Alcotest.(check (option string))
+        "migration starts without terminal observation" None
+        migrated.observed_terminal)
+
+let test_peer_observation_restart () =
+  let path = Filename.temp_file "piss-peer-observation-" ".sqlite3" in
+  let open_registry () = Durable_registry.open_ ~path in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun suffix ->
+          let candidate = path ^ suffix in
+          if Sys.file_exists candidate then Sys.remove candidate)
+        [ ""; "-wal"; "-shm" ])
+    (fun () ->
+      let first = open_registry () in
+      Durable_registry.upsert_workspace first ~id:"workspace" ~name:"Workspace"
+        ~root:"/tmp/peer-observation";
+      ignore
+        (Durable_registry.insert first ~id:"source" ~title:"Source"
+           ~harness:"pi" ~workspace_id:"workspace");
+      ignore
+        (Durable_registry.insert first ~id:"target" ~title:"Target"
+           ~harness:"pi" ~workspace_id:"workspace");
+      let request, _ =
+        match
+          Durable_registry.accept_peer_request first ~id:"stable-peer"
+            ~source_id:"source" ~target_id:"target" ~prompt:"observe once"
+            ~command_id:"peer-command" ~start_sequence:0L
+        with
+        | Ok value -> value
+        | Error message -> Alcotest.fail message
+      in
+      ignore
+        (Durable_registry.mark_peer_dispatching first request.id
+           ~start_sequence:8L);
+      ignore (Durable_registry.mark_peer_dispatched first request.id);
+      Alcotest.(check bool)
+        "first observation page advances" true
+        (Durable_registry.advance_peer_observation first request.id
+           ~from_sequence:8L ~through_sequence:12L ~command_seen:true
+           ~partial_response:"partial" ~terminal_state:None);
+      Durable_registry.close first;
+      let replacement = open_registry () in
+      let resumed =
+        Option.get
+          (Durable_registry.find_peer_request replacement "stable-peer")
+      in
+      Alcotest.(check int64)
+        "observation cursor survives restart" 12L resumed.observation_sequence;
+      Alcotest.(check string)
+        "partial response survives restart" "partial" resumed.partial_response;
+      Alcotest.(check bool)
+        "stale page retry cannot append twice" false
+        (Durable_registry.advance_peer_observation replacement resumed.id
+           ~from_sequence:8L ~through_sequence:12L ~command_seen:true
+           ~partial_response:"partialpartial" ~terminal_state:None);
+      Alcotest.(check bool)
+        "terminal observation advances once" true
+        (Durable_registry.advance_peer_observation replacement resumed.id
+           ~from_sequence:12L ~through_sequence:15L ~command_seen:true
+           ~partial_response:"partial response"
+           ~terminal_state:(Some "completed"));
+      Durable_registry.close replacement;
+      let retried = open_registry () in
+      Fun.protect ~finally:(fun () -> Durable_registry.close retried)
+      @@ fun () ->
+      let terminal =
+        Option.get (Durable_registry.find_peer_request retried "stable-peer")
+      in
+      Alcotest.(check (option string))
+        "terminal observation survives retry" (Some "completed")
+        terminal.observed_terminal;
+      Alcotest.(check string)
+        "assembled response survives retry" "partial response"
+        terminal.partial_response)
 
 let test_event_sequence () =
   with_store @@ fun store ->
@@ -1515,6 +1836,10 @@ let () =
           Alcotest.test_case "command recovery" `Quick test_command_recovery;
           Alcotest.test_case "command deduplication" `Quick
             test_command_deduplication;
+          Alcotest.test_case "terminal command receipts compact" `Quick
+            test_command_receipt_compaction;
+          Alcotest.test_case "reused command ignores old ACP response" `Quick
+            test_reused_command_ignores_old_response_after_restart;
           Alcotest.test_case "legacy command schema migrates" `Quick
             test_command_content_migration;
           Alcotest.test_case "event sequence" `Quick test_event_sequence;
@@ -1532,6 +1857,12 @@ let () =
             test_dispatched_commands_lists_open_records;
           Alcotest.test_case "restart reconciliation" `Quick
             test_restart_reconciliation;
+          Alcotest.test_case "permission restart is fail closed" `Quick
+            test_permission_restart_reconciliation;
+          Alcotest.test_case "peer observation schema migrates" `Quick
+            test_peer_observation_schema_migration;
+          Alcotest.test_case "peer observation resumes after restart" `Quick
+            test_peer_observation_restart;
           Alcotest.test_case "session registry archive" `Quick
             test_session_registry;
           Alcotest.test_case "legacy registry migration" `Quick

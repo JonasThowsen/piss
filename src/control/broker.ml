@@ -105,55 +105,89 @@ let is_command_accepted command_id event =
   if member "kind" event <> `String "command.accepted" then false
   else member "commandId" (member "payload" event) = `String command_id
 
-let inspect_peer_response ~net ~socket (request : Registry.peer_request) =
-  let rec pages cursor chunks command_seen =
-    match
-      worker_request ~net socket
-        (`Assoc
-           [
-             ("op", `String "events");
-             ("after", `Intlit (Int64.to_string cursor));
-             ("limit", `Int 200);
-           ])
-    with
-    | Error _ -> Peer_pending
-    | Ok (`List events) -> (
-        let previous_cursor = cursor in
-        let cursor =
-          List.fold_left
-            (fun latest event -> Int64.max latest (event_sequence event))
-            cursor events
-        in
-        let rec collect_until_terminal seen collected = function
-          | [] -> (seen, collected, None)
-          | event :: rest -> (
-              let seen = seen || is_command_accepted request.command_id event in
-              match command_terminal_state request.command_id event with
-              | Some state -> (seen, collected, Some state)
-              | None ->
-                  let text = if seen then agent_chunk_text event else "" in
-                  let collected =
-                    if String.equal text "" then collected
-                    else text :: collected
+let observed_result (request : Registry.peer_request) =
+  match request.observed_terminal with
+  | Some "completed" -> Some (Peer_completed request.partial_response)
+  | Some state -> Some (Peer_failed ("peer session ended as " ^ state))
+  | None -> None
+
+let inspect_peer_response ~net ~socket ~registry
+    (initial : Registry.peer_request) =
+  let rec pages (request : Registry.peer_request) =
+    match observed_result request with
+    | Some observation -> observation
+    | None -> (
+        let from_sequence = request.observation_sequence in
+        match
+          worker_request ~net socket
+            (`Assoc
+               [
+                 ("op", `String "events");
+                 ("after", `Intlit (Int64.to_string from_sequence));
+                 ("limit", `Int 200);
+               ])
+        with
+        | Error _ -> Peer_pending
+        | Ok (`List events) -> (
+            let response =
+              Buffer.create (String.length request.partial_response + 256)
+            in
+            Buffer.add_string response request.partial_response;
+            let rec collect cursor seen terminal = function
+              | [] -> (cursor, seen, terminal)
+              | _ when Option.is_some terminal -> (cursor, seen, terminal)
+              | event :: rest -> (
+                  let cursor = Int64.max cursor (event_sequence event) in
+                  let seen =
+                    seen || is_command_accepted request.command_id event
                   in
-                  collect_until_terminal seen collected rest)
-        in
-        let command_seen, chunks, terminal =
-          collect_until_terminal command_seen chunks events
-        in
-        match terminal with
-        | Some "completed" ->
-            Peer_completed (String.concat "" (List.rev chunks))
-        | Some state -> Peer_failed ("peer session ended as " ^ state)
-        | None when events <> [] && Int64.compare cursor previous_cursor > 0 ->
-            (* Event pages are byte-bounded and may contain fewer than the row
-               limit while more rows remain. Advance until an empty page proves
-               exhaustion rather than treating a short page as terminal. *)
-            pages cursor chunks command_seen
-        | None -> Peer_pending)
-    | Ok _ -> Peer_failed "peer worker returned an invalid event page"
+                  match command_terminal_state request.command_id event with
+                  | Some state -> (cursor, seen, Some state)
+                  | None ->
+                      let text = if seen then agent_chunk_text event else "" in
+                      Buffer.add_string response text;
+                      collect cursor seen None rest)
+            in
+            let through_sequence, command_seen, terminal_state =
+              collect from_sequence request.command_seen None events
+            in
+            if Int64.compare through_sequence from_sequence <= 0 then
+              Peer_pending
+            else
+              let partial_response = Buffer.contents response in
+              if
+                Registry.advance_peer_observation registry request.id
+                  ~from_sequence ~through_sequence ~command_seen
+                  ~partial_response ~terminal_state
+              then
+                let advanced =
+                  {
+                    request with
+                    observation_sequence = through_sequence;
+                    partial_response;
+                    command_seen;
+                    observed_terminal = terminal_state;
+                  }
+                in
+                match observed_result advanced with
+                | Some observation -> observation
+                | None ->
+                    (* Event pages are byte-bounded. Continue until an empty
+                       page proves exhaustion, persisting each page first. *)
+                    pages advanced
+              else
+                match Registry.find_peer_request registry request.id with
+                | Some latest when String.equal latest.state "completed" ->
+                    Peer_completed (Option.value ~default:"" latest.response)
+                | Some latest when String.equal latest.state "failed" ->
+                    Peer_failed
+                      (Option.value ~default:"peer request failed"
+                         latest.response)
+                | Some latest -> pages latest
+                | None -> Peer_pending)
+        | Ok _ -> Peer_failed "peer worker returned an invalid event page")
   in
-  pages request.start_sequence [] false
+  pages initial
 
 let target_sequence ~net (manager : Config.managed_workers)
     (target : Registry.session) =
@@ -254,7 +288,7 @@ let reconcile_peer_request ~net (manager : Config.managed_workers)
             (Peer_failed "target session is not active")
       | Some target -> (
           let observe dispatched =
-            inspect_peer_response ~net
+            inspect_peer_response ~net ~registry:manager.registry
               ~socket:(Lifecycle.session_socket manager.runtime_root target.id)
               dispatched
             |> complete_peer_observation ~net manager ~source dispatched
@@ -303,31 +337,33 @@ let accept_peer_json ~net (manager : Config.managed_workers)
   else if String.equal source.id target_id then
     Error "a session cannot ask itself"
   else
-    match Registry.find_active manager.registry target_id with
-    | None -> Error "target session is not active"
-    | Some target -> (
-        let command_id = "peer-" ^ Digest.to_hex (Digest.string request_id) in
-        let existing = Registry.find_peer_request manager.registry request_id in
-        match existing with
-        | Some request
-          when not
-                 (String.equal request.source_id source.id
-                 && String.equal request.target_id target.id
-                 && String.equal request.prompt prompt) ->
-            Error "requestId belongs to a different peer request"
-        | Some request -> Ok (request, true)
-        | None -> (
-            try
-              let request, _ =
-                Registry.accept_peer_request manager.registry ~id:request_id
-                  ~source_id:source.id ~target_id:target.id ~prompt ~command_id
-                  ~start_sequence:0L
-              in
-              ignore
-                (peer_event ~net manager source ~kind:"session.ask.sent"
-                   ~request_id ~peer_id:target.id ~text:prompt);
-              Ok (request, false)
-            with Invalid_argument message -> Error message))
+    match Registry.find_peer_request manager.registry request_id with
+    | Some request
+      when not
+             (String.equal request.source_id source.id
+             && String.equal request.target_id target_id
+             && String.equal request.prompt prompt) ->
+        Error "requestId belongs to a different peer request"
+    | Some request -> Ok (request, true)
+    | None -> (
+        match Registry.find_active manager.registry target_id with
+        | None -> Error "target session is not active"
+        | Some target -> (
+            let command_id =
+              "peer-" ^ Digest.to_hex (Digest.string request_id)
+            in
+            match
+              Registry.accept_peer_request manager.registry ~id:request_id
+                ~source_id:source.id ~target_id:target.id ~prompt ~command_id
+                ~start_sequence:0L
+            with
+            | Error message -> Error message
+            | Ok (request, duplicate) ->
+                if not duplicate then
+                  ignore
+                    (peer_event ~net manager source ~kind:"session.ask.sent"
+                       ~request_id ~peer_id:target.id ~text:prompt);
+                Ok (request, duplicate)))
 
 let send_peer_request ~net (manager : Config.managed_workers)
     ~(source : Registry.session) json =
@@ -490,20 +526,9 @@ let accept_peer_subscription (manager : Config.managed_workers)
         request_ids
     in
     let command_id = "peer-wake-" ^ Digest.to_hex (Digest.string id) in
-    let subscription, duplicate =
-      Registry.accept_peer_subscription manager.registry ~id
-        ~source_id:source.id ~request_ids ~wait_for ~command_id
-    in
-    if
-      duplicate
-      && not
-           (String.equal subscription.source_id source.id
-           && subscription.request_ids = request_ids
-           && String.equal subscription.wait_for wait_for)
-    then Error "subscriptionId belongs to a different peer subscription"
-    else
-      let _ = requests in
-      Ok (subscription, duplicate)
+    let _ = requests in
+    Registry.accept_peer_subscription manager.registry ~id ~source_id:source.id
+      ~request_ids ~wait_for ~command_id
 
 let bounded_subscription_operation ~clock operation =
   try Eio.Time.with_timeout_exn clock 2. operation with Eio.Time.Timeout -> ()

@@ -24,6 +24,10 @@ type peer_request = Registry_support.peer_request = {
   prompt : string;
   command_id : string;
   start_sequence : int64;
+  observation_sequence : int64;
+  partial_response : string;
+  command_seen : bool;
+  observed_terminal : string option;
   state : string;
   response : string option;
 }
@@ -591,7 +595,7 @@ let find_active_by_token registry token =
 let find_peer_request registry id =
   with_statement registry.db
     "SELECT \
-     id,source_id,target_id,prompt,command_id,start_sequence,state,response \
+     id,source_id,target_id,prompt,command_id,start_sequence,observation_sequence,partial_response,command_seen,observed_terminal,state,response \
      FROM peer_requests WHERE id = ?" (fun statement ->
       bind_text statement 1 id;
       match Sqlite3.step statement with
@@ -604,35 +608,41 @@ let find_peer_request registry id =
 let accept_peer_request registry ~id ~source_id ~target_id ~prompt ~command_id
     ~start_sequence =
   match find_peer_request registry id with
-  | Some request -> (request, true)
+  | Some request
+    when String.equal request.source_id source_id
+         && String.equal request.target_id target_id
+         && String.equal request.prompt prompt ->
+      Ok (request, true)
+  | Some _ -> Error "requestId was already used with different input"
   | None ->
       let now = Unix.gettimeofday () in
       with_statement registry.db
         "INSERT INTO \
-         peer_requests(id,source_id,target_id,prompt,command_id,start_sequence,state,response,managed_reconciliation,created_at,updated_at) \
-         SELECT ?,?,?,?,?,?,'accepted',NULL,1,?,? WHERE EXISTS (SELECT 1 FROM \
-         sessions WHERE id = ? AND archived_at IS NULL AND finishing_at IS \
-         NULL) AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND archived_at \
-         IS NULL AND finishing_at IS NULL)" (fun statement ->
+         peer_requests(id,source_id,target_id,prompt,command_id,start_sequence,observation_sequence,partial_response,command_seen,observed_terminal,state,response,managed_reconciliation,created_at,updated_at) \
+         SELECT ?,?,?,?,?,?,?,'',0,NULL,'accepted',NULL,1,?,? WHERE EXISTS \
+         (SELECT 1 FROM sessions WHERE id = ? AND archived_at IS NULL AND \
+         finishing_at IS NULL) AND EXISTS (SELECT 1 FROM sessions WHERE id = ? \
+         AND archived_at IS NULL AND finishing_at IS NULL)" (fun statement ->
           bind_text statement 1 id;
           bind_text statement 2 source_id;
           bind_text statement 3 target_id;
           bind_text statement 4 prompt;
           bind_text statement 5 command_id;
           bind_int64 statement 6 start_sequence;
-          bind_float statement 7 now;
+          bind_int64 statement 7 start_sequence;
           bind_float statement 8 now;
-          bind_text statement 9 source_id;
-          bind_text statement 10 target_id;
+          bind_float statement 9 now;
+          bind_text statement 10 source_id;
+          bind_text statement 11 target_id;
           expect_done "accept peer request" statement);
       if Sqlite3.changes registry.db = 0 then
-        invalid_arg "source or target session is no longer active";
-      (Option.get (find_peer_request registry id), false)
+        Error "source or target session is no longer active"
+      else Ok (Option.get (find_peer_request registry id), false)
 
 let list_peer_requests registry ~source_id =
   with_statement registry.db
     "SELECT \
-     id,source_id,target_id,prompt,command_id,start_sequence,state,response \
+     id,source_id,target_id,prompt,command_id,start_sequence,observation_sequence,partial_response,command_seen,observed_terminal,state,response \
      FROM peer_requests WHERE source_id = ? ORDER BY created_at ASC"
     (fun statement ->
       bind_text statement 1 source_id;
@@ -667,7 +677,7 @@ let list_reconcilable_peer_requests registry ~limit =
   let now = Unix.gettimeofday () in
   with_statement registry.db
     "SELECT \
-     id,source_id,target_id,prompt,command_id,start_sequence,state,response \
+     id,source_id,target_id,prompt,command_id,start_sequence,observation_sequence,partial_response,command_seen,observed_terminal,state,response \
      FROM peer_requests WHERE managed_reconciliation = 1 AND (state = \
      'dispatched' OR (state IN ('accepted','queued') AND updated_at <= ?) OR \
      (state = 'dispatching' AND updated_at <= ?)) ORDER BY updated_at ASC \
@@ -710,7 +720,12 @@ let find_peer_subscription registry id =
 let accept_peer_subscription registry ~id ~source_id ~request_ids ~wait_for
     ~command_id =
   match find_peer_subscription registry id with
-  | Some subscription -> (subscription, true)
+  | Some subscription
+    when String.equal subscription.source_id source_id
+         && subscription.request_ids = request_ids
+         && String.equal subscription.wait_for wait_for ->
+      Ok (subscription, true)
+  | Some _ -> Error "subscriptionId was already used with different input"
   | None ->
       let now = Unix.gettimeofday () in
       let request_ids_json =
@@ -729,7 +744,7 @@ let accept_peer_subscription registry ~id ~source_id ~request_ids ~wait_for
           bind_float statement 6 now;
           bind_float statement 7 now;
           expect_done "accept peer subscription" statement);
-      (Option.get (find_peer_subscription registry id), false)
+      Ok (Option.get (find_peer_subscription registry id), false)
 
 let list_open_peer_subscriptions registry =
   with_statement registry.db
@@ -766,12 +781,15 @@ let complete_peer_subscription registry id =
 
 let mark_peer_dispatching registry id ~start_sequence =
   with_statement registry.db
-    "UPDATE peer_requests SET state = 'dispatching',start_sequence = CASE WHEN \
-     start_sequence = 0 THEN ? ELSE start_sequence END,updated_at = ? WHERE id \
-     = ? AND state IN ('accepted','queued')" (fun statement ->
+    "UPDATE peer_requests SET start_sequence = CASE WHEN state = 'accepted' \
+     THEN ? ELSE start_sequence END,observation_sequence = CASE WHEN state = \
+     'accepted' THEN ? ELSE observation_sequence END,state = \
+     'dispatching',updated_at = ? WHERE id = ? AND state IN \
+     ('accepted','queued')" (fun statement ->
       bind_int64 statement 1 start_sequence;
-      bind_float statement 2 (Unix.gettimeofday ());
-      bind_text statement 3 id;
+      bind_int64 statement 2 start_sequence;
+      bind_float statement 3 (Unix.gettimeofday ());
+      bind_text statement 4 id;
       expect_done "mark peer request dispatching" statement);
   Sqlite3.changes registry.db > 0
 
@@ -792,6 +810,28 @@ let requeue_peer_request registry id =
       bind_float statement 1 (Unix.gettimeofday ());
       bind_text statement 2 id;
       expect_done "requeue peer request" statement);
+  Sqlite3.changes registry.db > 0
+
+let advance_peer_observation registry id ~from_sequence ~through_sequence
+    ~command_seen ~partial_response ~terminal_state =
+  with_statement registry.db
+    "UPDATE peer_requests SET observation_sequence = ?,partial_response = \
+     ?,command_seen = ?,observed_terminal = ?,updated_at = ? WHERE id = ? AND \
+     observation_sequence = ? AND state IN ('dispatching','dispatched')"
+    (fun statement ->
+      bind_int64 statement 1 through_sequence;
+      bind_text statement 2 partial_response;
+      fail_rc "bind peer command observation"
+        (Sqlite3.bind_int statement 3 (if command_seen then 1 else 0));
+      (match terminal_state with
+      | Some value -> bind_text statement 4 value
+      | None ->
+          fail_rc "bind peer terminal observation"
+            (Sqlite3.bind statement 4 Sqlite3.Data.NULL));
+      bind_float statement 5 (Unix.gettimeofday ());
+      bind_text statement 6 id;
+      bind_int64 statement 7 from_sequence;
+      expect_done "advance peer observation" statement);
   Sqlite3.changes registry.db > 0
 
 let complete_peer_request registry id response =

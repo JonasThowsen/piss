@@ -7,6 +7,12 @@
  (libraries piss.core alcotest))
 
 (rule
+ (alias runtest)
+ (deps session_mcp_ids.py ../session_mcp/main.exe)
+ (action
+  (run python3 %{dep:session_mcp_ids.py} %{dep:../session_mcp/main.exe})))
+
+(rule
  (alias interaction-test)
  (deps
   interaction.sh

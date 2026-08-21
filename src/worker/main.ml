@@ -43,6 +43,11 @@ let run ~env (args : Config.args) =
   if terminal_commands <> [] then
     Format.eprintf "reconciled %d ambiguous command(s) from ACP responses@."
       (List.length terminal_commands);
+  let cancelled_permissions = Store.reconcile_pending_permissions store in
+  if cancelled_permissions <> [] then
+    Format.eprintf
+      "cancelled %d permission request(s) from the previous worker@."
+      (List.length cancelled_permissions);
   Fun.protect ~finally:(fun () -> Store.close store) @@ fun () ->
   Eio.Switch.run @@ fun sw ->
   let clock = Eio.Stdenv.clock env in

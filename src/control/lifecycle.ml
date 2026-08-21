@@ -2,6 +2,21 @@
 
 open Piss_core
 
+type session_locks = (string, Eio.Mutex.t) Hashtbl.t
+
+let create_session_locks () = Hashtbl.create 32
+
+let with_session_lock locks session_id operation =
+  let lock =
+    match Hashtbl.find_opt locks session_id with
+    | Some lock -> lock
+    | None ->
+        let lock = Eio.Mutex.create () in
+        Hashtbl.add locks session_id lock;
+        lock
+  in
+  Eio.Mutex.use_ro lock operation
+
 let valid_session_id value =
   let valid_character = function
     | 'a' .. 'z' | '0' .. '9' | '-' -> true
@@ -82,23 +97,36 @@ let write_session_model_spec state_root (session : Registry.session) model =
   mkdir_p directory;
   write_private_file (Filename.concat directory "model") (model ^ "\n")
 
-let run executable session_id =
+let run ?(timeout_seconds = 60.) ~process_mgr ~clock executable session_id =
   if not (valid_session_id session_id) then Error "invalid session identity"
   else
     try
-      let pid =
-        Unix.create_process executable
-          [| executable; session_id |]
-          Unix.stdin Unix.stdout Unix.stderr
+      let status =
+        Eio.Time.with_timeout_exn clock timeout_seconds (fun () ->
+            Eio.Switch.run (fun sw ->
+                Eio.Process.spawn ~sw process_mgr ~executable
+                  [ executable; session_id ]
+                |> Eio.Process.await))
       in
-      match snd (Unix.waitpid [] pid) with
-      | Unix.WEXITED 0 -> Ok ()
-      | Unix.WEXITED code ->
+      match status with
+      | `Exited 0 -> Ok ()
+      | `Exited code ->
           Error
-            (Printf.sprintf "session lifecycle command exited with status %d"
-               code)
-      | Unix.WSIGNALED signal | Unix.WSTOPPED signal ->
+            (Printf.sprintf
+               "session lifecycle command %s for %s exited with status %d"
+               executable session_id code)
+      | `Signaled signal ->
           Error
-            (Printf.sprintf "session lifecycle command received signal %d"
-               signal)
-    with exn -> Error (Printexc.to_string exn)
+            (Printf.sprintf
+               "session lifecycle command %s for %s received signal %d"
+               executable session_id signal)
+    with
+    | Eio.Time.Timeout ->
+        Error
+          (Printf.sprintf
+             "session lifecycle command %s for %s timed out after %.3g seconds"
+             executable session_id timeout_seconds)
+    | exn ->
+        Error
+          (Printf.sprintf "session lifecycle command %s for %s failed: %s"
+             executable session_id (Printexc.to_string exn))

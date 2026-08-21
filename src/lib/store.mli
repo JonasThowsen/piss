@@ -38,13 +38,23 @@ val max_retained_events : int
     reaches this bound, [append_event] runs [compact_events_if_needed] which
     removes the oldest ordinary rows while preserving rows whose kind is in
     [retained_event_kinds] (permission requests, acceptances, harness
-    disconnects, reconciliation records). *)
+    disconnects, reconciliation records). Because command-correlated history is
+    protected independently of the bounded receipt table, 65,536 protected
+    events still exhaust the spool. A normal command contributes at least its
+    acceptance and terminal state, and usually an ACP response, so a
+    command-heavy session can reach this lifetime cap after roughly 21,845 to
+    32,768 commands (earlier with other protected events). History is not
+    silently deleted when receipt authority expires. *)
+
+val max_retained_command_receipts : int
+(** The maximum number of authoritative command receipts retained at once.
+    Before accepting a new identity at the bound, the oldest terminal receipt is
+    evicted. Open receipts are never evicted; a retry deduplicates exactly while
+    its receipt remains retained. Independent of [max_retained_events]. *)
 
 val max_retained_commands : int
-(** A separate upper bound on retained command rows; commands beyond this are
-    evicted when the table grows past the bound. Independent of
-    [max_retained_events] so a flood of command accepts cannot push out event
-    rows. *)
+[@@deprecated "use max_retained_command_receipts"]
+(** Deprecated source-compatible alias for [max_retained_command_receipts]. *)
 
 val retained_event_kinds : string list
 (** Event kinds that the retention pass must never evict. *)
@@ -214,3 +224,7 @@ val reconcile_ambiguous_responses : t -> string list
 (** Repair ambiguous rows for which a durable terminal ACP response already
     exists, such as a response that arrived after the former dispatch timeout.
 *)
+
+val reconcile_pending_permissions : t -> string list
+(** On worker startup, durably cancel permission requests that were actionable
+    only in the previous ACP process. Returns the cancelled request ids. *)

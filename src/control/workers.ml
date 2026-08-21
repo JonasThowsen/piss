@@ -14,7 +14,7 @@ let canonical_session_workspace (manager : Config.managed_workers)
             "registered workspace path no longer resolves to its approved \
              canonical directory")
 
-let start_registered ~process_mgr (manager : Config.managed_workers) =
+let start_registered ~process_mgr ~clock (manager : Config.managed_workers) =
   let incomplete_sessions =
     Registry.list_incomplete_session_creations manager.registry
     |> List.map (fun (request : Registry.session_creation) ->
@@ -23,7 +23,12 @@ let start_registered ~process_mgr (manager : Config.managed_workers) =
   let start (session : Registry.session) =
     try
       match canonical_session_workspace manager session with
-      | Ok () -> Eio.Process.run process_mgr [ manager.launcher; session.id ]
+      | Ok () -> (
+          match
+            Lifecycle.run ~process_mgr ~clock manager.launcher session.id
+          with
+          | Ok () -> ()
+          | Error message -> failwith message)
       | Error message -> failwith message
     with exn ->
       Format.eprintf "could not start session %s: %s@." session.id
@@ -34,6 +39,9 @@ let start_registered ~process_mgr (manager : Config.managed_workers) =
       |> List.filter (fun (session : Registry.session) ->
           not (List.mem session.id incomplete_sessions))
       |> List.iter (fun session -> Eio.Fiber.fork ~sw (fun () -> start session)))
+
+let with_session_lock (manager : Config.managed_workers) session_id operation =
+  Lifecycle.with_session_lock manager.session_locks session_id operation
 
 let active_session (manager : Config.managed_workers) requested =
   let selected =
@@ -93,11 +101,13 @@ let summary ~net (manager : Config.managed_workers) (session : Registry.session)
   | `Assoc fields -> `Assoc (fields @ runtime)
   | _ -> assert false
 
-let fail_session_creation (manager : Config.managed_workers)
+let fail_session_creation ~process_mgr ~clock (manager : Config.managed_workers)
     (request : Registry.session_creation) message =
   ignore
     (Registry.mark_session_creation_cleanup manager.registry request.id message);
-  match Lifecycle.run manager.stopper request.session_id with
+  match
+    Lifecycle.run ~process_mgr ~clock manager.stopper request.session_id
+  with
   | Error cleanup -> Error (message ^ "; worker cleanup pending: " ^ cleanup)
   | Ok () ->
       ignore (Registry.archive manager.registry request.session_id);
@@ -106,25 +116,29 @@ let fail_session_creation (manager : Config.managed_workers)
            message);
       Error message
 
-let launch_session_creation (manager : Config.managed_workers)
-    (request : Registry.session_creation) (session : Registry.session) =
+let launch_session_creation ~process_mgr ~clock
+    (manager : Config.managed_workers) (request : Registry.session_creation)
+    (session : Registry.session) =
   try
     (match canonical_session_workspace manager session with
     | Ok () -> ()
     | Error message -> raise (Failure message));
     Lifecycle.write_session_spec manager.registry manager.state_root session;
-    match Lifecycle.run manager.launcher session.id with
-    | Error message -> fail_session_creation manager request message
+    match Lifecycle.run ~process_mgr ~clock manager.launcher session.id with
+    | Error message ->
+        fail_session_creation ~process_mgr ~clock manager request message
     | Ok () -> (
         match Registry.find_active manager.registry session.id with
         | None ->
-            fail_session_creation manager request
+            fail_session_creation ~process_mgr ~clock manager request
               "session was archived while its worker was starting"
         | Some active ->
             ignore
               (Registry.mark_session_creation_active manager.registry request.id);
             Ok active)
-  with exn -> fail_session_creation manager request (Printexc.to_string exn)
+  with exn ->
+    fail_session_creation ~process_mgr ~clock manager request
+      (Printexc.to_string exn)
 
 let rec wait_for_session_creation ~clock (manager : Config.managed_workers)
     ~deadline ~duplicate request session =
@@ -141,8 +155,8 @@ let rec wait_for_session_creation ~clock (manager : Config.managed_workers)
       wait_for_session_creation ~clock manager ~deadline ~duplicate request
         session
 
-let create_broker_session ~clock (manager : Config.managed_workers) ~source_id
-    ~request_id ~harness ~workspace_id ~title ~model =
+let create_broker_session ~process_mgr ~clock (manager : Config.managed_workers)
+    ~source_id ~request_id ~harness ~workspace_id ~title ~model =
   let title = String.trim title in
   if not (Lifecycle.valid_session_id request_id) then
     Error "requestId must contain 3 to 64 lowercase letters, digits, or hyphens"
@@ -175,13 +189,13 @@ let create_broker_session ~clock (manager : Config.managed_workers) ~source_id
                 model);
           Result.map
             (fun active -> (active, duplicate))
-            (launch_session_creation manager request session))
+            (launch_session_creation ~process_mgr ~clock manager request session))
         else
           wait_for_session_creation ~clock manager
             ~deadline:(Unix.gettimeofday () +. 65.)
             ~duplicate request session
 
-let reconcile_session_creations ?(recover_launching = true)
+let reconcile_session_creations ?(recover_launching = true) ~process_mgr ~clock
     (manager : Config.managed_workers) =
   Registry.list_incomplete_session_creations manager.registry
   |> List.iter (fun (request : Registry.session_creation) ->
@@ -189,7 +203,9 @@ let reconcile_session_creations ?(recover_launching = true)
         (request.state, Registry.find manager.registry request.session_id)
       with
       | "cleanup", Some _ -> (
-          match Lifecycle.run manager.stopper request.session_id with
+          match
+            Lifecycle.run ~process_mgr ~clock manager.stopper request.session_id
+          with
           | Error message ->
               Format.eprintf "could not finish session cleanup %s: %s@."
                 request.session_id message
@@ -214,10 +230,13 @@ let reconcile_session_creations ?(recover_launching = true)
             && Registry.claim_session_creation
                  ~reclaim_before:(Unix.gettimeofday () +. 1.)
                  manager.registry request.id
-          then ignore (launch_session_creation manager request session))
+          then
+            ignore
+              (launch_session_creation ~process_mgr ~clock manager request
+                 session))
 
-let create_managed_session (manager : Config.managed_workers) ~harness
-    ~workspace_id ~title =
+let create_managed_session ~process_mgr ~clock
+    (manager : Config.managed_workers) ~harness ~workspace_id ~title =
   if not (List.exists (String.equal harness) manager.available_harnesses) then
     Error "requested harness is not available"
   else if Option.is_none (Registry.find_workspace manager.registry workspace_id)
@@ -244,19 +263,20 @@ let create_managed_session (manager : Config.managed_workers) ~harness
       (* A launcher can time out while its supervised worker is still starting.
          Stop before archiving so a failed create never leaves a hidden worker
          running for a session omitted from the active catalog. *)
-      ignore (Lifecycle.run manager.stopper id);
+      ignore (Lifecycle.run ~process_mgr ~clock manager.stopper id);
       ignore (Registry.archive manager.registry id);
       Error message
     in
     try
       Lifecycle.write_session_spec manager.registry manager.state_root session;
-      match Lifecycle.run manager.launcher id with
+      match Lifecycle.run ~process_mgr ~clock manager.launcher id with
       | Ok () -> Ok session
       | Error message -> abort_creation message
     with exn -> abort_creation (Printexc.to_string exn)
 
-let finish_claimed_session (manager : Config.managed_workers) id =
-  match Lifecycle.run manager.stopper id with
+let finish_claimed_session ~process_mgr ~clock
+    (manager : Config.managed_workers) id =
+  match Lifecycle.run ~process_mgr ~clock manager.stopper id with
   | Error message ->
       ignore (Registry.cancel_session_finish manager.registry id);
       Error message
@@ -266,32 +286,43 @@ let finish_claimed_session (manager : Config.managed_workers) id =
         ignore (Registry.cancel_session_finish manager.registry id);
         Error "session was already archived")
 
-let reconcile_session_finishes (manager : Config.managed_workers) =
-  Eio.Mutex.use_ro manager.lifecycle_mutex (fun () ->
-      Registry.list_finishing_sessions manager.registry
-      |> List.iter (fun (session : Registry.session) ->
-          match Lifecycle.run manager.stopper session.id with
-          | Ok () ->
-              if not (Registry.archive manager.registry session.id) then
-                Format.eprintf "could not archive reconciled session %s@."
-                  session.id
-          | Error message ->
-              ignore
-                (Registry.cancel_session_finish manager.registry session.id);
-              Format.eprintf
-                "could not reconcile session finish %s; restored it to active: \
-                 %s@."
-                session.id message))
+let reconcile_session_finishes ~process_mgr ~clock
+    (manager : Config.managed_workers) =
+  Registry.list_finishing_sessions manager.registry
+  |> List.iter (fun (session : Registry.session) ->
+      with_session_lock manager session.id (fun () ->
+          let still_finishing =
+            Registry.list_finishing_sessions manager.registry
+            |> List.exists (fun (current : Registry.session) ->
+                String.equal current.id session.id)
+          in
+          if still_finishing then
+            match
+              Lifecycle.run ~process_mgr ~clock manager.stopper session.id
+            with
+            | Ok () ->
+                if not (Registry.archive manager.registry session.id) then
+                  Format.eprintf "could not archive reconciled session %s@."
+                    session.id
+            | Error message ->
+                ignore
+                  (Registry.cancel_session_finish manager.registry session.id);
+                Format.eprintf
+                  "could not reconcile session finish %s; restored it to \
+                   active: %s@."
+                  session.id message))
 
-let archive_managed_session (manager : Config.managed_workers) id =
-  match Registry.find_active manager.registry id with
-  | None -> Error "active session not found"
-  | Some _ -> (
-      match Lifecycle.run manager.stopper id with
-      | Error message -> Error message
-      | Ok () ->
-          if Registry.archive manager.registry id then Ok ()
-          else Error "session was already archived")
+let archive_managed_session ~process_mgr ~clock
+    (manager : Config.managed_workers) id =
+  with_session_lock manager id (fun () ->
+      match Registry.find_active manager.registry id with
+      | None -> Error "active session not found"
+      | Some _ -> (
+          match Lifecycle.run ~process_mgr ~clock manager.stopper id with
+          | Error message -> Error message
+          | Ok () ->
+              if Registry.archive manager.registry id then Ok ()
+              else Error "session was already archived"))
 
 let delete_archived_sessions ?ids (manager : Config.managed_workers) =
   let archived = Registry.list_archived manager.registry in
@@ -331,31 +362,37 @@ let delete_archived_sessions ?ids (manager : Config.managed_workers) =
           Ok (Registry.delete_archived_ids manager.registry selected_ids)
         with exn -> Error (Printexc.to_string exn))
 
-let restore_managed_session (manager : Config.managed_workers) id =
-  (* TODO(tracer): Persist started/completed lifecycle receipts before replacing
-     the local synchronous systemd launcher with a remote or queued launcher. *)
-  match Registry.find manager.registry id with
-  | None -> Error "archived session not found"
-  | Some { archived_at = None; _ } -> Error "session is already active"
-  | Some session -> (
-      match canonical_session_workspace manager session with
-      | Error message -> Error message
-      | Ok () -> (
-          if
-            Registry.active_count manager.registry
-            >= manager.max_active_sessions
-          then Error "active session limit reached"
-          else if not (Registry.restore manager.registry id) then
-            Error "session could not be restored"
-          else
-            try
-              Lifecycle.write_session_spec manager.registry manager.state_root
-                { session with archived_at = None };
-              match Lifecycle.run manager.launcher id with
-              | Ok () -> Ok ()
-              | Error message ->
+let restore_managed_session ~process_mgr ~clock
+    (manager : Config.managed_workers) id =
+  with_session_lock manager id (fun () ->
+      (* TODO(tracer): Persist started/completed lifecycle receipts before
+         replacing the local synchronous systemd launcher with a remote or
+         queued launcher. *)
+      match Registry.find manager.registry id with
+      | None -> Error "archived session not found"
+      | Some { archived_at = None; _ } -> Error "session is already active"
+      | Some session -> (
+          match canonical_session_workspace manager session with
+          | Error message -> Error message
+          | Ok () -> (
+              if
+                Registry.active_count manager.registry
+                >= manager.max_active_sessions
+              then Error "active session limit reached"
+              else if not (Registry.restore manager.registry id) then
+                Error "session could not be restored"
+              else
+                try
+                  Lifecycle.write_session_spec manager.registry
+                    manager.state_root
+                    { session with archived_at = None };
+                  match
+                    Lifecycle.run ~process_mgr ~clock manager.launcher id
+                  with
+                  | Ok () -> Ok ()
+                  | Error message ->
+                      ignore (Registry.archive manager.registry id);
+                      Error message
+                with exn ->
                   ignore (Registry.archive manager.registry id);
-                  Error message
-            with exn ->
-              ignore (Registry.archive manager.registry id);
-              Error (Printexc.to_string exn)))
+                  Error (Printexc.to_string exn))))

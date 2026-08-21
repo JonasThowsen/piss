@@ -24,6 +24,10 @@ type peer_request = {
   prompt : string;
   command_id : string;
   start_sequence : int64;
+  observation_sequence : int64;
+  partial_response : string;
+  command_seen : bool;
+  observed_terminal : string option;
   state : string;
   response : string option;
 }
@@ -181,15 +185,34 @@ let initialize db =
   exec db
     "CREATE TABLE IF NOT EXISTS peer_requests (id TEXT PRIMARY KEY,source_id \
      TEXT NOT NULL,target_id TEXT NOT NULL,prompt TEXT NOT NULL,command_id \
-     TEXT NOT NULL UNIQUE,start_sequence INTEGER NOT NULL,state TEXT NOT \
-     NULL,response TEXT,managed_reconciliation INTEGER NOT NULL DEFAULT \
-     0,created_at REAL NOT NULL,updated_at REAL NOT NULL,FOREIGN \
+     TEXT NOT NULL UNIQUE,start_sequence INTEGER NOT NULL,observation_sequence \
+     INTEGER NOT NULL DEFAULT 0,partial_response TEXT NOT NULL DEFAULT \
+     '',command_seen INTEGER NOT NULL DEFAULT 0,observed_terminal TEXT,state \
+     TEXT NOT NULL,response TEXT,managed_reconciliation INTEGER NOT NULL \
+     DEFAULT 0,created_at REAL NOT NULL,updated_at REAL NOT NULL,FOREIGN \
      KEY(source_id) REFERENCES sessions(id),FOREIGN KEY(target_id) REFERENCES \
      sessions(id))";
   if not (has_column db "peer_requests" "managed_reconciliation") then
     exec db
       "ALTER TABLE peer_requests ADD COLUMN managed_reconciliation INTEGER NOT \
        NULL DEFAULT 0";
+  if not (has_column db "peer_requests" "observation_sequence") then
+    exec db
+      "ALTER TABLE peer_requests ADD COLUMN observation_sequence INTEGER NOT \
+       NULL DEFAULT 0";
+  if not (has_column db "peer_requests" "partial_response") then
+    exec db
+      "ALTER TABLE peer_requests ADD COLUMN partial_response TEXT NOT NULL \
+       DEFAULT ''";
+  if not (has_column db "peer_requests" "command_seen") then
+    exec db
+      "ALTER TABLE peer_requests ADD COLUMN command_seen INTEGER NOT NULL \
+       DEFAULT 0";
+  if not (has_column db "peer_requests" "observed_terminal") then
+    exec db "ALTER TABLE peer_requests ADD COLUMN observed_terminal TEXT";
+  exec db
+    "UPDATE peer_requests SET observation_sequence = start_sequence WHERE \
+     observation_sequence = 0 AND start_sequence <> 0";
   exec db
     "CREATE TABLE IF NOT EXISTS peer_subscriptions (id TEXT PRIMARY \
      KEY,source_id TEXT NOT NULL,request_ids TEXT NOT NULL,wait_for TEXT NOT \
@@ -274,11 +297,18 @@ let peer_request_of_statement statement =
     prompt = Sqlite3.column_text statement 3;
     command_id = Sqlite3.column_text statement 4;
     start_sequence = Sqlite3.column_int64 statement 5;
-    state = Sqlite3.column_text statement 6;
-    response =
-      (match Sqlite3.column statement 7 with
+    observation_sequence = Sqlite3.column_int64 statement 6;
+    partial_response = Sqlite3.column_text statement 7;
+    command_seen = Sqlite3.column_int statement 8 <> 0;
+    observed_terminal =
+      (match Sqlite3.column statement 9 with
       | Sqlite3.Data.NULL -> None
-      | _ -> Some (Sqlite3.column_text statement 7));
+      | _ -> Some (Sqlite3.column_text statement 9));
+    state = Sqlite3.column_text statement 10;
+    response =
+      (match Sqlite3.column statement 11 with
+      | Sqlite3.Data.NULL -> None
+      | _ -> Some (Sqlite3.column_text statement 11));
   }
 
 let peer_subscription_of_statement statement =

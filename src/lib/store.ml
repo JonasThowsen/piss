@@ -21,7 +21,8 @@ type t = {
 }
 
 let max_retained_events = 65_536
-let max_retained_commands = 1024
+let max_retained_command_receipts = 1024
+let max_retained_commands = max_retained_command_receipts
 
 (* Event kinds whose retention is required by the durability contract:
    permission requests, command acceptances, harness disconnects, and
@@ -39,6 +40,7 @@ let retained_event_kinds =
     "acp.permission.requested";
     "acp.permission.resolved";
     "acp.permission.cancelled";
+    "acp.permission.expired";
     "acp.initialize";
     "acp.session.created";
     "acp.session.loaded";
@@ -109,15 +111,60 @@ let initialize db =
   exec db
     "CREATE TABLE IF NOT EXISTS commands (command_id TEXT PRIMARY \
      KEY,request_id TEXT NOT NULL UNIQUE,prompt TEXT NOT NULL,content TEXT NOT \
-     NULL DEFAULT '[]',state TEXT NOT NULL,created_at REAL NOT NULL,updated_at \
-     REAL NOT NULL)";
+     NULL DEFAULT '[]',acceptance_sequence INTEGER NOT NULL DEFAULT 0,state \
+     TEXT NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL)";
   if not (table_has_column db "commands" "content") then
     exec db "ALTER TABLE commands ADD COLUMN content TEXT NOT NULL DEFAULT '[]'";
+  if not (table_has_column db "commands" "acceptance_sequence") then
+    exec db
+      "ALTER TABLE commands ADD COLUMN acceptance_sequence INTEGER NOT NULL \
+       DEFAULT 0";
   exec db
     "CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY \
      AUTOINCREMENT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at REAL \
      NOT NULL)";
-  exec db "CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind, sequence)"
+  exec db "CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind, sequence)";
+  let needs_acceptance_backfill =
+    with_statement db
+      "SELECT 1 FROM commands WHERE acceptance_sequence = 0 LIMIT 1"
+      (fun statement ->
+        match Sqlite3.step statement with
+        | Sqlite3.Rc.ROW -> true
+        | Sqlite3.Rc.DONE -> false
+        | rc ->
+            fail_rc "inspect command acceptance sequence migration" rc;
+            false)
+  in
+  if needs_acceptance_backfill then (
+    let acceptances = Hashtbl.create 32 in
+    with_statement db
+      "SELECT sequence,payload FROM events WHERE kind = 'command.accepted' \
+       ORDER BY sequence" (fun statement ->
+        let rec collect () =
+          match Sqlite3.step statement with
+          | Sqlite3.Rc.ROW ->
+              let sequence = Sqlite3.column_int64 statement 0 in
+              let payload =
+                Sqlite3.column_text statement 1 |> Yojson.Safe.from_string
+              in
+              (match Yojson.Safe.Util.member "commandId" payload with
+              | `String command_id ->
+                  Hashtbl.replace acceptances command_id sequence
+              | _ -> ());
+              collect ()
+          | Sqlite3.Rc.DONE -> ()
+          | rc -> fail_rc "backfill command acceptance sequences" rc
+        in
+        collect ());
+    Hashtbl.iter
+      (fun command_id sequence ->
+        with_statement db
+          "UPDATE commands SET acceptance_sequence = ? WHERE command_id = ? \
+           AND acceptance_sequence = 0" (fun statement ->
+            bind_int64 statement 1 sequence;
+            bind_text statement 2 command_id;
+            expect_done "backfill command acceptance sequence" statement))
+      acceptances)
 
 let count_events db =
   with_statement db "SELECT COUNT(*) FROM events" (fun statement ->
@@ -463,16 +510,33 @@ let command_acceptance store command_id =
       in
       find None)
 
+let compact_terminal_command_receipts store =
+  let count = row_count store "commands" in
+  let limit = Int64.of_int max_retained_command_receipts in
+  if Int64.compare count limit >= 0 then (
+    let remove_count = Int64.(to_int (add (sub count limit) 1L)) in
+    with_statement store.db
+      "DELETE FROM commands WHERE command_id IN (SELECT command_id FROM \
+       commands WHERE state IN \
+       ('completed','cancelled','ambiguous','rejected') ORDER BY updated_at \
+       ASC,created_at ASC,command_id ASC LIMIT ?)" (fun statement ->
+        fail_rc "bind command receipt compaction limit"
+          (Sqlite3.bind_int statement 1 remove_count);
+        expect_done "compact terminal command receipts" statement);
+    if Sqlite3.changes store.db < remove_count then
+      raise
+        (Store_error
+           (Printf.sprintf
+              "command receipt capacity exhausted (%d retained non-terminal \
+               commands)"
+              max_retained_command_receipts)))
+
 let accept_command_unlocked ?(action = "prompt") ?(content = `List [])
     ?(images = []) ?(resources = []) store ~command_id ~request_id ~prompt =
   match find_command store command_id with
   | Some state -> { state; duplicate = true }
   | None ->
-      if row_count store "commands" >= Int64.of_int max_retained_commands then
-        raise
-          (Store_error
-             (Printf.sprintf "command retention limit reached (%d)"
-                max_retained_commands));
+      compact_terminal_command_receipts store;
       let now = Unix.gettimeofday () in
       with_statement store.db
         "INSERT INTO commands(command_id, request_id, prompt, content, state, \
@@ -485,20 +549,27 @@ let accept_command_unlocked ?(action = "prompt") ?(content = `List [])
           bind_float statement 5 now;
           bind_float statement 6 now;
           expect_done "accept command" statement);
-      ignore
-        (append_event store ~kind:"command.accepted"
-           ~payload:
-             (`Assoc
-                [
-                  ("commandId", `String command_id);
-                  ("requestId", `String request_id);
-                  ("action", `String action);
-                  ("text", `String prompt);
-                  ("imageCount", `Int (List.length images));
-                  ("images", `List images);
-                  ("resourceCount", `Int (List.length resources));
-                  ("resources", `List resources);
-                ]));
+      let acceptance =
+        append_event store ~kind:"command.accepted"
+          ~payload:
+            (`Assoc
+               [
+                 ("commandId", `String command_id);
+                 ("requestId", `String request_id);
+                 ("action", `String action);
+                 ("text", `String prompt);
+                 ("imageCount", `Int (List.length images));
+                 ("images", `List images);
+                 ("resourceCount", `Int (List.length resources));
+                 ("resources", `List resources);
+               ])
+      in
+      with_statement store.db
+        "UPDATE commands SET acceptance_sequence = ? WHERE command_id = ?"
+        (fun statement ->
+          bind_int64 statement 1 acceptance.sequence;
+          bind_text statement 2 command_id;
+          expect_done "record command acceptance sequence" statement);
       { state = Accepted; duplicate = false }
 
 let accept_command ?action ?content ?images ?resources store ~command_id
@@ -695,17 +766,94 @@ let reconcile_incomplete_commands store =
         command_ids;
       command_ids)
 
+let permission_request_id payload =
+  match Yojson.Safe.Util.member "id" payload with
+  | `String value -> Some value
+  | `Int value -> Some (string_of_int value)
+  | `Intlit value -> Some value
+  | _ -> None
+
+let reconcile_pending_permissions store =
+  transaction store (fun () ->
+      let pending = Hashtbl.create 8 in
+      with_statement store.db
+        "SELECT kind,payload FROM events WHERE kind IN \
+         ('acp.permission.requested','acp.permission.resolved','acp.permission.cancelled','acp.permission.expired') \
+         ORDER BY sequence" (fun statement ->
+          let rec scan () =
+            match Sqlite3.step statement with
+            | Sqlite3.Rc.ROW ->
+                let kind = Sqlite3.column_text statement 0 in
+                let payload =
+                  Sqlite3.column_text statement 1 |> Yojson.Safe.from_string
+                in
+                let request_id =
+                  if String.equal kind "acp.permission.requested" then
+                    permission_request_id payload
+                  else
+                    match Yojson.Safe.Util.member "requestId" payload with
+                    | `String value -> Some value
+                    | _ -> None
+                in
+                Option.iter
+                  (fun request_id ->
+                    if String.equal kind "acp.permission.requested" then
+                      Hashtbl.replace pending request_id ()
+                    else Hashtbl.remove pending request_id)
+                  request_id;
+                scan ()
+            | Sqlite3.Rc.DONE -> ()
+            | rc -> fail_rc "reconcile pending permissions" rc
+          in
+          scan ());
+      let request_ids =
+        Hashtbl.to_seq_keys pending |> List.of_seq |> List.sort String.compare
+      in
+      (* TODO(tracer): Rebind durable ACP permission requests to a proven live
+         harness request when ACP exposes a stable restart/rebind contract.
+         Until then cancellation is fail-closed: an old request is never
+         presented as actionable after the worker that could answer it has
+         exited. *)
+      List.iter
+        (fun request_id ->
+          ignore
+            (append_event store ~kind:"acp.permission.cancelled"
+               ~payload:
+                 (`Assoc
+                    [
+                      ("requestId", `String request_id);
+                      ( "reason",
+                        `String "worker restarted before permission resolution"
+                      );
+                      ("restartAmbiguous", `Bool true);
+                    ])))
+        request_ids;
+      request_ids)
+
+let command_acceptance_sequence store command_id =
+  with_statement store.db
+    "SELECT acceptance_sequence FROM commands WHERE command_id = ?"
+    (fun statement ->
+      bind_text statement 1 command_id;
+      match Sqlite3.step statement with
+      | Sqlite3.Rc.ROW -> Some (Sqlite3.column_int64 statement 0)
+      | Sqlite3.Rc.DONE -> None
+      | rc ->
+          fail_rc "read command acceptance sequence" rc;
+          None)
+
 let reconcile_ambiguous_responses store =
   transaction store (fun () ->
       let responses =
         with_statement store.db
-          "SELECT payload FROM events WHERE kind = 'acp.response' ORDER BY \
-           sequence" (fun statement ->
+          "SELECT sequence,payload FROM events WHERE kind = 'acp.response' \
+           ORDER BY sequence" (fun statement ->
             let rec collect responses =
               match Sqlite3.step statement with
               | Sqlite3.Rc.ROW ->
+                  let sequence = Sqlite3.column_int64 statement 0 in
                   let payload =
-                    Sqlite3.column_text statement 0 |> Yojson.Safe.from_string
+                    Sqlite3.column_text statement 1 |> Yojson.Safe.from_string
                   in
                   let open Yojson.Safe.Util in
                   let response =
@@ -715,7 +863,7 @@ let reconcile_ambiguous_responses store =
                           (member "error" payload, member "result" payload)
                         with
                         | (`Assoc _ | `String _), _ ->
-                            Some (command_id, Rejected)
+                            Some (sequence, command_id, Rejected)
                         | _, `Assoc result ->
                             let state =
                               if
@@ -724,7 +872,7 @@ let reconcile_ambiguous_responses store =
                               then Cancelled
                               else Completed
                             in
-                            Some (command_id, state)
+                            Some (sequence, command_id, state)
                         | _ -> None)
                     | _ -> None
                   in
@@ -740,8 +888,16 @@ let reconcile_ambiguous_responses store =
             collect [])
       in
       List.filter_map
-        (fun (command_id, state) ->
-          if find_command store command_id = Some Ambiguous then (
+        (fun (response_sequence, command_id, state) ->
+          if
+            find_command store command_id = Some Ambiguous
+            &&
+            match command_acceptance_sequence store command_id with
+            | Some acceptance_sequence ->
+                acceptance_sequence > 0L
+                && response_sequence > acceptance_sequence
+            | None -> false
+          then (
             update_command_state store ~command_id state;
             ignore
               (append_event store ~kind:"command.reconciled"

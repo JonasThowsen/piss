@@ -129,6 +129,22 @@ let request_id_property =
       ("pattern", `String "^[a-z0-9-]+$");
     ]
 
+let optional_request_id_property =
+  `Assoc
+    [
+      ("type", `String "string");
+      ( "description",
+        `String
+          "Optional caller-stable identity (3-64 lowercase letters, digits, or \
+           hyphens). Supply and reuse the exact same value when retrying the \
+           same operation. If omitted, Piss generates a random identity for \
+           backward compatibility, which cannot make a later process retry \
+           caller-stable." );
+      ("minLength", `Int 3);
+      ("maxLength", `Int 64);
+      ("pattern", `String "^[a-z0-9-]+$");
+    ]
+
 let workspace_input_schema =
   `Assoc
     [
@@ -248,6 +264,7 @@ let peer_input_schema =
       ( "properties",
         `Assoc
           [
+            ("requestId", optional_request_id_property);
             ( "targetSessionId",
               `Assoc
                 [
@@ -386,6 +403,7 @@ let tools =
                 ( "properties",
                   `Assoc
                     [
+                      ("subscriptionId", optional_request_id_property);
                       ( "requestIds",
                         `Assoc
                           [
@@ -465,9 +483,14 @@ let peer_request_body arguments =
     | `String value -> value
     | _ -> failwith "prompt must be a string"
   in
+  let request_id =
+    match member "requestId" arguments with
+    | `String value -> value
+    | _ -> random_request_id ()
+  in
   `Assoc
     [
-      ("requestId", `String (random_request_id ()));
+      ("requestId", `String request_id);
       ("targetSessionId", `String target);
       ("prompt", `String prompt);
     ]
@@ -509,7 +532,10 @@ let call_tool params =
       let body =
         match arguments with
         | `Assoc fields ->
-            `Assoc (("subscriptionId", `String (random_request_id ())) :: fields)
+            if List.mem_assoc "subscriptionId" fields then `Assoc fields
+            else
+              `Assoc
+                (("subscriptionId", `String (random_request_id ())) :: fields)
         | _ -> failwith "subscription arguments must be an object"
       in
       retry_broker (fun () -> curl ~body "/api/v2/broker/subscribe")
