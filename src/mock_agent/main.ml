@@ -390,7 +390,11 @@ let config_options ~model ~thinking =
             `List
               (List.map
                  (fun value ->
-                   `Assoc [ ("value", `String value); ("name", `String value) ])
+                   `Assoc
+                     [
+                       ("value", `String value);
+                       ("name", `String ("Thinking: " ^ value));
+                     ])
                  [ "off"; "low"; "medium"; "high" ]) );
         ];
     ]

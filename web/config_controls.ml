@@ -57,11 +57,28 @@ let trigger_id option =
 let menu_id option =
   "config-menu-" ^ category_slug option.Runtime_domain.category
 
-let current_name (option : Runtime_domain.config_option) =
+let current_choice_name (option : Runtime_domain.config_option) =
   List.find option.choices ~f:(fun choice ->
       String.equal choice.value option.current_value)
   |> Option.value_map ~default:option.current_value ~f:(fun choice ->
       choice.name)
+
+let current_display_value (option : Runtime_domain.config_option) =
+  let choice_name = current_choice_name option in
+  let label_length = String.length option.name in
+  let repeats_label =
+    String.length choice_name > label_length
+    && String.Caseless.equal
+         (String.prefix choice_name label_length)
+         option.name
+    && Char.equal choice_name.[label_length] ':'
+  in
+  if not repeats_label then choice_name
+  else
+    let value =
+      String.drop_prefix choice_name (label_length + 1) |> String.strip
+    in
+    if String.is_empty value then option.current_value else value
 
 type control_kind = Model | Thinking
 
@@ -168,7 +185,7 @@ let component runtime ~available ~refresh ~on_error graph =
                class_ (trigger_class kind);
                Vdom.Attr.create "type" "button";
                Vdom.Attr.create "aria-label"
-                 (option.name ^ ": " ^ current_name option);
+                 (option.name ^ ": " ^ current_display_value option);
                Vdom.Attr.create "aria-haspopup" "menu";
                Vdom.Attr.create "aria-controls" menu;
                Vdom.Attr.create "aria-expanded" (Bool.to_string open_);
@@ -189,7 +206,7 @@ let component runtime ~available ~refresh ~on_error graph =
                   [
                     text
                       (if is_submitting then "Updating..."
-                       else current_name option);
+                       else current_display_value option);
                   ];
               ];
             chevron_down ();
