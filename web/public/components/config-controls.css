@@ -1,0 +1,283 @@
+/*
+ * Agent Model and Thinking controls.
+ *
+ * Markup: web/config_controls.ml
+ * Browser coverage: src/test/session_list_browser.mjs
+ *
+ * Keep this file next to the component instead of adding config-control rules
+ * to the application-wide stylesheet. The explicit --model and --thinking
+ * modifiers make the control discoverable from either visible UI text or
+ * browser devtools.
+ */
+
+.config-controls {
+  width: min(330px, 100%);
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(112px, .9fr);
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
+}
+
+.config-control {
+  position: relative;
+  min-width: 0;
+}
+
+.config-control__trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.config-control__trigger-content {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.config-control__label {
+  flex: none;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.config-control__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-control__trigger--thinking .config-control__value {
+  color: var(--accent);
+  text-transform: capitalize;
+}
+
+.config-control__trigger > svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.config-control__trigger[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+
+.config-control__trigger:hover:not(:disabled),
+.config-control__trigger[aria-expanded="true"] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.config-control__trigger:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.config-control__menu {
+  position: absolute;
+  z-index: 80;
+  right: 0;
+  bottom: calc(100% + 9px);
+  max-height: min(420px, calc(var(--app-height, 100dvh) - 24px));
+  overflow-y: auto;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+}
+
+.config-control__menu--model {
+  width: min(370px, calc(100vw - 20px));
+}
+
+.config-control__menu--thinking {
+  width: min(210px, calc(100vw - 20px));
+}
+
+.config-control__menu > header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--line-strong);
+  color: var(--panel);
+}
+
+.config-control__menu > header span,
+.config-control__menu > header small {
+  color: inherit;
+  font: 600 9px/1 var(--sans);
+}
+
+.config-control__choice {
+  width: 100%;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.config-control__menu--model .config-control__choice {
+  min-height: 48px;
+}
+
+.config-control__choice:last-child {
+  border-bottom: 0;
+}
+
+.config-control__choice:hover,
+.config-control__choice.selected {
+  background: var(--line-strong);
+  color: var(--panel);
+}
+
+.config-control__choice > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-control__choice b {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.config-control__check {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  color: transparent;
+  font-style: normal;
+}
+
+.config-control__choice:hover .config-control__check,
+.config-control__choice.selected .config-control__check {
+  border-color: var(--panel);
+}
+
+.config-control__check.checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--panel);
+}
+
+@media (max-width: 760px) {
+  .config-controls {
+    width: 100%;
+    max-width: none;
+    grid-template-columns: minmax(0, 1fr) minmax(108px, auto);
+  }
+
+  .config-control__menu {
+    position: fixed;
+    right: 8px;
+    bottom: 74px;
+    left: auto;
+    max-height: calc(var(--app-height, 100dvh) - 90px);
+  }
+
+  .config-control__menu--model {
+    width: min(370px, calc(100vw - 16px));
+  }
+
+  .config-control__menu--thinking {
+    width: min(210px, calc(100vw - 16px));
+  }
+}
+
+@media (min-width: 2100px) and (min-height: 1100px) {
+  .config-controls {
+    width: min(390px, 100%);
+    grid-template-columns: minmax(0, 1.4fr) minmax(130px, .8fr);
+  }
+
+  .config-control__trigger {
+    min-height: 48px;
+    padding-inline: 8px;
+  }
+
+  .config-control__label {
+    font-size: 11px;
+  }
+
+  .config-control__value {
+    font-size: 13px;
+  }
+
+  .config-control__trigger > svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .config-control__menu--model {
+    width: min(430px, calc(100vw - 28px));
+  }
+
+  .config-control__menu--thinking {
+    width: min(240px, calc(100vw - 28px));
+  }
+
+  .config-control__menu > header {
+    min-height: 40px;
+  }
+
+  .config-control__menu > header span,
+  .config-control__menu > header small {
+    font-size: 11px;
+  }
+
+  .config-control__choice,
+  .config-control__choice b {
+    font-size: 12px;
+  }
+
+  .config-control__menu--model .config-control__choice {
+    min-height: 56px;
+  }
+
+  .config-control__menu--thinking .config-control__choice {
+    min-height: 44px;
+  }
+}

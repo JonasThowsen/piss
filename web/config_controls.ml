@@ -63,6 +63,16 @@ let current_name (option : Runtime_domain.config_option) =
   |> Option.value_map ~default:option.current_value ~f:(fun choice ->
       choice.name)
 
+type control_kind = Model | Thinking
+
+let control_kind_class = function Model -> "model" | Thinking -> "thinking"
+
+let trigger_class kind =
+  "config-control__trigger config-control__trigger--" ^ control_kind_class kind
+
+let menu_class kind =
+  "config-control__menu config-control__menu--" ^ control_kind_class kind
+
 let component runtime ~available ~refresh ~on_error graph =
   let open_category, set_open_category = Bonsai.state None graph in
   let submitting, set_submitting = Bonsai.state None graph in
@@ -105,7 +115,7 @@ let component runtime ~available ~refresh ~on_error graph =
                     | Ok _ ->
                         Effect.bind refresh ~f:(fun () -> set_submitting None))))
   in
-  let render_control runtime (option : Runtime_domain.config_option) =
+  let render_control runtime kind (option : Runtime_domain.config_option) =
     let open_ =
       Option.value_map open_category ~default:false
         ~f:(String.equal option.category)
@@ -117,6 +127,10 @@ let component runtime ~available ~refresh ~on_error graph =
     in
     let disabled =
       Option.is_some submitting || (not available) || not idle_or_waiting
+    in
+    let is_submitting =
+      Option.value_map submitting ~default:false ~f:(fun config_id ->
+          String.equal config_id option.config_id)
     in
     let trigger = trigger_id option in
     let menu = menu_id option in
@@ -151,11 +165,7 @@ let component runtime ~available ~refresh ~on_error graph =
           ~attrs:
             ([
                Vdom.Attr.id trigger;
-               class_
-                 ("composer-config-trigger "
-                 ^
-                 if String.equal option.category "model" then "model"
-                 else "thinking");
+               class_ (trigger_class kind);
                Vdom.Attr.create "type" "button";
                Vdom.Attr.create "aria-label"
                  (option.name ^ ": " ^ current_name option);
@@ -169,12 +179,16 @@ let component runtime ~available ~refresh ~on_error graph =
             @ if disabled then [ Vdom.Attr.create "disabled" "" ] else [])
           [
             Vdom.Node.span
+              ~attrs:[ class_ "config-control__trigger-content" ]
               [
-                Vdom.Node.create "small" [ text option.name ];
-                Vdom.Node.b
+                Vdom.Node.span
+                  ~attrs:[ class_ "config-control__label" ]
+                  [ text (option.name ^ ":") ];
+                Vdom.Node.span
+                  ~attrs:[ class_ "config-control__value" ]
                   [
                     text
-                      (if Option.is_some submitting then "Updating..."
+                      (if is_submitting then "Updating..."
                        else current_name option);
                   ];
               ];
@@ -186,11 +200,7 @@ let component runtime ~available ~refresh ~on_error graph =
              ~attrs:
                [
                  Vdom.Attr.id menu;
-                 class_
-                   ("composer-config-menu "
-                   ^
-                   if String.equal option.category "model" then "model-menu"
-                   else "thinking-menu");
+                 class_ (menu_class kind);
                  Vdom.Attr.create "role" "menu";
                  Vdom.Attr.create "aria-label" (option.name ^ " options");
                ]
@@ -207,7 +217,9 @@ let component runtime ~available ~refresh ~on_error graph =
                    ~attrs:
                      [
                        Vdom.Attr.id (choice_id option index);
-                       (if selected then class_ "selected" else class_ "");
+                       class_
+                         ("config-control__choice"
+                         ^ if selected then " selected" else "");
                        Vdom.Attr.create "type" "button";
                        Vdom.Attr.create "role" "menuitemradio";
                        Vdom.Attr.create "aria-checked" (Bool.to_string selected);
@@ -220,14 +232,11 @@ let component runtime ~available ~refresh ~on_error graph =
                        ~attrs:
                          [
                            class_
-                             ("composer-option-check"
+                             ("config-control__check"
                              ^ if selected then " checked" else "");
                          ]
                        [ text (if selected then "x" else "") ];
-                     Vdom.Node.span
-                       [
-                         Vdom.Node.b [ text choice.name ];
-                       ];
+                     Vdom.Node.span [ Vdom.Node.b [ text choice.name ] ];
                    ])));
       ]
   in
@@ -235,15 +244,15 @@ let component runtime ~available ~refresh ~on_error graph =
   | None -> Vdom.Node.none
   | Some runtime ->
       let controls =
-        [ "model"; "thought_level" ]
-        |> List.filter_map ~f:(fun category ->
-            Runtime_domain.find_category runtime category)
-        |> List.map ~f:(render_control runtime)
+        [ (Model, "model"); (Thinking, "thought_level") ]
+        |> List.filter_map ~f:(fun (kind, category) ->
+            Runtime_domain.find_category runtime category
+            |> Option.map ~f:(fun option -> render_control runtime kind option))
       in
       Vdom.Node.div
         ~attrs:
           [
-            class_ "composer-config";
+            class_ "config-controls";
             Vdom.Attr.create "aria-label" "Agent configuration";
           ]
         controls

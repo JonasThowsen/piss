@@ -7,6 +7,16 @@ let safe_asset_path root resource =
   | "/" -> Some (Filename.concat root "index.html", "text/html; charset=utf-8")
   | "/styles.css" ->
       Some (Filename.concat root "styles.css", "text/css; charset=utf-8")
+  | resource when String.starts_with ~prefix:"/components/" resource ->
+      let name = Filename.basename resource in
+      if
+        String.contains name '/' || String.contains name '\\'
+        || Filename.extension name <> ".css"
+      then None
+      else
+        Some
+          ( Filename.concat (Filename.concat root "components") name,
+            "text/css; charset=utf-8" )
   | "/manifest.webmanifest" ->
       Some
         ( Filename.concat root "manifest.webmanifest",

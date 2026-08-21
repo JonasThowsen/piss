@@ -87,6 +87,7 @@ try {
     ["/", "text/html"],
     ["/app.js", "text/javascript"],
     ["/styles.css", "text/css"],
+    ["/components/config-controls.css", "text/css"],
     ["/manifest.webmanifest", "application/manifest+json"],
     ["/service-worker.js", "text/javascript"],
     ["/icon.svg", "image/svg+xml"],
@@ -425,6 +426,22 @@ try {
   }
   await page.getByRole("button", { name: "Model: Mock Deep" }).waitFor();
   const thinkingButton = page.getByRole("button", { name: "Thinking: medium" });
+  const thinkingDisplay = await thinkingButton.evaluate((button) => {
+    const label = button.querySelector(".config-control__label");
+    const value = button.querySelector(".config-control__value");
+    return {
+      label: label?.textContent,
+      value: value?.textContent,
+      valueClipped: value ? value.scrollWidth > value.clientWidth : true,
+    };
+  });
+  if (
+    thinkingDisplay.label !== "Thinking:"
+    || thinkingDisplay.value !== "medium"
+    || thinkingDisplay.valueClipped
+  ) {
+    throw new Error(`thinking level is not visible in its trigger: ${JSON.stringify(thinkingDisplay)}`);
+  }
   await thinkingButton.click();
   const configRequestPromise = page.waitForRequest(
     (request) => request.url().includes("/api/v2/config-options") && request.method() === "POST",
@@ -441,7 +458,12 @@ try {
   ) {
     throw new Error(`unexpected config request: ${configRequest.postData()}`);
   }
-  await page.getByRole("button", { name: "Thinking: high" }).waitFor();
+  const updatedThinkingButton = page.getByRole("button", { name: "Thinking: high" });
+  await updatedThinkingButton.waitFor();
+  const updatedThinkingValue = await updatedThinkingButton.locator(".config-control__value").textContent();
+  if (updatedThinkingValue !== "high") {
+    throw new Error(`updated thinking level is not visible: ${JSON.stringify(updatedThinkingValue)}`);
+  }
   await detailsTab.click();
   await page.getByRole("region", { name: "Session runtime details" }).getByText(/^worker-/).waitFor();
   await page.getByRole("region", { name: "Configuration options" }).getByText("Mock Fast", { exact: false }).waitFor();
@@ -1219,7 +1241,7 @@ try {
   }
   const composerLayout = await mobile.locator(".composer-footer").evaluate((footer) => {
     const bounds = footer.getBoundingClientRect();
-    const controls = [...footer.querySelectorAll(".composer-config-trigger")].map((node) => {
+    const controls = [...footer.querySelectorAll(".config-control__trigger")].map((node) => {
       const rect = node.getBoundingClientRect();
       return { left: rect.left, right: rect.right, width: rect.width };
     });
@@ -1240,8 +1262,8 @@ try {
     throw new Error(`mobile composer controls overlap: ${JSON.stringify(composerLayout)}`);
   }
   for (const [triggerSelector, menuSelector] of [
-    [".composer-config-trigger.model", ".composer-config-menu.model-menu"],
-    [".composer-config-trigger.thinking", ".composer-config-menu.thinking-menu"],
+    [".config-control__trigger--model", ".config-control__menu--model"],
+    [".config-control__trigger--thinking", ".config-control__menu--thinking"],
   ]) {
     const trigger = mobile.locator(triggerSelector);
     await trigger.tap();
