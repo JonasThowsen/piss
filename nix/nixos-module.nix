@@ -605,6 +605,7 @@ in
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
+          "AF_NETLINK"
           "AF_UNIX"
         ];
         # Codex's Linux sandbox uses a nested bubblewrap namespace. Keep time

@@ -461,6 +461,14 @@
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
               == "on-failure";
             assert
+              moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.RestrictAddressFamilies
+              == [
+                "AF_INET"
+                "AF_INET6"
+                "AF_NETLINK"
+                "AF_UNIX"
+              ];
+            assert
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.RestrictNamespaces
               == [
                 "cgroup"
