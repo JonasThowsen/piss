@@ -607,7 +607,19 @@ in
           "AF_INET6"
           "AF_UNIX"
         ];
-        RestrictNamespaces = true;
+        # Codex's Linux sandbox uses a nested bubblewrap namespace. Keep time
+        # namespaces prohibited, but allow the namespace set required by
+        # bubblewrap so commands remain sandboxed instead of failing closed and
+        # escalating every shell invocation to a permission request.
+        RestrictNamespaces = [
+          "cgroup"
+          "ipc"
+          "mnt"
+          "net"
+          "pid"
+          "user"
+          "uts"
+        ];
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
       };

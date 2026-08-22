@@ -255,7 +255,9 @@
         in
         {
           inherit piss;
-          opencode = opencode-src.packages.${system}.opencode;
+          opencode = opencode-src.packages.${system}.opencode.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/opencode-unknown-finish.patch ];
+          });
           codex-acp = pkgs.buildNpmPackage {
             pname = "codex-acp";
             version = "1.4.0";
@@ -384,6 +386,7 @@
             piss-web
             pi-acp
             codex-acp
+            opencode
             ;
           codex-acp-smoke =
             pkgs.runCommand "piss-codex-acp-smoke"
@@ -457,6 +460,17 @@
             assert
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.Restart
               == "on-failure";
+            assert
+              moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.RestrictNamespaces
+              == [
+                "cgroup"
+                "ipc"
+                "mnt"
+                "net"
+                "pid"
+                "user"
+                "uts"
+              ];
             assert builtins.elem "-%h/.pi"
               moduleEvaluation.config.systemd.user.services."piss-ocaml-worker@".serviceConfig.ReadWritePaths;
             assert nixpkgs.lib.hasInfix "--default-harness mock"

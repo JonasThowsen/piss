@@ -73,6 +73,11 @@ let optional_field fields path name decode =
   | None -> Ok None
   | Some value -> Result.map (decode (path ^ "." ^ name) value) ~f:Option.some
 
+let optional_nullable_field fields path name decode =
+  match List.Assoc.find fields ~equal:String.equal name with
+  | None | Some `Null -> Ok None
+  | Some value -> Result.map (decode (path ^ "." ^ name) value) ~f:Option.some
+
 let command_state path json =
   let* value = string path json in
   match value with
@@ -268,9 +273,14 @@ let decode_permission_option path json =
 let decode_permission_tool path json =
   let* fields = assoc path json in
   let* tool_call_id = field_as fields path "toolCallId" nonempty_string in
-  let* title = field_as fields path "title" nonempty_string in
-  let* kind = field_as fields path "kind" nonempty_string in
-  let* status = field_as fields path "status" tool_status in
+  (* ACP defines permission toolCall as a ToolCallUpdate: only toolCallId is
+     required. Codex therefore legitimately omits unchanged display fields. *)
+  let* kind = optional_nullable_field fields path "kind" nonempty_string in
+  let kind = Option.value kind ~default:"other" in
+  let* title = optional_nullable_field fields path "title" nonempty_string in
+  let title = Option.value title ~default:kind in
+  let* status = optional_nullable_field fields path "status" tool_status in
+  let status = Option.value status ~default:"pending" in
   let raw_input = List.Assoc.find fields ~equal:String.equal "rawInput" in
   Ok ({ tool_call_id; title; kind; status; raw_input } : permission_tool)
 

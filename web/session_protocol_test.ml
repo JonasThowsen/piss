@@ -353,6 +353,35 @@ let () =
     | Ok event -> event
     | Error message -> fail message
   in
+  let codex_permission =
+    permission_requested
+    |> String.substr_replace_first ~pattern:"\"id\": \"permission-web-command\""
+         ~with_:"\"id\": 0"
+    |> String.substr_replace_first
+         ~pattern:"            \"title\": \"Allow the stability proof\",\n"
+         ~with_:""
+  in
+  (match
+     Event_history.decode_event codex_permission
+     |> Result.map ~f:(fun event ->
+         Event_history.project [ event ] |> Event_history.pending_permissions)
+   with
+  | Ok
+      [
+        {
+          request =
+            {
+              request_id = "0";
+              tool =
+                { title = "execute"; kind = "execute"; status = "pending"; _ };
+              _;
+            };
+          _;
+        };
+      ] ->
+      ()
+  | Error message -> fail message
+  | Ok _ -> fail "Codex titleless permission request was not projected");
   let replay_boundary sequence kind =
     match
       Event_history.decode_event
