@@ -12,4 +12,5 @@ val render :
   Runtime_domain.t option ->
   Vdom.Node.t ->
   Vdom.Node.t ->
+  Vdom.Node.t ->
   Vdom.Node.t

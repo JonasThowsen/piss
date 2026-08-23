@@ -113,6 +113,10 @@ let status_to_string = function
   | Offline -> "offline"
   | Archived -> "archived"
 
+let status_label = function
+  | Waiting -> "waiting on delegated work"
+  | status -> status_to_string status
+
 let status path json =
   let* value = string path json in
   match value with

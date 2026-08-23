@@ -55,11 +55,11 @@ let render ~(session : Control_plane.Session.t)
     | None ->
         [
           fact "Runtime" (if loading then "connecting" else "unavailable");
-          fact "Status" (Control_plane.Session.status_to_string session.status);
+          fact "Status" (Runtime_domain.status_label session.status);
         ]
     | Some runtime ->
         [
-          fact "Status" (Runtime_domain.status_to_string runtime.status);
+          fact "Status" (Runtime_domain.status_label runtime.status);
           fact "Agent" runtime.agent_name;
           fact "Worker ID" runtime.worker_id;
           fact "Worker generation" runtime.worker_generation;

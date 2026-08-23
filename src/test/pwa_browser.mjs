@@ -58,7 +58,9 @@ const origin = `http://127.0.0.1:${address.port}`;
 let browser;
 try {
   browser = await chromium.launch({ executablePath, headless: true });
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  await context.grantPermissions(["notifications"], { origin });
+  const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(origin, { waitUntil: "domcontentloaded" });
@@ -89,10 +91,42 @@ try {
   if (!result.controller.endsWith("/service-worker.js")) {
     throw new Error(`replacement service worker did not claim the app: ${result.controller}`);
   }
+  const notification = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    registration.active?.postMessage({
+      type: "piss:show-notification",
+      title: "Piss agent finished",
+      body: "Omarchy notification proof",
+      tag: "piss-notification-proof",
+      data: { url: "/?session=s-notification-proof", sessionId: "s-notification-proof" },
+    });
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const notifications = await registration.getNotifications({ tag: "piss-notification-proof" });
+      if (notifications.length > 0) {
+        const [shown] = notifications;
+        const proof = { title: shown.title, body: shown.body, data: shown.data };
+        shown.close();
+        return proof;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("service worker did not show the desktop notification");
+  });
+  if (
+    notification.title !== "Piss agent finished"
+    || notification.body !== "Omarchy notification proof"
+    || notification.data?.url !== "/?session=s-notification-proof"
+  ) {
+    throw new Error(`service-worker notification was malformed: ${JSON.stringify(notification)}`);
+  }
+  if (!currentWorker.includes('self.addEventListener("notificationclick"')) {
+    throw new Error("service worker does not route notification clicks back to Piss");
+  }
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByText("current frontend", { exact: true }).waitFor();
   if (errors.length) throw new Error(`PWA browser errors: ${errors.join("; ")}`);
-  console.log("PWA cutover proof passed: retired cache removed, replacement worker claimed the origin, and current frontend loaded without a hard refresh");
+  console.log("PWA proof passed: retired cache removed, replacement worker claimed the origin, Linux Chromium showed a service-worker notification, and the current frontend loaded without a hard refresh");
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

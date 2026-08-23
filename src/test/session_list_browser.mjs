@@ -58,7 +58,7 @@ try {
   for (const file of auditProofFiles) await writeFile(join(workspace, file.relative), file.contents, "utf8");
   browser = await chromium.launch({ executablePath, headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
+  await context.grantPermissions(["clipboard-read", "clipboard-write", "notifications"], { origin: url });
   const page = await context.newPage();
   const eventPageRequests = [];
   const eventStreamRequests = [];
@@ -143,6 +143,12 @@ try {
     return registration?.active?.scriptURL.endsWith("/service-worker.js")
       && navigator.serviceWorker.controller?.scriptURL.endsWith("/service-worker.js");
   });
+  const notificationControl = page.getByRole("button", { name: "Enable desktop notifications" });
+  await notificationControl.click();
+  await page.getByRole("button", { name: "Disable desktop notifications" }).waitFor();
+  if (await page.evaluate(() => localStorage.getItem("piss:desktop-notifications")) !== "true") {
+    throw new Error("notification preference was not persisted for this PWA installation");
+  }
   const applicationCaches = await page.evaluate(() => caches.keys());
   if (applicationCaches.some((key) => key.startsWith("piss-shell-"))) {
     throw new Error(`retired frontend caches survived activation: ${JSON.stringify(applicationCaches)}`);
@@ -881,16 +887,35 @@ try {
   await page.getByRole("button", { name: "New session in Piss" }).click();
   const creator = page.getByRole("dialog", { name: "New session" });
   await creator.getByLabel("Session title").fill("Lifecycle proof");
-  if (await creator.getByRole("combobox", { name: "Session harness" }).inputValue() !== "opencode") {
+  const harnessSelect = creator.getByRole("combobox", { name: "Session harness" });
+  if (await harnessSelect.inputValue() !== "opencode") {
     throw new Error("session creator did not select the managed host default");
   }
+  await harnessSelect.selectOption("codex");
+  const fullAccess = creator.getByRole("checkbox", { name: "Start Codex with full access (YOLO)" });
+  await fullAccess.check();
   const createRequestPromise = page.waitForRequest(
     (candidate) => new URL(candidate.url()).pathname === "/api/v2/sessions" && candidate.method() === "POST",
   );
+  const codexConfigRequestPromise = page.waitForRequest(
+    (candidate) => new URL(candidate.url()).pathname === "/api/v2/config-options" && candidate.method() === "POST",
+  );
   await creator.getByRole("button", { name: "START SESSION" }).click();
   const createRequest = await createRequestPromise;
-  if (JSON.stringify(createRequest.postDataJSON()) !== JSON.stringify({ workspaceId: "test-workspace", title: "Lifecycle proof", harness: "opencode" })) {
+  if (JSON.stringify(createRequest.postDataJSON()) !== JSON.stringify({ workspaceId: "test-workspace", title: "Lifecycle proof", harness: "codex" })) {
     throw new Error(`unexpected create request: ${createRequest.postData()}`);
+  }
+  const codexConfigRequest = await codexConfigRequestPromise;
+  const codexConfigBody = codexConfigRequest.postDataJSON();
+  if (
+    codexConfigBody.configId !== "mode"
+    || codexConfigBody.value !== "agent-full-access"
+    || !codexConfigBody.mutationId?.startsWith("web-")
+    || codexConfigBody.target?.sessionId !== new URL(codexConfigRequest.url()).searchParams.get("session")
+    || !codexConfigBody.target?.workerId
+    || !Number.isInteger(codexConfigBody.target?.runtimeGeneration)
+  ) {
+    throw new Error(`unexpected Codex full-access request: ${codexConfigRequest.postData()}`);
   }
   await page.locator(".app-header").getByRole("heading", { name: "Lifecycle proof" }).waitFor({ timeout: 15_000 });
   await page.waitForFunction(() =>

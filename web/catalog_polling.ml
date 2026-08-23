@@ -7,12 +7,15 @@ let timer : int option ref = ref None
 let revision : Int64.t option ref = ref None
 let generation = ref 0
 
-let visible () =
+let foregrounded () =
   try
-    let state : Js.js_string Js.t =
-      Js.Unsafe.get (Js.Unsafe.inject Dom_html.document) "visibilityState"
+    let document = Js.Unsafe.inject Dom_html.document in
+    let state : Js.js_string Js.t = Js.Unsafe.get document "visibilityState" in
+    let focused =
+      Js.Unsafe.meth_call document "hasFocus" [||]
+      |> Js.Unsafe.coerce |> Js.to_bool
     in
-    String.equal (Js.to_string state) "visible"
+    String.equal (Js.to_string state) "visible" && focused
   with _ -> true
 
 let decode_revision body =
@@ -67,8 +70,9 @@ and refresh apply next expected_generation =
 and tick apply =
   timer := None;
   if not !running then ()
-  else if not (visible ()) then schedule apply 2_000
   else
+    let foregrounded = foregrounded () in
+    let next_tick = if foregrounded then 1_000 else 5_000 in
     Async_kernel.don't_wait_for
       (let open Async_kernel.Deferred.Let_syntax in
        let%bind response = Browser_http.get "/api/v2/catalog-revision" in
@@ -76,10 +80,10 @@ and tick apply =
          | None -> Async_kernel.Deferred.return ()
          | Some next -> (
              match !revision with
-             | Some previous when Int64.equal previous next ->
+             | Some previous when foregrounded && Int64.equal previous next ->
                  Async_kernel.Deferred.return ()
              | None | Some _ -> refresh apply next !generation))
-       >>| fun () -> if !running then schedule apply 1_000)
+       >>| fun () -> if !running then schedule apply next_tick)
 
 let invalidate () =
   Int.incr generation;

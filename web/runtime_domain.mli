@@ -38,6 +38,7 @@ type t = {
 }
 
 val status_to_string : status -> string
+val status_label : status -> string
 val decode : expected_session:string -> string -> (t, string) result
 
 val decode_json :

@@ -73,6 +73,38 @@ let () =
   let runtime = decode_snapshot snapshot in
   if not runtime.accepts_images then fail "image capability was lost";
   if not runtime.retention_pruned then fail "retention flag was lost";
+  if
+    not
+      (String.equal
+         (Runtime_domain.status_label Runtime_domain.Waiting)
+         "waiting on delegated work")
+  then fail "waiting status no longer explains delegated work";
+  let notification_state status last_finished_at : Notification_policy.state =
+    { status; last_finished_at }
+  in
+  (match
+     Notification_policy.decide
+       ~previous:(notification_state Runtime_domain.Running None)
+       ~current:(notification_state Runtime_domain.Requires_action None)
+   with
+  | Some Notification_policy.Requires_action -> ()
+  | _ -> fail "requires-action notification transition was lost");
+  (match
+     Notification_policy.decide
+       ~previous:(notification_state Runtime_domain.Running None)
+       ~current:(notification_state Runtime_domain.Waiting (Some 2.))
+   with
+  | Some (Notification_policy.Turn_finished { delegated_work_remains = true })
+    ->
+      ()
+  | _ -> fail "delegated turn-finished notification transition was lost");
+  (match
+     Notification_policy.decide
+       ~previous:(notification_state Runtime_domain.Waiting (Some 2.))
+       ~current:(notification_state Runtime_domain.Idle (Some 2.))
+   with
+  | Some Notification_policy.Delegated_work_finished -> ()
+  | _ -> fail "delegated-work completion notification transition was lost");
   (match Runtime_domain.find_category runtime "model" with
   | Some option when String.equal option.current_value "mock/fast" -> ()
   | _ -> fail "model config category was not decoded");

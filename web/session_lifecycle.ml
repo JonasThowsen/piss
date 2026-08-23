@@ -51,7 +51,7 @@ let rec wait_ready id remaining =
     match response with
     | Ok body -> (
         match Runtime_domain.decode ~expected_session:id body with
-        | Ok _ -> Async_kernel.Deferred.return (Ok ())
+        | Ok runtime -> Async_kernel.Deferred.return (Ok runtime)
         | Error _ -> wait_ready id (remaining - 1))
     | Error _ -> wait_ready id (remaining - 1)
 
@@ -63,9 +63,26 @@ let restore_and_wait id =
   match restored with
   | Error error ->
       Async_kernel.Deferred.return (Error (Error.to_string_hum error))
-  | Ok _ -> wait_ready id 40
+  | Ok _ ->
+      let%map ready = wait_ready id 40 in
+      Result.map ready ~f:ignore
 
-let create ~workspace_id ~title ~harness =
+let enable_codex_full_access runtime =
+  let open Async_kernel.Deferred.Let_syntax in
+  let%map response =
+    Browser_http.post_json
+      ~query:[ ("session", runtime.Runtime_domain.session_id) ]
+      "/api/v2/config-options"
+      (Runtime_domain.config_change_to_yojson runtime
+         ~mutation_id:(Command_id.create ()) ~config_id:"mode"
+         ~value:"agent-full-access")
+  in
+  Result.map_error response ~f:(fun error ->
+      "Session was created, but Codex full access could not be enabled: "
+      ^ Error.to_string_hum error)
+  |> Result.map ~f:ignore
+
+let create ~workspace_id ~title ~harness ~codex_full_access =
   let open Async_kernel.Deferred.Let_syntax in
   let%bind response =
     Browser_http.post_json "/api/v2/sessions"
@@ -82,9 +99,15 @@ let create ~workspace_id ~title ~harness =
   | Ok body -> (
       match Control_plane.decode_created_session_id body with
       | Error message -> Async_kernel.Deferred.return (Error message)
-      | Ok id ->
-          let%map ready = wait_ready id 40 in
-          Result.map ready ~f:(fun () -> id))
+      | Ok id -> (
+          let%bind ready = wait_ready id 40 in
+          match ready with
+          | Error _ as error -> Async_kernel.Deferred.return error
+          | Ok runtime ->
+              if not codex_full_access then Async_kernel.Deferred.return (Ok id)
+              else
+                let%map configured = enable_codex_full_access runtime in
+                Result.map configured ~f:(fun () -> id)))
 
 let mutate id action json =
   let open Async_kernel.Deferred.Let_syntax in
@@ -143,6 +166,7 @@ let component ~creation_options ~on_reload ~on_select graph =
   let dialog, set_dialog = Bonsai.state Closed graph in
   let title, set_title = Bonsai.state "" graph in
   let harness, set_harness = Bonsai.state None graph in
+  let codex_full_access, set_codex_full_access = Bonsai.state false graph in
   let busy, set_busy = Bonsai.state false graph in
   let error, set_error = Bonsai.state None graph in
   let%arr creation_options = creation_options
@@ -151,11 +175,13 @@ let component ~creation_options ~on_reload ~on_select graph =
   and dialog = dialog
   and title = title
   and harness = harness
+  and codex_full_access = codex_full_access
   and busy = busy
   and error = error
   and set_dialog = set_dialog
   and set_title = set_title
   and set_harness = set_harness
+  and set_codex_full_access = set_codex_full_access
   and set_busy = set_busy
   and set_error = set_error in
   let harnesses =
@@ -183,6 +209,7 @@ let component ~creation_options ~on_reload ~on_select graph =
          [
            set_title "";
            set_harness selected;
+           set_codex_full_access false;
            activate (Create workspace) "session-title";
          ])
       ~f:(fun () -> Effect.Ignore)
@@ -219,7 +246,8 @@ let component ~creation_options ~on_reload ~on_select graph =
                 ~f:(fun () ->
                   Effect.bind
                     (Effect.of_deferred_thunk (fun () ->
-                         create ~workspace_id:workspace.id ~title ~harness))
+                         create ~workspace_id:workspace.id ~title ~harness
+                           ~codex_full_access))
                     ~f:(function
                       | Error message -> fail message
                       | Ok id -> finish ~select:id ())))
@@ -304,11 +332,20 @@ let component ~creation_options ~on_reload ~on_select graph =
                                 (Option.value_map harness ~default:""
                                    ~f:Control_plane.Session.harness_to_string);
                               Vdom.Attr.on_change (fun _ value ->
-                                  set_harness
-                                    (List.find harnesses ~f:(fun candidate ->
-                                         String.equal value
-                                           (Control_plane.Session
-                                            .harness_to_string candidate))));
+                                  let selected =
+                                    List.find harnesses ~f:(fun candidate ->
+                                        String.equal value
+                                          (Control_plane.Session
+                                           .harness_to_string candidate))
+                                  in
+                                  Effect.Many
+                                    [
+                                      set_harness selected;
+                                      (match selected with
+                                      | Some Control_plane.Session.Codex ->
+                                          Effect.Ignore
+                                      | _ -> set_codex_full_access false);
+                                    ]);
                             ]
                           (List.map harnesses ~f:(fun candidate ->
                                let value =
@@ -329,6 +366,39 @@ let component ~creation_options ~on_reload ~on_select graph =
                                    else [])
                                  [ text value ]));
                       ];
+                    (match harness with
+                    | Some Control_plane.Session.Codex ->
+                        Vdom.Node.label
+                          ~attrs:[ class_ "codex-full-access" ]
+                          [
+                            Vdom.Node.input
+                              ~attrs:
+                                ([
+                                   Vdom.Attr.create "type" "checkbox";
+                                   Vdom.Attr.create "aria-label"
+                                     "Start Codex with full access (YOLO)";
+                                   Vdom.Attr.on_click (fun _ ->
+                                       set_codex_full_access
+                                         (not codex_full_access));
+                                 ]
+                                @
+                                if codex_full_access then
+                                  [ Vdom.Attr.create "checked" "checked" ]
+                                else [])
+                              ();
+                            Vdom.Node.span
+                              [
+                                Vdom.Node.b [ text "Full access (YOLO)" ];
+                                Vdom.Node.small
+                                  [
+                                    text
+                                      "No approvals or sandbox. Codex can use \
+                                       the network and access files outside \
+                                       this workspace.";
+                                  ];
+                              ];
+                          ]
+                    | _ -> Vdom.Node.none);
                     error_view;
                   ];
                 footer ~close ~busy ~danger:false "START SESSION" "STARTING...";

@@ -19,6 +19,11 @@ let text = Vdom.Node.text
 let render_session_row ~seen_finished_at ~selected_id ~menu_open ~on_menu
     ~on_select ~on_rename ~on_archive (session : Control_plane.Session.t) =
   let status = Global_search.status_label ~seen_finished_at session in
+  let status_text =
+    if String.equal status "waiting" then
+      Runtime_domain.status_label Runtime_domain.Waiting
+    else status
+  in
   let selected =
     Option.value_map selected_id ~default:false ~f:(String.equal session.id)
   in
@@ -48,7 +53,7 @@ let render_session_row ~seen_finished_at ~selected_id ~menu_open ~on_menu
               Vdom.Node.small
                 [
                   text
-                    (status ^ " / "
+                    (status_text ^ " / "
                     ^ Control_plane.Session.harness_to_string session.harness);
                 ];
             ];

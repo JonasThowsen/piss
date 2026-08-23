@@ -34,3 +34,43 @@ self.addEventListener("activate", (event) => {
     }
   })());
 });
+
+self.addEventListener("message", (event) => {
+  const message = event.data;
+  if (message?.type !== "piss:show-notification") return;
+
+  const title = typeof message.title === "string" ? message.title : "Piss";
+  const body = typeof message.body === "string" ? message.body : "";
+  const tag = typeof message.tag === "string" ? message.tag : "piss-session";
+  const data = message.data && typeof message.data === "object" ? message.data : {};
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    tag,
+    data,
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const requested = event.notification.data?.url;
+    const target = new URL(typeof requested === "string" ? requested : "/", self.location.origin);
+    if (target.origin !== self.location.origin) return;
+
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      try {
+        const url = new URL(client.url);
+        if (url.origin !== self.location.origin) continue;
+        const navigated = await client.navigate(target.href);
+        await (navigated ?? client).focus();
+        return;
+      } catch {
+        // Try another window or open a fresh installed-app window below.
+      }
+    }
+    await self.clients.openWindow(target.href);
+  })());
+});

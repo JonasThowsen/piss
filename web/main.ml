@@ -108,6 +108,7 @@ let refresh_catalog ~set_workspaces ~set_sessions ~set_archived
         match decode_catalog response with
         | Error _ -> Effect.Ignore
         | Ok (workspaces, sessions, archived, creation_options) ->
+            Desktop_notifications.observe_sessions sessions;
             Effect.Many
               [
                 set_workspaces workspaces;
@@ -447,14 +448,20 @@ let component graph =
                     next_sessions,
                     next_archived,
                     next_creation_options ) ->
+                  Desktop_notifications.observe_sessions next_sessions;
                   let selected_still_active =
                     Option.exists selected_id ~f:(fun selected ->
                         List.exists next_sessions
                           ~f:(fun (session : Control_plane.Session.t) ->
                             String.equal session.id selected))
                   in
+                  let requested_id =
+                    Desktop_notifications.requested_session ()
+                  in
                   let previous_id =
-                    Option.first_some selected_id (Last_opened_session.read ())
+                    Option.first_some requested_id
+                      (Option.first_some selected_id
+                         (Last_opened_session.read ()))
                   in
                   let next_id =
                     if composer.has_pending () && selected_still_active then
@@ -464,6 +471,10 @@ let component graph =
                         ~previous:previous_id next_sessions
                   in
                   Last_opened_session.write next_id;
+                  if
+                    Option.exists requested_id ~f:(fun requested ->
+                        Option.exists next_id ~f:(String.equal requested))
+                  then Desktop_notifications.clear_requested_session ();
                   let acknowledge_next =
                     if not (Finished_status.is_focused ()) then Effect.Ignore
                     else
@@ -575,6 +586,7 @@ let component graph =
     Session_lifecycle.component ~creation_options ~on_reload:load
       ~on_select:select_session graph
   in
+  let notifications = Desktop_notifications.component graph in
   let workspace_dialogs = Workspace_dialogs.component ~on_reload:load graph in
   let close_navigation =
     let%arr set_mobile_open = set_mobile_open
@@ -615,6 +627,7 @@ let component graph =
                   [
                     load;
                     Catalog_polling.start ~apply:(fun ~workspaces ~sessions ->
+                        Desktop_notifications.observe_sessions sessions;
                         dispatch
                           (set_polled_catalog (Some (workspaces, sessions))));
                   ])))
@@ -656,6 +669,7 @@ let component graph =
   and lifecycle = lifecycle
   and workspace_dialogs = workspace_dialogs
   and search = search
+  and notifications = notifications
   and acknowledge_selected = acknowledge_selected
   and select_session = select_session
   and set_mobile_open = set_mobile_open
@@ -693,7 +707,7 @@ let component graph =
   let header =
     App_header.render sessions workspaces selected_id runtime
       (Mobile_shell.menu_button ~open_:mobile_open ~on_toggle:toggle_mobile)
-      search.trigger
+      search.trigger notifications
   in
   let navigation_scrim =
     Mobile_shell.scrim ~open_:mobile_open ~on_close:close_mobile

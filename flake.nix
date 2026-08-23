@@ -112,6 +112,8 @@
                 ./web/control_plane_test.ml
                 ./web/details_view.ml
                 ./web/details_view.mli
+                ./web/desktop_notifications.ml
+                ./web/desktop_notifications.mli
                 ./web/event_buffer.ml
                 ./web/event_buffer.mli
                 ./web/event_buffer_test.ml
@@ -153,6 +155,8 @@
                 ./web/mention_request.mli
                 ./web/mobile_shell.ml
                 ./web/mobile_shell.mli
+                ./web/notification_policy.ml
+                ./web/notification_policy.mli
                 ./web/outbox_projection.ml
                 ./web/outbox_projection.mli
                 ./web/outbox_view.ml

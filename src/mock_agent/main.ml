@@ -362,7 +362,7 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
     run_prompt ~id:next_id ~session_id ~text:next_text ~images:next_images
       ~resources:next_resources
 
-let config_options ~model ~thinking =
+let config_options ~model ~thinking ~mode =
   `List
     [
       `Assoc
@@ -403,6 +403,24 @@ let config_options ~model ~thinking =
                      ])
                  [ "off"; "low"; "medium"; "high" ]) );
         ];
+      `Assoc
+        [
+          ("type", `String "select");
+          ("id", `String "mode");
+          ("category", `String "mode");
+          ("name", `String "Mode");
+          ("currentValue", `String mode);
+          ( "options",
+            `List
+              [
+                `Assoc [ ("value", `String "agent"); ("name", `String "Agent") ];
+                `Assoc
+                  [
+                    ("value", `String "agent-full-access");
+                    ("name", `String "Agent (full access)");
+                  ];
+              ] );
+        ];
     ]
 
 let () =
@@ -410,6 +428,7 @@ let () =
   let session_count = ref 0 in
   let model = ref "mock/fast" in
   let thinking = ref "medium" in
+  let mode = ref "agent" in
   try
     while true do
       let json = input_line stdin |> Yojson.Safe.from_string in
@@ -451,7 +470,8 @@ let () =
                   [
                     ("sessionId", `String !session_id);
                     ( "configOptions",
-                      config_options ~model:!model ~thinking:!thinking );
+                      config_options ~model:!model ~thinking:!thinking
+                        ~mode:!mode );
                   ]))
       | "session/set_config_option" ->
           let params = Yojson.Safe.Util.member "params" json in
@@ -460,13 +480,15 @@ let () =
           (match (config_id, value) with
           | `String "model", `String selected -> model := selected
           | `String "thought_level", `String selected -> thinking := selected
+          | `String "mode", `String selected -> mode := selected
           | _ -> ());
           write
             (Acp.response ~id
                (`Assoc
                   [
                     ( "configOptions",
-                      config_options ~model:!model ~thinking:!thinking );
+                      config_options ~model:!model ~thinking:!thinking
+                        ~mode:!mode );
                   ]))
       | "session/prompt" ->
           let params = Yojson.Safe.Util.member "params" json in

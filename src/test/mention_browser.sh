@@ -76,7 +76,7 @@ chmod +x "$root/launch" "$root/stop"
 "$control_exe" --port "$port" --registry "$state/registry.sqlite3" \
   --session-state-root "$state/sessions" --session-runtime-root "$runtime" \
   --session-launcher "$root/launch" --session-stopper "$root/stop" \
-  --available-harness pi --available-harness opencode --available-harness mock \
+  --available-harness pi --available-harness codex --available-harness opencode --available-harness mock \
   --default-harness opencode \
   --workspace-spec "test-workspace|Piss|$workspace" \
   --workspace-discovery-root "$repository" \
