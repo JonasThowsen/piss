@@ -38,6 +38,8 @@ let component session runtime connecting stream_notice notice config_controls
   in
   let resources, set_resources = Bonsai.state [] graph in
   let picker, set_picker = Bonsai.state Mention_picker.Closed graph in
+  let command_active, set_command_active = Bonsai.state None graph in
+  let command_selected, set_command_selected = Bonsai.state 0 graph in
   let submission, set_submission =
     Bonsai.state Prompt_command.Submission.ready graph
   in
@@ -81,6 +83,8 @@ let component session runtime connecting stream_notice notice config_controls
     let%arr set_prompt_state = set_prompt_state
     and set_resources = set_resources
     and set_picker = set_picker
+    and set_command_active = set_command_active
+    and set_command_selected = set_command_selected
     and attachments = attachments in
     fun session_id ->
       let prompt =
@@ -92,6 +96,8 @@ let component session runtime connecting stream_notice notice config_controls
           set_prompt_state (session_id, prompt);
           set_resources [];
           set_picker Mention_picker.Closed;
+          set_command_active None;
+          set_command_selected 0;
           attachments.clear ();
         ]
   in
@@ -104,6 +110,8 @@ let component session runtime connecting stream_notice notice config_controls
   and prompt = prompt
   and resources = resources
   and picker = picker
+  and command_active = command_active
+  and command_selected = command_selected
   and submission = submission
   and delivery = delivery
   and cancel_sequence = cancel_sequence
@@ -111,6 +119,8 @@ let component session runtime connecting stream_notice notice config_controls
   and set_prompt = set_prompt
   and set_resources = set_resources
   and set_picker = set_picker
+  and set_command_active = set_command_active
+  and set_command_selected = set_command_selected
   and set_submission = set_submission
   and set_delivery = set_delivery
   and set_cancel_sequence = set_cancel_sequence
@@ -127,6 +137,20 @@ let component session runtime connecting stream_notice notice config_controls
       ~image_processing:attachments.processing
   in
   let disabled = Composer_policy.disabled policy in
+  let available_commands =
+    Option.value_map runtime ~default:[] ~f:(fun runtime ->
+        runtime.Runtime_domain.available_commands)
+  in
+  let command_matches =
+    Option.value_map command_active ~default:[] ~f:(fun active ->
+        Command_picker.matching_commands ~query:active.Command_picker.query
+          available_commands)
+  in
+  let command_name_is_exact =
+    Option.exists command_active ~f:(fun active ->
+        List.exists available_commands ~f:(fun command ->
+            String.equal active.Command_picker.query command.name))
+  in
   let action_selected =
     match runtime with
     | Some runtime when phys_equal runtime.status Running ->
@@ -136,6 +160,9 @@ let component session runtime connecting stream_notice notice config_controls
   let close_picker () =
     Mention_request.cancel ();
     set_picker Mention_picker.Closed
+  in
+  let close_command_picker () =
+    Effect.Many [ set_command_active None; set_command_selected 0 ]
   in
   let start_search (active : Mention_picker.active) =
     match session with
@@ -166,9 +193,24 @@ let component session runtime connecting stream_notice notice config_controls
   let update_prompt event value =
     persist_prompt value;
     let cursor, _ = event_selection event (String.length value) in
-    match Mention_picker.active_at_cursor ~text:value ~cursor with
-    | None -> Effect.Many [ set_prompt value; close_picker () ]
-    | Some active -> Effect.Many [ set_prompt value; start_search active ]
+    match Command_picker.active_at_cursor ~text:value ~cursor with
+    | Some active ->
+        Effect.Many
+          [
+            set_prompt value;
+            close_picker ();
+            set_command_active (Some active);
+            set_command_selected 0;
+          ]
+    | None -> (
+        match Mention_picker.active_at_cursor ~text:value ~cursor with
+        | None ->
+            Effect.Many
+              [ set_prompt value; close_picker (); close_command_picker () ]
+        | Some active ->
+            Effect.Many
+              [ set_prompt value; close_command_picker (); start_search active ]
+        )
   in
   let choose active (resource : Mention_picker.resource) =
     let live_text, cursor, _ = field_snapshot prompt in
@@ -188,6 +230,25 @@ let component session runtime connecting stream_notice notice config_controls
           [
             set_prompt insertion.text;
             set_resources (Mention_picker.add_resource resources resource);
+            set_picker Mention_picker.Closed;
+          ]
+  in
+  let choose_command active command =
+    let live_text, cursor, _ = field_snapshot prompt in
+    let active =
+      Command_picker.active_at_cursor ~text:live_text ~cursor
+      |> Option.value ~default:active
+    in
+    match Command_picker.insert_command ~text:live_text ~active command with
+    | None -> close_command_picker ()
+    | Some insertion ->
+        persist_prompt insertion.text;
+        apply_to_field
+          { Mention_picker.text = insertion.text; cursor = insertion.cursor };
+        Effect.Many
+          [
+            set_prompt insertion.text;
+            close_command_picker ();
             set_picker Mention_picker.Closed;
           ]
   in
@@ -248,6 +309,8 @@ let component session runtime connecting stream_notice notice config_controls
                 set_prompt "";
                 set_resources [];
                 set_picker Mention_picker.Closed;
+                set_command_active None;
+                set_command_selected 0;
                 attachments.clear ();
                 set_delivery Prompt_command.Prompt;
                 set_cancel_sequence None;
@@ -362,22 +425,48 @@ let component session runtime connecting stream_notice notice config_controls
           ]
   in
   let keydown event =
-    match (key event, picker) with
-    | "ArrowDown", Open { active; _ } ->
+    match (key event, command_active, picker) with
+    | "ArrowDown", Some active, _ when not (List.is_empty command_matches) ->
+        focus_at active.stop;
+        let next = (command_selected + 1) mod List.length command_matches in
+        prevent (set_command_selected next)
+    | "ArrowUp", Some active, _ when not (List.is_empty command_matches) ->
+        focus_at active.stop;
+        let next =
+          (command_selected - 1 + List.length command_matches)
+          mod List.length command_matches
+        in
+        prevent (set_command_selected next)
+    | "Escape", Some active, _ ->
+        focus_at active.stop;
+        prevent (close_command_picker ())
+    | "Enter", Some active, _
+      when (not command_name_is_exact) && not (List.is_empty command_matches)
+      -> (
+        match List.nth command_matches command_selected with
+        | Some command -> prevent (choose_command active command)
+        | None -> prevent Effect.Ignore)
+    | "Enter", Some _, _
+      when (not (event_bool event "isComposing"))
+           && ((not (is_mobile ()))
+              || event_bool event "ctrlKey" || event_bool event "metaKey")
+           && not (event_bool event "shiftKey") ->
+        prevent (submit delivery)
+    | "ArrowDown", None, Open { active; _ } ->
         focus_at active.stop;
         prevent (set_picker (Mention_picker.move picker 1))
-    | "ArrowUp", Open { active; _ } ->
+    | "ArrowUp", None, Open { active; _ } ->
         focus_at active.stop;
         prevent (set_picker (Mention_picker.move picker (-1)))
-    | "Escape", Open { active; _ } ->
+    | "Escape", None, Open { active; _ } ->
         focus_at active.stop;
         prevent (close_picker ())
-    | "Enter", Open { active; availability = Ready (_ :: _); _ } -> (
+    | "Enter", None, Open { active; availability = Ready (_ :: _); _ } -> (
         match Mention_picker.selected_resource picker with
         | Some resource -> prevent (choose active resource)
         | None -> prevent Effect.Ignore)
-    | "Enter", Open _ -> prevent Effect.Ignore
-    | "Enter", Closed
+    | "Enter", None, Open _ -> prevent Effect.Ignore
+    | "Enter", None, Closed
       when (not (event_bool event "isComposing"))
            && ((not (is_mobile ()))
               || event_bool event "ctrlKey" || event_bool event "metaKey")
@@ -417,18 +506,32 @@ let component session runtime connecting stream_notice notice config_controls
     else notice ^ " " ^ stream_notice
   in
   let active_descendant =
-    match picker with
-    | Open { availability = Ready (_ :: _); selected; _ } ->
-        Some (Printf.sprintf "file-mention-%d" selected)
-    | _ -> None
+    match command_active with
+    | Some _ when not (List.is_empty command_matches) ->
+        Some (Printf.sprintf "slash-command-%d" command_selected)
+    | Some _ -> None
+    | None -> (
+        match picker with
+        | Open { availability = Ready (_ :: _); selected; _ } ->
+            Some (Printf.sprintf "file-mention-%d" selected)
+        | _ -> None)
   in
   let picker_open =
-    match picker with Mention_picker.Closed -> false | Open _ -> true
+    Option.is_some command_active
+    || match picker with Mention_picker.Closed -> false | Open _ -> true
+  in
+  let picker_controls =
+    if Option.is_some command_active then "slash-command-options"
+    else "file-mention-options"
   in
   let on_choose resource =
     match picker with
     | Open { active; _ } -> choose active resource
     | Closed -> Effect.Ignore
+  in
+  let on_choose_command command =
+    Option.value_map command_active ~default:Effect.Ignore ~f:(fun active ->
+        choose_command active command)
   in
   let view =
     Vdom.Node.div
@@ -455,7 +558,7 @@ let component session runtime connecting stream_notice notice config_controls
                    Vdom.Attr.id input_id;
                    Vdom.Attr.create "aria-label" "Message agent";
                    Vdom.Attr.create "aria-autocomplete" "list";
-                   Vdom.Attr.create "aria-controls" "file-mention-options";
+                   Vdom.Attr.create "aria-controls" picker_controls;
                    Vdom.Attr.create "aria-expanded" (Bool.to_string picker_open);
                    Vdom.Attr.placeholder (Composer_policy.placeholder policy);
                    Vdom.Attr.create "maxlength" "65536";
@@ -471,6 +574,9 @@ let component session runtime connecting stream_notice notice config_controls
                   @ Option.value_map active_descendant ~default:[] ~f:(fun id ->
                       [ Vdom.Attr.create "aria-activedescendant" id ]))
               [];
+            command_picker_view command_active command_matches
+              ~selected:command_selected ~on_hover:set_command_selected
+              ~on_choose:on_choose_command;
             picker_view picker
               ~on_hover:(fun index ->
                 set_picker (Mention_picker.select_index picker index))

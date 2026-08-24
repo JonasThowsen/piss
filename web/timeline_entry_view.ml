@@ -56,6 +56,109 @@ let message ~key ~class_name ~role ~status ?copy ?body_node body =
            else Vdom.Node.p ~attrs:[ class_ "message-body" ] [ text body ]);
     ]
 
+let background_count count singular =
+  if count = 1 then "1 " ^ singular
+  else Int.to_string count ^ " " ^ singular ^ "s"
+
+let background_meta (run : Background_work.node) =
+  let activity = run.activity in
+  [
+    Some (Background_work.kind_to_string run.kind);
+    Option.bind activity ~f:(fun value ->
+        Option.map value.current_tool ~f:(fun tool -> "tool: " ^ tool));
+    Option.bind activity ~f:(fun value ->
+        Option.map value.turn_count ~f:(fun count ->
+            background_count count "turn"));
+    Option.bind activity ~f:(fun value ->
+        Option.map value.tool_count ~f:(fun count ->
+            background_count count "tool"));
+  ]
+  |> List.filter_opt |> String.concat ~sep:" · "
+
+let rec background_node depth (node : Background_work.node) =
+  let status = Background_work.state_to_string node.state in
+  Vdom.Node.div
+    ~attrs:
+      [
+        class_ "background-node";
+        Vdom.Attr.create "data-background-depth" (Int.to_string depth);
+        Vdom.Attr.create "data-background-state" status;
+      ]
+    [
+      Vdom.Node.div
+        ~attrs:[ class_ "background-node-row" ]
+        [
+          Vdom.Node.span ~attrs:[ class_ "background-node-marker" ] [];
+          Vdom.Node.strong [ text node.label ];
+          Vdom.Node.span
+            ~attrs:[ class_ "background-node-kind" ]
+            [ text (Background_work.kind_to_string node.kind) ];
+          Vdom.Node.span
+            ~attrs:[ class_ "background-node-status" ]
+            [ text status ];
+          Option.value_map node.activity ~default:Vdom.Node.none
+            ~f:(fun activity ->
+              Option.value_map activity.current_tool ~default:Vdom.Node.none
+                ~f:(fun tool ->
+                  Vdom.Node.span
+                    ~attrs:[ class_ "background-node-tool" ]
+                    [ text tool ]));
+        ];
+      Vdom.Node.div
+        ~attrs:[ class_ "background-node-children" ]
+        (List.map node.children ~f:(background_node (depth + 1)));
+    ]
+
+let background_work sequence (run : Background_work.node) =
+  let live = Background_work.is_running run.state in
+  let state = Background_work.state_to_string run.state in
+  let key = "background:" ^ run.id in
+  Vdom.Node.create "details" ~key
+    ~attrs:
+      ([
+         class_
+           ("timeline-item timeline-background"
+           ^ if live then " timeline-background-live" else "");
+         Vdom.Attr.create "data-timeline-key" key;
+         Vdom.Attr.create "data-timeline-sequence" (Int64.to_string sequence);
+         Vdom.Attr.create "data-background-run-id" run.id;
+       ]
+      @ if live then [ Vdom.Attr.create "open" "" ] else [])
+    [
+      Vdom.Node.create "summary"
+        [
+          Vdom.Node.span ~attrs:[ class_ "background-chevron" ] [ text ">" ];
+          Vdom.Node.span
+            ~attrs:[ class_ "activity-summary-copy" ]
+            [
+              Vdom.Node.strong
+                ~attrs:[ class_ "activity-title" ]
+                [ text ("Delegated work · " ^ run.label) ];
+              Vdom.Node.span
+                ~attrs:[ class_ "activity-meta" ]
+                [ text (background_meta run) ];
+            ];
+          (if live then
+             Vdom.Node.span
+               ~attrs:[ class_ "activity-live-badge" ]
+               [ Vdom.Node.create "i" []; text "LIVE" ]
+           else Vdom.Node.span ~attrs:[ class_ "message-status" ] [ text state ]);
+        ];
+      Vdom.Node.div
+        ~attrs:[ class_ "background-tree" ]
+        (if List.is_empty run.children then
+           [
+             Vdom.Node.p
+               ~attrs:[ class_ "background-empty" ]
+               [
+                 text
+                   (if live then "Waiting for child activity…"
+                    else "No child details reported.");
+               ];
+           ]
+         else List.map run.children ~f:(background_node 0));
+    ]
+
 let render ~copy_feedback ~on_copy = function
   | Event_history.User { sequence; command_id; text = body } ->
       Some
@@ -72,6 +175,7 @@ let render ~copy_feedback ~on_copy = function
            ~body_node:
              (Markdown_view.render ~item_key:key ~copy_feedback ~on_copy body)
            body)
+  | Background_work { sequence; run } -> Some (background_work sequence run)
   | Tool { sequence = _; tool_call_id; title; input; output; status; artifacts }
     ->
       let key = "tool:" ^ tool_call_id in
@@ -156,8 +260,9 @@ let activity ~copy_feedback ~on_copy ~key ~sequence entries =
   let tools =
     List.filter_map entries ~f:(function
       | Event_history.Tool { title; status; _ } -> Some (title, status)
-      | User _ | Agent _ | Command_state _ | Permission_requested _
-      | Permission_resolved _ | Permission_cancelled _ ->
+      | User _ | Agent _ | Background_work _ | Command_state _
+      | Permission_requested _ | Permission_resolved _ | Permission_cancelled _
+        ->
           None)
   in
   let command_count =

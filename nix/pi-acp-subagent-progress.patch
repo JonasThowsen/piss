@@ -1,0 +1,250 @@
+diff --git a/src/acp/session.ts b/src/acp/session.ts
+index 3cfbb48..f2d9a43 100644
+--- a/src/acp/session.ts
++++ b/src/acp/session.ts
+@@ -300,6 +300,7 @@ export class PiAcpSession {
+   // that work visible to ACP clients until each completion-triggered turn is
+   // observed instead of falsely projecting an idle session.
+   private readonly backgroundWorkIds = new Set<string>()
++  private backgroundWorkSnapshot: Record<string, unknown> | null = null
+ 
+   // For ACP diff support: capture file contents before edit/write mutations,
+   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
+@@ -904,7 +905,13 @@ export class PiAcpSession {
+           } else {
+             this.emit({
+               sessionUpdate: 'session_info_update',
+-              _meta: { piAcp: { queueDepth: 0, running: this.backgroundWorkIds.size > 0 } }
++              _meta: {
++                piAcp: {
++                  queueDepth: 0,
++                  running: this.backgroundWorkIds.size > 0,
++                  ...(this.backgroundWorkSnapshot ? { subagents: this.backgroundWorkSnapshot } : {})
++                }
++              }
+             })
+           }
+         })
+@@ -920,35 +927,53 @@ export class PiAcpSession {
+     const prefix = 'PI_SUBAGENT_ASYNC_JSON:'
+     const lines = Array.isArray((ev as any).widgetLines) ? (ev as any).widgetLines : []
+     const line = lines.find((value: unknown) => typeof value === 'string' && value.startsWith(prefix))
+-    const active = new Set<string>()
++    const emptySnapshot = (): Record<string, unknown> => ({
++      kind: 'pi-subagents.async-status-snapshot',
++      version: 1,
++      generatedAt: Date.now(),
++      omitted: { runs: 0, children: 0, byteLimitExceeded: false },
++      runs: []
++    })
++    let snapshot = emptySnapshot()
+ 
+     if (typeof line === 'string') {
+       try {
+-        const snapshot = JSON.parse(line.slice(prefix.length))
+-        if (snapshot?.kind === 'pi-subagents.async-status-snapshot' && snapshot?.version === 1) {
+-          for (const run of Array.isArray(snapshot.runs) ? snapshot.runs : []) {
+-            if (
+-              run &&
+-              typeof run.id === 'string' &&
+-              (run.state === 'queued' || run.state === 'running')
+-            ) {
+-              active.add(run.id)
+-            }
++        const payload = line.slice(prefix.length)
++        if (Buffer.byteLength(payload, 'utf8') <= 32 * 1024) {
++          const parsed = JSON.parse(payload)
++          if (
++            parsed &&
++            parsed.kind === 'pi-subagents.async-status-snapshot' &&
++            parsed.version === 1 &&
++            Array.isArray(parsed.runs)
++          ) {
++            snapshot = parsed
+           }
+         }
+       } catch {
+-        return
++        // A malformed optional widget is equivalent to no active work. Publishing
++        // an empty snapshot clears stale progress restored from the durable spool.
+       }
+     }
+ 
++    this.backgroundWorkSnapshot = snapshot
+     this.backgroundWorkIds.clear()
+-    for (const asyncId of active) this.backgroundWorkIds.add(asyncId)
++    for (const run of snapshot.runs as unknown[]) {
++      if (
++        run &&
++        typeof (run as any).id === 'string' &&
++        ((run as any).state === 'queued' || (run as any).state === 'running')
++      ) {
++        this.backgroundWorkIds.add((run as any).id)
++      }
++    }
+     this.emit({
+       sessionUpdate: 'session_info_update',
+       _meta: {
+         piAcp: {
+           queueDepth: this.turnQueue.length,
+-          running: Boolean(this.pendingTurn || this.inAgentLoop || this.backgroundWorkIds.size > 0)
++          running: Boolean(this.pendingTurn || this.inAgentLoop || this.backgroundWorkIds.size > 0),
++          ...(this.backgroundWorkSnapshot ? { subagents: this.backgroundWorkSnapshot } : {})
+         }
+       }
+     })
+diff --git a/test/component/session-queue-cancel.test.ts b/test/component/session-queue-cancel.test.ts
+index 9da7f93..8ee8f21 100644
+--- a/test/component/session-queue-cancel.test.ts
++++ b/test/component/session-queue-cancel.test.ts
+@@ -4,6 +4,19 @@ import { PiAcpSession } from '../../src/acp/session.js'
+ import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
+ 
+ const nextTick = () => new Promise<void>(resolve => setImmediate(resolve))
++const statusRun = (id: string, state: string) => ({
++  id,
++  kind: 'workflow',
++  label: 'worker',
++  state
++})
++const statusSnapshot = (runs: unknown[]) => ({
++  kind: 'pi-subagents.async-status-snapshot',
++  version: 1,
++  generatedAt: 1,
++  omitted: { runs: 0, children: 0, byteLimitExceeded: false },
++  runs
++})
+ 
+ test('PiAcpSession: reports exact detached work from structured status snapshots', async () => {
+   const conn = new FakeAgentSideConnection()
+@@ -45,14 +58,8 @@ test('PiAcpSession: reports exact detached work from structured status snapshots
+     method: 'setWidget',
+     widgetKey: 'subagent-async',
+     widgetLines: [
+-      'PI_SUBAGENT_ASYNC_JSON:' + JSON.stringify({
+-        kind: 'pi-subagents.async-status-snapshot',
+-        version: 1,
+-        runs: [
+-          { id: 'run-1', state: 'complete' },
+-          { id: 'run-2', state: 'running' }
+-        ]
+-      })
++      'PI_SUBAGENT_ASYNC_JSON:' +
++        JSON.stringify(statusSnapshot([statusRun('run-1', 'complete'), statusRun('run-2', 'running')]))
+     ]
+   })
+   await nextTick()
+@@ -61,6 +68,11 @@ test('PiAcpSession: reports exact detached work from structured status snapshots
+     true,
+     'one remaining detached run must keep the ACP session active'
+   )
++  assert.deepEqual(
++    (conn.updates.at(-1)?.update as any)?._meta?.piAcp?.subagents?.runs,
++    [statusRun('run-1', 'complete'), statusRun('run-2', 'running')],
++    'the bounded structured status must be forwarded to ACP clients'
++  )
+ 
+   proc.emit({
+     type: 'extension_ui_request',
+@@ -70,6 +82,78 @@ test('PiAcpSession: reports exact detached work from structured status snapshots
+   })
+   await nextTick()
+   assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++  assert.deepEqual(
++    (conn.updates.at(-1)?.update as any)?._meta?.piAcp?.subagents?.runs,
++    [],
++    'clearing the widget must clear stale live progress'
++  )
++})
++
++test('PiAcpSession: fresh adapter publishes an empty snapshot when the widget clears', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-clear-after-restart',
++    method: 'setWidget',
++    widgetKey: 'subagent-async'
++  })
++  await nextTick()
++
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++  assert.deepEqual((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.subagents?.runs, [])
++})
++
++test('PiAcpSession: malformed detached-work snapshots clear stale progress', async () => {
++  const conn = new FakeAgentSideConnection()
++  const proc = new FakePiRpcProcess()
++
++  new PiAcpSession({
++    sessionId: 's1',
++    cwd: process.cwd(),
++    mcpServers: [],
++    proc: proc as any,
++    conn: asAgentConn(conn),
++    fileCommands: []
++  })
++
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-valid-before-oversized',
++    method: 'setWidget',
++    widgetKey: 'subagent-async',
++    widgetLines: [
++      'PI_SUBAGENT_ASYNC_JSON:' +
++        JSON.stringify(statusSnapshot([statusRun('previously-running', 'running')]))
++    ]
++  })
++  proc.emit({
++    type: 'extension_ui_request',
++    id: 'widget-oversized',
++    method: 'setWidget',
++    widgetKey: 'subagent-async',
++    widgetLines: [
++      'PI_SUBAGENT_ASYNC_JSON:' +
++        JSON.stringify({
++          ...statusSnapshot([statusRun('oversized', 'running')]),
++          padding: 'x'.repeat(33 * 1024)
++        })
++    ]
++  })
++  await nextTick()
++
++  assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, false)
++  assert.deepEqual((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.subagents?.runs, [])
+ })
+ 
+ test('PiAcpSession: restores detached work after an adapter restart', async () => {
+@@ -91,16 +175,17 @@ test('PiAcpSession: restores detached work after an adapter restart', async () =
+     method: 'setWidget',
+     widgetKey: 'subagent-async',
+     widgetLines: [
+-      'PI_SUBAGENT_ASYNC_JSON:' + JSON.stringify({
+-        kind: 'pi-subagents.async-status-snapshot',
+-        version: 1,
+-        runs: [{ id: 'restored-run', state: 'running' }]
+-      })
++      'PI_SUBAGENT_ASYNC_JSON:' +
++        JSON.stringify(statusSnapshot([statusRun('restored-run', 'running')]))
+     ]
+   })
+   await nextTick()
+ 
+   assert.equal((conn.updates.at(-1)?.update as any)?._meta?.piAcp?.running, true)
++  assert.equal(
++    (conn.updates.at(-1)?.update as any)?._meta?.piAcp?.subagents?.runs?.[0]?.id,
++    'restored-run'
++  )
+ })
+ 
+ test('PiAcpSession: ignores unrelated asyncId-shaped tool results', async () => {

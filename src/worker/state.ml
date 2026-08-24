@@ -14,6 +14,7 @@ type t = {
   supports_images : bool ref;
   harness_session_id : string ref;
   config_options : Yojson.Safe.t ref;
+  available_commands : Yojson.Safe.t ref;
   status : Domain.worker_status ref;
   harness_running : bool ref;
   running_commands : (string, float) Hashtbl.t;
@@ -42,6 +43,7 @@ let make ~args ~store ~workspace ~harness_pid ~runtime_worker_id
     supports_images = ref false;
     harness_session_id = ref "";
     config_options = ref (`List []);
+    available_commands = ref (`List []);
     status = ref Domain.Starting;
     harness_running = ref false;
     running_commands = Hashtbl.create 4;
@@ -130,6 +132,66 @@ let harness_session_id t = !(t.harness_session_id)
 let set_harness_session_id t session_id = t.harness_session_id := session_id
 let config_options t = !(t.config_options)
 let set_config_options t options = t.config_options := options
+let available_commands t = !(t.available_commands)
+
+let bounded_text ~limit = function
+  | `String value
+    when value <> ""
+         && String.length value <= limit
+         && not (String.contains value '\000') ->
+      Some value
+  | _ -> None
+
+let sanitized_available_commands commands =
+  match commands with
+  | `List commands ->
+      let _, retained =
+        List.fold_left
+          (fun (names, kept) command ->
+            if List.length kept >= 128 then (names, kept)
+            else
+              match command with
+              | `Assoc fields -> (
+                  match
+                    ( bounded_text ~limit:128
+                        (Yojson.Safe.Util.member "name" (`Assoc fields)),
+                      bounded_text ~limit:512
+                        (Yojson.Safe.Util.member "description" (`Assoc fields))
+                    )
+                  with
+                  | Some name, Some description
+                    when not (List.exists (String.equal name) names) ->
+                      let input =
+                        match
+                          Yojson.Safe.Util.member "input" (`Assoc fields)
+                        with
+                        | `Assoc input_fields -> (
+                            match
+                              bounded_text ~limit:256
+                                (Yojson.Safe.Util.member "hint"
+                                   (`Assoc input_fields))
+                            with
+                            | Some hint ->
+                                [ ("input", `Assoc [ ("hint", `String hint) ]) ]
+                            | None -> [])
+                        | `Null -> []
+                        | _ -> []
+                      in
+                      ( name :: names,
+                        `Assoc
+                          (("name", `String name)
+                          :: ("description", `String description)
+                          :: input)
+                        :: kept )
+                  | None, _ | _, None | Some _, Some _ -> (names, kept))
+              | _ -> (names, kept))
+          ([], []) commands
+      in
+      `List (List.rev retained)
+  | _ -> `List []
+
+let set_available_commands t commands =
+  t.available_commands := sanitized_available_commands commands
 
 let selected_config_values t =
   match !(t.config_options) with

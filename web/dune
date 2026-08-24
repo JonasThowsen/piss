@@ -4,6 +4,7 @@
  (modules
   acp_content
   audit_domain
+  background_work
   control_plane
   event_buffer
   event_decode
@@ -16,6 +17,7 @@
   mention_picker
   notification_policy
   composer_policy
+  command_picker
   outbox_projection
   permission_decision
   prompt_command
@@ -78,6 +80,20 @@
 (test
  (name audit_domain_test)
  (modules audit_domain_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name background_work_test)
+ (modules background_work_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name command_picker_test)
+ (modules command_picker_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

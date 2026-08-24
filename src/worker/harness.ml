@@ -30,8 +30,11 @@ let option_is_offered ~params ~option_id =
   | _ -> false
 
 let response_stop_reason json =
-  match Yojson.Safe.Util.(json |> member "result" |> member "stopReason") with
-  | `String value -> Some value
+  match Yojson.Safe.Util.member "result" json with
+  | `Assoc _ as result -> (
+      match Yojson.Safe.Util.member "stopReason" result with
+      | `String value -> Some value
+      | _ -> None)
   | _ -> None
 
 type t = {

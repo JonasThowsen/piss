@@ -134,6 +134,7 @@ let runtime =
     upgrade_pending = false;
     accepts_images = true;
     config_options = [];
+    available_commands = [];
   }
 
 let () =
@@ -342,6 +343,12 @@ let () =
   (match upgrade_event with
   | Ok event when Event_history.refreshes_session event -> ()
   | _ -> fail "worker upgrade completion did not refresh the runtime");
+  (match
+     Event_history.decode_event
+       {|{"sequence":6,"kind":"acp.available_commands_update","payload":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}},"createdAt":5}|}
+   with
+  | Ok event when Event_history.refreshes_session event -> ()
+  | _ -> fail "available commands did not refresh the runtime snapshot");
   (match
      Prompt_command.prompt ~runtime ~command_id:"web-uuid" ~text:"   "
        ~images:[] ~resources:[]

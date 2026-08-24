@@ -30,6 +30,10 @@ type artifact = Acp_content.artifact
 type update =
   | User_update of { sequence : int64; command_id : string; text : string }
   | Agent_chunk of { sequence : int64; message_id : string; text : string }
+  | Background_work_snapshot of {
+      sequence : int64;
+      snapshot : Background_work.t;
+    }
   | Tool_call of {
       sequence : int64;
       tool_call_id : string;
@@ -66,6 +70,7 @@ type update =
 type entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
+  | Background_work of { sequence : int64; run : Background_work.node }
   | Tool of {
       sequence : int64;
       tool_call_id : string;

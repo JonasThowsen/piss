@@ -145,6 +145,14 @@ collision.
 5. Worker records Dispatched, writes ACP, and later records terminal events.
 6. Browser resumes SSE by monotonic sequence and updates its bounded projection.
 
+For Pi sessions, the adapter also translates the `pi-subagents` extension's
+bounded `subagent-async` widget snapshot into
+`session_info_update._meta.piAcp.subagents`. The worker persists that ACP
+notification as ordinary, non-authoritative progress, and the browser projects
+each top-level run into a stable delegated-work timeline card. These snapshots
+may describe activity but never complete, reject, reconcile, or otherwise act
+as evidence for a command receipt.
+
 ### Peer request
 
 The broker durably accepts an idempotent request, claims dispatch with CAS,
@@ -170,6 +178,7 @@ Budgets are part of correctness:
 | catalog snapshot fan-out | work-conserving max 8; independent 1 s deadline per worker |
 | HTTP request body | 16 MiB |
 | worker response frame | 32 MiB |
+| Pi delegated-work snapshot | 32 KiB; 20 runs; 8 children/node; depth 3; strings 160 chars |
 | workspace mention search | 5,000 entries, depth 12, 150 ms, 20 results, 64 KiB |
 | command receipt authority | 1,024 terminal receipts; open receipts retained |
 

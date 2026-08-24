@@ -19,6 +19,7 @@ let runtime status =
     upgrade_pending = false;
     accepts_images = true;
     config_options = [];
+    available_commands = [];
   }
 
 let () =

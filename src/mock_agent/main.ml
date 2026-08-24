@@ -18,14 +18,90 @@ let session_update ~session_id update =
   Acp.notification ~method_:"session/update"
     (`Assoc [ ("sessionId", `String session_id); ("update", update) ])
 
-let write_running ~session_id running =
+let write_background_work ~session_id running =
+  let state = if running then "running" else "complete" in
+  let activity tool_count current_tool =
+    `Assoc
+      ([
+         ("state", `String (if running then "active" else "settled"));
+         ("turnCount", `Int 2);
+         ("toolCount", `Int tool_count);
+       ]
+      @
+      match current_tool with
+      | Some tool -> [ ("currentTool", `String tool) ]
+      | None -> [])
+  in
+  let child id label tool_count current_tool =
+    `Assoc
+      [
+        ("id", `String id);
+        ("kind", `String "step");
+        ("label", `String label);
+        ("state", `String state);
+        ("activity", activity tool_count current_tool);
+      ]
+  in
+  let snapshot =
+    `Assoc
+      [
+        ("kind", `String "pi-subagents.async-status-snapshot");
+        ("version", `Int 1);
+        ("generatedAt", `Intlit "1787596000000");
+        ( "caps",
+          `Assoc
+            [
+              ("maxRuns", `Int 20);
+              ("maxChildrenPerNode", `Int 8);
+              ("maxDepth", `Int 3);
+              ("maxStringLength", `Int 160);
+              ("maxSerializedBytes", `Int 32768);
+            ] );
+        ( "omitted",
+          `Assoc
+            [
+              ("runs", `Int 0);
+              ("children", `Int 0);
+              ("byteLimitExceeded", `Bool false);
+            ] );
+        ( "runs",
+          `List
+            [
+              `Assoc
+                [
+                  ("id", `String "mock-background-workflow");
+                  ("kind", `String "workflow");
+                  ("label", `String "worker, reviewer");
+                  ("state", `String state);
+                  ("activity", activity 7 None);
+                  ( "children",
+                    `List
+                      [
+                        child "implementation" "worker" 5
+                          (if running then Some "bash" else None);
+                        child "review" "reviewer" 2
+                          (if running then Some "read" else None);
+                      ] );
+                ];
+            ] );
+      ]
+  in
   write
     (session_update ~session_id
        (`Assoc
           [
             ("sessionUpdate", `String "session_info_update");
             ( "_meta",
-              `Assoc [ ("piAcp", `Assoc [ ("running", `Bool running) ]) ] );
+              `Assoc
+                [
+                  ( "piAcp",
+                    `Assoc
+                      [
+                        ("queueDepth", `Int 0);
+                        ("running", `Bool running);
+                        ("subagents", snapshot);
+                      ] );
+                ] );
           ]))
 
 let duration () =
@@ -172,6 +248,10 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
   in
   if not allowed then
     write (Acp.response ~id (`Assoc [ ("stopReason", `String "cancelled") ]))
+  else if String.starts_with ~prefix:"error:" text then
+    write
+      (Acp.error_response_with_id ~id:(`String id) ~code:(-32603)
+         ~message:"mock provider rejected the prompt")
   else (
     write
       (session_update ~session_id
@@ -350,17 +430,34 @@ let rec run_prompt ~id ~session_id ~text ~images ~resources =
               ]));
       write (Acp.response ~id (`Assoc [ ("stopReason", `String "end_turn") ]));
       if String.starts_with ~prefix:"background-status:" text then (
-        write_running ~session_id true;
+        write_background_work ~session_id true;
         Unix.sleepf 1.;
-        write_running ~session_id false)
+        write_background_work ~session_id false)
       else if String.starts_with ~prefix:"stale-background-status:" text then
-        write_running ~session_id:"stale-mock-acp-session" true));
+        write_background_work ~session_id:"stale-mock-acp-session" true));
   if not (Queue.is_empty pending_prompts) then
     let next_id, next_text, next_images, next_resources =
       Queue.take pending_prompts
     in
     run_prompt ~id:next_id ~session_id ~text:next_text ~images:next_images
       ~resources:next_resources
+
+let available_commands =
+  `List
+    [
+      `Assoc
+        [
+          ("name", `String "compact");
+          ("description", `String "Compact the active session");
+          ("input", `Null);
+        ];
+      `Assoc
+        [
+          ("name", `String "skill:review");
+          ("description", `String "Review code using the review skill");
+          ("input", `Assoc [ ("hint", `String "target") ]);
+        ];
+    ]
 
 let config_options ~model ~thinking ~mode =
   `List
@@ -472,6 +569,13 @@ let () =
                     ( "configOptions",
                       config_options ~model:!model ~thinking:!thinking
                         ~mode:!mode );
+                  ]));
+          write
+            (session_update ~session_id:!session_id
+               (`Assoc
+                  [
+                    ("sessionUpdate", `String "available_commands_update");
+                    ("availableCommands", available_commands);
                   ]))
       | "session/set_config_option" ->
           let params = Yojson.Safe.Util.member "params" json in

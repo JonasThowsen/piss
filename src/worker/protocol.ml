@@ -142,6 +142,7 @@ let handle ~clock state request =
                         `Bool (State.upgrade_is_preparing state) )
                    :: ("acceptsImages", `Bool (State.supports_images state))
                    :: ("configOptions", State.config_options state)
+                   :: ("availableCommands", State.available_commands state)
                    :: fields))
           | _ -> assert false)
       | Wire.Prepare_upgrade { generation = target }

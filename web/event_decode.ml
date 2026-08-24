@@ -208,6 +208,30 @@ let decode_message path sequence payload expected_kind role =
       Ok None
   | _, None -> Ok None
 
+let decode_background_work path sequence payload =
+  let* update, update_path = acp_update path "session_info_update" payload in
+  match List.Assoc.find update ~equal:String.equal "_meta" with
+  | Some (`Assoc meta) -> (
+      match List.Assoc.find meta ~equal:String.equal "piAcp" with
+      | Some (`Assoc pi_acp) -> (
+          match List.Assoc.find pi_acp ~equal:String.equal "subagents" with
+          | Some (`Assoc _ as json) -> (
+              match
+                Background_work.decode
+                  ~path:(update_path ^ "._meta.piAcp.subagents")
+                  json
+              with
+              | Ok snapshot ->
+                  Ok (Some (Background_work_snapshot { sequence; snapshot }))
+              | Error _ ->
+                  (* Delegated-work metadata is optional and non-authoritative.
+                     Version skew or malformed progress must not reject the
+                     surrounding durable history page/SSE stream. *)
+                  Ok None)
+          | None | Some `Null | Some _ -> Ok None)
+      | None | Some _ -> Ok None)
+  | None | Some _ -> Ok None
+
 let decode_tool_call path sequence payload =
   let* update, update_path = acp_update path "tool_call" payload in
   let* tool_call_id =
@@ -358,6 +382,8 @@ let decode_event_json index json =
     | "acp.agent_message_chunk" ->
         decode_message payload_path sequence payload "agent_message_chunk"
           `Agent
+    | "acp.session_info_update" ->
+        decode_background_work payload_path sequence payload
     | "acp.tool_call" -> decode_tool_call payload_path sequence payload
     | "acp.tool_call_update" -> decode_tool_update payload_path sequence payload
     | "acp.permission.requested" ->

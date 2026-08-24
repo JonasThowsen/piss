@@ -57,6 +57,8 @@ val record_additional_session : t -> session_id:string -> unit
 val additional_session_limit_reached : t -> bool
 val config_options : t -> Yojson.Safe.t
 val set_config_options : t -> Yojson.Safe.t -> unit
+val available_commands : t -> Yojson.Safe.t
+val set_available_commands : t -> Yojson.Safe.t -> unit
 val current_config_value : t -> config_id:string -> string option
 
 val change_config_option :

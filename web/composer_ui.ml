@@ -120,6 +120,66 @@ let prevent action =
   Effect.Many
     [ Vdom.Effect.Prevent_default; Vdom.Effect.Stop_propagation; action ]
 
+let command_picker_view active commands ~selected ~on_hover ~on_choose =
+  match active with
+  | None -> Vdom.Node.none
+  | Some active ->
+      let contents =
+        match commands with
+        | [] ->
+            [
+              Vdom.Node.p
+                ~attrs:[ class_ "command-picker-state" ]
+                [ text "No matching commands. Send to run it directly." ];
+            ]
+        | commands ->
+            List.mapi commands ~f:(fun index command ->
+                Vdom.Node.button ~key:command.Runtime_domain.name
+                  ~attrs:
+                    [
+                      Vdom.Attr.id (Printf.sprintf "slash-command-%d" index);
+                      Vdom.Attr.create "type" "button";
+                      Vdom.Attr.create "role" "option";
+                      Vdom.Attr.create "aria-label"
+                        ("/" ^ command.name ^ ": " ^ command.description);
+                      Vdom.Attr.create "aria-selected"
+                        (Bool.to_string (index = selected));
+                      (if index = selected then class_ "active" else class_ "");
+                      Vdom.Attr.on_mouseenter (fun _ -> on_hover index);
+                      Vdom.Attr.on_mousedown (fun _ ->
+                          Vdom.Effect.Prevent_default);
+                      Vdom.Attr.on_click (fun _ -> on_choose command);
+                    ]
+                  [
+                    Vdom.Node.create "i" [ text "/" ];
+                    Vdom.Node.span
+                      [
+                        Vdom.Node.create "b" [ text ("/" ^ command.name) ];
+                        Vdom.Node.create "small"
+                          [
+                            text
+                              (Option.value command.input_hint
+                                 ~default:command.description);
+                          ];
+                      ];
+                  ])
+      in
+      Vdom.Node.div
+        ~attrs:
+          [
+            class_ "command-picker-menu";
+            Vdom.Attr.id "slash-command-options";
+            Vdom.Attr.create "role" "listbox";
+            Vdom.Attr.create "aria-label" "Agent commands and skills";
+          ]
+        (Vdom.Node.header
+           [
+             Vdom.Node.span [ text "Commands & skills" ];
+             Vdom.Node.create "small"
+               [ text ("/" ^ active.Command_picker.query) ];
+           ]
+        :: contents)
+
 let picker_view picker ~on_hover ~on_choose =
   match picker with
   | Mention_picker.Closed -> Vdom.Node.none

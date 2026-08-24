@@ -89,6 +89,9 @@
                 ./web/audit_domain_test.ml
                 ./web/audit_view.ml
                 ./web/audit_view.mli
+                ./web/background_work.ml
+                ./web/background_work.mli
+                ./web/background_work_test.ml
                 ./web/browser_http.ml
                 ./web/browser_http.mli
                 ./web/catalog_polling.ml
@@ -96,6 +99,9 @@
                 ./web/clipboard.mli
                 ./web/command_id.ml
                 ./web/command_id.mli
+                ./web/command_picker.ml
+                ./web/command_picker.mli
+                ./web/command_picker_test.ml
                 ./web/composer.ml
                 ./web/composer.mli
                 ./web/composer_draft.ml
@@ -259,9 +265,7 @@
         in
         {
           inherit piss;
-          opencode = opencode-src.packages.${system}.opencode.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/opencode-unknown-finish.patch ];
-          });
+          opencode = opencode-src.packages.${system}.opencode;
           codex-acp = pkgs.buildNpmPackage {
             pname = "codex-acp";
             version = "1.4.0";
@@ -306,6 +310,7 @@
               ./nix/pi-acp-background-drain.patch
               ./nix/pi-acp-prelude-events.patch
               ./nix/pi-acp-active-turn-contract.patch
+              ./nix/pi-acp-subagent-progress.patch
             ];
             npmDepsHash = "sha256-/fX79XucKojL/6gZbK5eizEfrXso8rlTgiHfJffmDuY=";
             nativeBuildInputs = [ pkgs.makeWrapper ];

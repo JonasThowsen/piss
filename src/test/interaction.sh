@@ -58,9 +58,24 @@ updated_config=$(curl -fsS -X POST -H 'content-type: application/json' \
   --data "$(targeted '{"mutationId":"config-thought-high","configId":"thought_level","value":"high"}')" \
   "http://127.0.0.1:$port/api/v2/config-options")
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$updated_config") == high ]]
-snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
+for _ in $(seq 1 100); do
+  snapshot=$(curl -fsS "http://127.0.0.1:$port/api/v2/session")
+  available_hint=$(jq -r '.availableCommands[] | select(.name == "skill:review") | .input.hint' <<<"$snapshot")
+  [[ "$available_hint" == target ]] && break
+  sleep .02
+done
 [[ $(jq -r '.configOptions[]|select(.category=="thought_level")|.currentValue' <<<"$snapshot") == high ]]
 [[ $(jq -r '.acceptsImages' <<<"$snapshot") == true ]]
+[[ "$available_hint" == target ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"slash-skill","text":"/skill:review src/worker/state.ml"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  slash_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "slash-skill" and .payload.state == "completed")] | length' <<<"$slash_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "slash-skill" and .payload.text == "/skill:review src/worker/state.ml")] | length' <<<"$slash_events") == 1 ]]
 mentions=$(curl -fsS "http://127.0.0.1:$port/api/v2/file-mentions?query=main")
 jq -e 'any(.[]; .path == "web/main.ml" and .kind == "file")' \
   <<<"$mentions" >/dev/null
@@ -99,6 +114,31 @@ done
 [[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "image-command" and .payload.imageCount == 1 and .payload.images[0].mimeType == "image/gif" and .payload.images[0].size == 14)] | length' <<<"$image_events") == 1 ]]
 [[ $(jq --arg data "$image_data" '[.[] | select(tostring | contains($data))] | length' <<<"$image_events") == 0 ]]
 [[ $(jq '[.[] | select(.kind == "acp.agent_message_chunk" and .payload.params.update.content.text == "Received 1 image attachment.")] | length' <<<"$image_events") == 1 ]]
+
+# A JSON-RPC error is terminal command evidence, not a malformed successful
+# result. The worker must reject the command without crashing and remain able to
+# serve the next prompt.
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"adapter-error","text":"error: reject this prompt"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  error_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "adapter-error" and .payload.state == "rejected")] | length' <<<"$error_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "adapter-error" and .payload.state == "rejected")] | length' <<<"$error_events") == 1 ]]
+kill -0 "$worker_pid"
+[[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == idle ]]
+curl -fsS -X POST -H 'content-type: application/json' \
+  --data "$(targeted '{"commandId":"after-adapter-error","text":"prove the worker survived"}')" \
+  "http://127.0.0.1:$port/api/v2/commands" >/dev/null
+for _ in $(seq 1 300); do
+  recovery_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
+  [[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "after-adapter-error" and .payload.state == "completed")] | length' <<<"$recovery_events") == 1 ]] && break
+  sleep .02
+done
+[[ $(jq '[.[] | select(.kind == "command.state" and .payload.commandId == "after-adapter-error" and .payload.state == "completed")] | length' <<<"$recovery_events") == 1 ]]
+
 initial_events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
 [[ $(jq '[.[] | select(.kind == "timeline.reset")] | length' <<<"$initial_events") == 1 ]]
 initial_cursor=$(jq '[.[].sequence] | max // 0' <<<"$initial_events")
@@ -209,6 +249,8 @@ done
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == idle ]]
 [[ $(jq '[.[] | select(.kind == "command.accepted" and .payload.commandId == "background-queued" and .payload.action == "follow_up")] | length' <<<"$events") == 1 ]]
 [[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.update._meta.piAcp.running == true)] | length' <<<"$events") -ge 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.update._meta.piAcp.running == true and .payload.params.update._meta.piAcp.subagents.runs[0].children[0].activity.currentTool == "bash")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.update._meta.piAcp.running == false and .payload.params.update._meta.piAcp.subagents.runs[0].state == "complete")] | length' <<<"$events") == 1 ]]
 
 curl -fsS -X POST -H 'content-type: application/json' \
   --data "$(targeted '{"commandId":"stale-background","text":"stale-background-status: ignore another ACP session"}')" \
@@ -219,7 +261,8 @@ for _ in $(seq 1 300); do
   sleep .02
 done
 [[ $(curl -fsS "http://127.0.0.1:$port/api/v2/session" | jq -r .status) == idle ]]
-[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.sessionId == "stale-mock-acp-session" and .payload.params.update._meta.piAcp.running == true)] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.foreign_session_update" and .payload.params.sessionId == "stale-mock-acp-session" and .payload.params.update._meta.piAcp.subagents.runs[0].state == "running")] | length' <<<"$events") == 1 ]]
+[[ $(jq '[.[] | select(.kind == "acp.session_info_update" and .payload.params.sessionId == "stale-mock-acp-session" and .payload.params.update._meta.piAcp.subagents != null)] | length' <<<"$events") == 0 ]]
 
 curl -NsS --max-time 12 -H "Last-Event-ID: $resume_cursor" \
   "http://127.0.0.1:$port/api/v2/event-stream?after=0" \
@@ -242,6 +285,8 @@ for _ in $(seq 1 100); do
   sleep .02
 done
 grep -q '"commandId":"cancel-command","state":"cancelled"' \
+  "$state/cancel.stream"
+grep -q '"kind":"pi-subagents.async-status-snapshot"' \
   "$state/cancel.stream"
 kill "$stream_pid" 2>/dev/null || true
 wait "$stream_pid" 2>/dev/null || true
@@ -277,4 +322,4 @@ events=$(curl -fsS "http://127.0.0.1:$port/api/v2/events?after=0")
   --data "$(targeted '{"commandId":"upgrade-race","text":"must not enter a draining worker"}')" \
   "http://127.0.0.1:$port/api/v2/commands") == 503 ]]
 
-echo "interaction proof passed: bounded file mentions, typed resources, images, SSE, permissions, delivery, cancellation, and atomic idle-upgrade drain"
+echo "interaction proof passed: bounded file mentions, typed resources, images, SSE, subagent progress, permissions, delivery, cancellation, and atomic idle-upgrade drain"

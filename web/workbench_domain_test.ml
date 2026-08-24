@@ -18,6 +18,10 @@ let snapshot =
       "retentionPruned": true,
       "upgradePending": false,
       "acceptsImages": true,
+      "availableCommands": [
+        {"name": "compact", "description": "Compact the active session", "input": null},
+        {"name": "skill:review", "description": "Review code", "input": {"hint": "target"}}
+      ],
       "configOptions": [
         {
           "type": "select",
@@ -73,6 +77,13 @@ let () =
   let runtime = decode_snapshot snapshot in
   if not runtime.accepts_images then fail "image capability was lost";
   if not runtime.retention_pruned then fail "retention flag was lost";
+  (match runtime.available_commands with
+  | [
+   { name = "compact"; input_hint = None; _ };
+   { name = "skill:review"; input_hint = Some "target"; _ };
+  ] ->
+      ()
+  | _ -> fail "available slash commands were not decoded");
   if
     not
       (String.equal

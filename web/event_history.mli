@@ -35,6 +35,7 @@ type pending_permission = { sequence : int64; request : permission_request }
 type entry = Timeline_projection.entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
+  | Background_work of { sequence : int64; run : Background_work.node }
   | Tool of {
       sequence : int64;
       tool_call_id : string;

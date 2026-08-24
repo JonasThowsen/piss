@@ -7,6 +7,29 @@ let write_json sink json =
 
 let read_json reader = Eio.Buf_read.line reader |> Yojson.Safe.from_string
 
+let json_member name = function
+  | `Assoc fields -> Option.value ~default:`Null (List.assoc_opt name fields)
+  | _ -> `Null
+
+let foreign_subagent_update state = function
+  | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
+      let expected_session = State.harness_session_id state in
+      let has_subagents =
+        match
+          params |> json_member "update" |> json_member "_meta"
+          |> json_member "piAcp" |> json_member "subagents"
+        with
+        | `Assoc _ -> true
+        | _ -> false
+      in
+      (not (String.equal expected_session ""))
+      && has_subagents
+      &&
+      match json_member "sessionId" params with
+      | `String session_id -> not (String.equal session_id expected_session)
+      | _ -> false)
+  | Ok _ | Error _ -> false
+
 let run ~env (args : Config.args) =
   let authorized_workspace = Unix.realpath args.workspace in
   if not (String.equal authorized_workspace args.workspace) then
@@ -129,9 +152,12 @@ let run ~env (args : Config.args) =
           in
           (if not replayed_session_update then
              let durable_json = Acp.redact_user_image_data json in
-             ignore
-               (State.append_event state ~kind:(Harness.event_kind json)
-                  ~payload:durable_json));
+             let kind =
+               if foreign_subagent_update state envelope then
+                 "acp.foreign_session_update"
+               else Harness.event_kind json
+             in
+             ignore (State.append_event state ~kind ~payload:durable_json));
           (match envelope with
           | Ok (Acp.Response { id = "session-load"; _ }) ->
               session_load_in_progress := false
@@ -147,10 +173,12 @@ let run ~env (args : Config.args) =
                   | None -> ()
                   | Some command_id ->
                       let command_state =
-                        match (error, Harness.response_stop_reason json) with
-                        | Some _, _ -> Domain.Rejected
-                        | None, Some "cancelled" -> Domain.Cancelled
-                        | None, _ -> Domain.Completed
+                        match error with
+                        | Some _ -> Domain.Rejected
+                        | None -> (
+                            match Harness.response_stop_reason json with
+                            | Some "cancelled" -> Domain.Cancelled
+                            | Some _ | None -> Domain.Completed)
                       in
                       if
                         Store.find_command store command_id
@@ -186,16 +214,30 @@ let run ~env (args : Config.args) =
                         ]))
           | Ok (Acp.Notification { method_ = "session/update"; params }) -> (
               match Yojson.Safe.Util.member "sessionId" params with
-              | `String session_id
-                when String.equal session_id (State.harness_session_id state)
-                -> (
+              | `String session_id -> (
+                  let expected_session = State.harness_session_id state in
+                  let matches = String.equal session_id expected_session in
                   let update = Yojson.Safe.Util.member "update" params in
-                  (match Yojson.Safe.Util.member "configOptions" update with
-                  | `List _ as options -> State.set_config_options state options
-                  | _ -> ());
-                  match Acp.running_state update with
-                  | Some running -> State.set_harness_running state running
-                  | None -> ())
+                  if matches then (
+                    (match Yojson.Safe.Util.member "configOptions" update with
+                    | `List _ as options ->
+                        State.set_config_options state options
+                    | _ -> ());
+                    match Acp.running_state update with
+                    | Some running -> State.set_harness_running state running
+                    | None -> ());
+                  (* Command discovery is bounded, non-authoritative UI
+                     metadata. The adapter may emit it immediately after
+                     session/new, before the response fiber stores the new
+                     session id. Retain that startup update; once an id is
+                     claimed, normal matching applies. *)
+                  if matches || String.equal expected_session "" then
+                    match
+                      Yojson.Safe.Util.member "availableCommands" update
+                    with
+                    | `List _ as commands ->
+                        State.set_available_commands state commands
+                    | _ -> ())
               | _ -> ())
           | Ok (Acp.Notification { method_ = "$/cancel_request"; params }) -> (
               match Yojson.Safe.Util.member "id" params |> Acp.id_to_string with

@@ -20,6 +20,12 @@ type config_option = {
   choices : choice list;
 }
 
+type available_command = {
+  name : string;
+  description : string;
+  input_hint : string option;
+}
+
 type t = {
   session_id : string;
   worker_id : string;
@@ -35,6 +41,7 @@ type t = {
   upgrade_pending : bool;
   accepts_images : bool;
   config_options : config_option list;
+  available_commands : available_command list;
 }
 
 val status_to_string : status -> string

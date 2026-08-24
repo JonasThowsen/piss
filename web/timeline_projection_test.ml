@@ -100,6 +100,138 @@ let () =
   ] ->
       ()
   | _ -> fail "id-less response segments did not remain around the tool call");
+  let background_child state current_tool =
+    ({
+       id = "implementation";
+       kind = Background_work.Step;
+       label = "worker";
+       state;
+       activity =
+         Some
+           {
+             state = Some "active";
+             current_tool;
+             turn_count = Some 2;
+             tool_count = Some 7;
+           };
+       children = [];
+     }
+      : Background_work.node)
+  in
+  let background_snapshot state child =
+    ({
+       generated_at = 1L;
+       omitted_runs = 0;
+       omitted_children = 0;
+       runs =
+         [
+           {
+             id = "workflow-1";
+             kind = Background_work.Workflow;
+             label = "worker";
+             state;
+             activity = None;
+             children = [ child ];
+           };
+         ];
+     }
+      : Background_work.t)
+  in
+  let background_entries =
+    project
+      [
+        Background_work_snapshot
+          {
+            sequence = 35L;
+            snapshot =
+              background_snapshot Background_work.Running
+                (background_child Background_work.Running (Some "bash"));
+          };
+        Background_work_snapshot
+          {
+            sequence = 36L;
+            snapshot =
+              background_snapshot Background_work.Complete
+                (background_child Background_work.Complete None);
+          };
+      ]
+  in
+  (match background_entries with
+  | [
+   Background_work
+     {
+       sequence = 35L;
+       run =
+         {
+           id = "workflow-1";
+           state = Background_work.Complete;
+           children = [ { state = Background_work.Complete; _ } ];
+           _;
+         };
+     };
+  ] ->
+      ()
+  | _ -> fail "background work snapshots did not update one stable run entry");
+  (match group_timeline background_entries with
+  | [ Message_entry (Background_work _) ] -> ()
+  | _ -> fail "background work was hidden inside command activity");
+  let cleared_background =
+    project
+      [
+        Background_work_snapshot
+          {
+            sequence = 37L;
+            snapshot =
+              background_snapshot Background_work.Running
+                (background_child Background_work.Running (Some "bash"));
+          };
+        Background_work_snapshot
+          {
+            sequence = 38L;
+            snapshot =
+              {
+                generated_at = 2L;
+                omitted_runs = 0;
+                omitted_children = 0;
+                runs = [];
+              };
+          };
+      ]
+  in
+  if not (List.is_empty cleared_background) then
+    fail "an untracked live background run remained visible forever";
+  let interleaved_background =
+    project
+      [
+        Agent_chunk { sequence = 39L; message_id = "stream"; text = "still " };
+        Background_work_snapshot
+          {
+            sequence = 40L;
+            snapshot =
+              background_snapshot Background_work.Running
+                (background_child Background_work.Running (Some "bash"));
+          };
+        Agent_chunk { sequence = 41L; message_id = "stream"; text = "working" };
+        Background_work_snapshot
+          {
+            sequence = 42L;
+            snapshot =
+              background_snapshot Background_work.Complete
+                (background_child Background_work.Complete None);
+          };
+      ]
+  in
+  (match interleaved_background with
+  | [
+   Agent { sequence = 39L; text = "still working"; _ };
+   Background_work
+     { sequence = 40L; run = { state = Background_work.Complete; _ } };
+  ] ->
+      ()
+  | _ ->
+      fail
+        "background progress split an agent message or moved out of \
+         chronological position");
   let grouped =
     group_timeline
       [

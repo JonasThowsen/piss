@@ -22,6 +22,12 @@ type config_option = {
   choices : choice list;
 }
 
+type available_command = {
+  name : string;
+  description : string;
+  input_hint : string option;
+}
+
 type t = {
   session_id : string;
   worker_id : string;
@@ -37,6 +43,7 @@ type t = {
   upgrade_pending : bool;
   accepts_images : bool;
   config_options : config_option list;
+  available_commands : available_command list;
 }
 
 let ( let* ) result f = Result.bind result ~f
@@ -161,6 +168,44 @@ let decode_config_option path json =
 let decode_config_options fields path =
   list_as fields path "configOptions" decode_config_option
 
+let bounded_nonempty_string ~limit path json =
+  let* value = nonempty_string path json in
+  if String.length value > limit || String.contains value '\000' then
+    error path
+      (Printf.sprintf "must contain at most %d non-NUL characters" limit)
+  else Ok value
+
+let decode_available_command path json =
+  let* fields = assoc path json in
+  let* name =
+    field_as fields path "name" (bounded_nonempty_string ~limit:128)
+  in
+  let* description =
+    field_as fields path "description" (bounded_nonempty_string ~limit:512)
+  in
+  let* input_hint =
+    optional_field fields path "input" (fun input_path input ->
+        let* input = assoc input_path input in
+        optional_field input input_path "hint"
+          (bounded_nonempty_string ~limit:256))
+  in
+  Ok { name; description; input_hint = Option.join input_hint }
+
+let decode_available_commands fields path =
+  match List.Assoc.find fields ~equal:String.equal "availableCommands" with
+  | None | Some `Null -> Ok []
+  | Some (`List commands) ->
+      if List.length commands > 128 then
+        error (path ^ ".availableCommands") "must contain at most 128 commands"
+      else
+        commands
+        |> List.mapi ~f:(fun index command ->
+            decode_available_command
+              (Printf.sprintf "%s.availableCommands[%d]" path index)
+              command)
+        |> Result.all
+  | Some _ -> error (path ^ ".availableCommands") "must be an array"
+
 let decode_json ~path ~expected_session json =
   let* fields = assoc path json in
   let* session_id = field_as fields path "sessionId" nonempty_string in
@@ -182,6 +227,7 @@ let decode_json ~path ~expected_session json =
     let* upgrade_pending = field_as fields path "upgradePending" bool in
     let* accepts_images = field_as fields path "acceptsImages" bool in
     let* config_options = decode_config_options fields path in
+    let* available_commands = decode_available_commands fields path in
     if runtime_generation < 0 then
       error (path ^ ".runtimeGeneration") "must be non-negative"
     else if worker_pid <= 0 then error (path ^ ".workerPid") "must be positive"
@@ -204,6 +250,7 @@ let decode_json ~path ~expected_session json =
           upgrade_pending;
           accepts_images;
           config_options;
+          available_commands;
         }
 
 let parse body =

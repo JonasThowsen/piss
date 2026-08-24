@@ -36,6 +36,7 @@ type artifact = Timeline_projection.artifact
 type entry = Timeline_projection.entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
+  | Background_work of { sequence : int64; run : Background_work.node }
   | Tool of {
       sequence : int64;
       tool_call_id : string;
@@ -84,6 +85,7 @@ let replayed_timeline_update kind =
     [
       "acp.user_message_chunk";
       "acp.agent_message_chunk";
+      "acp.session_info_update";
       "acp.tool_call";
       "acp.tool_call_update";
     ]
@@ -138,6 +140,7 @@ let refreshes_session event =
   String.equal kind "command.state"
   || String.is_prefix kind ~prefix:"acp.permission."
   || String.equal kind "acp.config_option.changed"
+  || String.equal kind "acp.available_commands_update"
   || String.equal kind "worker.upgrade.completed"
 
 let command_is_terminal ~command_id entries =
@@ -157,7 +160,7 @@ let pending_permissions entries =
     | Permission_resolved { request_id; _ }
     | Permission_cancelled { request_id; _ } ->
         Hashtbl.remove requests request_id
-    | User _ | Agent _ | Tool _ | Command_state _ -> ());
+    | User _ | Agent _ | Background_work _ | Tool _ | Command_state _ -> ());
   Hashtbl.data requests
   |> List.sort
        ~compare:(fun (left : pending_permission) (right : pending_permission) ->
@@ -181,6 +184,7 @@ let has_conversation_boundary events =
         in
         loop accepted completed rest
     | Agent _ :: rest
+    | Background_work _ :: rest
     | Tool _ :: rest
     | Permission_requested _ :: rest
     | Permission_resolved _ :: rest

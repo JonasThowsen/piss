@@ -32,6 +32,10 @@ type artifact = Acp_content.artifact
 type update =
   | User_update of { sequence : int64; command_id : string; text : string }
   | Agent_chunk of { sequence : int64; message_id : string; text : string }
+  | Background_work_snapshot of {
+      sequence : int64;
+      snapshot : Background_work.t;
+    }
   | Tool_call of {
       sequence : int64;
       tool_call_id : string;
@@ -68,6 +72,7 @@ type update =
 type entry =
   | User of { sequence : int64; command_id : string; text : string }
   | Agent of { sequence : int64; message_id : string; text : string }
+  | Background_work of { sequence : int64; run : Background_work.node }
   | Tool of {
       sequence : int64;
       tool_call_id : string;
@@ -97,6 +102,7 @@ type timeline_block =
 let entry_sequence = function
   | User { sequence; _ }
   | Agent { sequence; _ }
+  | Background_work { sequence; _ }
   | Tool { sequence; _ }
   | Command_state { sequence; _ }
   | Permission_requested { sequence; _ }
@@ -109,6 +115,7 @@ let group_timeline entries =
     | User { command_id; _ } -> "user:" ^ command_id
     | Agent { sequence; message_id; _ } ->
         "agent:" ^ message_id ^ ":" ^ Int64.to_string sequence
+    | Background_work { run; _ } -> "background:" ^ run.id
     | Tool _ | Command_state _ | Permission_requested _ | Permission_resolved _
     | Permission_cancelled _ ->
         assert false
@@ -128,7 +135,7 @@ let group_timeline entries =
   in
   let rec loop boundary activity blocks = function
     | [] -> List.rev (flush boundary activity blocks)
-    | ((User _ | Agent _) as entry) :: rest ->
+    | ((User _ | Agent _ | Background_work _) as entry) :: rest ->
         let blocks = Message_entry entry :: flush boundary activity blocks in
         loop (Some (boundary_key entry)) None blocks rest
     | ((Tool _ | Command_state _) as entry) :: rest ->
@@ -162,6 +169,13 @@ let add_or_replace state key entry =
   in
   { state with order; entries = Map.set state.entries ~key ~data:entry }
 
+let remove_entry state key =
+  {
+    state with
+    order = List.filter state.order ~f:(Fn.non (String.equal key));
+    entries = Map.remove state.entries key;
+  }
+
 let interrupt_agent state = { state with current_agent_group = None }
 
 let append_unique current incoming =
@@ -192,6 +206,14 @@ let empty_projection =
     current_command = None;
     current_agent_group = None;
   }
+
+let updated_agent_entry state ~message_id ~text =
+  List.find_map state.order ~f:(fun key ->
+      match Map.find state.entries key with
+      | Some (Agent previous) when String.equal previous.message_id message_id
+        ->
+          Some (key, Agent { previous with text = previous.text ^ text })
+      | Some _ | None -> None)
 
 let apply_update state update =
   match update with
@@ -225,20 +247,44 @@ let apply_update state update =
             equal_agent_group previous group)
       in
       let key, entry =
-        match state.order with
-        | key :: _ when same_group -> (
-            match Map.find state.entries key with
-            | Some (Agent previous) ->
-                (key, Agent { previous with text = previous.text ^ text })
-            | Some _ | None ->
-                ( "event:agent:" ^ Int64.to_string sequence,
-                  Agent { sequence; message_id; text } ))
-        | _ ->
+        match
+          if same_group then updated_agent_entry state ~message_id ~text
+          else None
+        with
+        | Some (key, entry) -> (key, entry)
+        | None ->
             ( "event:agent:" ^ Int64.to_string sequence,
               Agent { sequence; message_id; text } )
       in
       let state = add_or_replace state key entry in
       { state with current_agent_group = Some group }
+  | Background_work_snapshot { sequence; snapshot } ->
+      let reported_ids =
+        snapshot.runs
+        |> List.map ~f:(fun (run : Background_work.node) -> run.id)
+        |> String.Set.of_list
+      in
+      let state =
+        Map.fold state.entries ~init:state ~f:(fun ~key ~data state ->
+            match data with
+            | Background_work { run; _ }
+              when Background_work.is_running run.state
+                   && not (Set.mem reported_ids run.id) ->
+                remove_entry state key
+            | User _ | Agent _ | Background_work _ | Tool _ | Command_state _
+            | Permission_requested _ | Permission_resolved _
+            | Permission_cancelled _ ->
+                state)
+      in
+      List.fold snapshot.runs ~init:state ~f:(fun state run ->
+          let key = "background:" ^ run.id in
+          let entry =
+            match Map.find state.entries key with
+            | Some (Background_work previous) ->
+                Background_work { previous with run }
+            | Some _ | None -> Background_work { sequence; run }
+          in
+          add_or_replace state key entry)
   | Tool_call { sequence; tool_call_id; title; input; status; artifacts } ->
       let key = "tool:" ^ tool_call_id in
       let entry =

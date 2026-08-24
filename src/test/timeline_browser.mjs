@@ -74,6 +74,48 @@ const tool = (sequence, sessionId) => ({
   createdAt: 1_723_123_456 + sequence,
 });
 
+const backgroundWork = (sequence, sessionId) => ({
+  sequence,
+  kind: "acp.session_info_update",
+  payload: {
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          piAcp: {
+            queueDepth: 0,
+            running: true,
+            subagents: {
+              kind: "pi-subagents.async-status-snapshot",
+              version: 1,
+              generatedAt: 1_787_596_000_000,
+              omitted: { runs: 0, children: 0, byteLimitExceeded: false },
+              runs: [{
+                id: "browser-workflow",
+                kind: "workflow",
+                label: "worker, reviewer",
+                state: "running",
+                activity: { state: "active", turnCount: 3, toolCount: 9 },
+                children: [{
+                  id: "browser-worker",
+                  kind: "step",
+                  label: "worker",
+                  state: "running",
+                  activity: { state: "active", currentTool: "bash", turnCount: 2, toolCount: 6 },
+                }],
+              }],
+            },
+          },
+        },
+      },
+    },
+  },
+  createdAt: 1_723_123_456 + sequence,
+});
+
 const permission = (sequence, sessionId) => ({
   sequence,
   kind: "acp.permission.requested",
@@ -140,6 +182,7 @@ const configure = async (context, mode) => {
       events = Array.from({ length: 500 }, (_, index) => command(index + 202));
       if (mode === "history") {
         events[0] = completedCommand(202, 2);
+        events[496] = backgroundWork(698, selected.id);
         events[497] = agent(699, selected.id, "Before the tool call.");
         events[498] = tool(700, selected.id);
         events[499] = agent(701, selected.id);
@@ -172,6 +215,14 @@ try {
   const timeline = page.locator("#timeline");
   await page.getByText("Retained history begins at sequence 2", { exact: false }).waitFor();
   await page.getByText("Browser Markdown", { exact: true }).waitFor();
+  const delegatedWork = page.locator('.timeline-background[data-background-run-id="browser-workflow"]');
+  await delegatedWork.getByText("Delegated work · worker, reviewer", { exact: true }).waitFor();
+  if (!(await delegatedWork.evaluate((element) => element.open))) {
+    throw new Error("live delegated work was not expanded for immediate visibility");
+  }
+  if (!(await delegatedWork.textContent()).includes("bash")) {
+    throw new Error("delegated work omitted the child agent's current tool");
+  }
   const agentSegments = page.locator(".timeline-stream > .timeline-agent");
   const interleavedActivity = page.locator(".timeline-stream > .timeline-activity").filter({ hasText: "Inspect interleaving" });
   if (await agentSegments.count() !== 2 || await interleavedActivity.count() !== 1) {
