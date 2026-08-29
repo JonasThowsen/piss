@@ -347,38 +347,34 @@ try {
   if (!pageAuditResponse.ok()) throw new Error(`page Audit request failed: ${pageAuditResponse.status()}`);
   const pageAudit = (await pageAuditResponse.json()).audit;
   await page.waitForFunction(() => document.getElementById("session-tab-audit")?.getAttribute("aria-selected") === "true");
-  await page.getByRole("region", { name: "Feature Audit" }).getByRole("heading", { name: "Read the design end to end" }).waitFor();
+  await page.getByRole("main", { name: "Code diff" }).waitFor();
   if (auditRequests.length !== 1 || !auditRequests[0].endsWith("/api/v2/sessions/s-mention-browser/audit")) {
     throw new Error(`Audit was not bound to the selected durable session: ${JSON.stringify(auditRequests)}`);
   }
-  const journey = page.getByRole("region", { name: "Review journey" });
-  const stops = journey.locator("details.audit-stop");
-  if (await stops.count() !== pageAudit.highlightedFiles || pageAudit.highlightedFiles < 3) {
-    throw new Error(`Audit did not render the real representative journey: ${await stops.count()} / ${pageAudit.highlightedFiles}`);
+  const changedFiles = page.getByRole("navigation", { name: "Changed files" });
+  const fileButtons = changedFiles.locator("button.audit-file");
+  if (await fileButtons.count() !== pageAudit.files.length || pageAudit.highlightedFiles < 3) {
+    throw new Error(`Audit diff navigator did not account for every path: ${await fileButtons.count()} / ${pageAudit.files.length}`);
   }
-  const proofStop = stops.filter({ hasText: proofPath });
-  await proofStop.waitFor();
-  if ((await proofStop.getAttribute("open")) === null) await proofStop.locator("summary").click();
-  await proofStop.getByText("audit_browser_proof = 733", { exact: false }).waitFor();
-  const secondStop = stops.nth(1);
-  if ((await secondStop.getAttribute("open")) === null) await secondStop.locator("summary").click();
-  if ((await secondStop.getAttribute("open")) === null) throw new Error("non-first Audit disclosure did not open");
-  if (await secondStop.locator(".audit-stop-toggle").count() !== 1) {
-    throw new Error("Audit disclosure lacked a visible affordance");
-  }
-  const ledger = page.getByRole("region", { name: "Change coverage ledger" });
-  if (await ledger.locator("li").count() !== pageAudit.files.length) {
-    throw new Error("Audit coverage ledger did not account for every API file");
-  }
-  for (const file of pageAudit.files) await ledger.getByText(file.path, { exact: true }).waitFor();
+  for (const file of pageAudit.files) await changedFiles.getByText(file.path, { exact: true }).waitFor();
+  const proofFileButton = changedFiles.getByRole("button", { name: new RegExp(proofPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) });
+  await proofFileButton.click();
+  await page.getByRole("main", { name: "Code diff" }).getByText("audit_browser_proof = 733", { exact: false }).waitFor();
+  const splitControl = page.getByRole("button", { name: "Split" });
+  const unifiedControl = page.getByRole("button", { name: "Unified" });
+  if (await splitControl.getAttribute("aria-pressed") !== "true") throw new Error("Audit did not default to split review");
+  await unifiedControl.click();
+  await page.waitForFunction(() => document.querySelector(".audit-layout-control-active")?.textContent === "Unified");
+  if (await unifiedControl.getAttribute("aria-pressed") !== "true") throw new Error("Audit did not switch to unified review");
+  await splitControl.click();
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileAudit = await page.locator(".audit-view").evaluate((node) => ({
     scrollWidth: node.scrollWidth,
     clientWidth: node.clientWidth,
-    ledgerPosition: getComputedStyle(node.querySelector(".audit-ledger")).position,
+    navigatorDisplay: getComputedStyle(node.querySelector(".audit-file-list")).display,
   }));
-  if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.ledgerPosition !== "static") {
-    throw new Error(`Audit mobile layout overflowed or kept a sticky ledger: ${JSON.stringify(mobileAudit)}`);
+  if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.navigatorDisplay !== "flex") {
+    throw new Error(`Audit mobile diff layout overflowed or hid its file navigator: ${JSON.stringify(mobileAudit)}`);
   }
   const auditUrlPattern = "**/api/v2/sessions/s-mention-browser/audit";
   let failNextAuditRefresh = true;
@@ -408,7 +404,7 @@ try {
   await auditAlert.getByRole("button", { name: "Try again" }).click();
   const recoveryResponse = await recoveryResponsePromise;
   if (!recoveryResponse.ok()) throw new Error(`Audit recovery failed: ${recoveryResponse.status()}`);
-  await page.waitForFunction((expected) => document.querySelectorAll(".audit-stop").length === expected, pageAudit.highlightedFiles);
+  await page.waitForFunction((expected) => document.querySelectorAll(".audit-file").length === expected, pageAudit.files.length);
   await page.unroute(auditUrlPattern);
   if (auditRequests.length !== 3) {
     throw new Error(`Audit error and recovery did not issue two refreshes: ${JSON.stringify(auditRequests)}`);

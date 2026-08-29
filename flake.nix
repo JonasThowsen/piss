@@ -89,6 +89,9 @@
                 ./web/audit_domain_test.ml
                 ./web/audit_view.ml
                 ./web/audit_view.mli
+                ./web/diff_view_domain.ml
+                ./web/diff_view_domain.mli
+                ./web/diff_view_domain_test.ml
                 ./web/background_work.ml
                 ./web/background_work.mli
                 ./web/background_work_test.ml

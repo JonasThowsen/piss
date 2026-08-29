@@ -2,6 +2,11 @@ open! Core
 open! Bonsai_web.Cont
 open Bonsai.Let_syntax
 
+(* Hunk's useful shape is a small normalized row model: parsing, pairing, and
+   word emphasis happen once for the selected file; VDOM only paints those
+   rows. *)
+type layout = Split | Unified
+
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
 let cancel_active = ref (fun () -> ())
@@ -49,90 +54,305 @@ let status file =
   then "renamed"
   else "modified"
 
-let patch_view file =
-  if String.is_empty file.Audit_domain.patch then
-    Vdom.Node.p
-      ~attrs:[ class_ "audit-patch-empty" ]
-      [
-        text
-          (if file.binary then "Binary change; no textual patch is available."
-           else "No textual patch is available for this change.");
-      ]
-  else
-    Vdom.Node.pre
-      ~attrs:[ class_ "audit-patch" ]
-      [ Vdom.Node.code [ text file.patch ] ]
-
 let display_path file =
   Option.value_map file.Audit_domain.previous_path ~default:file.path
     ~f:(fun previous -> previous ^ " → " ^ file.path)
 
-let journey_stop index file =
-  Vdom.Node.create "details"
-    ~attrs:
-      ([ class_ "audit-stop" ]
-      @ if index = 1 then [ Vdom.Attr.create "open" "" ] else [])
-    [
-      Vdom.Node.create "summary"
-        [
-          Vdom.Node.span
-            ~attrs:[ class_ "audit-stop-number" ]
-            [ text (Printf.sprintf "%02d" index) ];
-          Vdom.Node.span
-            ~attrs:[ class_ "audit-stop-title" ]
-            [
-              Vdom.Node.small [ text file.Audit_domain.role ];
-              Vdom.Node.b [ text (display_path file) ];
-            ];
-          Vdom.Node.span
-            ~attrs:[ class_ "audit-file-status" ]
-            [ text (status file) ];
-          Vdom.Node.span
-            ~attrs:
-              [
-                class_ "audit-stop-toggle";
-                Vdom.Attr.create "aria-hidden" "true";
-              ]
-            [ text "⌄" ];
-        ];
+let line_number = function None -> "" | Some number -> Int.to_string number
+
+let word_segment_view = function
+  | Diff_view_domain.Plain value -> text value
+  | Emphasized value ->
+      Vdom.Node.create "mark" ~attrs:[ class_ "audit-diff-word" ] [ text value ]
+
+let line_segments ?counterpart (line : Diff_view_domain.line) =
+  match counterpart with
+  | Some (other : Diff_view_domain.line)
+    when phys_equal line.Diff_view_domain.kind Diff_view_domain.Deletion ->
+      Diff_view_domain.word_segments ~original:line.Diff_view_domain.text
+        ~revised:other.Diff_view_domain.text
+      |> fst
+      |> List.map ~f:word_segment_view
+  | Some (other : Diff_view_domain.line)
+    when phys_equal line.Diff_view_domain.kind Diff_view_domain.Addition ->
+      Diff_view_domain.word_segments ~original:other.Diff_view_domain.text
+        ~revised:line.Diff_view_domain.text
+      |> snd
+      |> List.map ~f:word_segment_view
+  | None | Some _ -> [ text line.Diff_view_domain.text ]
+
+let diff_cell ?counterpart (line : Diff_view_domain.line option) =
+  match line with
+  | None ->
+      Vdom.Node.div ~attrs:[ class_ "audit-diff-cell audit-diff-empty" ] []
+  | Some line ->
+      let kind =
+        match line.Diff_view_domain.kind with
+        | Context -> "context"
+        | Addition -> "addition"
+        | Deletion -> "deletion"
+      in
+      let sign =
+        match line.Diff_view_domain.kind with
+        | Context -> " "
+        | Addition -> "+"
+        | Deletion -> "-"
+      in
       Vdom.Node.div
-        ~attrs:[ class_ "audit-stop-body" ]
+        ~attrs:
+          [ class_ "audit-diff-cell"; Vdom.Attr.create "data-diff-kind" kind ]
         [
-          Vdom.Node.p ~attrs:[ class_ "audit-reason" ] [ text file.reason ];
+          Vdom.Node.span
+            ~attrs:[ class_ "audit-diff-number" ]
+            [ text (line_number line.Diff_view_domain.old_number) ];
+          Vdom.Node.span
+            ~attrs:[ class_ "audit-diff-number audit-diff-new-number" ]
+            [ text (line_number line.Diff_view_domain.new_number) ];
+          Vdom.Node.span ~attrs:[ class_ "audit-diff-sign" ] [ text sign ];
+          Vdom.Node.code
+            ~attrs:[ class_ "audit-diff-code" ]
+            (line_segments ?counterpart line);
+        ]
+
+let split_hunk_view (hunk : Diff_view_domain.hunk) =
+  let rows = Diff_view_domain.split_rows hunk in
+  Vdom.Node.section
+    ~attrs:[ class_ "audit-diff-hunk" ]
+    (Vdom.Node.div
+       ~attrs:[ class_ "audit-diff-hunk-header" ]
+       [ text hunk.Diff_view_domain.header ]
+    :: List.map rows ~f:(fun row ->
+        let left_counterpart =
+          match (row.left, row.right) with
+          | Some left, Some right
+            when phys_equal left.kind Diff_view_domain.Deletion
+                 && phys_equal right.kind Diff_view_domain.Addition ->
+              Some right
+          | (None | Some _), (None | Some _) -> None
+        in
+        let right_counterpart =
+          Option.map left_counterpart ~f:(fun _ -> Option.value_exn row.left)
+        in
+        Vdom.Node.div
+          ~attrs:[ class_ "audit-diff-split-row" ]
+          [
+            diff_cell ?counterpart:left_counterpart row.left;
+            diff_cell ?counterpart:right_counterpart row.right;
+          ]))
+
+let unified_hunk_view (hunk : Diff_view_domain.hunk) =
+  Vdom.Node.section
+    ~attrs:[ class_ "audit-diff-hunk" ]
+    (Vdom.Node.div
+       ~attrs:[ class_ "audit-diff-hunk-header" ]
+       [ text hunk.Diff_view_domain.header ]
+    :: List.map hunk.Diff_view_domain.lines ~f:(fun line ->
+        diff_cell (Some line)))
+
+let patch_view file (parsed : Diff_view_domain.parsed) layout =
+  if String.is_empty file.Audit_domain.patch then
+    Vdom.Node.p
+      ~attrs:[ class_ "audit-diff-empty-state" ]
+      [
+        text
+          (if file.binary then "Binary change; source lines are not available."
+           else "No textual patch is available for this change.");
+      ]
+  else if List.is_empty parsed.hunks then
+    Vdom.Node.p
+      ~attrs:[ class_ "audit-diff-empty-state" ]
+      [ text "This patch has no renderable unified hunks." ]
+  else
+    Vdom.Node.div
+      ~attrs:[ class_ "audit-diff-body" ]
+      (List.map parsed.hunks ~f:(function hunk ->
+          (match layout with
+          | Split -> split_hunk_view hunk
+          | Unified -> unified_hunk_view hunk)))
+
+let file_picker audit ~selected_path ~select_file =
+  Vdom.Node.create "nav"
+    ~attrs:
+      [
+        class_ "audit-file-list"; Vdom.Attr.create "aria-label" "Changed files";
+      ]
+    (List.map audit.Audit_domain.files ~f:(fun file ->
+         let selected = String.equal selected_path file.path in
+         Vdom.Node.button
+           ~attrs:
+             [
+               class_
+                 (if selected then "audit-file audit-file-selected"
+                  else "audit-file");
+               Vdom.Attr.create "type" "button";
+               Vdom.Attr.create "aria-current"
+                 (if selected then "true" else "false");
+               Vdom.Attr.on_click (fun _ -> select_file file.path);
+             ]
+           [
+             Vdom.Node.span
+               ~attrs:[ class_ "audit-file-path" ]
+               [ text file.path ];
+             Vdom.Node.span
+               ~attrs:[ class_ "audit-file-meta" ]
+               [ text (status file); text file.role ];
+           ]))
+
+let layout_control ~layout ~set_layout =
+  let control requested label =
+    Vdom.Node.button
+      ~attrs:
+        [
+          class_
+            (if phys_equal layout requested then
+               "audit-layout-control audit-layout-control-active"
+             else "audit-layout-control");
+          Vdom.Attr.create "type" "button";
+          Vdom.Attr.create "aria-pressed"
+            (Bool.to_string (phys_equal layout requested));
+          Vdom.Attr.on_click (fun _ -> set_layout requested);
+        ]
+      [ text label ]
+  in
+  Vdom.Node.div
+    ~attrs:
+      [
+        class_ "audit-layout-controls";
+        Vdom.Attr.create "aria-label" "Diff layout";
+      ]
+    [ control Split "Split"; control Unified "Unified" ]
+
+let selected_file audit selected_path =
+  List.find audit.Audit_domain.files ~f:(fun file ->
+      String.equal file.path selected_path)
+  |> Option.value ~default:(List.hd_exn audit.files)
+
+let paging_controls (parsed : Diff_view_domain.parsed) ~set_page_start =
+  let has_previous = parsed.first_line > 0 in
+  let has_next =
+    parsed.first_line + parsed.rendered_line_count < parsed.total_line_count
+  in
+  let button ~name ~enabled action label =
+    Vdom.Node.button
+      ~attrs:
+        ([
+           class_ "audit-page-control";
+           Vdom.Attr.create "type" "button";
+           Vdom.Attr.create "aria-label" name;
+           Vdom.Attr.on_click (fun _ -> action ());
+         ]
+        @ if enabled then [] else [ Vdom.Attr.create "disabled" "" ])
+      [ text label ]
+  in
+  Vdom.Node.div
+    ~attrs:
+      [
+        class_ "audit-page-controls"; Vdom.Attr.create "aria-label" "Diff pages";
+      ]
+    [
+      button ~name:"Previous diff page" ~enabled:has_previous
+        (fun () ->
+          set_page_start
+            (Int.max 0
+               (parsed.first_line - Diff_view_domain.diff_page_line_count)))
+        "←";
+      Vdom.Node.span
+        [
+          text
+            (Printf.sprintf "%d–%d / %d"
+               (if parsed.total_line_count = 0 then 0 else parsed.first_line + 1)
+               (parsed.first_line + parsed.rendered_line_count)
+               parsed.total_line_count);
+        ];
+      button ~name:"Next diff page" ~enabled:has_next
+        (fun () ->
+          set_page_start (parsed.first_line + parsed.rendered_line_count))
+        "→";
+    ]
+
+let diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
+    ~layout ~set_layout =
+  let file = selected_file audit selected_path in
+  let requested_page =
+    Diff_view_domain.parse_unified_patch ~first_line:page_start file.patch
+  in
+  let parsed =
+    if
+      requested_page.rendered_line_count = 0
+      && requested_page.total_line_count > 0
+      && page_start > 0
+    then
+      Diff_view_domain.parse_unified_patch
+        ~first_line:
+          (Int.max 0
+             (requested_page.total_line_count
+            - Diff_view_domain.diff_page_line_count))
+        file.patch
+    else requested_page
+  in
+  let additions, deletions = Diff_view_domain.change_counts parsed in
+  Vdom.Node.div
+    ~attrs:[ class_ "audit-review" ]
+    [
+      Vdom.Node.create "aside"
+        ~attrs:[ class_ "audit-navigator" ]
+        [
+          Vdom.Node.header
+            [
+              Vdom.Node.span [ text "CHANGED FILES" ];
+              Vdom.Node.b
+                [ text (Printf.sprintf "%d files" audit.accounted_files) ];
+              Vdom.Node.p
+                [
+                  text
+                    "Every path is listed. Select a file to inspect its exact \
+                     patch.";
+                ];
+            ];
+          file_picker audit ~selected_path ~select_file;
+        ];
+      Vdom.Node.main
+        ~attrs:
+          [ class_ "audit-diff"; Vdom.Attr.create "aria-label" "Code diff" ]
+        [
+          Vdom.Node.header
+            ~attrs:[ class_ "audit-diff-toolbar" ]
+            [
+              Vdom.Node.div
+                [
+                  Vdom.Node.span [ text (status file) ];
+                  Vdom.Node.h2 [ text (display_path file) ];
+                  Vdom.Node.p [ text file.reason ];
+                ];
+              Vdom.Node.div
+                ~attrs:[ class_ "audit-diff-stats" ]
+                [
+                  Vdom.Node.span
+                    ~attrs:[ class_ "audit-stat-addition" ]
+                    [ text (Printf.sprintf "+%d" additions) ];
+                  Vdom.Node.span
+                    ~attrs:[ class_ "audit-stat-deletion" ]
+                    [ text (Printf.sprintf "−%d" deletions) ];
+                  paging_controls parsed ~set_page_start;
+                  layout_control ~layout ~set_layout;
+                ];
+            ];
           (if file.truncated then
              Vdom.Node.p
                ~attrs:
-                 [
-                   class_ "audit-inline-warning";
-                   Vdom.Attr.create "role" "status";
-                 ]
-               [ text "This patch was bounded by an Audit safety limit." ]
+                 [ class_ "audit-diff-limit"; Vdom.Attr.create "role" "status" ]
+               [
+                 text
+                   "The server bounded this patch before it reached the \
+                    browser.";
+               ]
            else Vdom.Node.none);
-          patch_view file;
+          patch_view file parsed layout;
         ];
     ]
 
-let ledger_row file =
-  let direct = Option.is_some file.Audit_domain.journey_index in
-  Vdom.Node.li
-    ~attrs:[ class_ (if direct then "audit-ledger-direct" else "") ]
-    [
-      Vdom.Node.span
-        ~attrs:[ class_ "audit-ledger-mark" ]
-        [ text (if direct then "✓" else "·") ];
-      Vdom.Node.span
-        ~attrs:[ class_ "audit-ledger-path" ]
-        [
-          Vdom.Node.b [ text (display_path file) ];
-          Vdom.Node.small [ text (status file) ];
-        ];
-      Vdom.Node.span ~attrs:[ class_ "audit-ledger-role" ] [ text file.role ];
-      Vdom.Node.span
-        ~attrs:[ class_ "audit-ledger-coverage" ]
-        [ text (if direct then "Journey" else "Accounted") ];
-    ]
-
-let loaded_view audit ~on_refresh =
+let loaded_view audit ~selected_path ~select_file ~page_start ~set_page_start
+    ~layout ~set_layout =
   if audit.Audit_domain.total_files = 0 then
     Vdom.Node.div
       ~attrs:[ class_ "audit-state audit-clean" ]
@@ -142,92 +362,16 @@ let loaded_view audit ~on_refresh =
           [ text "✓" ];
         Vdom.Node.h2 [ text "Working tree is clean" ];
         Vdom.Node.p
-          [ text "There are no staged, unstaged, or untracked files to audit." ];
-        Vdom.Node.button
-          ~attrs:
-            [
-              Vdom.Attr.create "type" "button";
-              Vdom.Attr.on_click (fun _ -> on_refresh ());
-            ]
-          [ text "Refresh Audit" ];
-      ]
-  else
-    let journey = Audit_domain.journey audit in
-    Vdom.Node.div
-      ~attrs:[ class_ "audit-content" ]
-      [
-        (if audit.truncated then
-           Vdom.Node.p
-             ~attrs:[ class_ "audit-warning"; Vdom.Attr.create "role" "status" ]
-             [
-               text
-                 (Printf.sprintf
-                    "Audit limits were reached. %d of %d changed paths are \
-                     listed; bounded patches are marked."
-                    audit.accounted_files audit.total_files);
-             ]
-         else Vdom.Node.none);
-        Vdom.Node.section
-          ~attrs:
-            [
-              class_ "audit-journey";
-              Vdom.Attr.create "aria-label" "Review journey";
-            ]
-          ([
-             Vdom.Node.header
-               [
-                 Vdom.Node.div
-                   [
-                     Vdom.Node.span [ text "FEATURE JOURNEY" ];
-                     Vdom.Node.h2 [ text "Read the design end to end" ];
-                   ];
-                 Vdom.Node.p
-                   [
-                     text
-                       "Stops are selected by transparent risk and coverage \
-                        heuristics—not as a claim that omitted code was \
-                        independently reviewed.";
-                   ];
-               ];
-           ]
-          @ List.mapi journey ~f:(fun index file ->
-              journey_stop (index + 1) file));
-        Vdom.Node.section
-          ~attrs:
-            [
-              class_ "audit-ledger";
-              Vdom.Attr.create "aria-label" "Change coverage ledger";
-            ]
           [
-            Vdom.Node.header
-              [
-                Vdom.Node.div
-                  [
-                    Vdom.Node.span [ text "COVERAGE LEDGER" ];
-                    Vdom.Node.h2
-                      [
-                        text
-                          (if audit.accounted_files = audit.total_files then
-                             "Every changed path, accounted for"
-                           else "Bounded change coverage");
-                      ];
-                  ];
-                Vdom.Node.p
-                  [
-                    Vdom.Node.b
-                      [
-                        text
-                          (Printf.sprintf "%d / %d" audit.accounted_files
-                             audit.total_files);
-                      ];
-                    text " paths listed";
-                  ];
-              ];
-            Vdom.Node.ol (List.map audit.files ~f:ledger_row);
+            text "There are no staged, unstaged, or untracked files to review.";
           ];
       ]
+  else
+    diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
+      ~layout ~set_layout
 
-let render state ~session_id ~on_refresh =
+let render state ~session_id ~on_refresh ~selected_path ~select_file ~page_start
+    ~set_page_start ~layout ~set_layout =
   let body =
     match state with
     | Audit_domain.Loading current
@@ -240,7 +384,7 @@ let render state ~session_id ~on_refresh =
             ]
           [
             Vdom.Node.span [ text "···" ];
-            Vdom.Node.h2 [ text "Building the Audit journey" ];
+            Vdom.Node.h2 [ text "Building the change review" ];
             Vdom.Node.p
               [
                 text "Reading bounded staged, unstaged, and untracked changes…";
@@ -255,7 +399,7 @@ let render state ~session_id ~on_refresh =
             ]
           [
             Vdom.Node.span [ text "!" ];
-            Vdom.Node.h2 [ text "Audit unavailable" ];
+            Vdom.Node.h2 [ text "Review unavailable" ];
             Vdom.Node.p [ text message ];
             Vdom.Node.button
               ~attrs:
@@ -267,12 +411,20 @@ let render state ~session_id ~on_refresh =
           ]
     | Audit_domain.Loaded (current, audit)
       when String.equal current.session_id session_id ->
-        loaded_view audit ~on_refresh
+        let selected_path =
+          if
+            List.exists audit.files ~f:(fun file ->
+                String.equal file.path selected_path)
+          then selected_path
+          else (List.hd_exn audit.files).path
+        in
+        loaded_view audit ~selected_path ~select_file ~page_start
+          ~set_page_start ~layout ~set_layout
     | Audit_domain.Dormant | Audit_domain.Loading _ | Audit_domain.Loaded _
     | Audit_domain.Failed _ ->
         Vdom.Node.div
           ~attrs:[ class_ "audit-state" ]
-          [ Vdom.Node.h2 [ text "Open Audit to read this feature journey" ] ]
+          [ Vdom.Node.h2 [ text "Open Changes to inspect this workspace" ] ]
   in
   let audit = Audit_domain.snapshot_for state ~session_id in
   Vdom.Node.section
@@ -290,19 +442,17 @@ let render state ~session_id ~on_refresh =
         [
           Vdom.Node.div
             [
-              Vdom.Node.span [ text "SIGN-OFF / AUDIT" ];
-              Vdom.Node.h1 [ text "Audit" ];
+              Vdom.Node.span [ text "REVIEW / DIFF" ];
+              Vdom.Node.h1 [ text "Changes" ];
               Vdom.Node.p
                 [
                   text
                     (Option.value_map audit
-                       ~default:
-                         "A guided review of this session's workspace changes"
+                       ~default:"Select a session to inspect its changes"
                        ~f:(fun audit ->
                          Printf.sprintf
-                           "%d journey stops · %d changed paths · %d accounted"
-                           audit.highlighted_files audit.total_files
-                           audit.accounted_files));
+                           "%d changed paths · %d in the review journey"
+                           audit.total_files audit.highlighted_files));
                 ];
             ];
           Vdom.Node.button
@@ -332,6 +482,9 @@ let component ~session_id ~active graph =
       ~sexp_of_action:(fun _ -> Sexp.Atom "audit-load-action")
       graph
   in
+  let selected_path, set_selected_path = Bonsai.state "" graph in
+  let page_start, set_page_start = Bonsai.state 0 graph in
+  let layout, set_layout = Bonsai.state Split graph in
   let key =
     let%arr session_id = session_id and active = active in
     if active then session_id else None
@@ -347,7 +500,15 @@ let component ~session_id ~active graph =
   Bonsai.Edge.on_change key
     ~equal:(Option.equal String.equal)
     ~callback:on_key graph;
-  let%arr state = state and inject = inject and session_id = session_id in
+  let%arr state = state
+  and inject = inject
+  and session_id = session_id
+  and selected_path = selected_path
+  and set_selected_path = set_selected_path
+  and page_start = page_start
+  and set_page_start = set_page_start
+  and layout = layout
+  and set_layout = set_layout in
   let refresh () =
     Option.value_map session_id ~default:Effect.Ignore ~f:(load ~inject)
   in
@@ -361,6 +522,11 @@ let component ~session_id ~active graph =
                Vdom.Attr.create "aria-label" "Feature Audit";
              ]
            [])
-      ~f:(fun session_id -> render state ~session_id ~on_refresh:refresh)
+      ~f:(fun session_id ->
+        let select_file path =
+          Effect.Many [ set_selected_path path; set_page_start 0 ]
+        in
+        render state ~session_id ~on_refresh:refresh ~selected_path ~select_file
+          ~page_start ~set_page_start ~layout ~set_layout)
   in
   { view; refresh }

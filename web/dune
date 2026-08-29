@@ -6,6 +6,7 @@
   audit_domain
   background_work
   control_plane
+  diff_view_domain
   event_buffer
   event_decode
   event_history
@@ -108,6 +109,13 @@
 (test
  (name control_plane_test)
  (modules control_plane_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name diff_view_domain_test)
+ (modules diff_view_domain_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))
