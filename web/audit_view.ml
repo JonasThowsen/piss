@@ -597,6 +597,9 @@ let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
         in
         let toggle_navigator () = set_navigator_open (not navigator_open) in
         let select_line number = set_review_line (Int.to_string number) in
+        let cancel_note () =
+          Effect.Many [ set_review_line ""; set_review_draft "" ]
+        in
         let add_note () =
           if String.is_empty (String.strip review_draft) then Effect.Ignore
           else
@@ -629,7 +632,14 @@ let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
               ~navigator_open ~toggle_navigator ~on_close:close ~layout
               ~set_layout;
             Vdom.Node.create "aside"
-              ~attrs:[ class_ "audit-review-notes" ]
+              ~attrs:
+                [
+                  class_
+                    (if
+                       String.is_empty review_line && List.is_empty review_notes
+                     then "audit-review-notes audit-review-notes-empty"
+                     else "audit-review-notes");
+                ]
               [
                 Vdom.Node.b
                   [
@@ -645,7 +655,19 @@ let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
                       [ Vdom.Attr.create "hidden" "" ]
                     else [])
                   [
-                    Vdom.Node.p [ text ("Line " ^ review_line) ];
+                    Vdom.Node.div
+                      ~attrs:[ class_ "audit-note-composer-heading" ]
+                      [
+                        Vdom.Node.p [ text ("Line " ^ review_line) ];
+                        Vdom.Node.button
+                          ~attrs:
+                            [
+                              class_ "audit-note-cancel";
+                              Vdom.Attr.create "type" "button";
+                              Vdom.Attr.on_click (fun _ -> cancel_note ());
+                            ]
+                          [ text "Cancel" ];
+                      ];
                     Vdom.Node.textarea
                       ~attrs:
                         [
