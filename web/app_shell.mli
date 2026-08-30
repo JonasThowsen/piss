@@ -1,6 +1,7 @@
 open! Bonsai_web.Cont
 
 val render :
+  audit_active:bool ->
   header:Vdom.Node.t ->
   navigation_scrim:Vdom.Node.t ->
   session_rail:Vdom.Node.t ->

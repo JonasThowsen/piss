@@ -6,6 +6,14 @@ open Bonsai.Let_syntax
    word emphasis happen once for the selected file; VDOM only paints those
    rows. *)
 type layout = Split | Unified
+type review_note = { path : string; line : int; text : string }
+
+let format_review_notes notes =
+  "Review notes:\n\n"
+  ^ (List.rev notes
+    |> List.map ~f:(fun note ->
+        Printf.sprintf "Review note — %s:%d\n%s" note.path note.line note.text)
+    |> String.concat ~sep:"\n\n")
 
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
@@ -81,7 +89,7 @@ let line_segments ?counterpart (line : Diff_view_domain.line) =
       |> List.map ~f:word_segment_view
   | None | Some _ -> [ text line.Diff_view_domain.text ]
 
-let diff_cell ?counterpart (line : Diff_view_domain.line option) =
+let diff_cell ?counterpart ?select_line (line : Diff_view_domain.line option) =
   match line with
   | None ->
       Vdom.Node.div ~attrs:[ class_ "audit-diff-cell audit-diff-empty" ] []
@@ -98,9 +106,21 @@ let diff_cell ?counterpart (line : Diff_view_domain.line option) =
         | Addition -> "+"
         | Deletion -> "-"
       in
+      let select_attr =
+        Option.value_map select_line ~default:[] ~f:(fun select_line ->
+            Option.value_map (Option.first_some line.new_number line.old_number)
+              ~default:[] ~f:(fun number ->
+                [
+                  Vdom.Attr.create "role" "button";
+                  Vdom.Attr.create "aria-label"
+                    (Printf.sprintf "Add review note at line %d" number);
+                  Vdom.Attr.on_click (fun _ -> select_line number);
+                ]))
+      in
       Vdom.Node.div
         ~attrs:
-          [ class_ "audit-diff-cell"; Vdom.Attr.create "data-diff-kind" kind ]
+          ([ class_ "audit-diff-cell"; Vdom.Attr.create "data-diff-kind" kind ]
+          @ select_attr)
         [
           Vdom.Node.span
             ~attrs:[ class_ "audit-diff-number" ]
@@ -114,7 +134,7 @@ let diff_cell ?counterpart (line : Diff_view_domain.line option) =
             (line_segments ?counterpart line);
         ]
 
-let split_hunk_view (hunk : Diff_view_domain.hunk) =
+let split_hunk_view ?select_line (hunk : Diff_view_domain.hunk) =
   let rows = Diff_view_domain.split_rows hunk in
   Vdom.Node.section
     ~attrs:[ class_ "audit-diff-hunk" ]
@@ -136,20 +156,20 @@ let split_hunk_view (hunk : Diff_view_domain.hunk) =
         Vdom.Node.div
           ~attrs:[ class_ "audit-diff-split-row" ]
           [
-            diff_cell ?counterpart:left_counterpart row.left;
-            diff_cell ?counterpart:right_counterpart row.right;
+            diff_cell ?counterpart:left_counterpart ?select_line row.left;
+            diff_cell ?counterpart:right_counterpart ?select_line row.right;
           ]))
 
-let unified_hunk_view (hunk : Diff_view_domain.hunk) =
+let unified_hunk_view ?select_line (hunk : Diff_view_domain.hunk) =
   Vdom.Node.section
     ~attrs:[ class_ "audit-diff-hunk" ]
     (Vdom.Node.div
        ~attrs:[ class_ "audit-diff-hunk-header" ]
        [ text hunk.Diff_view_domain.header ]
     :: List.map hunk.Diff_view_domain.lines ~f:(fun line ->
-        diff_cell (Some line)))
+        diff_cell ?select_line (Some line)))
 
-let patch_view file (parsed : Diff_view_domain.parsed) layout =
+let patch_view ?select_line file (parsed : Diff_view_domain.parsed) layout =
   if String.is_empty file.Audit_domain.patch then
     Vdom.Node.p
       ~attrs:[ class_ "audit-diff-empty-state" ]
@@ -167,8 +187,8 @@ let patch_view file (parsed : Diff_view_domain.parsed) layout =
       ~attrs:[ class_ "audit-diff-body" ]
       (List.map parsed.hunks ~f:(function hunk ->
           (match layout with
-          | Split -> split_hunk_view hunk
-          | Unified -> unified_hunk_view hunk)))
+          | Split -> split_hunk_view ?select_line hunk
+          | Unified -> unified_hunk_view ?select_line hunk)))
 
 let file_picker audit ~selected_path ~select_file =
   Vdom.Node.create "nav"
@@ -270,7 +290,8 @@ let paging_controls (parsed : Diff_view_domain.parsed) ~set_page_start =
         "→";
     ]
 
-let diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
+let diff_view audit ~on_refresh ~selected_path ~select_file ~select_line
+    ~page_start ~set_page_start ~navigator_open ~toggle_navigator ~on_close
     ~layout ~set_layout =
   let file = selected_file audit selected_path in
   let requested_page =
@@ -294,14 +315,38 @@ let diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
   Vdom.Node.div
     ~attrs:[ class_ "audit-review" ]
     [
+      Vdom.Node.button
+        ~attrs:
+          ([
+             class_ "audit-navigator-scrim";
+             Vdom.Attr.create "type" "button";
+             Vdom.Attr.create "aria-label" "Hide changed files";
+             Vdom.Attr.on_click (fun _ -> toggle_navigator ());
+           ]
+          @ if navigator_open then [] else [ Vdom.Attr.create "hidden" "" ])
+        [];
       Vdom.Node.create "aside"
-        ~attrs:[ class_ "audit-navigator" ]
+        ~attrs:
+          [
+            class_
+              (if navigator_open then "audit-navigator audit-navigator-open"
+               else "audit-navigator");
+          ]
         [
           Vdom.Node.header
             [
               Vdom.Node.span [ text "CHANGED FILES" ];
               Vdom.Node.b
                 [ text (Printf.sprintf "%d files" audit.accounted_files) ];
+              Vdom.Node.button
+                ~attrs:
+                  [
+                    class_ "audit-navigator-close";
+                    Vdom.Attr.create "type" "button";
+                    Vdom.Attr.create "aria-label" "Hide changed files";
+                    Vdom.Attr.on_click (fun _ -> toggle_navigator ());
+                  ]
+                [ text "×" ];
               Vdom.Node.p
                 [
                   text
@@ -319,10 +364,43 @@ let diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
             ~attrs:[ class_ "audit-diff-toolbar" ]
             [
               Vdom.Node.div
+                ~attrs:[ class_ "audit-diff-identity" ]
                 [
-                  Vdom.Node.span [ text (status file) ];
-                  Vdom.Node.h2 [ text (display_path file) ];
-                  Vdom.Node.p [ text file.reason ];
+                  Vdom.Node.button
+                    ~attrs:
+                      [
+                        class_ "audit-close";
+                        Vdom.Attr.create "type" "button";
+                        Vdom.Attr.create "aria-label" "Close diff viewer";
+                        Vdom.Attr.on_click (fun _ -> on_close ());
+                      ]
+                    [ text "×" ];
+                  Vdom.Node.button
+                    ~attrs:
+                      [
+                        class_ "audit-files-toggle";
+                        Vdom.Attr.create "type" "button";
+                        Vdom.Attr.create "aria-expanded"
+                          (Bool.to_string navigator_open);
+                        Vdom.Attr.create "aria-label" "Show changed files";
+                        Vdom.Attr.on_click (fun _ -> toggle_navigator ());
+                      ]
+                    [ text (Printf.sprintf "Files %d" audit.accounted_files) ];
+                  Vdom.Node.button
+                    ~attrs:
+                      [
+                        class_ "audit-refresh";
+                        Vdom.Attr.create "type" "button";
+                        Vdom.Attr.create "aria-label" "Refresh Audit";
+                        Vdom.Attr.on_click (fun _ -> on_refresh ());
+                      ]
+                    [ text "↻" ];
+                  Vdom.Node.div
+                    [
+                      Vdom.Node.span [ text (status file) ];
+                      Vdom.Node.h2 [ text (display_path file) ];
+                      Vdom.Node.p [ text file.reason ];
+                    ];
                 ];
               Vdom.Node.div
                 ~attrs:[ class_ "audit-diff-stats" ]
@@ -347,11 +425,12 @@ let diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
                     browser.";
                ]
            else Vdom.Node.none);
-          patch_view file parsed layout;
+          patch_view ~select_line file parsed layout;
         ];
     ]
 
-let loaded_view audit ~selected_path ~select_file ~page_start ~set_page_start
+let loaded_view audit ~on_refresh ~selected_path ~select_file ~select_line
+    ~page_start ~set_page_start ~navigator_open ~toggle_navigator ~on_close
     ~layout ~set_layout =
   if audit.Audit_domain.total_files = 0 then
     Vdom.Node.div
@@ -367,11 +446,13 @@ let loaded_view audit ~selected_path ~select_file ~page_start ~set_page_start
           ];
       ]
   else
-    diff_view audit ~selected_path ~select_file ~page_start ~set_page_start
+    diff_view audit ~on_refresh ~selected_path ~select_file ~select_line
+      ~page_start ~set_page_start ~navigator_open ~toggle_navigator ~on_close
       ~layout ~set_layout
 
-let render state ~session_id ~on_refresh ~selected_path ~select_file ~page_start
-    ~set_page_start ~layout ~set_layout =
+let render state ~session_id ~on_refresh ~selected_path ~select_file
+    ~select_line ~page_start ~set_page_start ~navigator_open ~toggle_navigator
+    ~on_close ~layout ~set_layout =
   let body =
     match state with
     | Audit_domain.Loading current
@@ -418,15 +499,15 @@ let render state ~session_id ~on_refresh ~selected_path ~select_file ~page_start
           then selected_path
           else (List.hd_exn audit.files).path
         in
-        loaded_view audit ~selected_path ~select_file ~page_start
-          ~set_page_start ~layout ~set_layout
+        loaded_view audit ~on_refresh ~selected_path ~select_file ~select_line
+          ~page_start ~set_page_start ~navigator_open ~toggle_navigator
+          ~on_close ~layout ~set_layout
     | Audit_domain.Dormant | Audit_domain.Loading _ | Audit_domain.Loaded _
     | Audit_domain.Failed _ ->
         Vdom.Node.div
           ~attrs:[ class_ "audit-state" ]
           [ Vdom.Node.h2 [ text "Open Changes to inspect this workspace" ] ]
   in
-  let audit = Audit_domain.snapshot_for state ~session_id in
   Vdom.Node.section
     ~attrs:
       [
@@ -436,45 +517,11 @@ let render state ~session_id ~on_refresh ~selected_path ~select_file ~page_start
           (Bool.to_string
              (match state with Audit_domain.Loading _ -> true | _ -> false));
       ]
-    [
-      Vdom.Node.header
-        ~attrs:[ class_ "audit-overview" ]
-        [
-          Vdom.Node.div
-            [
-              Vdom.Node.span [ text "REVIEW / DIFF" ];
-              Vdom.Node.h1 [ text "Changes" ];
-              Vdom.Node.p
-                [
-                  text
-                    (Option.value_map audit
-                       ~default:"Select a session to inspect its changes"
-                       ~f:(fun audit ->
-                         Printf.sprintf
-                           "%d changed paths · %d in the review journey"
-                           audit.total_files audit.highlighted_files));
-                ];
-            ];
-          Vdom.Node.button
-            ~attrs:
-              ([
-                 class_ "audit-refresh";
-                 Vdom.Attr.create "type" "button";
-                 Vdom.Attr.create "aria-label" "Refresh Audit";
-                 Vdom.Attr.on_click (fun _ -> on_refresh ());
-               ]
-              @
-              match state with
-              | Audit_domain.Loading _ -> [ Vdom.Attr.create "disabled" "" ]
-              | _ -> [])
-            [ text "↻  Refresh" ];
-        ];
-      body;
-    ]
+    [ body ]
 
 type t = { view : Vdom.Node.t; refresh : unit -> unit Vdom.Effect.t }
 
-let component ~session_id ~active graph =
+let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
   let state, inject =
     Bonsai.state_machine0 ~default_model:Audit_domain.Dormant
       ~apply_action:Audit_domain.apply_load
@@ -484,6 +531,10 @@ let component ~session_id ~active graph =
   in
   let selected_path, set_selected_path = Bonsai.state "" graph in
   let page_start, set_page_start = Bonsai.state 0 graph in
+  let navigator_open, set_navigator_open = Bonsai.state false graph in
+  let review_notes, set_review_notes = Bonsai.state [] graph in
+  let review_draft, set_review_draft = Bonsai.state "" graph in
+  let review_line, set_review_line = Bonsai.state "1" graph in
   let layout, set_layout = Bonsai.state Split graph in
   let key =
     let%arr session_id = session_id and active = active in
@@ -507,6 +558,17 @@ let component ~session_id ~active graph =
   and set_selected_path = set_selected_path
   and page_start = page_start
   and set_page_start = set_page_start
+  and navigator_open = navigator_open
+  and set_navigator_open = set_navigator_open
+  and review_notes = review_notes
+  and set_review_notes = set_review_notes
+  and review_draft = review_draft
+  and set_review_draft = set_review_draft
+  and review_line = review_line
+  and set_review_line = set_review_line
+  and runtime = runtime
+  and close = close
+  and submit_review_notes = submit_review_notes
   and layout = layout
   and set_layout = set_layout in
   let refresh () =
@@ -524,9 +586,110 @@ let component ~session_id ~active graph =
            [])
       ~f:(fun session_id ->
         let select_file path =
-          Effect.Many [ set_selected_path path; set_page_start 0 ]
+          Effect.Many
+            [
+              set_selected_path path; set_page_start 0; set_navigator_open false;
+            ]
         in
-        render state ~session_id ~on_refresh:refresh ~selected_path ~select_file
-          ~page_start ~set_page_start ~layout ~set_layout)
+        let toggle_navigator () = set_navigator_open (not navigator_open) in
+        let select_line number = set_review_line (Int.to_string number) in
+        let add_note () =
+          if String.is_empty (String.strip review_draft) then Effect.Ignore
+          else
+            Effect.Many
+              [
+                set_review_notes
+                  ({
+                     path = selected_path;
+                     line =
+                       Option.value (Int.of_string_opt review_line) ~default:1;
+                     text = review_draft;
+                   }
+                  :: review_notes);
+                set_review_draft "";
+              ]
+        in
+        let send_notes action () =
+          if List.is_empty review_notes then Effect.Ignore
+          else
+            Effect.Many
+              [
+                submit_review_notes action (format_review_notes review_notes);
+                set_review_notes [];
+              ]
+        in
+        Vdom.Node.div
+          [
+            render state ~session_id ~on_refresh:refresh ~selected_path
+              ~select_file ~select_line ~page_start ~set_page_start
+              ~navigator_open ~toggle_navigator ~on_close:close ~layout
+              ~set_layout;
+            Vdom.Node.create "aside"
+              ~attrs:[ class_ "audit-review-notes" ]
+              [
+                Vdom.Node.b
+                  [
+                    text
+                      (Printf.sprintf "Review notes · %d"
+                         (List.length review_notes));
+                  ];
+                Vdom.Node.input
+                  ~attrs:
+                    [
+                      Vdom.Attr.create "type" "number";
+                      Vdom.Attr.value_prop review_line;
+                      Vdom.Attr.on_input (fun _ value -> set_review_line value);
+                      Vdom.Attr.create "aria-label" "Review note line";
+                    ]
+                  ();
+                Vdom.Node.textarea
+                  ~attrs:
+                    [
+                      Vdom.Attr.value_prop review_draft;
+                      Vdom.Attr.on_input (fun _ value -> set_review_draft value);
+                      Vdom.Attr.create "placeholder"
+                        "Note for agent about this file…";
+                    ]
+                  [];
+                Vdom.Node.button
+                  ~attrs:
+                    [
+                      Vdom.Attr.create "type" "button";
+                      Vdom.Attr.on_click (fun _ -> add_note ());
+                    ]
+                  [ text "Add note" ];
+                (match runtime with
+                | Some runtime
+                  when phys_equal runtime.Runtime_domain.status Running ->
+                    Vdom.Node.div
+                      [
+                        Vdom.Node.button
+                          ~attrs:
+                            [
+                              Vdom.Attr.create "type" "button";
+                              Vdom.Attr.on_click (fun _ ->
+                                  send_notes Prompt_command.Steer ());
+                            ]
+                          [ text "Finish · Steer next" ];
+                        Vdom.Node.button
+                          ~attrs:
+                            [
+                              Vdom.Attr.create "type" "button";
+                              Vdom.Attr.on_click (fun _ ->
+                                  send_notes Prompt_command.Follow_up ());
+                            ]
+                          [ text "Finish · Follow-up" ];
+                      ]
+                | None | Some _ ->
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.on_click (fun _ ->
+                              send_notes Prompt_command.Prompt ());
+                        ]
+                      [ text "Send review notes" ]);
+              ];
+          ])
   in
   { view; refresh }

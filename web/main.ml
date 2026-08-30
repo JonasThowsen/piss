@@ -179,8 +179,9 @@ let component graph =
     let%arr shell = shell in
     phys_equal shell.tab Session_tabs.Audit
   in
-  let audit =
-    Audit_view.component ~session_id:selected_id ~active:audit_active graph
+  let close_audit =
+    let%arr inject_shell = inject_shell in
+    fun () -> inject_shell (Select_tab Session_tabs.Agent)
   in
   let history, inject_history =
     Bonsai.state_machine0 ~default_model:Timeline_view.Sessions_loading
@@ -335,6 +336,14 @@ let component graph =
     Composer.component selected runtime connecting stream_notice composer_notice
       config_controls ~set_notice:set_composer_notice ~on_busy:set_composer_busy
       ~refresh_runtime graph
+  in
+  let submit_review_notes =
+    let%arr composer = composer in
+    composer.submit_review_notes
+  in
+  let audit =
+    Audit_view.component ~session_id:selected_id ~active:audit_active ~runtime
+      ~close:close_audit ~submit_review_notes graph
   in
   let visible_history =
     let%arr sessions = sessions and history = history in
@@ -735,7 +744,9 @@ let component graph =
       ~tab:shell.tab ~on_tab:select_tab ~timeline ~audit:audit.view ~outbox
       ~composer:(Some composer.view)
   in
-  App_shell.render ~header ~navigation_scrim ~session_rail ~workbench
+  App_shell.render
+    ~audit_active:(phys_equal shell.tab Session_tabs.Audit)
+    ~header ~navigation_scrim ~session_rail ~workbench
     ~search_dialog:search.view ~session_lifecycle:lifecycle.view
     ~workspace_dialogs:workspace_dialogs.view
 

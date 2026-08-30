@@ -88,6 +88,7 @@ try {
     ["/app.js", "text/javascript"],
     ["/styles.css", "text/css"],
     ["/components/audit.css", "text/css"],
+    ["/components/audit-fullscreen.css", "text/css"],
     ["/components/config-controls.css", "text/css"],
     ["/manifest.webmanifest", "application/manifest+json"],
     ["/service-worker.js", "text/javascript"],
@@ -351,6 +352,7 @@ try {
   if (auditRequests.length !== 1 || !auditRequests[0].endsWith("/api/v2/sessions/s-mention-browser/audit")) {
     throw new Error(`Audit was not bound to the selected durable session: ${JSON.stringify(auditRequests)}`);
   }
+  await page.getByRole("button", { name: "Show changed files" }).click();
   const changedFiles = page.getByRole("navigation", { name: "Changed files" });
   const fileButtons = changedFiles.locator("button.audit-file");
   if (await fileButtons.count() !== pageAudit.files.length || pageAudit.highlightedFiles < 3) {
@@ -373,7 +375,7 @@ try {
     clientWidth: node.clientWidth,
     navigatorDisplay: getComputedStyle(node.querySelector(".audit-file-list")).display,
   }));
-  if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.navigatorDisplay !== "flex") {
+  if (mobileAudit.scrollWidth > mobileAudit.clientWidth || mobileAudit.navigatorDisplay !== "block") {
     throw new Error(`Audit mobile diff layout overflowed or hid its file navigator: ${JSON.stringify(mobileAudit)}`);
   }
   const auditUrlPattern = "**/api/v2/sessions/s-mention-browser/audit";
@@ -410,11 +412,7 @@ try {
     throw new Error(`Audit error and recovery did not issue two refreshes: ${JSON.stringify(auditRequests)}`);
   }
   await page.setViewportSize({ width: 1280, height: 800 });
-  await auditTab.press("ArrowRight");
-  await page.waitForFunction(() => document.getElementById("session-tab-details")?.getAttribute("aria-selected") === "true");
-  await detailsTab.press("ArrowLeft");
-  await page.waitForFunction(() => document.getElementById("session-tab-audit")?.getAttribute("aria-selected") === "true");
-  await auditTab.press("ArrowLeft");
+  await page.getByRole("button", { name: "Close diff viewer" }).click();
   await page.waitForFunction(() => document.getElementById("session-tab-agent")?.getAttribute("aria-selected") === "true");
   const modelButton = page.getByRole("button", { name: "Model: Mock Fast" });
   await modelButton.click();

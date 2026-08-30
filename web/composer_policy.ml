@@ -44,3 +44,8 @@ let action status ~delivery =
   match status with
   | Runtime_domain.Running -> delivery
   | _ -> Prompt_command.Prompt
+
+let delivery_for_runtime status ~delivery =
+  match status with
+  | Runtime_domain.Running -> delivery
+  | _ -> Prompt_command.Prompt

@@ -23,3 +23,8 @@ val action :
   Runtime_domain.status ->
   delivery:Prompt_command.action ->
   Prompt_command.action
+
+val delivery_for_runtime :
+  Runtime_domain.status ->
+  delivery:Prompt_command.action ->
+  Prompt_command.action

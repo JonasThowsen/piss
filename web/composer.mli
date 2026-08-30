@@ -4,6 +4,7 @@ type output = {
   view : Vdom.Node.t;
   restore : string option -> unit Effect.t;
   set_notice : string -> unit Effect.t;
+  submit_review_notes : Prompt_command.action -> string -> unit Effect.t;
   has_pending : unit -> bool;
 }
 

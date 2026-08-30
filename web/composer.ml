@@ -7,6 +7,7 @@ type output = {
   view : Vdom.Node.t;
   restore : string option -> unit Effect.t;
   set_notice : string -> unit Effect.t;
+  submit_review_notes : Prompt_command.action -> string -> unit Effect.t;
   has_pending : unit -> bool;
 }
 
@@ -268,6 +269,7 @@ let component session runtime connecting stream_notice notice config_controls
                   (Prompt_command.Submission.mark_uncertain
                      (Prompt_command.Submission.start pending));
                 on_busy false;
+                set_delivery Prompt_command.Prompt;
                 refresh_runtime;
                 set_notice
                   ("Runtime conflict: "
@@ -323,7 +325,7 @@ let component session runtime connecting stream_notice notice config_controls
                   | Follow_up -> "Follow-up queued. Waiting for live events.");
               ])
   in
-  let submit requested_action =
+  let submit ?text_override requested_action =
     match (session, runtime, disabled, pending) with
     | _, _, _, _ when !submission_locked -> Effect.Ignore
     | None, _, _, _ | _, None, _, _ | _, _, true, _ | _, _, _, Some _ ->
@@ -335,7 +337,10 @@ let component session runtime connecting stream_notice notice config_controls
     | Some (session : Control_plane.Session.t), Some runtime, false, None -> (
         submission_locked := true;
         request_in_flight := true;
-        let live_text, _, _ = field_snapshot prompt in
+        let live_text, _, _ =
+          Option.value_map text_override ~default:(field_snapshot prompt)
+            ~f:(fun text -> (text, 0, 0))
+        in
         let selected = Mention_picker.reconcile ~text:live_text resources in
         let command_resources =
           List.map selected ~f:(fun resource : Prompt_command.resource ->
@@ -350,7 +355,8 @@ let component session runtime connecting stream_notice notice config_controls
               })
         in
         let action =
-          Composer_policy.action runtime.status ~delivery:requested_action
+          Composer_policy.delivery_for_runtime runtime.status
+            ~delivery:requested_action
         in
         let command_id = Command_id.create () in
         match
@@ -703,5 +709,6 @@ let component session runtime connecting stream_notice notice config_controls
             set_notice "";
           ]);
     set_notice;
+    submit_review_notes = (fun action text -> submit ~text_override:text action);
     has_pending = (fun () -> !submission_locked || Option.is_some pending);
   }

@@ -31,6 +31,13 @@ let () =
             ~connecting:false ~submitting:false ~image_processing:false)
          Requires_action)
   then fail "requires_action composer state was not explicit";
+  if
+    not
+      (phys_equal
+         (Composer_policy.delivery_for_runtime Idle
+            ~delivery:Prompt_command.Steer)
+         Prompt_command.Prompt)
+  then fail "idle runtime retained stale Steer delivery";
   let image =
     match
       Image_attachment.of_data_url ~name:"proof.gif" ~mime_type:"image/gif"

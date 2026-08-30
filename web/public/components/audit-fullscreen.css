@@ -1,0 +1,10 @@
+/* Audit is a focused review mode, not another constrained workbench panel. */
+.audit-fullscreen-mode { display: block; background: #11141b; }
+.audit-fullscreen-mode > .app-header,
+.audit-fullscreen-mode .runtime-rail,
+.audit-fullscreen-mode .sidebar-scrim,
+.audit-fullscreen-mode .capability-tabs { display: none; }
+.audit-fullscreen-mode > .workspace-grid { display: block; height: 100%; }
+.audit-fullscreen-mode .conversation-panel { display: block; width: 100%; height: 100%; background: #11141b; }
+.audit-fullscreen-mode .session-panel-stack { height: 100%; }
+.audit-fullscreen-mode .audit-panel { height: 100%; }
