@@ -96,6 +96,14 @@
 .audit-layout-control { border-color: var(--line-strong); }
 .audit-layout-control-active { background: var(--accent); color: #fff; }
 .audit-diff-body { background: var(--canvas); }
+.audit-all-patches { padding-bottom: 28px; }
+.audit-file-patch { margin: 0; scroll-margin-top: 12px; }
+.audit-file-patch-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 22px 12px 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-bottom: 0; background: var(--panel); }
+.audit-file-patch-header h3 { margin: 0; overflow: hidden; color: var(--ink); font: 600 12px/1.25 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.audit-file-patch-header span { flex: none; color: var(--muted); font: 10px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.audit-file-patch .audit-diff-body { padding-top: 0; }
+.audit-file-patch .audit-diff-hunk { margin-top: 0; border-radius: 0; }
+@media (max-width: 700px) { .audit-file-patch-header { margin-inline: 0; } }
 .audit-diff-hunk { border-color: var(--line-strong); background: var(--panel); }
 .audit-diff-hunk-header { border-color: var(--line); background: var(--soft); color: var(--muted); }
 .audit-diff-split-row, .audit-diff-hunk > .audit-diff-cell { border-color: var(--line); }

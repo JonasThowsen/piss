@@ -62,10 +62,6 @@ let status file =
   then "renamed"
   else "modified"
 
-let display_path file =
-  Option.value_map file.Audit_domain.previous_path ~default:file.path
-    ~f:(fun previous -> previous ^ " → " ^ file.path)
-
 let line_number = function None -> "" | Some number -> Int.to_string number
 
 let word_segment_view = function
@@ -401,9 +397,10 @@ let diff_view audit ~on_refresh ~selected_path ~select_file ~select_line
                     [ text "↻" ];
                   Vdom.Node.div
                     [
-                      Vdom.Node.span [ text (status file) ];
-                      Vdom.Node.h2 [ text (display_path file) ];
-                      Vdom.Node.p [ text file.reason ];
+                      Vdom.Node.span [ text "Review" ];
+                      Vdom.Node.h2 [ text "All changed files" ];
+                      Vdom.Node.p
+                        [ text "Scroll through every available patch in this review." ];
                     ];
                 ];
               Vdom.Node.div
@@ -429,7 +426,26 @@ let diff_view audit ~on_refresh ~selected_path ~select_file ~select_line
                     browser.";
                ]
            else Vdom.Node.none);
-          patch_view ~select_line file parsed layout;
+          Vdom.Node.div
+            ~attrs:[ class_ "audit-all-patches" ]
+            (List.map audit.files ~f:(fun file ->
+                 let parsed = Diff_view_domain.parse_unified_patch file.patch in
+                 Vdom.Node.section
+                   ~attrs:[ class_ "audit-file-patch" ]
+                   [
+                     Vdom.Node.header
+                       ~attrs:[ class_ "audit-file-patch-header" ]
+                       [
+                         Vdom.Node.h3 [ text file.path ];
+                         Vdom.Node.span
+                           [
+                             text
+                               (Printf.sprintf "+%d −%d" parsed.additions
+                                  parsed.deletions);
+                           ];
+                       ];
+                     patch_view ~select_line file parsed layout;
+                   ]));
         ];
     ]
 
