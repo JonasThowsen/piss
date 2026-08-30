@@ -276,6 +276,22 @@ let component session runtime connecting stream_notice notice config_controls
                   ^ Browser_http.error_message error
                   ^ " The runtime is refreshing; retry the same command.");
               ]
+        | Error error when Browser_http.is_conflict error ->
+            request_in_flight := false;
+            submission_locked := false;
+            Effect.Many
+              [
+                set_submission Prompt_command.Submission.ready;
+                on_busy false;
+                set_delivery
+                  (Composer_policy.delivery_after_runtime_conflict ~conflict:true
+                     ~delivery);
+                refresh_runtime;
+                set_notice
+                  ("Runtime conflict: "
+                  ^ Browser_http.error_message error
+                  ^ " The runtime is refreshing; send as a normal prompt.");
+              ]
         | Error error when Browser_http.is_authoritative_terminal error ->
             request_in_flight := false;
             submission_locked := false;
@@ -284,9 +300,7 @@ let component session runtime connecting stream_notice notice config_controls
                 set_submission Prompt_command.Submission.ready;
                 on_busy false;
                 set_notice
-                  ((if Browser_http.is_conflict error then "Runtime conflict: "
-                    else "Command rejected: ")
-                  ^ Browser_http.error_message error);
+                  ("Command rejected: " ^ Browser_http.error_message error);
               ]
         | Error error ->
             request_in_flight := false;

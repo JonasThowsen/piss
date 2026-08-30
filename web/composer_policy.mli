@@ -28,3 +28,9 @@ val delivery_for_runtime :
   Runtime_domain.status ->
   delivery:Prompt_command.action ->
   Prompt_command.action
+
+(** Resets stale interactive delivery after a runtime conflict. *)
+val delivery_after_runtime_conflict :
+  conflict:bool ->
+  delivery:Prompt_command.action ->
+  Prompt_command.action

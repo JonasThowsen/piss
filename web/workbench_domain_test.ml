@@ -116,6 +116,13 @@ let () =
    with
   | Some Notification_policy.Delegated_work_finished -> ()
   | _ -> fail "delegated-work completion notification transition was lost");
+  (match
+     Notification_policy.decide
+       ~previous:(notification_state Runtime_domain.Idle (Some 1.))
+       ~current:(notification_state Runtime_domain.Idle (Some 2.))
+   with
+  | None -> ()
+  | Some _ -> fail "idle catalog refresh replayed an old completion notification");
   (match Runtime_domain.find_category runtime "model" with
   | Some option when String.equal option.current_value "mock/fast" -> ()
   | _ -> fail "model config category was not decoded");

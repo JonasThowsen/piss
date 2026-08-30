@@ -28,7 +28,10 @@ let decide ~previous ~current =
     phys_equal previous.status Runtime_domain.Waiting
     && phys_equal current.status Runtime_domain.Idle
   then Some Delegated_work_finished
-  else if finished_advanced previous.last_finished_at current.last_finished_at
+  else if
+    (phys_equal previous.status Runtime_domain.Running
+    || phys_equal previous.status Runtime_domain.Waiting)
+    && finished_advanced previous.last_finished_at current.last_finished_at
   then
     Some
       (Turn_finished

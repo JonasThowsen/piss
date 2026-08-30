@@ -38,6 +38,13 @@ let () =
             ~delivery:Prompt_command.Steer)
          Prompt_command.Prompt)
   then fail "idle runtime retained stale Steer delivery";
+  if
+    not
+      (phys_equal
+         (Composer_policy.delivery_after_runtime_conflict ~conflict:true
+            ~delivery:Prompt_command.Steer)
+         Prompt_command.Prompt)
+  then fail "generic runtime conflict retained stale Steer delivery";
   let image =
     match
       Image_attachment.of_data_url ~name:"proof.gif" ~mime_type:"image/gif"
