@@ -106,21 +106,24 @@ let diff_cell ?counterpart ?select_line (line : Diff_view_domain.line option) =
         | Addition -> "+"
         | Deletion -> "-"
       in
-      let select_attr =
-        Option.value_map select_line ~default:[] ~f:(fun select_line ->
-            Option.value_map (Option.first_some line.new_number line.old_number)
-              ~default:[] ~f:(fun number ->
-                [
-                  Vdom.Attr.create "role" "button";
-                  Vdom.Attr.create "aria-label"
-                    (Printf.sprintf "Add review note at line %d" number);
-                  Vdom.Attr.on_click (fun _ -> select_line number);
-                ]))
+      let line_note_trigger =
+        Option.bind select_line ~f:(fun select_line ->
+            Option.map (Option.first_some line.new_number line.old_number)
+              ~f:(fun number ->
+                Vdom.Node.button
+                  ~attrs:
+                    [
+                      class_ "audit-line-note-trigger";
+                      Vdom.Attr.create "type" "button";
+                      Vdom.Attr.create "aria-label"
+                        (Printf.sprintf "Add review note at line %d" number);
+                      Vdom.Attr.on_click (fun _ -> select_line number);
+                    ]
+                  [ text "+" ]))
       in
       Vdom.Node.div
         ~attrs:
-          ([ class_ "audit-diff-cell"; Vdom.Attr.create "data-diff-kind" kind ]
-          @ select_attr)
+          [ class_ "audit-diff-cell"; Vdom.Attr.create "data-diff-kind" kind ]
         [
           Vdom.Node.span
             ~attrs:[ class_ "audit-diff-number" ]
@@ -132,6 +135,7 @@ let diff_cell ?counterpart ?select_line (line : Diff_view_domain.line option) =
           Vdom.Node.code
             ~attrs:[ class_ "audit-diff-code" ]
             (line_segments ?counterpart line);
+          Option.value line_note_trigger ~default:Vdom.Node.none;
         ]
 
 let split_hunk_view ?select_line (hunk : Diff_view_domain.hunk) =
@@ -534,7 +538,7 @@ let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
   let navigator_open, set_navigator_open = Bonsai.state false graph in
   let review_notes, set_review_notes = Bonsai.state [] graph in
   let review_draft, set_review_draft = Bonsai.state "" graph in
-  let review_line, set_review_line = Bonsai.state "1" graph in
+  let review_line, set_review_line = Bonsai.state "" graph in
   let layout, set_layout = Bonsai.state Split graph in
   let key =
     let%arr session_id = session_id and active = active in
@@ -633,31 +637,33 @@ let component ~session_id ~active ~runtime ~close ~submit_review_notes graph =
                       (Printf.sprintf "Review notes · %d"
                          (List.length review_notes));
                   ];
-                Vdom.Node.input
+                Vdom.Node.div
                   ~attrs:
-                    [
-                      Vdom.Attr.create "type" "number";
-                      Vdom.Attr.value_prop review_line;
-                      Vdom.Attr.on_input (fun _ value -> set_review_line value);
-                      Vdom.Attr.create "aria-label" "Review note line";
-                    ]
-                  ();
-                Vdom.Node.textarea
-                  ~attrs:
-                    [
-                      Vdom.Attr.value_prop review_draft;
-                      Vdom.Attr.on_input (fun _ value -> set_review_draft value);
-                      Vdom.Attr.create "placeholder"
-                        "Note for agent about this file…";
-                    ]
-                  [];
-                Vdom.Node.button
-                  ~attrs:
-                    [
-                      Vdom.Attr.create "type" "button";
-                      Vdom.Attr.on_click (fun _ -> add_note ());
-                    ]
-                  [ text "Add note" ];
+                    ([ class_ "audit-note-composer" ]
+                    @
+                    if String.is_empty review_line then
+                      [ Vdom.Attr.create "hidden" "" ]
+                    else [])
+                  [
+                    Vdom.Node.p [ text ("Line " ^ review_line) ];
+                    Vdom.Node.textarea
+                      ~attrs:
+                        [
+                          Vdom.Attr.value_prop review_draft;
+                          Vdom.Attr.on_input (fun _ value ->
+                              set_review_draft value);
+                          Vdom.Attr.create "placeholder"
+                            "Note for agent about this line…";
+                        ]
+                      [];
+                    Vdom.Node.button
+                      ~attrs:
+                        [
+                          Vdom.Attr.create "type" "button";
+                          Vdom.Attr.on_click (fun _ -> add_note ());
+                        ]
+                      [ text "Add note" ];
+                  ];
                 (match runtime with
                 | Some runtime
                   when phys_equal runtime.Runtime_domain.status Running ->

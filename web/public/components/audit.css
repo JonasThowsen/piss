@@ -32,7 +32,7 @@
 .audit-diff-split-row { display: grid; grid-template-columns: minmax(460px, 1fr) minmax(460px, 1fr); border-bottom: 1px solid #252a34; }
 .audit-diff-split-row:last-child { border-bottom: 0; }
 .audit-diff-split-row > .audit-diff-cell:first-child { border-right: 1px solid #343945; }
-.audit-diff-cell { min-width: 0; min-height: 22px; display: grid; grid-template-columns: 43px 43px 18px minmax(0, 1fr); align-items: stretch; background: #11141b; color: #e1e5ed; font: 11px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+.audit-diff-cell { min-width: 0; min-height: 22px; display: grid; grid-template-columns: 43px 43px 18px minmax(0, 1fr) 26px; align-items: stretch; background: #11141b; color: #e1e5ed; font: 11px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
 .audit-diff-hunk > .audit-diff-cell { border-bottom: 1px solid #252a34; }
 .audit-diff-hunk > .audit-diff-cell:last-child { border-bottom: 0; }
 .audit-diff-cell[data-diff-kind="addition"] { background: #143822; }
@@ -44,6 +44,8 @@
 .audit-diff-cell[data-diff-kind="addition"] .audit-diff-number, .audit-diff-cell[data-diff-kind="addition"] .audit-diff-sign { color: #52dc7c; }
 .audit-diff-cell[data-diff-kind="deletion"] .audit-diff-number, .audit-diff-cell[data-diff-kind="deletion"] .audit-diff-sign { color: #ff7777; }
 .audit-diff-code { min-width: 0; display: block; overflow: hidden; padding: 2px 12px 2px 4px; color: inherit; font: inherit; white-space: pre; tab-size: 2; }
+.audit-line-note-trigger { min-height: 22px; width: 24px; align-self: stretch; border: 0; border-left: 1px solid rgba(221, 226, 235, .08); background: transparent; color: #7f8ba1; font: 16px/1 var(--mono); cursor: pointer; }
+.audit-line-note-trigger:hover, .audit-line-note-trigger:focus-visible { background: #313947; color: #fff; }
 .audit-diff-word { padding: 0; border-radius: 2px; background: rgba(242, 193, 73, .2); color: inherit; }
 .audit-diff-empty-state { min-height: 180px; display: grid; place-items: center; margin: 16px; padding: 28px; border: 1px dashed #454b59; border-radius: 4px; color: #9da5b5; font: 10px/1.5 var(--mono); text-align: center; }
 
@@ -77,6 +79,6 @@
   .audit-diff-body { min-width: max-content; padding: 6px 0 20px; }
   .audit-diff-hunk { min-width: max-content; margin: 0 0 8px; border-right: 0; border-left: 0; border-radius: 0; }
   .audit-diff-split-row { grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); }
-  .audit-diff-cell { grid-template-columns: 35px 35px 16px minmax(0, 1fr); font-size: 9px; }
+  .audit-diff-cell { grid-template-columns: 35px 35px 16px minmax(0, 1fr) 26px; font-size: 9px; }
   .audit-diff-code { padding-right: 7px; }
 }
