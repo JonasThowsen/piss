@@ -12,6 +12,11 @@ type output = {
   clear : unit -> unit Effect.t;
 }
 
+type pending_image_reference = {
+  selection : Image_references.selection;
+  first_image_number : int;
+}
+
 let input_id = "composer-image-input"
 let class_ name = Vdom.Attr.class_ name
 let text = Vdom.Node.text
@@ -104,8 +109,9 @@ let format_size bytes =
     Printf.sprintf "%.1f KiB" (Float.of_int bytes /. 1024.)
   else Int.to_string bytes ^ " B"
 
-let component ~available ~on_notice ~on_processing graph =
-  let paste_focus = ref None in
+let component ~available ~on_notice ~on_processing ~composer_selection
+    ~on_images_added ~on_image_removed graph =
+  let pending_image_reference = ref None in
   let state, inject =
     Bonsai.state_machine0 ~default_model:Image_batch.empty
       ~apply_action:(fun _ state action -> Image_batch.apply state action)
@@ -119,22 +125,6 @@ let component ~available ~on_notice ~on_processing graph =
   in
   Bonsai.Edge.on_change processing_value ~equal:Bool.equal
     ~callback:on_processing graph;
-  let image_count_value =
-    let%arr state = state in
-    List.length (Image_batch.images state)
-  in
-  let restore_completed_paste =
-    let%arr _ = on_processing in
-    fun _ ->
-      match !paste_focus with
-      | None -> Effect.Ignore
-      | Some restore_focus ->
-          paste_focus := None;
-          restore_focus ();
-          Effect.Ignore
-  in
-  Bonsai.Edge.on_change image_count_value ~equal:Int.equal
-    ~callback:restore_completed_paste graph;
   let notification_value =
     let%arr state = state in
     Image_batch.notification state
@@ -149,11 +139,27 @@ let component ~available ~on_notice ~on_processing graph =
   let%arr available = available
   and on_notice = on_notice
   and state = state
-  and inject = inject in
+  and inject = inject
+  and composer_selection = composer_selection
+  and on_images_added = on_images_added
+  and on_image_removed = on_image_removed in
   let images = Image_batch.images state in
   let processing = Image_batch.processing state in
-  let select ?restore_focus files =
+  let select ?selection files =
     clear_input ();
+    let saved_reference = !pending_image_reference in
+    pending_image_reference := None;
+    let selection =
+      Option.value selection
+        ~default:
+          (Option.value_map saved_reference ~default:(composer_selection ())
+             ~f:(fun pending -> pending.selection))
+    in
+    let first_image_number =
+      Option.value_map saved_reference
+        ~default:(List.length images + 1)
+        ~f:(fun pending -> pending.first_image_number)
+    in
     if (not available) || processing || List.is_empty files then Effect.Ignore
     else if List.length images + List.length files > Image_attachment.max_count
     then on_notice "At most four images may be attached"
@@ -186,26 +192,52 @@ let component ~available ~on_notice ~on_processing graph =
           then on_notice "Image attachments exceed the 10 MiB limit"
           else
             let token = Image_batch.next_token state in
-            Option.iter restore_focus ~f:(fun restore_focus ->
-                paste_focus := Some restore_focus);
+            pending_image_reference := Some { selection; first_image_number };
             Effect.bind (inject (Image_batch.Begin token)) ~f:(fun () ->
                 Effect.bind
                   (Effect.of_deferred_thunk (fun () ->
                        Async_kernel.Deferred.all (List.map files ~f:decode_file)))
                   ~f:(fun decoded ->
-                    inject (Image_batch.Complete (token, Result.all decoded))))
+                    let result =
+                      Result.bind (Result.all decoded) ~f:(fun additions ->
+                          Result.map
+                            (Image_attachment.validate_total (images @ additions))
+                            ~f:(fun () -> additions))
+                    in
+                    Effect.bind
+                      (inject (Image_batch.Complete (token, result)))
+                      ~f:(fun () ->
+                        match (result, !pending_image_reference) with
+                        | Ok additions, Some pending ->
+                            pending_image_reference := None;
+                            on_images_added ~text:pending.selection.text
+                              ~start:pending.selection.start
+                              ~stop:pending.selection.stop
+                              ~first_image_number:pending.first_image_number
+                              ~count:(List.length additions)
+                        | Error _, Some _ ->
+                            pending_image_reference := None;
+                            Effect.Ignore
+                        | Ok _, None | Error _, None -> Effect.Ignore)))
   in
-  let remove index = inject (Image_batch.Remove index) in
+  let remove index =
+    Effect.bind (inject (Image_batch.Remove index)) ~f:(fun () ->
+        on_image_removed ~removed_image_number:(index + 1)
+          ~image_count:(List.length images))
+  in
   let paste_attr =
     Vdom.Attr.on_paste (fun event ->
         let files = paste_files event in
         if List.is_empty files then Effect.Ignore
         else
           let start, stop = Composer_ui.event_selection event 0 in
+          let current_selection = composer_selection () in
+          let selection =
+            { Image_references.text = current_selection.text; start; stop }
+          in
           let restore_focus () = Composer_ui.focus_selection ~start ~stop in
           restore_focus ();
-          Effect.Many
-            [ Vdom.Effect.Prevent_default; select ~restore_focus files ])
+          Effect.Many [ Vdom.Effect.Prevent_default; select ~selection files ])
   in
   let previews =
     if List.is_empty images then Vdom.Node.none
@@ -268,6 +300,12 @@ let component ~available ~on_notice ~on_processing graph =
                Vdom.Attr.create "type" "button";
                Vdom.Attr.create "aria-label" "Attach images";
                Vdom.Attr.on_click (fun _ ->
+                   pending_image_reference :=
+                     Some
+                       {
+                         selection = composer_selection ();
+                         first_image_number = List.length images + 1;
+                       };
                    open_input ();
                    Effect.Ignore);
              ]
@@ -284,6 +322,7 @@ let component ~available ~on_notice ~on_processing graph =
     view;
     clear =
       (fun () ->
+        pending_image_reference := None;
         clear_input ();
         inject Image_batch.Clear);
   }

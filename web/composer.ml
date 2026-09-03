@@ -76,9 +76,44 @@ let component session runtime connecting stream_notice notice config_controls
            | Idle | Waiting | Running -> true
            | _ -> false)
   in
+  let composer_selection =
+    let%arr prompt = prompt in
+    fun () ->
+      let text, start, stop = field_snapshot prompt in
+      { Image_references.text; start; stop }
+  in
+  let insert_image_references =
+    let%arr session = session and set_prompt = set_prompt in
+    fun ~text ~start ~stop ~first_image_number ~count ->
+      let insertion =
+        Image_references.insert_image_references { text; start; stop }
+          ~first_image_number ~count
+      in
+      Option.iter session ~f:(fun (session : Control_plane.Session.t) ->
+          Composer_draft.write session.id insertion.text);
+      apply_to_field
+        { Mention_picker.text = insertion.text; cursor = insertion.start };
+      set_prompt insertion.text
+  in
+  let remove_image_reference =
+    let%arr session = session and prompt = prompt and set_prompt = set_prompt in
+    fun ~removed_image_number ~image_count ->
+      let text, cursor, _ = field_snapshot prompt in
+      let text =
+        Image_references.remove_image_reference ~text ~removed_image_number
+          ~image_count
+      in
+      Option.iter session ~f:(fun (session : Control_plane.Session.t) ->
+          Composer_draft.write session.id text);
+      apply_to_field
+        { Mention_picker.text; cursor = Int.min cursor (String.length text) };
+      set_prompt text
+  in
   let attachments =
     Image_attachments.component ~available:attachment_available
-      ~on_notice:set_notice ~on_processing:on_busy graph
+      ~on_notice:set_notice ~on_processing:on_busy ~composer_selection
+      ~on_images_added:insert_image_references
+      ~on_image_removed:remove_image_reference graph
   in
   let reset_session_state =
     let%arr set_prompt_state = set_prompt_state

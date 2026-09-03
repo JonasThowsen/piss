@@ -145,6 +145,9 @@
                 ./web/image_attachment.mli
                 ./web/image_batch.ml
                 ./web/image_batch.mli
+                ./web/image_references.ml
+                ./web/image_references.mli
+                ./web/image_references_test.ml
                 ./web/image_attachments.ml
                 ./web/image_attachments.mli
                 ./web/last_opened_session.ml

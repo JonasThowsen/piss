@@ -14,6 +14,7 @@
   http_error
   image_attachment
   image_batch
+  image_references
   markdown_syntax
   mention_picker
   notification_policy
@@ -137,6 +138,13 @@
 (test
  (name markdown_syntax_test)
  (modules markdown_syntax_test)
+ (libraries core control_plane_domain)
+ (preprocess
+  (pps ppx_jane)))
+
+(test
+ (name image_references_test)
+ (modules image_references_test)
  (libraries core control_plane_domain)
  (preprocess
   (pps ppx_jane)))

@@ -636,11 +636,15 @@ try {
   if ((await imageInput.getAttribute("multiple")) === null || !(await imageInput.isHidden())) {
     throw new Error("image input was not hidden and multi-file capable");
   }
-  await page.getByRole("textbox", { name: "Message agent" }).evaluate((field, data) => {
+  const imagePrompt = "Here is the image ";
+  const imageComposer = page.getByRole("textbox", { name: "Message agent" });
+  await imageComposer.fill(imagePrompt);
+  await imageComposer.evaluate((field, data) => {
     const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
     const transfer = new DataTransfer();
     transfer.items.add(new File([bytes], "proof.gif", { type: "image/gif" }));
     field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
     field.dispatchEvent(new ClipboardEvent("paste", {
       bubbles: true,
       cancelable: true,
@@ -654,6 +658,10 @@ try {
     undefined,
     { timeout: 2000 },
   );
+  const imageText = `${imagePrompt}[image 1]`;
+  if (await imageComposer.inputValue() !== imageText) {
+    throw new Error("image reference was not inserted at the composer cursor");
+  }
   const imageRequestPromise = page.waitForRequest(
     (candidate) => candidate.url().includes("/api/v2/commands") && candidate.method() === "POST",
   );
@@ -661,7 +669,7 @@ try {
   const imageBody = (await imageRequestPromise).postDataJSON();
   if (
     imageBody.action !== "prompt"
-    || imageBody.text !== ""
+    || imageBody.text !== imageText
     || imageBody.images?.length !== 1
     || imageBody.images[0]?.mimeType !== "image/gif"
     || imageBody.images[0]?.name !== "proof.gif"
@@ -669,6 +677,7 @@ try {
   ) {
     throw new Error(`unexpected image command: ${JSON.stringify(imageBody)}`);
   }
+  await page.locator(".timeline-user").last().getByText(imageText, { exact: true }).waitFor();
   await page.getByText("Received 1 image attachment.", { exact: true }).waitFor({ timeout: 10000 });
   if ((await page.locator("body").innerText()).includes(gifData)) {
     throw new Error("base64 image data was rendered into the timeline");
