@@ -351,7 +351,7 @@ let component ~workspaces ~active ~archived ~seen_finished_at ~on_open
     in
     match delta with
     | Some delta ->
-        let next = Global_search.move ~count ~current:selected ~delta in
+        let next = Global_search.move_clamped ~count ~current:selected ~delta in
         Effect.Many
           [ Vdom.Effect.Prevent_default; set_selected next; reveal_option next ]
     | None when String.equal key "Enter" -> (

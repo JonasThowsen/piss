@@ -126,8 +126,10 @@ let () =
          (List.map all_archived ~f:(fun item -> item.Global_search.session.id))
          [ "s-old"; "s-archived-b" ])
   then fail "archived search was not grouped by workspace";
-  if Global_search.move ~count:3 ~current:0 ~delta:(-1) <> 2 then
-    fail "keyboard selection did not wrap backward";
+  if Global_search.move_clamped ~count:3 ~current:0 ~delta:(-1) <> 0 then
+    fail "session-search selection wrapped before the first result";
+  if Global_search.move_clamped ~count:3 ~current:2 ~delta:1 <> 2 then
+    fail "session-search selection wrapped after the last result";
   (match
      Control_plane.decode_session_creation
        {|{"availableHarnesses":["pi","codex","opencode","mock"],"defaultHarness":"pi"}|}

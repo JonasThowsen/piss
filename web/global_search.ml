@@ -106,3 +106,8 @@ let items ~scope ~query ~seen_finished_at ~workspaces ~active ~archived =
 
 let move ~count ~current ~delta =
   if count <= 0 then 0 else (current + delta + count) mod count
+
+(* Moves a session-search selection without wrapping past either result
+   boundary. *)
+let move_clamped ~count ~current ~delta =
+  if count <= 0 then 0 else Int.min (count - 1) (Int.max 0 (current + delta))

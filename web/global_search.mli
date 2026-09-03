@@ -18,3 +18,7 @@ val items :
   item list
 
 val move : count:int -> current:int -> delta:int -> int
+
+val move_clamped : count:int -> current:int -> delta:int -> int
+(** Moves a session-search selection without wrapping at the first or last
+    result. *)
